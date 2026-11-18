@@ -65,6 +65,10 @@ class MoveContract:
     A ``value-only`` contract carries ``expected_values``: each constant with the value and
     exact type it must have. ``environment`` holds the variables the module reads those
     values from when it is imported. Neither applies to any other kind.
+
+    ``registers_routes`` marks a ``module`` whose import registers daemon routes. Running it
+    a second time is refused as a duplicate registration, so its cold run checks that the
+    reload is refused in place of checking that the reload succeeds.
     """
 
     old: str
@@ -77,6 +81,7 @@ class MoveContract:
     cold_orders: tuple[ColdOrder, ...] = COLD_ORDERS
     expected_values: tuple[tuple[str, object], ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
+    registers_routes: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -89,6 +94,8 @@ class MoveContract:
                 raise ValueError(f"{self.old}: a value-only module declares values, not names")
         elif self.expected_values or self.environment:
             raise ValueError(f"{self.old}: only a value-only module carries expected values")
+        if self.registers_routes and self.kind != "module":
+            raise ValueError(f"{self.old}: only a module row registers routes")
 
 
 # State a moved module shares between its two names, read and written through both.
@@ -1000,6 +1007,167 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"StoreNotAddressableError"}),
     ),
+    MoveContract(old="lionagi.integrations", new="lionhub.integrations", kind="package"),
+    MoveContract(
+        old="lionagi.studio._host",
+        new="lionhub.serve.daemon._host",
+        kind="module",
+        public_names=frozenset({"admitted_host_names", "is_unspecified_host"}),
+    ),
+    MoveContract(
+        old="lionagi.studio._traceback_dump",
+        new="lionhub.serve.daemon._traceback_dump",
+        kind="module",
+        public_names=frozenset({"arm_traceback_dump", "disarm_traceback_dump"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.daemon_log",
+        new="lionhub.serve.daemon.daemon_log",
+        kind="module",
+        public_names=frozenset({"daemon_log_handler"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.reconnect",
+        new="lionhub.serve.daemon.reconnect",
+        kind="module",
+        public_names=frozenset({"default_socket_path", "port_proof"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._io",
+        new="lionhub.serve.daemon.services._io",
+        kind="module",
+        public_names=frozenset({"parse_json_col", "read_json_file_checked"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._path_safety",
+        new="lionhub.serve.daemon.services._path_safety",
+        kind="module",
+        public_names=frozenset({"public_path", "safe_path_join"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._sse",
+        new="lionhub.serve.daemon.services._sse",
+        kind="module",
+        public_names=frozenset({"sse_response"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.artifact_verification",
+        new="lionhub.serve.daemon.services.artifact_verification",
+        kind="module",
+        public_names=frozenset({"resolve_artifact_verification"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.signals",
+        new="lionhub.serve.daemon.services.signals",
+        kind="module",
+        public_names=frozenset({"get_signals_after"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_view",
+        new="lionhub.serve.daemon.services.run_view",
+        kind="module",
+        public_names=frozenset({"build_run_view", "get_run_view"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.task_applications",
+        new="lionhub.serve.daemon.services.task_applications",
+        kind="module",
+        public_names=frozenset({"cancel_task", "submit_task"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.operator.redact",
+        new="lionhub.serve.daemon.services.redact",
+        kind="module",
+        public_names=frozenset({"redact_arguments", "scrub_text"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.launch_access",
+        new="lionhub.serve.daemon.launch_access",
+        kind="module",
+        public_names=frozenset({"daemon_epoch", "reset_launch_access"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.runs",
+        new="lionhub.serve.daemon.services.runs",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"get_run", "list_runs"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_resume",
+        new="lionhub.serve.daemon.services.run_resume",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"RunNotFoundError"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.run_resume_worker",
+        new="lionhub.serve.daemon.services.run_resume_worker",
+        kind="module",
+        public_names=frozenset({"main", "run_worker"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.engine_runs",
+        new="lionhub.serve.daemon.services.engine_runs",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"get_engine_run", "list_engine_runs"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.invocations",
+        new="lionhub.serve.daemon.services.invocations",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"get_invocation", "list_invocations"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.launches",
+        new="lionhub.serve.daemon.services.launches",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"launch", "launch_detached_argv"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.identity",
+        new="lionhub.serve.daemon.services.identity",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"get_identity_route"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.pairing",
+        new="lionhub.serve.daemon.services.pairing",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"create_pairing_code_route", "redeem_pairing_code_route"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.sessions",
+        new="lionhub.serve.daemon.services.sessions",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"display_cost", "display_model"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.admin",
+        new="lionhub.serve.daemon.services.admin",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"MaintenanceBody", "PruneBody"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services.schedules",
+        new="lionhub.serve.daemon.services.schedules",
+        kind="module",
+        registers_routes=True,
+        public_names=frozenset({"compute_schedule_health", "list_schedules"}),
+    ),
+    MoveContract(
+        old="lionagi.studio.services._session_tail",
+        new="lionhub.serve.daemon.services._session_tail",
+        kind="module",
+        public_names=frozenset({"SessionTailRegistry", "capture_frontiers"}),
+    ),
 )
 
 
@@ -1135,7 +1303,16 @@ for name in value_names:
 """
 
 _COLD_TAIL = """
-assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
+if registers_routes:
+    try:
+        importlib.reload(first)
+    except ValueError as exc:
+        assert "Duplicate studio_route registration" in str(exc), exc
+    else:
+        raise AssertionError("a route module ran its registrations twice without a refusal")
+    assert first is sys.modules[old] is sys.modules[new]
+else:
+    assert importlib.reload(first) is first is sys.modules[old] is sys.modules[new]
 assert first.__spec__.name == new and first.__name__ == new
 assert all(getattr(first, name) is getattr(second, name) for name in names)
 assert all(getattr(first, name) is getattr(second, name) for name in value_names)
@@ -1161,6 +1338,7 @@ def cold_program(
         f"expected = {dict(contract.expected_values)!r}\n"
         f"search_path = {list(search_path)!r}\norigin = {origin!r}\n"
         f"register_row = {register_row!r}\n"
+        f"registers_routes = {contract.registers_routes!r}\n"
     )
     consumers = "\n".join(consumer.source for consumer in contract.state_consumers)
     return header + _COLD_HEAD + consumers + "\n" + _COLD_TAIL

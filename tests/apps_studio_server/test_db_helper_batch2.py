@@ -19,7 +19,7 @@ class TestOpenDb:
         """sessions.py must import and use _open_db (not bare aiosqlite.connect)."""
         import inspect
 
-        import lionagi.studio.services.sessions as sessions_mod
+        import lionhub.serve.daemon.services.sessions as sessions_mod
 
         src = inspect.getsource(sessions_mod)
         # Verify _open_db is imported

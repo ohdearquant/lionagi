@@ -64,8 +64,8 @@ async def _seed_run(
 @pytest.fixture
 def resume_harness(tmp_path: Path, monkeypatch: Any):
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.run_resume as resume_svc
     import lionhub.orchestration.runs as cli_runs
+    import lionhub.serve.daemon.services.run_resume as resume_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -224,7 +224,7 @@ def test_resume_running_run_queues_until_terminal_and_coalesces_duplicate(
     assert worker_argv[:4] == [
         sys.executable,
         "-m",
-        "lionagi.studio.services.run_resume_worker",
+        "lionhub.serve.daemon.services.run_resume_worker",
         "--config",
     ]
     config_path = worker_argv[4]
@@ -259,8 +259,8 @@ async def test_queued_resume_worker_waits_for_terminal_snapshot_before_spawning(
     tmp_path, monkeypatch
 ):
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.run_resume as resume_svc
-    import lionagi.studio.services.run_resume_worker as worker
+    import lionhub.serve.daemon.services.run_resume as resume_svc
+    import lionhub.serve.daemon.services.run_resume_worker as worker
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

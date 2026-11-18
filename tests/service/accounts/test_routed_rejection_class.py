@@ -8,6 +8,7 @@ streamed attempt.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import anyio
 import anyio.lowlevel
+import httpx
 import pytest
 
 import lionagi
@@ -33,6 +35,7 @@ from tests.service.accounts.test_routed_endpoint import (
     _answer_late,
     _attempts,
     _block_reason,
+    _count_ledger_settlements,
     _http_statuses,
     _install_accounts,
     _model,
@@ -108,6 +111,30 @@ class _Rejection(StubResponse):
             await anyio.lowlevel.checkpoint()
             self.yielded += 1
             yield self.content[start : start + self.piece_size]
+
+    async def aclose(self):
+        await anyio.lowlevel.checkpoint()
+        self.closed = True
+
+
+class _StalledHTTPXBody(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.reading = anyio.Event()
+        self.reader_exited = anyio.Event()
+        self.close_count = 0
+
+    async def __aiter__(self):
+        try:
+            piece = SENTINEL.encode()
+            yield piece
+            self.reading.set()
+            await anyio.sleep_forever()
+        finally:
+            self.reader_exited.set()
+
+    async def aclose(self):
+        await anyio.lowlevel.checkpoint()
+        self.close_count += 1
 
 
 class _HangingRejection(_Rejection):
@@ -688,7 +715,91 @@ async def test_a_streamed_overload_body_that_is_not_read_keeps_the_ceiling(
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
+@pytest.mark.parametrize("native", [False, True], ids=["anyio-scope", "native-task"])
+@pytest.mark.parametrize(
+    ("status", "reason", "rejection"),
+    [(400, "request_rejected", ("other", "other")), (529, "provider_error", (None, None))],
+)
+async def test_cancellation_stops_a_stalled_httpx_rejection(
+    monkeypatch, tmp_path, caplog, native, status, reason, rejection
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [])
+    model.endpoint.config.max_retries = 0
+    body = _StalledHTTPXBody()
+    requests = []
+    responses = []
+
+    def respond(request):
+        requests.append(request)
+        response = httpx.Response(status, stream=body, request=request)
+        responses.append(response)
+        return response
+
+    def session(client_kwargs=None, timeout=None):
+        return httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=timeout)
+
+    model.endpoint._create_http_session = session
+    writes = _count_ledger_settlements(monkeypatch)
+    scope = anyio.CancelScope()
+    errors = []
+
+    async def consume():
+        with scope, pytest.raises(asyncio.CancelledError) as caught:
+            await _send(model, True)
+        errors.append(caught.value)
+
+    task = asyncio.create_task(consume())
+    try:
+        with anyio.fail_after(READ_HANG_GUARD):
+            await body.reading.wait()
+        if native:
+            task.cancel("stop the request")
+        else:
+            scope.cancel()
+        done, _ = await asyncio.wait({task}, timeout=READ_HANG_GUARD)
+        assert task in done, "caller cancellation waited for the diagnostic body deadline"
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, AccountRoutingError):
+                await task
+
+    (error,) = errors
+    if native:
+        assert error.args == ("stop the request",)
+    assert body.reader_exited.is_set()
+    assert len(requests) == 1 and len(responses) == 1
+    assert responses[0].is_closed and body.close_count == 1
+    assert len(writes) == 1 and writes[0].reason_code == reason
+    assert _attempts(path)[0][2:5] == ("open", None, reason)
+    assert _rejection_columns(path) == [(reason, *rejection)]
+    assert _http_statuses(path) == [(status,)]
+    _assert_no_sentinel(error, caplog, path)
+    reader = _StalledHTTPXBody.__aiter__.__code__
+    needle = SENTINEL.encode()
+    pending, seen = [error], set()
+    while pending:
+        linked = pending.pop()
+        if linked is None or id(linked) in seen:
+            continue
+        seen.add(id(linked))
+        pending.extend((linked.__cause__, linked.__context__))
+        trace = linked.__traceback__
+        while trace is not None:
+            assert trace.tb_frame.f_code is not reader
+            assert trace.tb_frame.f_code.co_name != "read_body"
+            assert not any(
+                needle in value
+                for value in trace.tb_frame.f_locals.values()
+                if isinstance(value, bytes)
+            )
+            trace = trace.tb_next
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_rejection_retains_its_ceiling_when_the_body_was_partial(
     monkeypatch, tmp_path
 ):
     path = _install_accounts(monkeypatch, tmp_path)
@@ -700,7 +811,8 @@ async def test_a_cancelled_caller_still_has_its_streamed_rejection_classified(
             await _send(model, True)
 
     assert caller.cancel_called
-    assert _rejection_columns(path) == [("rejection_zero", INVALID, "prompt_too_long")]
+    assert _rejection_columns(path) == [("request_rejected", "other", "other")]
+    assert rejection.closed
 
 
 def test_rejection_classifier_uses_module_level_error_names():
@@ -836,8 +948,57 @@ def test_the_message_check_passes_when_a_package_frame_holds_other_text(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_a_cancellation_pending_at_classifier_entry_skips_the_rejection_body(
+    monkeypatch, tmp_path
+):
+    class ImmediateRejection(_Rejection):
+        async def aiter_bytes(self):
+            self.yielded += 1
+            yield self.content
+
+    response = ImmediateRejection(400, _typed(PROMPT))
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, transport = _model(monkeypatch, [response])
+    writes = _count_ledger_settlements(monkeypatch)
+    classify = messages_module._classify_streamed_rejection_details
+    cancel_message = "cancel before rejection body"
+
+    async def cancel_at_entry(rejection, status):
+        assert rejection is response and status == 400 and response.yielded == 0
+        task = asyncio.current_task()
+        assert task is not None
+        cancellation_requested = task.cancel(cancel_message)
+        assert cancellation_requested
+        return await classify(rejection, status)
+
+    monkeypatch.setattr(messages_module, "_classify_streamed_rejection_details", cancel_at_entry)
+    cancellations = []
+
+    async def consume():
+        try:
+            await _send(model, True)
+        except asyncio.CancelledError as exc:
+            cancellations.append(exc.args)
+            raise
+
+    task = asyncio.create_task(consume())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Check the message inside the consumer. Python 3.10 may lose it across the task boundary.
+    assert cancellations == [(cancel_message,)]
+    assert response.yielded == 0
+    assert response.closed and task.cancelled() and len(transport.calls) == 1
+    assert len(writes) == 1 and writes[0].reason_code == "request_rejected"
+    assert len(_attempts(path)) == 1
+    assert _attempts(path)[0][2:5] == ("open", None, "request_rejected")
+    assert _rejection_columns(path) == [("request_rejected", "other", "other")]
+    assert _http_statuses(path) == [(400,)]
+
+
+@pytest.mark.asyncio
 @STREAMED
-async def test_a_pending_cancellation_is_delivered_after_a_classified_rejection_is_recorded(
+async def test_a_pending_cancellation_records_the_evidence_available_after_late_headers(
     monkeypatch, tmp_path, streamed
 ):
     path, model, transport, _ = await _prime(monkeypatch, tmp_path, [_rejected(_typed(PROMPT))])
@@ -847,9 +1008,44 @@ async def test_a_pending_cancellation_is_delivered_after_a_classified_rejection_
         with anyio.fail_after(DEADLINE):
             await _send(model, streamed)
 
-    assert _attempts(path)[-1][4] == "rejection_zero"
-    assert _rejection_columns(path)[-1] == ("rejection_zero", INVALID, "prompt_too_long")
+    if streamed:
+        assert _rejection_columns(path)[-1] == ("request_rejected", "other", "other")
+        assert _attempts(path)[-1][2:4] == ("open", None)
+    else:
+        assert _rejection_columns(path)[-1] == ("rejection_zero", INVALID, "prompt_too_long")
     assert _warm_rows(path) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 529])
+async def test_a_classified_streamed_rejection_keeps_its_typed_settlement(
+    monkeypatch, tmp_path, status
+):
+    """The caller received the classification before it began the typed write."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    raw = _typed(PROMPT) if status == 400 else _overloaded_of(200)
+    response = _Rejection(status, raw)
+    model, transport = _model(monkeypatch, [response])
+    model.endpoint.config.max_retries = 0
+    scope = anyio.CancelScope()
+    original = router_module.AccountRouter.settle_rejection
+    writes = _count_ledger_settlements(monkeypatch)
+
+    async def cancel_before_typed_write(self, attempt, evidence, **kwargs):
+        assert response.yielded == 1
+        scope.cancel()
+        return await original(self, attempt, evidence, **kwargs)
+
+    monkeypatch.setattr(router_module.AccountRouter, "settle_rejection", cancel_before_typed_write)
+    with scope, pytest.raises(asyncio.CancelledError):
+        await _send(model, True)
+
+    assert response.closed and len(transport.calls) == 1 and len(writes) == 1
+    assert _attempts(path)[0][2:5] == ("settled", 0, "rejection_zero")
+    assert writes[0].provider_error_type == (INVALID if status == 400 else "overloaded_error")
+    expected = (INVALID, "prompt_too_long") if status == 400 else (None, None)
+    assert _rejection_columns(path) == [("rejection_zero", *expected)]
+    assert _http_statuses(path) == [(status,)]
 
 
 @pytest.mark.asyncio

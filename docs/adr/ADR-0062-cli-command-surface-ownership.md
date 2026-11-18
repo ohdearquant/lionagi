@@ -9,7 +9,7 @@
 ## Context
 
 `li` is the public operator entry point, but it is not a single execution layer. The
-root in `lionagi/cli/main.py` composes local execution commands, observation and control
+root in `lionhub/src/lionhub/serve/cli/main.py` composes local execution commands, observation and control
 commands, compatibility aliases, and clients for services owned elsewhere. That
 composition answers five concrete problems.
 
@@ -36,13 +36,13 @@ one global output protocol would freeze incidental human presentation or make sc
 depend on it accidentally.
 
 **P5 — Delegation must not erase ownership.** Scheduling is registered at the root but
-implemented in `lionagi/studio/cli.py` as an HTTP client for the Studio schedules API.
+implemented in `lionhub/src/lionhub/serve/cli/schedule.py` as an HTTP client for the Studio schedules API.
 The CLI owns spelling, parsing, diagnostics, and process exit; the service owns durable
 schedule behavior.
 
 | Concern | Decision |
 |---|---|
-| Canonical operator namespace | D1: `lionagi.cli.main:main` composes and owns the top-level `li` surface. |
+| Canonical operator namespace | D1: `lionhub.serve.cli.main:main` composes and owns the top-level `li` surface. |
 | Compatibility routing | D2: ordered pre-parser rewrites and intercepts are part of that same surface. |
 | Execution ownership | D3: each command keeps a declared local, observation, launcher, or service-client locus. |
 | Parsing and failure behavior | D4: special parser paths preserve sentinel safety and command-specific exit behavior. |
@@ -68,7 +68,7 @@ This ADR deliberately does **not** decide:
 The canonical process entry is:
 
 ```python
-# lionagi/cli/main.py
+# lionhub/src/lionhub/serve/cli/main.py
 def main(argv: list[str] | None = None) -> int: ...
 ```
 
@@ -109,15 +109,15 @@ The registration contract is composition, not implementation co-location:
 
 | Surface | Registration/dispatch anchor | Current execution locus |
 |---|---|---|
-| `agent` | `lionagi/cli/agent.py`; `add_agent_subparser`, `run_agent` | Local adapter over a provider-backed Branch operation |
-| `orchestrate\|o` | `lionagi/cli/orchestrate/__init__.py`; `add_orchestrate_subparser`, `run_orchestrate` | Local orchestration adapter |
-| `play` | `lionagi/cli/main.py`; `_handle_play_shortcut` | Compatibility rewrite into `o flow` |
-| `skill` | `lionagi/cli/skill.py`; `run_skill` | Local filesystem reader |
-| `wait` | `lionagi/cli/wait.py`; `run_wait` | Local durable-state observation |
-| `monitor\|mon`, status forms | `lionagi/cli/monitor.py`, `lionagi/cli/status.py` | Local durable-state observation/control |
-| `schedule` | `lionagi/studio/cli.py`; `add_schedule_subparser`, `run_schedule` | Studio HTTP client |
-| `studio` | `lionagi/studio/cli.py`; `add_studio_subparser`, `run_studio` | Local service launcher |
-| Remaining registered commands | Their `lionagi/cli/*.py` modules | Local adapters over their owning state or execution subsystem |
+| `agent` | `lionhub/src/lionhub/serve/cli/agent.py`; `add_agent_subparser`, `run_agent` | Local adapter over a provider-backed Branch operation |
+| `orchestrate\|o` | `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`; `add_orchestrate_subparser`, `run_orchestrate` | Local orchestration adapter |
+| `play` | `lionhub/src/lionhub/serve/cli/main.py`; `_handle_play_shortcut` | Compatibility rewrite into `o flow` |
+| `skill` | `lionhub/src/lionhub/serve/cli/skill.py`; `run_skill` | Local filesystem reader |
+| `wait` | `lionhub/src/lionhub/serve/cli/wait.py`; `run_wait` | Local durable-state observation |
+| `monitor\|mon`, status forms | `lionhub/src/lionhub/serve/cli/monitor.py`, `lionhub/src/lionhub/serve/cli/status.py` | Local durable-state observation/control |
+| `schedule` | `lionhub/src/lionhub/serve/cli/schedule.py`; `add_schedule_subparser`, `run_schedule` | Studio HTTP client |
+| `studio` | `lionhub/src/lionhub/serve/cli/studio.py`; `add_studio_subparser`, `run_studio` | Local service launcher |
+| Remaining registered commands | Their `lionhub/src/lionhub/serve/cli/*.py` modules | Local adapters over their owning state or execution subsystem |
 
 **Exact semantics**:
 
@@ -155,7 +155,7 @@ The order in `main` is a behavioral contract:
 The rewrite contract is:
 
 ```python
-# lionagi/cli/main.py
+# lionhub/src/lionhub/serve/cli/main.py
 def _handle_play_shortcut(argv: list[str]) -> list[str] | int: ...
 
 play NAME [ARGS...]     -> ["o", "flow", "-p", NAME, *ARGS]
@@ -195,7 +195,7 @@ tokens.
 `li schedule` is the concrete service-client case. Its public functions are:
 
 ```python
-# lionagi/studio/cli.py
+# lionhub/src/lionhub/serve/cli/schedule.py
 def add_schedule_subparser(
     subparsers: argparse._SubParsersAction,
 ) -> argparse.ArgumentParser: ...
@@ -349,7 +349,7 @@ keeping the rest of the CLI evolvable.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Publish a command-ownership registry that classifies every top-level verb as local, service-backed, observation, machine-contract, or compatibility alias; acceptance: automated coverage fails when `lionagi/cli/main.py` registers an unclassified command. | S | (filled at issue-open time) |
+| 1 | Publish a command-ownership registry that classifies every top-level verb as local, service-backed, observation, machine-contract, or compatibility alias; acceptance: automated coverage fails when `lionhub/src/lionhub/serve/cli/main.py` registers an unclassified command. | S | (filled at issue-open time) |
 | 2 | Extract target resolution and terminal polling from private monitor/status helpers into a neutral CLI query service; acceptance: `wait`, `status`, and `monitor run` use the shared service while their public output remains byte-compatible. | M | (filled at issue-open time) |
 | 3 | Resolve the fixed-workflow entry-point gap by either registering `li flow run` or documenting the Studio workflow service as the sole public entry; acceptance: root help, command documentation, and the scheduling-control-plane ADR name the same surface. | M | (filled at issue-open time) |
 | 4 | Add parser-to-handler conformance coverage for every MCP-projectable option; acceptance: every projected non-presentation option is consumed by the selected handler or is absent/rejected, parser fingerprints and generated schemas update together, and `resume_on_timeout` is either implemented under a documented per-surface recovery contract or omitted from flow/fanout. | M | (filled at issue-open time) |

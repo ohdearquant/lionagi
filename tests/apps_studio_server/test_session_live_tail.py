@@ -21,7 +21,8 @@ async def live_backend(tmp_path, monkeypatch):
     import aiosqlite
 
     import lionagi.state.db as db_mod
-    from lionagi.studio.services import _session_tail, sessions, signals
+    from lionagi.studio.services import signals
+    from lionhub.serve.daemon.services import _session_tail, sessions
 
     path = tmp_path / "live.sqlite3"
     url = f"sqlite+aiosqlite:///{path}"

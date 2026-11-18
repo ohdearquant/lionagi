@@ -14,7 +14,7 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.studio.services.schedules import (
+from lionhub.serve.daemon.services.schedules import (
     _svc_validate_github_filter,
     create_schedule,
     update_schedule,
@@ -137,7 +137,7 @@ def test_create_schedule_accepts_pr_merged_filter():
     data = _create_data(github_filter={"event": "pr_merged"})
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -152,7 +152,7 @@ def test_create_schedule_accepts_same_repo_only_true():
     data = _create_data(github_filter={"same_repo_only": True})
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -167,7 +167,7 @@ def test_create_schedule_accepts_same_repo_only_false():
     data = _create_data(github_filter={"same_repo_only": False})
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -198,7 +198,7 @@ def test_update_schedule_rejects_unknown_github_filter_key():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -222,7 +222,7 @@ def test_update_schedule_accepts_pr_merged_filter():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -246,7 +246,7 @@ def test_update_schedule_accepts_same_repo_only_true():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -270,7 +270,7 @@ def test_update_schedule_accepts_same_repo_only_false():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()
@@ -294,7 +294,7 @@ def test_update_schedule_rejects_non_bool_same_repo_only():
     }
 
     async def _run():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=existing)
             mock_db.update_schedule = AsyncMock()

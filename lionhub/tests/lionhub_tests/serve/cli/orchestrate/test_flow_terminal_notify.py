@@ -185,21 +185,29 @@ async def test_run_flow_reports_kind_play_with_playbook_name(temp_db_path: Path,
 async def test_run_flow_fires_real_hook_with_settings_configured_command(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """End-to-end: a settings-configured notify.on_terminal (no --notify
-    flag) still fires via the process-wide settings bootstrap, receiving
-    the new minimal envelope shape."""
+    """A configured executable receives the flow's own run facts and envelope."""
     monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
     env = _make_env(tmp_path)
     invocation_id = str(uuid4())
     await _make_invocation(temp_db_path, invocation_id)
-    out_file = tmp_path / "captured.json"
+    out_file = tmp_path / "captured.jsonl"
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     _write_project_settings(
         repo_dir,
         {
             "enabled": True,
-            "adapter": {"kind": "exec", "argv": shlex.split(_capture_command(out_file))},
+            "adapter": {
+                "kind": "exec",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import sys\n"
+                    "with open(sys.argv[1], 'a', encoding='utf-8') as output:\n"
+                    "    output.write(sys.stdin.read() + '\\n')\n",
+                    str(out_file),
+                ],
+            },
         },
     )
 
@@ -223,6 +231,7 @@ async def test_run_flow_fires_real_hook_with_settings_configured_command(
                 "do the thing",
                 cwd=str(repo_dir),
                 invocation_id=invocation_id,
+                notify_sender="release coordinator",
             )
     finally:
         from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
@@ -231,10 +240,25 @@ async def test_run_flow_fires_real_hook_with_settings_configured_command(
 
     assert result == "ok"
     assert terminal_status == "completed"
-    payload = json.loads(out_file.read_text())
-    assert payload["schema"] == "lionagi.run-terminal"
-    assert payload["entity"] == {"kind": "invocation", "id": invocation_id}
-    assert payload["terminal_status"] == "completed"
+    payloads = [json.loads(line) for line in out_file.read_text().splitlines()]
+    assert [payload["entity"] for payload in payloads] == [
+        {"kind": "session", "id": str(env.session.id)},
+        {"kind": "invocation", "id": invocation_id},
+    ]
+    expected_notice = {
+        "schema_version": 1,
+        "run_id": "run-test-1",
+        "status": "completed",
+        "reason_code": RunReasons.COMPLETED_OK,
+        "label": None,
+        "sender": "release coordinator",
+        "cwd": str(repo_dir),
+        "output_dir": str(tmp_path / "artifacts"),
+    }
+    for payload in payloads:
+        assert payload["schema"] == "lionagi.run-terminal"
+        assert payload["terminal_status"] == "completed"
+        assert {field: payload[field] for field in expected_notice} == expected_notice
 
 
 async def test_run_flow_notify_flag_overrides_settings_handler_for_this_run_only(

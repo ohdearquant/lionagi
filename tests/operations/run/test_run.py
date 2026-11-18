@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from pydantic import BaseModel
 
 from lionagi.operations.run.run import (
@@ -615,6 +616,65 @@ async def test_run_and_collect_clears_messages_and_joins_assistant_text(monkeypa
     assert result == "one\n\ntwo"
 
 
+def _text_response(branch: Branch, text: str) -> AssistantResponse:
+    return AssistantResponse(
+        content=AssistantResponseContent(assistant_response=text),
+        sender=branch.id,
+        recipient="user",
+    )
+
+
+async def test_a_provider_error_after_text_carries_the_text_collected_so_far(monkeypatch):
+    """The error that ends a turn after it delivered text carries that text, joined as
+    a completed turn joins it."""
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "first part")
+        yield _text_response(branch, "second part")
+        raise ProviderAdapterError("status=ERROR: The stream was interrupted.")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text == "first part\n\nsecond part"
+
+
+async def test_a_provider_error_before_any_text_carries_no_partial_text(monkeypatch):
+    from lionagi._provider_errors import ProviderAdapterError
+
+    branch = Branch()
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "")
+        raise ProviderAdapterError("status=ERROR: cut off")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ProviderAdapterError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value.partial_text is None
+
+
+async def test_an_error_that_is_not_a_provider_error_is_raised_unchanged(monkeypatch):
+    branch = Branch()
+    boom = ValueError("not a provider failure")
+
+    async def fake_run(b, ins, param):
+        yield _text_response(branch, "some text")
+        raise boom
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+
+    with pytest.raises(ValueError) as raised:
+        await run_and_collect(branch, "test", ChatParam(), skip_validation=True)
+    assert raised.value is boom
+    assert not hasattr(raised.value, "partial_text")
+
+
 async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     """When response_format is set, run_and_collect passes full text to parse."""
     from lionagi.operations.types import ParseParam
@@ -793,30 +853,48 @@ async def test_run_strips_timeout_from_create_event_kwargs():
     assert "timeout" not in captured, f"timeout leaked into create_event kwargs: {captured!r}"
 
 
-async def test_run_derives_gemini_print_timeout_from_caller_timeout():
-    """The shared run seam forwards its deadline to buffered Gemini CLI requests."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
+@pytest_asyncio.fixture(loop_scope="function")
+async def gemini_stream(monkeypatch):
+    """Use real request construction and capture what would reach the transport."""
+    from lionhub.providers.google import gemini_code
 
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+    requests = []
+    event_kwargs = []
+    model = iModel(endpoint=gemini_code.GeminiCLIEndpoint())
+    create_event = model.create_event
+
+    async def capture_create_event(**kwargs):
+        event_kwargs.append(kwargs)
+        return await create_event(**kwargs)
+
+    async def fake_events(request):
+        assert isinstance(request, gemini_code.GeminiCodeRequest)
+        requests.append(request)
+        yield {"status": "SUCCESS", "response": "ok"}
+
+    monkeypatch.setattr(model, "create_event", capture_create_event)
+    monkeypatch.setattr(gemini_code, "stream_gemini_cli_events", fake_events)
+    try:
+        yield Branch(chat_model=model), requests, event_kwargs
+    finally:
+        await model.executor.stop()
+
+
+async def test_run_derives_gemini_print_timeout_from_caller_timeout(gemini_stream):
+    """The shared run seam forwards its deadline to buffered Gemini CLI requests."""
+    branch, requests, event_kwargs = gemini_stream
 
     await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
 
-    derived = captured["print_timeout"]
-    assert int(derived.removesuffix("s")) > 1200
-    assert "timeout" not in captured
+    (request,) = requests
+    assert int(request.print_timeout.removesuffix("s")) > 1200
+    (forwarded,) = event_kwargs
+    assert "timeout" not in forwarded
 
 
-async def test_run_rejects_gemini_timeout_at_provider_ceiling():
+async def test_run_rejects_gemini_timeout_at_provider_ceiling(gemini_stream):
     """Reject a caller deadline that cannot have a later agy backstop."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
-
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+    branch, requests, event_kwargs = gemini_stream
 
     with pytest.raises(ValueError, match="caller deadline"):
         await _collect(
@@ -827,17 +905,20 @@ async def test_run_rejects_gemini_timeout_at_provider_ceiling():
             )
         )
 
-    assert captured == {}
+    assert event_kwargs == []
+    assert requests == []
 
 
-async def test_run_preserves_explicit_gemini_print_timeout():
-    """An explicit provider cap wins over the timeout-derived default."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
-
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+@pytest.mark.parametrize(
+    "endpoint_options",
+    [{}, {"print_timeout": "50m"}],
+    ids=["default-endpoint", "configured-endpoint"],
+)
+async def test_run_preserves_explicit_gemini_print_timeout(gemini_stream, endpoint_options):
+    """A request cap wins over the endpoint cap and timeout-derived default."""
+    branch, requests, _ = gemini_stream
+    config = branch.chat_model.endpoint.config
+    config.kwargs.update(endpoint_options)
 
     await _collect(
         run(
@@ -847,31 +928,31 @@ async def test_run_preserves_explicit_gemini_print_timeout():
         )
     )
 
-    assert captured["print_timeout"] == "45m"
+    (request,) = requests
+    assert request.print_timeout == "45m"
+    assert config.kwargs.get("print_timeout") == endpoint_options.get("print_timeout")
 
 
-async def test_run_without_timeout_sets_configured_gemini_print_timeout(monkeypatch):
+async def test_run_without_timeout_sets_configured_gemini_print_timeout(gemini_stream, monkeypatch):
     """The shared run seam supplies the configured cap without an outer deadline."""
     import lionagi.config as config_module
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
-    configured_cap = 3600.0
     monkeypatch.setattr(
         config_module,
         "settings",
-        config_module.AppSettings(LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT=configured_cap),
+        config_module.settings.model_copy(update={"LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT": 3600.0}),
     )
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+    branch, requests, _ = gemini_stream
 
     await _collect(run(branch, "hi", RunParam()))
 
-    assert captured["print_timeout"] == "3600s"
+    (request,) = requests
+    assert request.print_timeout == "3600s"
 
 
-async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(monkeypatch):
+async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(
+    gemini_stream, monkeypatch
+):
     """A large configured cap must not reach agy as scientific notation.
 
     The setting exists to be overridden, and general float formatting turns
@@ -880,91 +961,95 @@ async def test_configured_gemini_print_timeout_stays_a_parseable_go_duration(mon
     error, which is the failure this whole path exists to stop producing.
     """
     import lionagi.config as config_module
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
 
     monkeypatch.setattr(
         config_module,
         "settings",
-        config_module.AppSettings(LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT=1_000_000.0),
+        config_module.settings.model_copy(
+            update={"LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT": 1_000_000.0}
+        ),
     )
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+    branch, requests, _ = gemini_stream
 
     await _collect(run(branch, "hi", RunParam()))
 
-    emitted = captured["print_timeout"]
+    (request,) = requests
+    emitted = request.print_timeout
     assert emitted.endswith("s")
     # int() rejects both "1e+06" and any other non-integer spelling, so this
     # asserts parseability rather than restating the formatting expression.
     assert int(emitted.removesuffix("s")) == 1_000_000
 
 
-async def test_run_preserves_explicit_gemini_print_timeout_without_timeout():
+async def test_run_preserves_explicit_gemini_print_timeout_without_timeout(gemini_stream):
     """An explicit provider cap also wins when no outer deadline is configured."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
-
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    branch = Branch()
-    branch.chat_model = model
+    branch, requests, _ = gemini_stream
 
     await _collect(run(branch, "hi", RunParam(imodel_kw={"print_timeout": "45m"})))
 
-    assert captured["print_timeout"] == "45m"
+    (request,) = requests
+    assert request.print_timeout == "45m"
 
 
-async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout():
+async def test_run_preserves_endpoint_gemini_print_timeout_without_timeout(gemini_stream):
     """Endpoint configuration is explicit and must not receive a request default."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
-
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    model.endpoint.config = types.SimpleNamespace(kwargs={"print_timeout": "50m"})
-    branch = Branch()
-    branch.chat_model = model
+    branch, requests, event_kwargs = gemini_stream
+    config = branch.chat_model.endpoint.config
+    config.kwargs["print_timeout"] = "50m"
 
     await _collect(run(branch, "hi", RunParam()))
 
-    assert "print_timeout" not in captured
-    assert model.endpoint.config.kwargs["print_timeout"] == "50m"
+    (request,) = requests
+    assert request.print_timeout == "50m"
+    (forwarded,) = event_kwargs
+    assert "print_timeout" not in forwarded
+    assert config.kwargs["print_timeout"] == "50m"
 
 
-async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout():
-    """The fourth precedence case: endpoint cap set AND a caller deadline set.
-
-    The other three combinations of (caller timeout, explicit cap) are covered
-    above. This is the one where a derived value exists and could plausibly
-    overwrite an explicit one, so it is the cell most worth pinning down.
-    """
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
-
-    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-    model.endpoint._request_model = GeminiCodeRequest
-    model.endpoint.config = types.SimpleNamespace(kwargs={"print_timeout": "50m"})
-    branch = Branch()
-    branch.chat_model = model
+async def test_run_preserves_endpoint_gemini_print_timeout_with_caller_timeout(gemini_stream):
+    """An endpoint cap also wins over the derived cap from a caller deadline."""
+    branch, requests, event_kwargs = gemini_stream
+    config = branch.chat_model.endpoint.config
+    config.kwargs["print_timeout"] = "50m"
 
     await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
 
-    assert "print_timeout" not in captured
-    assert model.endpoint.config.kwargs["print_timeout"] == "50m"
+    (request,) = requests
+    assert request.print_timeout == "50m"
+    (forwarded,) = event_kwargs
+    assert "print_timeout" not in forwarded
+    assert config.kwargs["print_timeout"] == "50m"
 
 
-async def test_gemini_timeout_arms_produce_distinct_caps():
+async def test_run_preserves_explicit_none_over_endpoint_gemini_print_timeout(gemini_stream):
+    branch, requests, _ = gemini_stream
+    config = branch.chat_model.endpoint.config
+    config.kwargs["print_timeout"] = "50m"
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200, "print_timeout": None})))
+
+    (request,) = requests
+    assert request.print_timeout is None
+    assert "--print-timeout" not in request.as_cmd_args()
+    assert config.kwargs["print_timeout"] == "50m"
+
+
+async def test_gemini_timeout_arms_produce_distinct_caps(gemini_stream, monkeypatch):
     """A caller deadline receives headroom; the configured default is the cap."""
-    from lionhub.providers.google.gemini_code import GeminiCodeRequest
+    import lionagi.config as config_module
 
-    async def captured_cap(imodel_kw):
-        model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
-        model.endpoint._request_model = GeminiCodeRequest
-        branch = Branch()
-        branch.chat_model = model
-        await _collect(run(branch, "hi", RunParam(imodel_kw=imodel_kw)))
-        return captured["print_timeout"]
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        config_module.settings.model_copy(update={"LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT": 3600.0}),
+    )
+    branch, requests, _ = gemini_stream
 
-    assert await captured_cap({"timeout": 1200}) != await captured_cap({})
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 1200})))
+    await _collect(run(branch, "another turn", RunParam()))
+
+    deadline_request, default_request = requests
+    assert deadline_request.print_timeout != default_request.print_timeout
 
 
 # Regression: Branch.operate() must flatten **kwargs so timeout reaches run()
@@ -1051,6 +1136,7 @@ async def test_imodel_stream_propagates_cancellation():
     # make the pending-queue bookkeeping below a no-op.
     api_call.id = uuid4()
     api_call.metadata = {}
+    api_call._telemetry_frame = None
     api_call.execution = AsyncMock()
     api_call.execution.status = EventStatus.PENDING
 
@@ -1548,6 +1634,40 @@ async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkey
     assert exc_info.value.reason == "worker.stream_idle"
     assert len(create_event_calls) == 1
     assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_a_worker_that_stalls_after_text_keeps_the_text_in_the_branch_and_the_error(
+    monkeypatch,
+):
+    """The idle stall raises inside the stream loop, not on an error chunk; the text the
+    worker delivered before it still reaches the branch and the raised error."""
+    import lionagi.config as config_module
+    from lionagi._provider_errors import WorkerLivenessError
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [(0, StreamChunk(type="text", content="delivered before the stall"))],
+        hang_after=True,
+    )
+    branch = Branch()
+    branch.chat_model = model
+    monkeypatch.setattr(
+        config_module, "settings", config_module.AppSettings(LIONAGI_WORKER_IDLE_TIMEOUT=0.03)
+    )
+
+    with pytest.raises(WorkerLivenessError) as raised:
+        await run_and_collect(
+            branch,
+            "go",
+            RunParam(imodel_kw={"timeout": 0.2, "liveness_timeout": 0.1}),
+            skip_validation=True,
+        )
+
+    assert raised.value.reason == "worker.stream_idle"
+    assert raised.value.partial_text == "delivered before the stall"
+    responses = [m for m in branch.messages if isinstance(m, AssistantResponse)]
+    assert [r.response for r in responses] == ["delivered before the stall"]
 
 
 async def test_run_idle_watchdog_resets_after_every_chunk():

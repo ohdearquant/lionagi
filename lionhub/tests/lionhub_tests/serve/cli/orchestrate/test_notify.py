@@ -155,6 +155,19 @@ async def test_final_response_matches_in_every_notify_transport(
         )
 
     [(argv, env_payload, at_launch)] = launch
+    legacy_payload = (
+        b'{"invocation_id": "inv-123", "kind": "flow", "playbook": null, '
+        b'"status": "completed", "reason_code": "run.completed.ok", "save_dir": %s, '
+        b'"cwd": "/repo", "exit_class": "success", "started_at": 1.0, "ended_at": 2.0, '
+        b'"final_response": %s, "final_response_truncated": %s, "final_response_path": %s}'
+    ) % (
+        json.dumps(str(run.artifact_root)).encode(),
+        json.dumps(preview).encode(),
+        b"true" if truncated else b"false",
+        json.dumps(str(artifact)).encode(),
+    )
+    assert env_payload.encode() == legacy_payload
+    communicate.assert_awaited_once_with(legacy_payload)
     payload = json.loads(env_payload)
     assert argv[0] == "capture-notify"
     assert argv[2:] == ("completed", "inv-123")
@@ -163,7 +176,6 @@ async def test_final_response_matches_in_every_notify_transport(
     assert "final_response" not in argv_payload
     assert json.dumps(preview)[1:-1] not in argv[1]
     assert argv_payload == {k: v for k, v in payload.items() if k != "final_response"}
-    communicate.assert_awaited_once_with(env_payload.encode())
     assert payload["final_response"] == preview
     assert payload["final_response_truncated"] is truncated
     assert payload["final_response_path"] == str(artifact)

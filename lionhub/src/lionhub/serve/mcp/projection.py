@@ -176,6 +176,12 @@ _APPEND = argparse._AppendAction
 # invocation, so skipping them is not a gap in the description.
 _META_ACTIONS = (argparse._HelpAction, argparse._VersionAction)
 
+# Destinations a command accepts on the command line only. ``mcp_submit_snapshot`` is set by
+# the server itself when it launches a command; ``probe_anthropic_account`` sends a billed
+# request and can lift an account block, which ADR-0126 Amendment 15 keeps to the operator's
+# own command line.
+_CLI_ONLY_DESTS = frozenset({"mcp_submit_snapshot", "probe_anthropic_account"})
+
 _SCALAR_JSON_TYPE = {None: "string", str: "string", int: "integer", float: "number"}
 
 _UNBOUNDED_NARGS = (argparse.REMAINDER, argparse.PARSER)
@@ -397,7 +403,7 @@ def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
         if (
             isinstance(action, _META_ACTIONS)
             or action.dest == argparse.SUPPRESS
-            or action.dest == "mcp_submit_snapshot"
+            or action.dest in _CLI_ONLY_DESTS
         ):
             continue
         for option in action.option_strings:
@@ -486,7 +492,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
     for action in parser._actions:
         if isinstance(action, _META_ACTIONS):
             continue
-        if action.dest in {argparse.SUPPRESS, "mcp_submit_snapshot"}:
+        if action.dest == argparse.SUPPRESS or action.dest in _CLI_ONLY_DESTS:
             continue
         properties[action.dest] = _rewrite_descriptions(
             _project_action(path, parser, action), flags

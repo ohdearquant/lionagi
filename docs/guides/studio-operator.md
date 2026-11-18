@@ -108,7 +108,7 @@ is reported in the run's activity rather than guaranteeing completion.
 
 These paths are defined by
 `apps/studio/frontend/src/components/history/ResumeRun.tsx` and
-`lionagi/studio/services/run_resume.py`. Run-link visibility and conversation
+`lionhub/src/lionhub/serve/daemon/services/run_resume.py`. Run-link visibility and conversation
 identity follow `components/operator/OperatorPanel.tsx` under that frontend
 source directory and `lionagi/studio/operator/engine.py`.
 

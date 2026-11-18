@@ -28,6 +28,7 @@ from lionhub.orchestration.schedule.parsing import (
     build_create_body,
     build_quick_create_parser,
 )
+from lionhub.serve.cli.studio_client import studio_request, with_unauthorized_hint
 
 # --- `li schedule` — manage lionagi Studio schedules from the CLI ---
 
@@ -43,21 +44,14 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     from lionagi.ln._ssrf import open_url
 
     url = f"{_base_url()}/api/schedules{path}"
-    data = json.dumps(body).encode() if body is not None else None
-    declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
-    req = urllib.request.Request(  # noqa: S310
-        url,
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"} if declares_json else {},
-    )
+    req = studio_request(url, method=method, body=body)
     started_at = time.monotonic()
     try:
         with open_url(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
-        print(f"Error {exc.code}: {msg}", file=sys.stderr)
+        print(with_unauthorized_hint(exc.code, f"Error {exc.code}: {msg}"), file=sys.stderr)
         return None
     except OSError as exc:
         if _is_schedule_request_timeout(exc):

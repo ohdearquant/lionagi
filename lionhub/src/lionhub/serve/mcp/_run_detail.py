@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Execution-graph, artifact-contract, and stall detail for ``job.status(detail=True)``.
 
-Reuses the Studio session service (``lionagi.studio.services.sessions.get_session``)
+Reuses the Studio session service (``lionhub.serve.daemon.services.sessions.get_session``)
 for the planned graph, per-branch status, and artifact-verification state rather
 than re-deriving any of that here. This module only reshapes what that service
 already computed into the per-node/per-artifact/per-stall triples a machine
@@ -12,7 +12,9 @@ caller reads, and resolves the CLI run id to the StateDB session backing it
 Every failure mode here is soft: a run with no session, a session with no
 graph, or a missing ``studio`` extra all report through ``detail_unavailable``
 rather than raising, so a caller asking for the richer view never turns a
-plain ``job.status`` into an error.
+plain ``job.status`` into an error. The one exception is a failure to import
+this server's own code, which is not a missing extra: it propagates, and the
+server stops so the client starts a fresh one.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from lionagi._checkpoint_version import (
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
+from lionhub.serve.mcp.dispatch import _own_module
 
 __all__ = ("build_run_detail",)
 
@@ -44,7 +47,9 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     """
     try:
         from lionagi.state.db import StateDB
-    except ImportError:
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
         return {"detail_unavailable": "state_db_not_installed"}
 
     try:
@@ -62,12 +67,18 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     session_id = session_row["id"]
 
     try:
-        from lionagi.studio.services import sessions as sessions_svc
-    except ImportError:
+        from lionhub.serve.daemon.services import sessions as sessions_svc
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
         return {"detail_unavailable": "studio_extra_not_installed"}
 
     try:
         session = await sessions_svc.get_session(session_id)
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
+        return {"detail_unavailable": "session_detail_unreadable"}
     except Exception:
         return {"detail_unavailable": "session_detail_unreadable"}
 
@@ -87,7 +98,7 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     # node id that isn't hashable) must not turn an opt-in detail request into
     # an error on the base job.status call, so the whole reshape is guarded.
     try:
-        nodes = _build_nodes(session, run_id)
+        nodes = await _build_nodes(session, run_id)
         return {
             "nodes": nodes,
             "artifact_contract": _build_artifact_contract(session),
@@ -95,6 +106,10 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
         }
     except UnsupportedCheckpointVersionError:
         return {"detail_unavailable": "unsupported_checkpoint_version"}
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
+        return {"detail_unavailable": "malformed_session_detail"}
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
@@ -206,10 +221,13 @@ def _session_has_no_detail_material(session: dict[str, Any]) -> bool:
     return not _node_metadata_recorded(session)
 
 
-def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+async def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+    from lionagi.ln.concurrency import run_sync
+    from lionhub.orchestration.flow.checkpoint import CHECKPOINT_READ_LIMIT
+
     branches = session.get("branches") or []
     branch_by_name = _branch_by_name(session)
-    spawned_by_map = _spawned_by_map(run_id)
+    spawned_by_map = await run_sync(_spawned_by_map, run_id, limiter=CHECKPOINT_READ_LIMIT)
     graph = session.get("graph")
 
     if graph is None:

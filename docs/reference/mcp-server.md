@@ -20,17 +20,28 @@ passed to that tool rather than a tool of its own, because an advertised tool
 schema is sent to the model on every request in every session for as long as the
 server is registered. A verb's parameters are fetched by asking for them.
 
+### Job authority
+
+The stdio server uses the LionAGI home set at startup by `LIONAGI_HOME`. The default is
+`~/.lionagi`. A relative home is interpreted from the server's startup directory, and detached
+jobs use that same home even when they execute in another directory. Clients and operators
+whose servers use the same home share access to jobs in that store, including older detached
+jobs whose records lack caller information. This access covers both the inline reply and its
+artifact path when polling a job, including after automatic resume. To isolate callers, launch
+their servers with separate homes and separate filesystem access to those homes.
+
 ## Install and client registration
 
-The server needs the optional `mcp` extra:
+Use Python 3.10 or later and install the optional `mcp` extra.
 
 ```bash
-pip install 'lionagi[mcp]'
+pip install "lionagi[mcp]"
 ```
 
-Importing `lionhub.serve.mcp` does not pull that dependency. Only serving does, so a
-missing extra surfaces when you run `li mcp`, with a message naming the install
-command.
+You can import `lionhub.serve.mcp` without the extra. `li doctor` checks whether
+`fastmcp` is available. If the server import reports `fastmcp`, `mcp`, or
+`starlette` missing, `li mcp` exits with status `78` and gives the install
+command. Other import failures report the startup error and exit with status `1`.
 
 Register it with any MCP client, for example in an `.mcp.json`:
 
@@ -138,8 +149,17 @@ exclusion.
 ```
 
 A spawn verb's help also returns a `schema_fingerprint`, which that verb's ops
-must carry. `help={"verb": "<verb>", "playbook": "<name>"}` additionally
-resolves that playbook's own declared arguments into the schema.
+must carry beside `args`. A `stale_schema` refusal includes the current value at
+`error.detail.schema_fingerprint` and the schema it checked at `error.schema`.
+When an earlier op's error in the same response already carries that schema,
+whatever the error kind, the refusal carries `error.schema_ref` instead: the
+`op_index` of the op holding the copy and that schema's fingerprint. If the
+arguments match that schema, retry the op once with the returned fingerprint.
+Spawn-verb help states the same rule in `help_usage`. When the verb's
+fingerprint depends on an argument help was not given (`play.submit` without a
+playbook), `help_usage` says to pass it first.
+`help={"verb": "<verb>", "playbook": "<name>"}` resolves that playbook's own
+declared arguments into the schema.
 
 ## The catalog
 
@@ -169,7 +189,7 @@ python -c "from lionhub.serve.mcp import verbs as v; print(len(v.VERBS)); [print
 | `invoke.list` | Recent skill-level invocations, newest first. |
 | `job.kill` | Stop a background job by signalling the process group this server created. |
 | `job.list` | Recent background jobs, newest first, optionally filtered by status. |
-| `job.output` | Console tail and artifact list of a background run. |
+| `job.output` | Console tail, artifact list, and any captured final agent reply. |
 | `job.status` | Current state of a background run: liveness, job record, CLI manifest. |
 | `job.wait` | Observe runs until terminal or the window closes; partial results, never a bool. |
 | `lifecycle` | What the lifecycle store records about one run: whether every session it opened has ended, and with what outcome. |
@@ -313,9 +333,33 @@ The reply carries the allocated `run_id`. Poll it, or read what it wrote:
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
 
+An `agent.submit` handle has a nullable `resume_id`. A fresh submit returns
+immediately with `resume_id: null`. Agent `job.status` and terminal notices
+report the branch ID when the job has an owned, readable snapshot with the
+matching branch ID. The snapshot limit is 16 MiB and the metadata limit is
+1,024 keys. Unavailable or invalid snapshots produce `resume_id: null`.
+A branch that moved from the Anthropic API to the subscription route also
+reports null. Submitting that run's ID returns `invalid_input` and asks
+the caller to start a new branch before any job is prepared. To
+continue the branch, pass the full `run_id` as `agent.submit`'s `resume`
+value. The agent loads that run's own saved snapshot, and the submit handle
+reports the resolved branch ID. Branch IDs and branch prefixes also work and
+use the usual branch lookup. Run IDs must be complete.
+
+For a finished `agent.submit` job, `final` contains the last assistant reply
+captured for the leg that ended the job. `final_path` points to the UTF-8 file
+holding the same text in the server's configured runs directory. An automatic
+resume keeps the result under the original submitted run ID. If the file exceeds
+1 MiB, `final` is null and `final_path` still points to the full reply. Both fields
+are null while the job is live or when a reply file is unavailable. The
+`tail_chars` argument only affects the console tail.
+
 To block instead of polling, use `job.wait`, which observes runs until they are
 terminal or the window closes and returns partial results rather than a bare
-boolean. Because ops run in order in one call, a status read and an output read
+boolean. Set the wait window in seconds with `max_wait`. A request that passes
+`timeout` is refused with guidance to use `max_wait`.
+
+Because ops run in order in one call, a status read and an output read
 can travel together:
 
 ```json
@@ -383,10 +427,21 @@ an outcome — read each entry's `outcome` for that.
 
 An earlier version of this server advertised one tool per operation, with flat
 names such as `submit_agent`, `job_status` and `server_info`. Those names were
-accepted inside `ops` for one release and are now removed: an op that uses one is
-refused as `not_found`, like any other unknown verb. Each maps to the namespaced
-verb with the same words, `submit_agent` to `agent.submit` and `jobs_list` to
-`job.list`; `help=true` lists them all.
+accepted inside `ops` for one release. The server now refuses them as `not_found`.
+Use the following namespaced verbs when migrating a script.
+
+| Removed name | Namespaced verb |
+| --- | --- |
+| `submit_agent` | `agent.submit` |
+| `submit_flow` | `flow.submit` |
+| `submit_fanout` | `fanout.submit` |
+| `submit_play` | `play.submit` |
+| `job_status` | `job.status` |
+| `job_output` | `job.output` |
+| `job_kill` | `job.kill` |
+| `job_wait` | `job.wait` |
+| `jobs_list` | `job.list` |
+| `server_info` | `server.info` |
 
 If your client shows a single entry in `tools/list`, that is correct and
 current. The operations are behind `request`, and `help=true` lists them.

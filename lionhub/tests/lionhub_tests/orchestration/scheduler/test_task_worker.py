@@ -20,13 +20,13 @@ from sqlalchemy import text
 
 from lionagi.state.db import StateDB, TransitionRejectedError
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
-from lionagi.studio.services.task_applications import TaskApplication, submit_task
 from lionhub.orchestration.scheduler.worker import (
     MAX_LEASE_ATTEMPTS,
     claim_and_execute,
     reap_expired_leases,
     worker_tick,
 )
+from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
 
 @pytest_asyncio.fixture
@@ -128,7 +128,7 @@ async def test_two_concurrent_claims_exactly_one_wins(tmp_path) -> None:
 
 
 async def test_cancelled_before_claim_is_never_leased(db: StateDB) -> None:
-    from lionagi.studio.services.task_applications import cancel_task
+    from lionhub.serve.daemon.services.task_applications import cancel_task
 
     run_id = await _submit_host_task(db)
     assert await cancel_task(db, run_id, actor=Actor(type="operator", id="test")) is True
@@ -378,7 +378,7 @@ async def test_claimed_task_deadline_is_recorded_as_timed_out(db: StateDB) -> No
 async def test_cancelled_to_running_rejected(db: StateDB) -> None:
     """The vocabulary is closed: cancelled is terminal, and a bare CAS from
     cancelled back to running must raise, not apply."""
-    from lionagi.studio.services.task_applications import cancel_task
+    from lionhub.serve.daemon.services.task_applications import cancel_task
 
     run_id = await _submit_host_task(db)
     assert await cancel_task(db, run_id, actor=Actor(type="operator", id="test")) is True

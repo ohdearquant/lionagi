@@ -30,7 +30,8 @@ from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, 
 from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
 from .code.search import SearchRequest, _visible_grep_lines
 from .context.context import ContextRequest, ContextTool
-from .file.editor import EditorRequest, _write_text_no_follow
+from .file._bounded_io import _FileSizeLimitError, _read_regular_bytes
+from .file.editor import EditorRequest, _read_text_for_edit, _write_text_no_follow
 from .file.reader import ReaderRequest, ReaderResponse
 from .file.reader import _list_dir_sync as _file_list_dir_sync
 from .file.reader import _read_sync as _file_read_sync
@@ -109,6 +110,7 @@ class SubagentRequest(BaseModel):
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_MAX_IMAGE_BYTES = 3_500_000
 _IMAGE_MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -128,7 +130,9 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
     ext = p.suffix.lower()
     media_type = _IMAGE_MEDIA_TYPES.get(ext, "image/png")
     try:
-        raw = p.read_bytes()
+        raw = _read_regular_bytes(p, _MAX_IMAGE_BYTES)
+    except _FileSizeLimitError:
+        return {"success": False, "error": f"Image {path!r} exceeds {_MAX_IMAGE_BYTES} bytes."}
     except OSError as e:
         return {"success": False, "error": str(e)}
     encoded = base64.b64encode(raw).decode("ascii")
@@ -200,7 +204,7 @@ def _write_file_sync(
     else:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            _write_text_no_follow(p, content, create=True)
         except OSError as e:
             return {"success": False, "error": str(e)}
 
@@ -230,7 +234,7 @@ def _prepare_edit_file(
         return {"success": False, "error": str(e)}
 
     try:
-        original = p.read_text(encoding="utf-8")
+        original = _read_text_for_edit(p)
     except OSError as e:
         return {"success": False, "error": str(e)}
 
@@ -477,10 +481,13 @@ class CodingToolkit(LionTool):
         self._bound_nudge_engine = engine
 
         dormant_reads: dict[str, float] = {}
+        resolved_read_paths: dict[str, str | None] = {}
 
         def _invalidate_stale_reads(*, only_recorded: bool = False) -> None:
             """Drop file_state entries whose backing read was evicted/compacted —
             otherwise the read-before-edit guard stays satisfied for a read the model can no longer see."""
+            if not read_tracked and not dormant_reads:
+                return
             active = set(branch.progression)
             pile = msgs.messages
             active_paths: set[str] = set()
@@ -497,13 +504,19 @@ class CodingToolkit(LionTool):
                 p = args.get("path")
                 if not p:
                     continue
-                try:
-                    resolved = str(_resolve_workspace_path(p, workspace_root).resolve())
-                    recorded_paths.add(resolved)
-                    if m.id in active:
-                        active_paths.add(resolved)
-                except PermissionError:
+                if m.id not in resolved_read_paths:
+                    try:
+                        resolved_read_paths[m.id] = str(
+                            _resolve_workspace_path(p, workspace_root).resolve()
+                        )
+                    except PermissionError:
+                        resolved_read_paths[m.id] = None
+                resolved = resolved_read_paths[m.id]
+                if resolved is None:
                     continue
+                recorded_paths.add(resolved)
+                if m.id in active:
+                    active_paths.add(resolved)
             for p in [p for p in dormant_reads if p in active_paths]:
                 file_state[p] = dormant_reads.pop(p)
                 read_tracked.add(p)
@@ -554,8 +567,10 @@ class CodingToolkit(LionTool):
         ) -> dict:
             """Read files or list directory contents.
 
-            Text reads include total_lines and reached_eof. Offsets at or past the
-            end of a nonempty file return an end-of-file notice.
+            Text reads include total_lines and reached_eof; both are None when the file
+            is longer than the part a read scans. Offsets at or past the end of a
+            nonempty file return an end-of-file notice. One read returns a bounded
+            amount of text; continue from the next offset for more.
             """
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.

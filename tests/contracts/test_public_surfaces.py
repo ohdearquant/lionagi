@@ -94,9 +94,9 @@ def specialized_cases(_specialized_snapshot):
     return deepcopy(_specialized_snapshot)
 
 
-def test_http_route_count_is_149():
+def test_http_route_count_is_151():
     live = _capture.capture_http()
-    assert live["count"] == 149
+    assert live["count"] == 151
 
 
 def _routes_by_key(payload: dict) -> dict[str, dict]:
@@ -173,10 +173,10 @@ def test_http_openapi_has_full_operations_and_schemas():
     assert isinstance(sample_schema, dict) and sample_schema, "expected full schema definitions"
 
 
-def test_cli_registry_has_21_commands():
+def test_cli_registry_has_22_commands():
     live = _capture.capture_cli()
-    assert live["registry_count"] == 21
-    assert live["name_map_count"] == 23
+    assert live["registry_count"] == 22
+    assert live["name_map_count"] == 24
 
 
 def test_kill_quarantine_surface_counts_are_locked_by_hand():
@@ -407,9 +407,9 @@ def test_mcp_projections_match_baseline():
 def test_mcp_projects_every_available_path():
     live = _capture.capture_mcp()
     assert live["projection_count"] + live["projection_error_count"] == live["available_path_count"]
-    assert live["available_path_count"] == 78
+    assert live["available_path_count"] == 83
     assert live["projection_count"] == 64
-    assert live["projection_error_count"] == 14
+    assert live["projection_error_count"] == 19
 
 
 def test_mcp_terminal_consumer_exposes_only_list():
@@ -564,11 +564,11 @@ _KNOWN_CROSS_SEED_IMPORTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def test_import_laziness_traces_all_21_seeds_cleanly():
+def test_import_laziness_traces_all_22_seeds_cleanly():
     live = _capture.capture_imports()
     trace = live["import_laziness"]
-    assert trace["seed_count"] == 21
-    assert len(trace["seed_names"]) == 21
+    assert trace["seed_count"] == 22
+    assert len(trace["seed_names"]) == 22
     for name, result in trace["traces"].items():
         assert not result.get("_error"), f"{name}: subprocess trace failed: {result.get('_error')}"
         assert not result["http_registry_realized"], (

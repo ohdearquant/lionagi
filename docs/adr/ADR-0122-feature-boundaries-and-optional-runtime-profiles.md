@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: Phase 0 partial. Implemented: compatibility fixture (item 1), import graph (item 2), owner and layer inventory (item 3), report-only checker (item 6). Pending: import side-effect record, with the probe tool landed (item 4); target owners per shared symbol (item 5); a follow-up issue per existing finding (item 6).
+- **Implementation-status**: Phase 0 partial. The compatibility fixture (item 1), import graph (item 2), owner and layer inventory (item 3), and report-only checker (item 6) are implemented. The [default-runtime import-effects baseline](../internals/feature-boundaries.md#default-runtime-import-effects-baseline) is recorded. Item 4 remains partial while the 72 imports cut short at platform identification await a capture with that call available. Target owners per shared symbol (item 5) and a follow-up issue per existing finding (item 6) remain pending.
 - **Area**: governance
 - **Date**: 2026-08-16
 - **Relations**: depends on ADR-0119 (deterministic declaration and configuration substrate);
@@ -482,16 +482,13 @@ Implementation-status line in the header records which items have landed.
    the checker's input, and the run fails when that input is invalid or cannot be read. A module's
    recorded destination is valid in exactly three cases:
 
-   - it is one of the two markers for a destination not yet decided,
-     `lionhub (destination not yet recorded)` or
-     `pending the CLI location decision (ADR-0139 D1)`, which name no module and so have nothing
-     to check for existence;
-   - it names a module that exists in the `lionhub` source tree, wherever that module is;
-   - it does not exist yet, is named in ADR-0138 or ADR-0139 (the records that decide the Studio
-     backend and CLI destinations ADR-0136 D7 deferred), and is not under `lionhub.cli`, whose
-     location ADR-0139 D1 has not decided.
+   - it is the marker `lionhub (destination not yet recorded)`;
+   - it names a module that exists in the `lionhub` source tree;
+   - it names a future module allocated in ADR-0138 or ADR-0139.
 
-   Any other destination makes the manifest invalid, and so does a tree without both of those
+   The checker first rejects `lionhub.cli` and its submodules as superseded, even if they exist.
+   ADR-0139 Amendment 5 establishes `lionhub.serve.cli` as the canonical destination. Any other
+   unrecorded destination makes the manifest invalid, and the checker requires both allocation
    documents.
 
 No production package moves, dependency removals, public-export deletions, or registry rewrites

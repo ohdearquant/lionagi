@@ -75,6 +75,7 @@ from lionhub.providers._cli_subprocess import (
 )
 
 from ._codex_profile import (
+    _codex_config_turning_sandbox_off,
     _read_codex_config,
     codex_config_defining_profile,
     codex_config_setting_default_permissions,
@@ -1062,6 +1063,151 @@ def _toml_scalar(value: str | int | float | bool) -> str:
     return dumped[len("x = ") :].rstrip("\n")
 
 
+def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
+    """Refuse a heavy request that turns codex's sandbox off while ``child_sandbox`` is enabled.
+
+    Claude Code children keep their sandbox under ``bypassPermissions`` and the Antigravity CLI
+    runs under the macOS sandbox with ``yolo``; a codex child with its sandbox off would run
+    every command with the user's full rights. Refused: ``bypass_approvals``,
+    ``sandbox='danger-full-access'``, a config override setting ``sandbox_mode`` to that mode or
+    setting ``default_permissions`` (a permissions profile codex applies in place of its
+    sandbox), and, when the request sets no mode, a codex config that sets that mode or
+    ``default_permissions``. A config that cannot be read is refused too: it cannot be ruled out.
+    So is an ``add_dir`` or ``writable_roots`` entry that is the home directory or an ancestor of
+    it (``_roots_reaching_home``). ``light`` requests are refused all of this by
+    ``_refuse_light_escape`` already.
+    """
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    if not resolve_child_sandbox(None).enabled:
+        return
+    flags = _command_line_layer(plain)
+    reasons = []
+    if plain.bypass_approvals:
+        reasons.append("bypass_approvals turns codex's sandbox off")
+    if plain.sandbox == "danger-full-access":
+        reasons.append("sandbox='danger-full-access' turns codex's sandbox off")
+    profiles = flags.get("profiles") if isinstance(flags.get("profiles"), Mapping) else {}
+    tables = [flags, *(t for t in profiles.values() if isinstance(t, Mapping))]
+    if any(t.get("sandbox_mode") == "danger-full-access" for t in tables):
+        reasons.append("config_overrides set sandbox_mode to 'danger-full-access'")
+    if any(_sets(t, ("default_permissions",)) for t in tables):
+        reasons.append(
+            "config_overrides set default_permissions, a permissions profile codex applies in "
+            "place of its sandbox"
+        )
+    if not reasons:
+        try:
+            found = codex_config_setting_default_permissions(plain.env, cwd)
+            if found is not None:
+                reasons.append(
+                    f"{str(found)!r} sets default_permissions, a permissions profile codex "
+                    "applies in place of its sandbox"
+                )
+            elif not (plain.full_auto or plain.sandbox or _sets(flags, ("sandbox_mode",))):
+                found_mode = _codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
+                if found_mode is not None:
+                    reasons.append(found_mode)
+        except (ValueError, OSError) as exc:
+            reasons.append(str(exc))
+    reasons.extend(_roots_reaching_home(plain, cwd, tables))
+    if reasons:
+        raise CLIInputRefusedError(
+            "a codex child runs in its sandbox while the child sandbox is enabled; "
+            + "; ".join(reasons)
+            + ". To run codex children without it, set `child_sandbox: {enabled: false}` in "
+            "~/.lionagi/settings.yaml."
+        )
+
+
+def _roots_reaching_home(
+    plain: _PlainRequest, cwd: Path, tables: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """Why the request's own writable roots reach the home directory, if they do.
+
+    A workspace-write root that is the home directory or one of its ancestors (``/``,
+    ``/Users``) makes the whole home writable, which is the same outcome as turning the
+    sandbox off. Checked: each ``add_dir`` entry and each ``writable_roots`` entry the run's
+    config overrides set under ``sandbox_workspace_write``, at the root or in a profile table.
+    A root inside the home directory is honoured. Relative entries are read against the
+    working directory, ``~`` is expanded, and links are resolved, on both sides. The home is
+    this process's, the child's ``HOME`` when the request sets one, and the account's home
+    from the password database, which a scratch ``HOME`` does not move.
+
+    An entry that exists is compared by identity (device and inode) with the home directory
+    and each of its ancestors, because a spelling is not an identity: on a case-insensitive
+    volume ``/users/u`` is the home ``/Users/u`` and ``realpath`` keeps the case it was given.
+    The spelling comparison stays beside it for an entry that does not exist yet.
+    """
+    from lionhub.agent.child_sandbox import _home_directories
+
+    homes = _home_directories(plain.env)
+    reaching: set[tuple[int, int]] = set()
+    for home in homes:
+        for directory in (home, *map(str, Path(home).parents)):
+            try:
+                found = os.stat(directory)
+            except OSError:
+                continue
+            reaching.add((found.st_dev, found.st_ino))
+    entries: list[tuple[str, Any]] = [("add_dir", entry) for entry in plain.add_dir]
+    for table in tables:
+        section = table.get("sandbox_workspace_write")
+        if not isinstance(section, Mapping) or "writable_roots" not in section:
+            continue
+        roots = section["writable_roots"]
+        if isinstance(roots, str):
+            roots = [roots]
+        if not isinstance(roots, (list, tuple)):
+            return ["config_overrides set writable_roots to something other than a list of paths"]
+        entries.extend(("writable_roots", root) for root in roots)
+    reasons = []
+    for source, entry in entries:
+        if not isinstance(entry, str):
+            reasons.append(f"a {source} entry is not a path")
+            continue
+        path = os.path.expanduser(entry)
+        if not os.path.isabs(path):
+            path = os.path.join(cwd, path)
+        real = os.path.realpath(path)
+        try:
+            found = os.stat(real)
+            same = (found.st_dev, found.st_ino) in reaching
+        except OSError:
+            same = False
+        if same or any(
+            real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes
+        ):
+            reasons.append(
+                f"{source} entry {entry!r} is the home directory or an ancestor of it, which "
+                "makes the whole home writable"
+            )
+    return reasons
+
+
+def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
+    """The extra writable roots a heavy codex agent gets in its workspace-write sandbox.
+
+    The user config's ``[sandbox_workspace_write] writable_roots`` reach every
+    workspace-write session, and a user config that lists a home or projects directory
+    there lets any heavy agent delete files across it. A heavy agent instead gets the child
+    sandbox's ``allow_write`` list (toolchain caches by default, extended in
+    ``~/.lionagi/settings.yaml``), beside its working directory, ``add_dir`` and its
+    linked worktree's git directory, which codex takes from ``--add-dir``. ``None`` leaves
+    the setting alone: when the run's own overrides set ``writable_roots`` (the caller
+    chose them), or when ``child_sandbox`` is switched off.
+    """
+    if _sets(_command_line_layer(plain), ("sandbox_workspace_write", "writable_roots")):
+        return None
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    policy = resolve_child_sandbox(None)
+    if not policy.enabled:
+        return None
+    roots = (os.path.expanduser(path) for path in policy.allow_write)
+    return list(dict.fromkeys(root for root in roots if os.path.isabs(root)))
+
+
 def _override_key_path(key: str, what: str) -> list[str]:
     """The parts of a `-c key=value` override's key, read as the TOML dotted
     key the CLI reads it as: a quoted part loses its quotes and its escapes, so
@@ -1525,10 +1671,7 @@ class CodexCodeRequest(BaseModel):
         `Branch()`) reaches the CLI through this request model, so the fix
         belongs here rather than at each of them.
         """
-        from lionagi.service.providers import (
-            _clamp_codex_effort,
-            codex_unset_effort_default,
-        )
+        from lionagi.service.providers import _clamp_codex_effort
 
         _redact_codex_runtime_fields_in_place(values)
         values = cls._resolve_config_profile(values)
@@ -1549,12 +1692,14 @@ class CodexCodeRequest(BaseModel):
         # user config derives nothing from it: the child never reads that file,
         # so there is no configured value to clamp.
         if not hermetic and values.get("reasoning_effort") is None:
+            from ._codex_profile import codex_unset_effort_from_config
+
             # The child's own environment decides which config codex reads, and
             # `env` replaces that environment wholesale when it is set. By this
             # point an earlier before-validator has wrapped it for redaction,
             # so it must be revealed to be read at all.
             env = reveal_redacted(values.get("env"))
-            derived = codex_unset_effort_default(
+            derived = codex_unset_effort_from_config(
                 model,
                 reveal_redacted(values.get("config_overrides")),
                 env if isinstance(env, Mapping) else None,
@@ -1867,11 +2012,16 @@ class CodexCodeRequest(BaseModel):
 
     def _cmd_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:
         """Render a previously checked request and workspace snapshot."""
+        from lionhub.agent.child_sandbox import _refuse_a_home_workspace
+
+        _refuse_a_home_workspace(cwd, plain.env)
         _refuse_ambiguous_approval(plain)
         _refuse_light_escape(plain)
         light = plain.workload == "light"
         if light:
             self._refuse_a_config_profile_for_light(plain, cwd)
+        else:
+            _refuse_sandbox_off_while_confined(plain, cwd)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
@@ -1998,6 +2148,13 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", "sandbox_workspace_write.network_access=false"])
             args.extend(["-c", "sandbox_workspace_write.exclude_slash_tmp=true"])
             args.extend(["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"])
+        elif not plain.bypass_approvals:
+            roots = _heavy_writable_roots(plain)
+            if roots is not None:
+                # Last, like the light pins, so it beats the user config, a config profile,
+                # a trusted project layer and the roots carried beside ignore_user_config.
+                rendered = _rendered_override_value(roots, "The writable roots")
+                args.extend(["-c", f"sandbox_workspace_write.writable_roots={rendered}"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
@@ -2778,6 +2935,39 @@ def _exclusive_cmd_args(
     return cmd
 
 
+def _provider_env_keys(providers: Any) -> set[str]:
+    """The ``env_key`` of every table in a ``model_providers`` table."""
+    if not isinstance(providers, Mapping):
+        return set()
+    return {
+        table["env_key"]
+        for table in providers.values()
+        if isinstance(table, Mapping) and isinstance(table.get("env_key"), str)
+    }
+
+
+def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[str]:
+    """The variables a codex child may read its key from: ``OPENAI_API_KEY``, every ``CODEX_*``
+    name, and the ``env_key`` of every model provider the user config or this run's ``-c``
+    overrides define. A profile file's providers arrive as overrides. The selected provider is
+    not resolved: a key one of these names is the operator's own, wherever it is defined.
+
+    *env* is the child's environment after the secret fill, so a ``CODEX_HOME`` the lookup
+    supplies is kept and its config is the one read."""
+    names = {"OPENAI_API_KEY"}
+    names |= {name for name in env if name.upper().startswith("CODEX_")}
+    try:
+        config = _read_codex_config(codex_home_for_env(env) / "config.toml") or {}
+    except ValueError:
+        # An unreadable config is codex's own refusal to make; this child keeps no key it names.
+        config = {}
+    names |= _provider_env_keys(config.get("model_providers"))
+    # The overrides as codex's loader builds them, so a later override that replaces a
+    # provider table also drops the env_key the earlier one named.
+    names |= _provider_env_keys(_command_line_layer(plain).get("model_providers"))
+    return frozenset(names)
+
+
 # TODO: migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
@@ -2821,6 +3011,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             on_spawn=request.on_spawn,
             engine="codex",
             workload=plain.workload,
+            auth_env=functools.partial(_codex_auth_env, plain),
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:

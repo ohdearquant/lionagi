@@ -230,7 +230,9 @@ async def create_agent(
     client registered for ``spec.khive_injection`` acts as. Its khive server
     gets the actor in ``--actor`` and ``KHIVE_ACTOR``. A caller that hands the
     child khive servers attributed to a profile passes the same actor here.
-    ``None`` leaves the injection server as configured.
+    ``None`` leaves the injection server as configured. That server starts in
+    the directory the model's own khive servers start in: a CLI model's working
+    directory, or this process's directory for an API model.
 
     ``spec.contain_account_integrations`` turns a codex agent's account
     ``apps`` and ``plugins`` features off by default. It is applied to the
@@ -411,9 +413,9 @@ async def create_agent(
             # Unset is not "no opinion": codex would read the global config's
             # effort, tuned for that config's own model, and 400 when it
             # exceeds this one's ceiling. Same seam the CLI builders use.
-            from lionagi.service.providers import codex_unset_effort_default
+            from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
 
-            effort = codex_unset_effort_default(model_name)
+            effort = codex_unset_effort_from_config(model_name)
             derived = effort is not None
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider_key)
@@ -615,7 +617,9 @@ async def create_agent(
         command_env_names=command_names,
         _command_env_supplier=command_env_supplier,
     )
-    _register_providers(branch, spec, actor=khive_actor)
+    _register_providers(
+        branch, spec, actor=khive_actor, cwd=_cli_working_directory(branch.chat_model)
+    )
     native_mcp_servers: frozenset[str] = frozenset()
     if resolved_mcp_servers is Unset:
         native_mcp_servers = await _load_mcp(
@@ -915,7 +919,24 @@ def _register_tools(
             branch.register_tools(tool)
 
 
-def _register_providers(branch: Branch, spec: AgentSpec, *, actor: str | None = None) -> None:
+def _cli_working_directory(model: Any) -> str | None:
+    """The working directory a CLI model's process starts in, when one is set on it.
+
+    The khive servers handed to a CLI model start there. An API model's servers start in
+    this process's directory, so it has none."""
+    if not getattr(model, "is_cli", False):
+        return None
+    repo = model.endpoint.config.kwargs.get("repo")
+    return os.fspath(repo) if repo else None
+
+
+def _register_providers(
+    branch: Branch,
+    spec: AgentSpec,
+    *,
+    actor: str | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> None:
     # LIONAGI_KHIVE_INJECTION is the fleet-wide injection kill-switch.
     env_setting = os.getenv("LIONAGI_KHIVE_INJECTION")
     if env_setting is not None and env_setting.strip().lower() in {
@@ -973,7 +994,7 @@ def _register_providers(branch: Branch, spec: AgentSpec, *, actor: str | None = 
             raise TypeError(
                 "khive_injection must be None, a bool, a mapping, or a KhiveInjectionPolicy"
             )
-        provider = KhiveInjectionProvider(policy, actor=actor)
+        provider = KhiveInjectionProvider(policy, actor=actor, cwd=cwd)
     except Exception as exc:
         import logging
 
@@ -988,7 +1009,13 @@ def _register_providers(branch: Branch, spec: AgentSpec, *, actor: str | None = 
     branch.providers.register(provider)
 
 
-def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> None:
+def register_profile_injection(
+    branch: Branch,
+    role_name: str,
+    profile: Any,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> None:
     """Register a CLI agent profile's khive injection provider onto ``branch``.
 
     Shared by the orchestrate path and the bare ``li agent`` path so both honor a
@@ -997,7 +1024,9 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
     The provider is keyed on ``{role_name}-recall-v1`` (role_name is the invoked
     profile name). None/False disables; the env kill-switch is honored by
     ``_register_providers``. Its direct khive connection uses the same minted or
-    profile actor as the forwarded servers and starts in the process directory.
+    profile actor as the forwarded servers and starts where they start: ``cwd`` when
+    the caller gives one, otherwise the working directory set on a CLI model, otherwise
+    this process's directory.
     """
     configured = getattr(profile, "khive_injection", None)
     # Only None/False disable — an empty mapping is a valid opt-in (see _register_providers).
@@ -1014,6 +1043,7 @@ def register_profile_injection(branch: Branch, role_name: str, profile: Any) -> 
         branch,
         provider_spec,
         actor=run_khive_actor(getattr(profile, "name", None)),
+        cwd=cwd if cwd is not None else _cli_working_directory(branch.chat_model),
     )
 
 
@@ -1295,7 +1325,18 @@ def apply_forwarded_mcp_servers(
                                 or (unicodedata.category(char) == "Zs" and char != " ")
                                 for char in config_text
                             )
-                            description = "non-path config" if unsafe else config_text
+                            # Only name an existing file. A suffix or separator can
+                            # also occur in credentials and other non-path text.
+                            try:
+                                is_file = not unsafe and os.path.isfile(config_text)
+                            except (OSError, ValueError):
+                                is_file = False
+                            if not is_file:
+                                description = "non-path config"
+                            elif len(config_text) > 1024:
+                                description = config_text[:1024] + "... (truncated)"
+                            else:
+                                description = config_text
                         else:
                             description = "inline JSON config"
                 logger.warning(

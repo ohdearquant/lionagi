@@ -65,14 +65,42 @@ _NETWORK_POLICY = """(allow network-outbound)
 (allow sysctl-read (sysctl-name-regex #"^net.routetable"))
 """
 
-# Runs as `python -I -S -c`: no site, no user or script directory on sys.path. O_NOFOLLOW keeps the
-# editor's refusal to write through a symlink in the child that does the write.
-_WRITE_CHILD = """import os, sys
+# Runs as `python -I -S -c`: the confined editor checks the descriptor it will write.
+#: The pseudo-terminals a CLI's shell tool allocates for each command it runs. Only a terminal
+#: the confined process allocated itself carries the ``com.apple.sandbox.pty`` extension, so a
+#: terminal it did not allocate (another program's, a terminal multiplexer's pane) cannot be
+#: opened, written to or sent ioctls.
+_PTY_POLICY = """(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write* file-ioctl
+  (require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty")))
+"""
+
+_WRITE_CHILD = """import errno, os, stat, sys
 path = sys.argv[1]
+kinds = {"b": "block device", "c": "character device", "d": "directory",
+         "l": "symbolic link", "p": "FIFO", "s": "socket"}
+
+def require_regular(mode):
+    if not stat.S_ISREG(mode):
+        kind = kinds.get(stat.filemode(mode)[0], "special file")
+        raise OSError(errno.EINVAL, f"Expected a regular file, got {kind}", path)
+
 try:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags, 0o666)
+    except OSError as exc:
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            raise exc from None
+        require_regular(mode)
+        raise
     with os.fdopen(fd, "wb") as f:
+        require_regular(os.fstat(fd).st_mode)
+        os.ftruncate(fd, 0)
         f.write(sys.stdin.buffer.read())
 except OSError as e:
     sys.stderr.write(f"{e.strerror}: {e.filename}")
@@ -118,6 +146,7 @@ class SeatbeltPolicy:
     writable_roots: tuple[str, ...]
     read_only: tuple[str, ...] = ()
     network: bool = False
+    pty: bool = False
 
     @classmethod
     def for_workspace(
@@ -125,21 +154,31 @@ class SeatbeltPolicy:
         workspace_root: str | Path,
         *,
         network: bool = False,
+        extra_roots: Sequence[str | Path] = (),
+        pty: bool = False,
         _command_env_names: frozenset[str] | None = None,
     ) -> SeatbeltPolicy:
-        """Writes to the workspace, the uv cache and the temporary directory; the workspace's
-        ``.git`` stays read-only, since a hook written there would run outside the sandbox."""
+        """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``;
+        the workspace's ``.git`` stays read-only, since a hook written there would run outside
+        the sandbox. ``pty`` lets the confined process allocate pseudo-terminals of its own,
+        which a CLI's shell tool needs to run a command; terminals it did not allocate stay
+        closed to it. While the child sandbox is enabled, a workspace that is the home
+        directory or an ancestor of it is refused."""
+        from lionhub.agent.child_sandbox import _refuse_a_home_workspace
+
+        _refuse_a_home_workspace(workspace_root)
         workspace = Path(workspace_root).expanduser().resolve()
         roots: list[str] = []
         for root in (
             workspace,
             _uv_cache_dir(_command_env_names=_command_env_names),
             Path(tempfile.gettempdir()),
+            *extra_roots,
         ):
             resolved = str(Path(root).expanduser().resolve())
             if resolved not in roots:
                 roots.append(resolved)
-        return cls(tuple(roots), (str(workspace / ".git"),), network)
+        return cls(tuple(roots), (str(workspace / ".git"),), network, pty)
 
     def profile(self) -> str:
         writes = "\n".join(
@@ -152,6 +191,8 @@ class SeatbeltPolicy:
         ]
         if self.network:
             parts.append(_NETWORK_POLICY)
+        if self.pty:
+            parts.append(_PTY_POLICY)
         return "".join(parts)
 
     def wrap(self, argv: Sequence[str]) -> list[str]:

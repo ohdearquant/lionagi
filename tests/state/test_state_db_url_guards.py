@@ -119,7 +119,7 @@ async def test_engine_defs_are_found_in_a_moved_store(moved_sqlite_url):
 
 
 async def test_schedules_are_found_in_a_moved_store(moved_sqlite_url):
-    from lionagi.studio.services import schedules as svc
+    from lionhub.serve.daemon.services import schedules as svc
 
     await svc.create_schedule(
         {
@@ -251,7 +251,7 @@ async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
     as the connection error this asserts.
     """
     _set_url(monkeypatch, _SERVER_URL)
-    from lionagi.studio.services import schedules as svc
+    from lionhub.serve.daemon.services import schedules as svc
 
     with pytest.raises(Exception) as excinfo:  # noqa: B017 — the message is the assertion
         await svc.list_schedules()
@@ -357,7 +357,7 @@ async def test_a_resume_read_on_a_server_url_fails_on_the_connection_not_the_mod
     refusal, which never touches the network and so cannot be a fact about the
     store.
     """
-    from lionagi.studio.services import run_resume
+    from lionhub.serve.daemon.services import run_resume
 
     _set_url(monkeypatch, _SERVER_URL)
 

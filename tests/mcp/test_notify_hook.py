@@ -31,6 +31,7 @@ from lionhub.serve.mcp import _notify_hook, config, jobs
 @pytest.fixture
 def job(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_TARGET", raising=False)
     rid = jobs.new_run_id()
@@ -252,8 +253,19 @@ def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     assert json.loads(captured["proc"].input)["reason_code"] == "run.completed.spawn_refused"
 
 
-def test_command_override_substitutes_and_delivers(job, monkeypatch):
+@pytest.mark.parametrize(
+    ("label_fields", "expected_label"),
+    [
+        ({"kind": "agent", "label": "t1"}, "t1"),
+        ({"kind": "agent", "label": None}, "agent"),
+        ({}, "run"),
+    ],
+    ids=["explicit-label", "kind-fallback", "run-fallback"],
+)
+def test_command_override_substitutes_and_delivers(job, monkeypatch, label_fields, expected_label):
     captured: dict = {}
+    monkeypatch.delenv("LIONAGI_MCP_NOTIFY_SENDER", raising=False)
+    monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
 
     def fake_popen(argv, **kw):
         captured["argv"] = argv
@@ -261,6 +273,10 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
         return captured["proc"]
 
     monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+    record = jobs._read_job(job)
+    del record["kind"], record["label"]
+    record.update(label_fields)
+    jobs._write_job(record)
 
     command = json.dumps(["notify", "{run_id}", "{status}", "{label}", "{target}"])
     rc = _notify_hook.main(
@@ -269,17 +285,21 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert rc == 0
     rec = jobs._read_job(job)
     assert rec["status"] == "failed"
-    assert captured["argv"] == ["notify", job, "failed", "t1", "downstream"]
-    # the same fields are offered as a JSON payload on stdin
+    assert captured["argv"] == ["notify", job, "failed", expected_label, "downstream"]
+    # The notifier receives the common fields and the MCP target on stdin.
+    # Agent jobs also carry a null resume ID before they have a saved branch.
     payload = json.loads(captured["proc"].input)
     assert payload == {
+        "schema_version": 1,
         "run_id": job,
         "status": "failed",
-        "label": "t1",
+        "reason_code": None,
+        "label": expected_label,
         "target": "downstream",
-        # Empty, not absent: no sender was given, and the notifier is told that
-        # rather than left to fill the gap from its working directory.
-        "sender": "",
+        "sender": None,
+        "cwd": None,
+        "output_dir": None,
+        **({"resume_id": None} if label_fields.get("kind") == "agent" else {}),
     }
     assert rec["notify_delivery"] == {
         "attempted": True,
@@ -975,6 +995,7 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
     The CLI writes its terminal manifest after the callback returns.
     """
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
     monkeypatch.setenv(
         "PYTHONPATH",
         os.pathsep.join(
@@ -982,7 +1003,7 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
         ),
     )
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
 
     shim = tmp_path / "li_shim.py"
     shim.write_text(_LI_SHIM_WITH_A_DELIVERY_GATED_NOTIFY_TIMEOUT)
@@ -1204,6 +1225,7 @@ def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, 
     # from the environment, so patching the constant here alone would leave the
     # two halves of this test writing to two different directories.
     monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setattr(config, "LIONAGI_HOME", tmp_path)
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
     # The run is launched by absolute script path, so it imports whichever
     # lionagi its interpreter resolves — which is this checkout only when the
@@ -1299,42 +1321,84 @@ def test_delivery_runs_where_the_run_was_submitted_not_where_it_ran(monkeypatch,
     assert captured["cwd"] != str(run_dir)
 
 
-def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path):
-    """The hook and the reap path sign the same notice the same way.
-
-    They never share a working directory — the hook runs in the run's dying
-    process, the reap path inside the server — so a delivery that inherits gives
-    one run two possible senders depending on which caller got there first. The
-    record is what makes them agree.
-    """
+@pytest.mark.parametrize("explicit_run_cwd", [True, False], ids=["submit-cwd", "recorded-cwd"])
+def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path, explicit_run_cwd):
+    """The hook and the reaper deliver the same run details from the signing directory."""
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.delenv("LIONAGI_NOTIFY_PAYLOAD", raising=False)
     submit_dir = tmp_path / "seat"
     submit_dir.mkdir()
+    signing_dir = tmp_path / "sender"
+    signing_dir.mkdir()
     run_dir = tmp_path / "worktree"
     run_dir.mkdir()
-    command = json.dumps(["notify", "{run_id}"])
+    artifact_root = tmp_path / "custom-output"
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **_: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(argv=("notify", "{run_id}", "{sender}", "{target}"))
+        ),
+    )
     rid = _job_with(
         monkeypatch,
         tmp_path,
-        cwd=str(run_dir),
+        cwd=str(run_dir) if explicit_run_cwd else None,
         submit_cwd=str(submit_dir),
-        notify_command=command,
+        sender_cwd=str(signing_dir),
+        notify_sender="reviewer-a",
+        notify_target="reviewer-b",
         status="exited",
     )
-
-    seen: list = []
-    monkeypatch.setattr(
-        _notify_hook.subprocess,
-        "Popen",
-        lambda *_a, **kw: seen.append(kw.get("cwd")) or _FakeCompleted(0),
+    manifest = config.run_manifest(rid)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"run_id": rid, "cwd": str(run_dir), "artifact_root": str(artifact_root)}),
+        encoding="utf-8",
     )
 
+    seen = []
+
+    def fake_popen(argv, **kwargs):
+        proc = _FakeCompleted(0)
+        seen.append((argv, kwargs, proc))
+        return proc
+
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+
     # caller 1: the run's own terminal hook
-    assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
+    result = _notify_hook.main(
+        [
+            "--run-id",
+            rid,
+            "--status",
+            "completed",
+            "--sender",
+            "reviewer-a",
+            "--target",
+            "reviewer-b",
+        ]
+    )
+    assert result == 0
     # caller 2: the observer publishing an end for a run whose process never got there
     jobs._deliver_reap_notice(rid, jobs._read_job(rid))
 
     assert len(seen) == 2
-    assert seen[0] == seen[1] == str(submit_dir)
+    for argv, kwargs, proc in seen:
+        assert argv == ["notify", rid, "reviewer-a", "reviewer-b"]
+        assert kwargs["cwd"] == str(signing_dir)
+        assert kwargs["env"]["LIONAGI_NOTIFY_SENDER"] == "reviewer-a"
+        assert json.loads(proc.input) == {
+            "schema_version": 1,
+            "run_id": rid,
+            "status": "completed",
+            "reason_code": None,
+            "label": "t1",
+            "sender": "reviewer-a",
+            "target": "reviewer-b",
+            "cwd": str(run_dir),
+            "output_dir": str(artifact_root),
+            "resume_id": None,
+        }
 
 
 def test_an_operator_can_override_the_delivery_directory(monkeypatch, tmp_path):

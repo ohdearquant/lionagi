@@ -4,7 +4,7 @@ Non-obvious invariants, protocol contracts, and design rationale for
 `lionagi/studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
-## lionagi/studio/_host.py
+## lionhub/src/lionhub/serve/daemon/_host.py
 
 **`normalize_host`** — the one reader of a host value's spelling: whitespace
 and one bracket pair removed, lowercased, and, when `ipaddress` parses what is
@@ -380,7 +380,7 @@ back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
 that path, by default or through the variable, shares it with any lionagi its
 commands run under the same home directory.
 
-## lionagi/studio/services/schedules.py
+## lionhub/src/lionhub/serve/daemon/services/schedules.py
 
 - **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
   `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
@@ -524,7 +524,7 @@ commands run under the same home directory.
   `last_healthy_poll_at` and `poller_consecutive_401` continue to describe HTTP
   liveness and authentication.
 
-## lionagi/studio/services/runs.py
+## lionhub/src/lionhub/serve/daemon/services/runs.py
 
 **Run identity projection** — list and detail rows keep `id` equal to the
 backing Session ID, which is the value accepted by every v1 Studio run and
@@ -547,7 +547,7 @@ legacy payloads. The `message_stats.message_count` check is key-presence
 based, not truthy: a legitimate `0` (stale progression referencing pruned
 message ids) must not fall through to `0 or fallback`.
 
-## lionagi/studio/services/sessions.py
+## lionhub/src/lionhub/serve/daemon/services/sessions.py
 
 - **`_fetch_action_messages`** — The `+m.lion_class` query hint disqualifies
   the `lion_class` index so the planner uses the id primary key for the IN
@@ -558,7 +558,7 @@ message ids) must not fall through to `0 or fallback`.
   since a branch with thousands of messages would exceed SQLite's 999
   bound-variable limit.
 
-## lionagi/studio/services/admin.py
+## lionhub/src/lionhub/serve/daemon/services/admin.py
 
 - **`process_liveness`** — Tri-state: `True` = observed alive; `False` =
   confirmed dead (recorded pid gone, start-time verified when recorded);
@@ -601,7 +601,7 @@ message ids) must not fall through to `0 or fallback`.
   necessarily about *now*), shelling out to git off the event loop under
   its own budget so a daemon never stalls on its own health check.
 
-## lionagi/studio/services/invocations.py
+## lionhub/src/lionhub/serve/daemon/services/invocations.py
 
 **`list_invocations_route`** — The usage aggregates are opt-in through the
 non-schema `include_usage` query flag, which the library usage panel passes and the
@@ -651,7 +651,7 @@ store — the decision belongs to a caller that has already checked
 `read_only_open_supported()`, since passing `True` unconditionally would
 fail at open elsewhere rather than degrade.
 
-## lionagi/studio/services/engine_runs.py
+## lionhub/src/lionhub/serve/daemon/services/engine_runs.py
 
 - **Canonical runtime identity** — A persisted Engine execution has one
   `engine_runs.id`, one signal session whose id is the same value, and optional
@@ -919,7 +919,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   clear on `None`/`""`; all other disk keys preserved. Writes through
   symlinks to the real source file.
 
-## lionagi/studio/services/task_applications.py
+## lionhub/src/lionhub/serve/daemon/services/task_applications.py
 
 - **ADR-0071 D1 architecture** — `TaskApplication` is the frozen submit shape
   every binding shares. This module wires the in-process binding
@@ -982,8 +982,11 @@ in that zone), and the next plan reports `UNCHANGED`.
   and messages are kept. Later session prunes leave these orphaned
   progressions and messages in place. The CLI's internal
   `deferred_victim_progressions` count covers the kept non-array
-  progressions without surviving owners. Other non-array survivors are
-  reported separately. Malformed JSON aborts the write transaction.
+  progressions without surviving owners. `deferred_array_progressions`
+  counts the array progressions kept because their owner also points at a
+  non-array progression, including one shared with a surviving session, and
+  the CLI reports it on its own line. Other non-array survivors are reported
+  separately. Malformed JSON aborts the write transaction.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
@@ -1230,7 +1233,7 @@ otherwise be misread on restore. It must recurse to every depth because
 every depth too — a shallow escape paired with the deep bytes conversion
 would leave nested collisions ambiguous.
 
-## lionagi/studio/services/run_resume.py
+## lionhub/src/lionhub/serve/daemon/services/run_resume.py
 
 `FLOW_RESUME_KINDS` lists the `invocation_kind` values that replay a
 checkpointed flow instead of reopening a single agent branch, kept separate
@@ -1581,20 +1584,17 @@ resolution time would let a race during that gap either write to a run that
 changed ownership or silently no-op in a way the caller couldn't
 distinguish from success.
 
-`cancel_run` additionally reuses `lionhub.orchestration.kill`'s exact primitives
-(`kill_one`, `list_running_children`) so a cancellation from the Operator
-is indistinguishable from one issued through `li kill --recursive`: running
-children are signalled deepest-first so none are orphaned, and
-`_persist_cancel`'s guard against a non-`running` row means a race that lets
-the same generation finish naturally degrades to `already_terminal` rather
-than a double cancel. A conflicting generation or rejected state update is
-reported as `not_stopped` with its reason and observed side effects. An
-indeterminate state-write failure reports an unknown `run_untouched` value.
-Process signalling
-waits off the Studio event loop. If the request task is cancelled while signalling,
-the command and its final audit finish before cancellation reaches the caller. Each
-target has its own TERM grace before escalation; the complete command has no fixed
-wall-clock bound because targets are processed in order and persistence can take time.
+`cancel_run` uses the identity checks and guarded writes in
+`lionhub.orchestration.kill`. The Operator dispatches TERM deepest first,
+waits off the event loop until the targets exit or one shared grace period
+elapses, then rechecks each surviving process's identity before escalating.
+Persistence follows in traversal order and can take additional time.
+A conflicting generation or rejected state update returns `not_stopped`
+with its reason and observed effects. A stale-context conflict before
+execution reports `run_untouched: true`. An indeterminate state-write
+failure leaves `run_untouched` unknown. If the request task is cancelled
+while the command is executing, settlement and its final audit finish
+before cancellation reaches the caller.
 `resume_run`
 is a distinct operation from un-pausing: the session lifecycle policy
 (`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
@@ -1855,7 +1855,7 @@ caller can tell "nothing happened" from "the field doesn't exist yet."
 
 `run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
 from message content via the shared `_detect_status` heuristic retained in
-`lionagi.studio.services.runs` for Session/operator projections, since plain
+`lionhub.serve.daemon.services.runs` for Session/operator projections, since plain
 session messages carry no structured `ok: bool`. Every section
 here is bounded by a message *window* (the carrier is called with a fixed
 `message_limit`) before any byte cap ever applies — the byte cap almost

@@ -39,12 +39,14 @@ worker.
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
+| `li remote {run,status,output,cancel}` | Run agent legs on a remote leg host ([guide](guides/remote-legs.md)) |
 | `li state {import,import-teams,ls,stats,checkpoint,vacuum,prune,doctor,migrate}` | Inspect and maintain StateDB |
 | `li dispatch {ls,show,ack,retry,purge}` | Operate the durable dispatch outbox |
 | `li stats runs` | Aggregate run reporting from StateDB |
 | `li mirror` | Mirror Claude Code transcripts into StateDB/Studio |
 | `li mcp` | Serve an MCP server that submits `li` runs as background jobs ([details](#li-mcp)) |
 | `li doctor` | Check installation, dependencies, Studio reachability, and writable state |
+| `li doctor --probe-anthropic-account NAME` | Send one billed request on a named account blocked for low credit or its spend limit and clear its block only on a 2xx response; runs only from an interactive terminal |
 
 `play`, `skill`, and `wait` are compatibility-friendly top-level conveniences handled
 before the normal argparse registry, so they may not appear in the command list printed
@@ -90,6 +92,11 @@ the run did not resolve; `li agent` resolves the same way and warns when it hand
 config was found. A set read from a file named with `--mcp-config` is exclusive: the agent
 starts with those servers and no others. A set found by the `.mcp.json` lookup is additive and
 joins the servers the provider already configures.
+
+To silence the `li agent` warning when no MCP configuration file is found, set
+`mcp.quiet_discovery` to the YAML boolean `true` in `~/.lionagi/settings.yaml`. Only the user
+settings control this warning. The MCP search still starts from the directory where you ran
+the command, and the provider still discovers its own configuration normally.
 
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
@@ -160,6 +167,14 @@ li agent status                         # latest agent-kind session in this proj
 li agent status SESSION_OR_INVOCATION   # full ID or unique prefix
 li agent status SESSION_OR_INVOCATION --json
 ```
+
+When a CLI provider ends a turn on an error after the turn has already delivered text, `li agent`
+writes that text to standard output and exits `76` (`EX_PROTOCOL`). Standard error carries the
+`<ErrorClass>: <message>` line every failed run writes, then `output is partial: the turn ended on
+<ErrorClass>: <message>`. The run's status stays `failed`; its `run.json` adds `partial: true`,
+and the text stays in the saved branch, so `li agent -r` resumes after it. A `--verbose` run has
+already streamed the text and writes only the two lines. An error before any text keeps the
+ordinary failed exit, `1`.
 
 ### Agent caps and workload
 
@@ -703,6 +718,7 @@ li kill abc123                        # kill by id prefix
 li kill <session-id>                  # stop a worker process
 li kill abc123 --reason 'stuck'
 li kill abc123 --recursive            # kill + direct children (session -> invocation)
+li kill abc123 --recursive --dry-run  # preview the targets and signals
 li kill --all-stale                   # sweep dead-PID sessions/invocations
 li kill --all-stale --threshold 3600  # only rows older than 1h
 li kill --all-stale --dry-run
@@ -711,14 +727,31 @@ li kill abc123 --resolve-quarantine failed --reason 'investigated'
 
 | Arg/Flag | Default | Notes |
 |----------|---------|-------|
-| `id` | none | Entity ID or prefix: run/session/invocation/play |
+| `id` | none | Run, session, invocation, play, or show ID or unambiguous prefix |
 | `--reason` | `""` | Recorded in `status_transitions`; required for a quarantine disposition |
 | `--recursive` | false | Also kill direct child entities |
 | `--all-stale` | false | Sweep stale sessions/invocations (and their child-derived plays/shows) |
 | `--threshold SECS` | 3600 | Only sweep entities started more than this long ago |
-| `--dry-run` | false | Only valid with `--all-stale`; prints without cancelling |
+| `--dry-run` | false | Preview one ID or the stale sweep without signalling or recording cancellation |
 | `--resolve-quarantine {failed,aborted,cancelled}` | none | Record an investigated disposition for one quarantined session or invocation without signalling its PID |
 | `--grace SECS` | 5.0 | Wait after SIGTERM before escalating to SIGKILL |
+
+**Scheduled commands.** Use the invocation ID to stop a scheduled command.
+A verified local command process group receives SIGTERM. After the grace
+period the CLI can send SIGKILL if the group still has a verified member.
+An older invocation with no recorded PID reports `no_pid`. The stale sweep
+cancels a stale PID-less invocation if the row has stayed unchanged since the
+sweep read it. For a recorded command group, the sweep cancels only after it
+verifies the group is empty. When complete identity markers bind an
+unverifiable group to this host and boot, the sweep records a quarantine
+observation and leaves the invocation running. A verified live group clears
+its observations. A dry run previews cancellations and leaves quarantine
+records unchanged.
+
+**Single-ID preview.** `li kill <id> --dry-run` shows the targets in kill
+order, including those reached through `--recursive`. It displays the
+verified PID or process group and the planned signals, or the current reason
+for sending no signal. The preview leaves state and run manifests untouched.
 
 **Unverifiable process identities.** When a stale sweep cannot inspect a locally
 recorded process, it leaves the row running and records the observation. Three
@@ -750,10 +783,8 @@ and an orchestrator row reaches them only through a link it recorded:
   (`li monitor` lists them). `--recursive` is not needed for either case: a
   play row carries no PID of its own, so resolving its workers is the kill.
 - Killing a **session** with `--recursive` also cancels its linked invocation.
-- A **show** id cannot be killed directly today: only `running` rows are
-  killable, and show rows persist as `active` (never `running`), so
-  `li kill <show-id>` is rejected as already-terminal, with or without
-  `--recursive`.
+- Killing an **active show** marks the show `aborted`. It does not stop the
+  show's plays or workers, even with `--recursive`.
 
 To stop everything under a show, kill the play id or session id directly
 (`li monitor <show-id>` lists its plays). `--all-stale` covers the abandoned
@@ -837,8 +868,8 @@ Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
 a control plane over this CLI: it submits `li` runs as **detached background
 jobs** and answers questions about them, so a submit returns a `run_id`
 immediately instead of blocking and the run keeps going in its own process
-group, surviving an MCP-server restart. Requires the `mcp` extra
-(`pip install 'lionagi[mcp]'`). Source: `lionhub/src/lionhub/serve/mcp/`.
+group, surviving an MCP-server restart. Requires Python 3.10 or later and the
+`mcp` extra (`pip install "lionagi[mcp]"`). Source: `lionhub/src/lionhub/serve/mcp/`.
 
 ```bash
 li mcp            # serve over stdio (same as: python -m lionhub.serve.mcp)
@@ -1220,7 +1251,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 |-------|-------|
 | `model` | Provider/model spec (e.g. `claude_code/opus`, `codex/gpt-5.4-xhigh`) |
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
-| `yolo` | Auto-approve tool calls |
+| `yolo` | Auto-approve tool calls. For Codex, `yolo: true` enables sandboxed file access. |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
 | `mcp` | Set to `none` to launch the agent or worker with no MCP servers, as with `--no-mcp-config`. Any other value is refused. An explicit `--mcp-config` conflicts with this setting and is refused before that agent starts. A resumed branch retains profile-origin containment and refuses `--mcp-config`, whether or not a profile is named on resume; a resumed flow retains its orchestrator's recorded choice. The flow planner runs under the orchestrator's profile and its containment; each worker uses its own profile. |
 | `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`); `false` leaves them as the account and config set them. When the key is omitted, a codex launch is contained unless the profile names `account_connectors`, and a launch with no profile, or a bare worker, is contained. Contained by default: `li agent` new runs and resumes, orchestration planners and workers, and branches cloned from the orchestrator (spawned nodes, fanout synthesis, retried nodes). Opt-in only, until #4267 changes their default: `AgentSpec` / `create_agent`, `OrchestrationEngine`, and a codex request built directly, which take `contain_account_integrations=True`. A branch cloned from the orchestrator does not carry its `account_connectors`; it is contained unless the orchestrator opted out with `false` and named no connectors, in which case the clone keeps that opt-out. A codex profile's resolved view in the agent roster reports the containment it gets, including when the key is omitted |

@@ -107,7 +107,7 @@ def _columns(path: Path) -> set[str]:
 async def test_session_label_search_is_literal_and_project_scoped(
     db_path, reader, label, query, decoy
 ):
-    from lionagi.studio.services.sessions import SessionFilter, count_sessions, list_sessions
+    from lionhub.serve.daemon.services.sessions import SessionFilter, count_sessions, list_sessions
 
     await _seed(db_path, label=label)
     await _seed(db_path, SECOND, label=decoy)
@@ -253,7 +253,7 @@ def test_operator_proposals_name_the_displayed_run(summary):
 
 
 async def test_invocation_child_session_uses_label_then_authored_fallback(db_path):
-    from lionagi.studio.services.invocations import get_invocation
+    from lionhub.serve.daemon.services.invocations import get_invocation
 
     async with StateDB(db_path) as db:
         await db.execute(
@@ -272,7 +272,7 @@ async def test_invocation_child_session_uses_label_then_authored_fallback(db_pat
 
 
 async def test_phantom_run_diagnostic_uses_label_and_legacy_authored_fallback(db_path, monkeypatch):
-    from lionagi.studio.services import admin
+    from lionhub.serve.daemon.services import admin
 
     async def no_process(*args, **kwargs):
         return False, ""
@@ -330,7 +330,7 @@ async def test_show_linked_session_uses_label_and_legacy_authored_fallback(
 
 async def test_operator_rename_replaces_label_without_changing_system_name_or_activity(db_path):
     from lionagi.studio.operator.rename_session import execute_rename_session_command
-    from lionagi.studio.services.sessions import get_session
+    from lionhub.serve.daemon.services.sessions import get_session
 
     await _seed(db_path)
     before = _stored(db_path)

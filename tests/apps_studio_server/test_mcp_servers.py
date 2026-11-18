@@ -379,7 +379,7 @@ def test_a_registry_that_is_not_utf8_is_reported_without_its_bytes(tmp_path, mon
     # the codec's own message quotes the byte it could not decode
     registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
     registry_path.write_bytes(UNREADABLE_REGISTRIES["not UTF-8"])
-    caplog.set_level(logging.WARNING, logger="lionagi.studio.services._io")
+    caplog.set_level(logging.WARNING, logger="lionhub.serve.daemon.services._io")
 
     with pytest.raises(mcp_mod.McpRegistryUnreadableError) as refused:
         mcp_mod.list_servers()

@@ -206,6 +206,26 @@ class TestEndpointCall:
         )
 
 
+def test_direct_gemini_payload_keeps_default_print_timeout(monkeypatch):
+    """Direct payload construction leaves the print-mode default to agy."""
+    import lionagi.config as config_module
+    from lionhub.providers.google.gemini_code import GeminiCLIEndpoint
+
+    monkeypatch.setattr(
+        config_module,
+        "settings",
+        config_module.settings.model_copy(update={"LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT": 3600.0}),
+    )
+    endpoint = GeminiCLIEndpoint()
+
+    payload, _ = endpoint.create_payload({"prompt": "hello"})
+
+    request = payload["request"]
+    assert isinstance(request, GeminiCodeRequest)
+    assert request.print_timeout is None
+    assert "--print-timeout" not in request.as_cmd_args()
+
+
 class TestDefaultModel:
     """GeminiCodeRequest default model must be the newest agy family."""
 

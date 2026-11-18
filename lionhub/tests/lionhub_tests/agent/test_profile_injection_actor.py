@@ -12,9 +12,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from lionagi import iModel
 from lionagi.session.branch import Branch
 from lionhub.agent.factory import register_profile_injection
-from lionhub.agent.khive_actor import KHIVE_ACTOR_ENV
+from lionhub.agent.khive_actor import KHIVE_ACTOR_ENV, attribute_khive_servers
 from lionhub.tools.khive_injection import KhiveInjectionProvider
 
 
@@ -109,3 +110,70 @@ async def test_create_agent_without_an_actor_leaves_the_injection_server_as_conf
 
     config = await _config_sent_to_pool(_registered_provider(branch))
     assert KHIVE_ACTOR_ENV not in (config.get("env") or {})
+
+
+def _actor_config(directory, actor):
+    (directory / ".khive").mkdir(parents=True)
+    (directory / ".khive" / "config.toml").write_text(f'[actor]\nid = "{actor}"\n')
+    return directory
+
+
+@pytest.mark.asyncio
+async def test_the_injection_server_starts_where_a_cli_childs_khive_servers_start(
+    tmp_path, monkeypatch
+):
+    """The launching directory and the child's directory each name a different actor. The
+    injection server and the child's forwarded khive server get the same directory and the
+    same arguments, so khive resolves both from the same configuration."""
+    launch = _actor_config(tmp_path / "launch", "team:a")
+    work = _actor_config(tmp_path / "work", "team:b")
+    monkeypatch.chdir(launch)
+    model = iModel(provider="claude_code", model="sonnet", repo=str(work))
+    branch = Branch(chat_model=model)
+    profile = SimpleNamespace(name="implementer", khive_injection=True)
+
+    register_profile_injection(branch, "implementer", profile)
+
+    injection = await _config_sent_to_pool(_registered_provider(branch))
+    forwarded = attribute_khive_servers(
+        {"khive": {"command": "kkernel", "args": ["mcp"]}}, "agent:implementer", cwd=work
+    )["khive"]
+    assert injection["cwd"] == str(work)
+    assert injection["args"] == forwarded["args"]
+    assert injection["env"][KHIVE_ACTOR_ENV] == forwarded["env"][KHIVE_ACTOR_ENV]
+
+
+@pytest.mark.asyncio
+async def test_a_directory_the_caller_names_wins_over_the_models(tmp_path):
+    model = iModel(provider="claude_code", model="sonnet", repo=str(tmp_path / "model"))
+    branch = Branch(chat_model=model)
+    profile = SimpleNamespace(name="implementer", khive_injection=True)
+
+    register_profile_injection(branch, "implementer", profile, cwd=tmp_path / "agent")
+
+    config = await _config_sent_to_pool(_registered_provider(branch))
+    assert config["cwd"] == str(tmp_path / "agent")
+
+
+@pytest.mark.asyncio
+async def test_an_api_models_injection_server_starts_in_the_process_directory():
+    branch = Branch()
+    profile = SimpleNamespace(name="implementer", khive_injection=True)
+
+    register_profile_injection(branch, "implementer", profile)
+
+    config = await _config_sent_to_pool(_registered_provider(branch))
+    assert "cwd" not in config
+
+
+@pytest.mark.asyncio
+async def test_create_agent_starts_the_injection_server_in_the_cli_models_directory(tmp_path):
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
+
+    spec = AgentSpec.coding(khive_injection=True, model="claude_code/sonnet")
+    spec.cwd = str(tmp_path)
+    branch = await create_agent(spec, load_settings=False, khive_actor="agent:reviewer")
+
+    config = await _config_sent_to_pool(_registered_provider(branch))
+    assert config["cwd"] == str(tmp_path)

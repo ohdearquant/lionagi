@@ -12,11 +12,11 @@ from lionagi import Branch
 from lionagi.operations.flow import DependencyAwareExecutor
 from lionagi.state.db import StateDB
 from lionagi.studio.operator.run_progress import _node_lanes_by_name
-from lionagi.studio.services.sessions import get_session
 from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.engines import PlanningEngine
 from lionhub.serve.cli.orchestrate import _orchestration as orchestration_module
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
+from lionhub.serve.daemon.services.sessions import get_session
 
 from .test_fanout_artifacts import _fanout_env
 from .test_fanout_failure_visibility import _completed, _failed

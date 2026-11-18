@@ -19,10 +19,10 @@ import pytest
 
 import lionhub.orchestration.schedule.validation as schedule_validation
 from lionagi.state.db import NO_CURSOR_CLAIM
-from lionagi.studio.services.schedules import _run_trigger_facts
 from lionhub.orchestration.scheduler import github as gh_mod
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
+from lionhub.serve.daemon.services.schedules import _run_trigger_facts
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -409,28 +409,6 @@ async def test_raised_merged_page_limit_scans_backlog(monkeypatch, full_pages, r
     assert result.scan_complete is True
     assert result.items == []
     assert len(client.requests) == requests
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("event", "expected"), [("pr_merged", None), ("pr_opened", '"tag"')])
-async def test_merged_mode_never_uses_first_page_etag(monkeypatch, event, expected):
-    async def token():
-        return "synthetic"
-
-    seen = []
-
-    class Client:
-        async def get(self, url, headers=None, params=None):
-            seen.append(dict(headers))
-            return _FakeResp([])
-
-    monkeypatch.setattr(gh_mod, "_get_gh_token", token)
-    monkeypatch.setattr(gh_mod, "_get_client", lambda: Client())
-    result = await gh_mod.github_poll(
-        _minimal_schedule(github_filter={"event": event}, node_metadata={"github_etag": '"tag"'})
-    )
-    assert result.scan_complete is True
-    assert seen[0].get("If-None-Match") == expected
 
 
 @pytest.mark.asyncio

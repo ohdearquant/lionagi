@@ -41,9 +41,9 @@ from lionagi._errors import LionError
 from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln._proc import env_without_state_db_url
+from lionhub.serve.daemon.services._io import read_json_file_checked as _read_json_checked
 
 from ..registry import studio_route
-from ._io import read_json_file_checked as _read_json_checked
 
 _log = logging.getLogger(__name__)
 
@@ -325,6 +325,7 @@ async def _attempt_connection(config: dict[str, Any]) -> dict[str, Any]:
                 command=config["command"],
                 args=config.get("args") or [],
                 env=env,
+                cwd=config.get("cwd"),
             )
             client = FastMCPClient(transport)
 

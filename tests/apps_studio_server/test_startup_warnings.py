@@ -83,10 +83,10 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
     consistent OOM kills in xdist workers and leaked writes into DEFAULT_DB_PATH.
     The scheduler, reconciliation, and checkpoint paths are covered elsewhere.
     """
-    import lionagi.studio.services.launches as launches_mod
     import lionhub.orchestration.scheduler.db_maintenance as db_maintenance_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.services.launches as launches_mod
 
     monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
     monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)
@@ -207,8 +207,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -226,8 +227,9 @@ class TestEscalatedWarningOnWildcardBind:
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
 
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "HOST", "0.0.0.0")
+        monkeypatch.setattr(daemon_settings, "HOST", "0.0.0.0")
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -529,8 +531,9 @@ class TestCORSWildcardOriginWarning:
         """CORS_ORIGINS containing '*' emits a startup WARNING."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", ["*"])
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", ["*"])
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", ["*"])
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
@@ -548,9 +551,10 @@ class TestCORSWildcardOriginWarning:
         """No CORS warning when origins are explicitly listed (not wildcard)."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.settings as daemon_settings
 
         explicit_origins = ["http://localhost:3000", "http://localhost:5173"]
-        monkeypatch.setattr(config_mod, "CORS_ORIGINS", explicit_origins)
+        monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", explicit_origins)
         monkeypatch.setattr(app_mod, "CORS_ORIGINS", explicit_origins)
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
@@ -579,11 +583,14 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
+        def _fake_uvicorn_run(
+            _app: str, *, host: str, port: int, workers: int, timeout_graceful_shutdown: int
+        ) -> None:
             # The export must have happened before uvicorn.run is invoked.
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
             captured["workers"] = workers
+            captured["shutdown_grace"] = timeout_graceful_shutdown
 
         import uvicorn
 
@@ -595,6 +602,8 @@ class TestCLIHostWiring:
         assert captured["bind_host"] == "0.0.0.0"
         # One process: a code minted before serving lives only in this one.
         assert captured["workers"] == 1
+        # One SIGTERM ends the server: open connections get a bounded wait.
+        assert captured["shutdown_grace"] == 3
         assert captured["env_host"] == "0.0.0.0", (
             "CLI must export the resolved bind host into LIONAGI_STUDIO_HOST "
             "before uvicorn.run so the app's security warning sees it"
@@ -618,9 +627,12 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
+        def _fake_uvicorn_run(
+            _app: str, *, host: str, port: int, workers: int, timeout_graceful_shutdown: int
+        ) -> None:
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
+            captured["shutdown_grace"] = timeout_graceful_shutdown
 
         import uvicorn
 
@@ -630,6 +642,7 @@ class TestCLIHostWiring:
 
         assert rc == 0
         assert captured["bind_host"] == "127.0.0.1"
+        assert captured["shutdown_grace"] == 3
         assert captured["env_host"] == "127.0.0.1", (
             "_start_local must overwrite a stale LIONAGI_STUDIO_HOST with the "
             "actual resolved bind host before uvicorn.run"

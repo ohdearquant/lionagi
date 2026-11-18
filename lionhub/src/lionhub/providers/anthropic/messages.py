@@ -7,19 +7,30 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Union
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Union
 
 import anyio.lowlevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from lionagi.ln.concurrency import CancelScope
-from lionagi.service.accounts._types import _PROVIDER_ERROR_TYPES, _REJECTION_CLASSES
+from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
+from lionagi.service.accounts._types import (
+    _PROVIDER_ERROR_TYPES,
+    _REJECTION_CLASSES,
+    ProvenNotSent,
+    RejectionZero,
+    UnknownOutcome,
+)
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
+
+if TYPE_CHECKING:
+    from lionagi.service.accounts._router import AccountRouter, RouterAttempt
+    from lionagi.service.accounts._types import Evidence
 
 logger = logging.getLogger("lionagi.providers.anthropic.messages")
 
@@ -627,38 +638,94 @@ def _classify_rejection_details(body: bytes, status: int) -> tuple[str, str, boo
 
 
 async def _classify_streamed_rejection_details(response: Any, status: int) -> tuple[str, str, bool]:
-    """Name the provider error type and the rejection class of a streamed rejection.
+    """Read a bounded rejection body without adding its frames to caller cancellation.
 
-    Reads the response's decoded byte stream (``aiter_bytes``) until it holds more than
-    ``_REJECTION_BODY_LIMIT`` bytes or ends, reads no further piece after that, and returns what
-    ``_classify_rejection`` names for the first ``_REJECTION_BODY_LIMIT + 1`` bytes. The read is
-    shielded from cancellation, so a caller that cancelled still has its attempt recorded, and
-    bounded by ``_REJECTION_READ_SECONDS``: a body that has not arrived by then is
-    ``("other", "other")``. Nothing of the body is logged, kept or raised: it is bound only in
-    this frame, only the two names leave this function, and every failure returns
-    ``("other", "other")``.
+    Pending cancellation raises at entry before the read deadline starts (ADR-0126 A14 Rule 1).
     """
-    try:
-        body = b""
-        deadline = anyio.current_time() + _REJECTION_READ_SECONDS
-        with CancelScope(deadline=deadline, shield=True) as scope:
-            async for piece in response.aiter_bytes():
-                body += piece
-                if len(body) > _REJECTION_BODY_LIMIT:
-                    break
-        if scope.cancelled_caught:
-            return "other", "other", False
-        return _classify_rejection_details(body[: _REJECTION_BODY_LIMIT + 1], status)
-    except Exception:
-        return "other", "other", False
+    # Observe pending cancellation before the reader can consume an available body.
+    await anyio.lowlevel.checkpoint()
+    details = ("other", "other", False)
+    deadline = anyio.current_time() + _REJECTION_READ_SECONDS
+
+    async def read_body() -> None:
+        nonlocal details
+        try:
+            body = b""
+            with CancelScope(deadline=deadline) as scope:
+                async for piece in response.aiter_bytes():
+                    body += piece
+                    if len(body) > _REJECTION_BODY_LIMIT:
+                        break
+            if not scope.cancelled_caught:
+                details = _classify_rejection_details(body[: _REJECTION_BODY_LIMIT + 1], status)
+        except (Exception, anyio.get_cancelled_exc_class()):
+            # Only the classification crosses from this task. The caller's own
+            # cancellation comes from waiting for the task group to finish.
+            return
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(read_body)
+    return details
 
 
-async def _classify_streamed_rejection(response: Any) -> tuple[str, str]:
-    """Keep the established two-name result for callers that need diagnosis only."""
-    error_type, rejection_class, _ = await _classify_streamed_rejection_details(
-        response, getattr(response, "status_code", 0)
+async def _send_routed_messages(
+    client: Any,
+    attempt: RouterAttempt,
+    request_pairs: list[tuple[str, str]],
+    *,
+    method: str,
+    url: str,
+    request_kwargs: dict[str, Any],
+) -> Any:
+    request_headers = {
+        name: value for name, value in request_pairs if name.strip().lower() != "content-type"
+    }
+    request_headers["Content-Type"] = "application/json"
+    request_headers["x-api-key"] = attempt.key.get_secret_value()
+    return await client.request(
+        method=method,
+        url=url,
+        headers=request_headers,
+        content=attempt.body,
+        follow_redirects=False,
+        **request_kwargs,
     )
-    return error_type, rejection_class
+
+
+@dataclass(frozen=True, slots=True)
+class _AccountProbeResult:
+    account: str
+    attempt_id: str
+    http_status: int | None
+    provider_error_type: str | None
+    cleared: bool
+
+
+def _read_probe_response(router: AccountRouter, response: Any) -> tuple[int, Evidence, str | None]:
+    status = response.status_code
+    if 200 <= status < 300:
+        try:
+            body = response.json()
+        except Exception:
+            return status, UnknownOutcome("usage_incomplete"), None
+        return status, router.probe_usage(body), None
+
+    error_type, _ = _classify_rejection(response.content[: _REJECTION_BODY_LIMIT + 1])
+    if status == 400 and error_type == "invalid_request_error":
+        evidence = RejectionZero(400, error_type, None, "request_rejected")
+    elif status == 529 and error_type == "overloaded_error":
+        evidence = RejectionZero(529, error_type, None, "provider_error")
+    else:
+        if status in (401, 403):
+            reason = "auth_required"
+        elif status == 429:
+            reason = "rate_limited"
+        elif status >= 500:
+            reason = "provider_error"
+        else:
+            reason = "request_rejected"
+        return status, UnknownOutcome(reason), error_type
+    return status, evidence, error_type
 
 
 @AnthropicConfigs.MESSAGES.register
@@ -674,6 +741,70 @@ class AnthropicMessagesEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("default_headers", {"anthropic-version": "2023-06-01"})
         super().__init__(config, **kwargs)
+
+    async def probe_blocked_account(self, name: str) -> _AccountProbeResult:
+        """Send one fixed, ledger-accounted request to an account with a billing block."""
+        from lionagi.service.accounts._router import (
+            get_router,
+            header_pairs,
+            routed_client_kwargs,
+            validate_routed_request,
+        )
+
+        url = self.config.full_url
+        method = self.config.method
+        timeout = self.config.timeout
+        headers = header_pairs(self.config.default_headers)
+        client_kwargs = routed_client_kwargs(self.config.client_kwargs)
+        validate_routed_request(
+            self, headers, request_kwargs={}, client_kwargs=client_kwargs, url=url, method=method
+        )
+        router = get_router()
+        attempt = await router.begin_probe(name)
+        entered = False
+        observed = None
+        try:
+            async with self._create_http_session(client_kwargs, timeout=timeout) as client:
+                entered = True
+                observed = _read_probe_response(
+                    router,
+                    await _send_routed_messages(
+                        client, attempt, headers, method=method, url=url, request_kwargs={}
+                    ),
+                )
+        except get_cancelled_exc_class():
+            try:
+                if observed is not None:
+                    status, evidence, error_type = observed
+                    await router.finish_probe(
+                        attempt, evidence, http_status=status, provider_error_type=error_type
+                    )
+                elif entered:
+                    await router.finish_probe(
+                        attempt,
+                        UnknownOutcome("cancelled"),
+                        http_status=None,
+                        provider_error_type=None,
+                    )
+                else:
+                    await router.settle_not_sent(attempt, caller_cancelled=True)
+            except Exception:  # noqa: S110 - preserve the caller's cancellation
+                pass
+            raise
+        except Exception:  # noqa: S110
+            # Settle outside this handler. The transport error can quote the request or response.
+            pass
+        if observed is None:
+            status, error_type = None, None
+            evidence = UnknownOutcome("transport_error") if entered else ProvenNotSent()
+        else:
+            status, evidence, error_type = observed
+        cleared = await router.finish_probe(
+            attempt, evidence, http_status=status, provider_error_type=error_type
+        )
+        return _AccountProbeResult(
+            attempt.account, str(attempt.attempt_id), status, error_type, cleared
+        )
 
     async def _request_attempt(
         self,
@@ -701,7 +832,6 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         import httpx
 
-        from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._router import (
             get_router,
             header_pairs,
@@ -750,6 +880,10 @@ class AnthropicMessagesEndpoint(Endpoint):
                 attempt_id=exc.attempt_id,
                 http_status=exc.http_status,
             ) from None
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         attempt = await router.begin(
@@ -757,31 +891,26 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=request_kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
             url=url,
             method=method,
         )
-        request_headers = {
-            name: value for name, value in request_pairs if name.strip().lower() != "content-type"
-        }
-        request_headers["Content-Type"] = "application/json"
-        request_headers["x-api-key"] = attempt.key.get_secret_value()
-
         request_entered = False
         status = None
         failure: Exception | None = None
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
-                response = await client.request(
+                response = await _send_routed_messages(
+                    client,
+                    attempt,
+                    request_pairs,
                     method=method,
                     url=url,
-                    headers=request_headers,
-                    content=attempt.body,
-                    follow_redirects=False,
-                    **request_kwargs,
+                    request_kwargs=request_kwargs,
                 )
                 status = response.status_code
                 if status in (401, 403):
@@ -1076,6 +1205,10 @@ class AnthropicMessagesEndpoint(Endpoint):
             url=url,
             method=method,
         )
+
+        # Keep this import local because ._prompt_cache imports _is_blank_text from this module.
+        from ._prompt_cache import routed_cache_evidence
+
         router = get_router()
         scope = self._account_scope(_routing_scope)
         body_kwargs = {"json": payload}
@@ -1084,6 +1217,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload,
             request_pairs,
             endpoint=self,
+            cache_evidence_for=routed_cache_evidence,
             request_kwargs=kwargs,
             body_kwargs=body_kwargs,
             client_kwargs=session_kwargs,
@@ -1264,6 +1398,33 @@ class AnthropicMessagesEndpoint(Endpoint):
                     chunk.metadata = redact_value(chunk.metadata, attempt.key)
                     yield chunk
 
+        async def read_rejection(response: Any, status: int) -> tuple[str, str, bool]:
+            try:
+                return await _classify_streamed_rejection_details(response, status)
+            except get_cancelled_exc_class():
+                # The HTTP status is known even though the diagnostic body was interrupted.
+                # The router shields the write, and this path already owns the outcome.
+                try:
+                    if status == 529:
+                        await router.settle_unknown(attempt, "provider_error", http_status=status)
+                    else:
+                        await router.settle_unknown(
+                            attempt,
+                            "request_rejected",
+                            provider_error_type="other",
+                            rejection_class="other",
+                            http_status=status,
+                        )
+                except Exception:  # noqa: S110 - retain the original cancellation
+                    pass
+                # Leave a closed response to the HTTP client's stream context.
+                with CancelScope(shield=True):
+                    try:
+                        await response.aclose()
+                    except Exception:  # noqa: S110 - retain the original cancellation
+                        pass
+                raise
+
         try:
             async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
@@ -1308,9 +1469,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         # The raised error, and so the retry, is the same either way.
                         overloaded = False
                         if status == 529:
-                            # The body read is shielded and bounded by _REJECTION_READ_SECONDS,
-                            # so a 529 whose body stalls raises after at most that long.
-                            error_type, _ = await _classify_streamed_rejection(response)
+                            error_type, _, _ = await read_rejection(response, status)
                             overloaded = error_type == "overloaded_error"
                         if overloaded:
                             await router.settle_rejection(
@@ -1330,13 +1489,11 @@ class AnthropicMessagesEndpoint(Endpoint):
                         )
                     if status != 200:
                         settled = True
-                        # Only the two names leave the classifier: it reads the body in its own
-                        # frame and no local here holds it.
                         (
                             provider_error_type,
                             rejection_class,
                             billing_rejection,
-                        ) = await _classify_streamed_rejection_details(response, status)
+                        ) = await read_rejection(response, status)
                         # Only a 400 naming ``invalid_request_error`` settles at zero, whatever
                         # its class; every other rejection keeps the ceiling.
                         billing_block = None

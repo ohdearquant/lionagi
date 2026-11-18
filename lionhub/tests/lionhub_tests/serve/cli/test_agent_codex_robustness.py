@@ -125,11 +125,33 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path):
 
     await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False)
 
-    # The hint must steer users to --yolo (the sandboxed default) as the
-    # primary remedy, not --bypass (which disables the sandbox).
-    assert any("--yolo" in w for w in warnings_emitted), (
-        f"Expected the warning to recommend --yolo, got: {warnings_emitted}"
+    [file_access_warning] = [w for w in warnings_emitted if "need file access enabled" in w]
+    assert "--yolo" in file_access_warning
+    assert "use an agent profile (-a)" in file_access_warning
+
+
+@pytest.mark.asyncio
+async def test_run_agent_codex_warns_which_profile_field_enables_file_access(monkeypatch, tmp_path):
+    captured: list = []
+    _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
+
+    import lionhub.orchestration.console as logging_mod
+    import lionhub.serve.cli.agent as agent_mod
+    from lionhub.orchestration.spawn import _parse_profile
+
+    warnings_emitted: list[str] = []
+    monkeypatch.setattr(logging_mod, "warn", warnings_emitted.append)
+    profile = _parse_profile(
+        "reviewer",
+        "---\nmodel: codex/gpt-5.3-codex-spark\nlion_system: false\n---\nProfile body.",
     )
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda _name: profile)
+
+    await agent_mod._run_agent(None, "do stuff", agent_name="reviewer")
+
+    [file_access_warning] = [w for w in warnings_emitted if "need file access enabled" in w]
+    assert "yolo: true" in file_access_warning
+    assert "use an agent profile" not in file_access_warning
 
 
 @pytest.mark.asyncio
@@ -165,8 +187,7 @@ async def test_run_agent_codex_profile_approval_flag_suppresses_warning(
 
     await _run_agent(None, "do stuff", agent_name="approved")
 
-    bypass_warns = [w for w in warnings_emitted if "require" in w.lower() and "bypass" in w.lower()]
-    assert not bypass_warns
+    assert not any("need file access enabled" in w for w in warnings_emitted)
 
 
 @pytest.mark.asyncio

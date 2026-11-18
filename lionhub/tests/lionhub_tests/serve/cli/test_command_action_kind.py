@@ -51,7 +51,7 @@ class TestCreateScheduleCommandValidation:
         return asyncio.run(coro)
 
     def test_create_command_without_action_command_raises(self):
-        from lionagi.studio.services.schedules import create_schedule
+        from lionhub.serve.daemon.services.schedules import create_schedule
 
         data = {
             "name": "bad-command-missing",
@@ -64,7 +64,7 @@ class TestCreateScheduleCommandValidation:
 
     def test_create_command_not_allowlisted_raises(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "other-tool")
-        from lionagi.studio.services.schedules import create_schedule
+        from lionhub.serve.daemon.services.schedules import create_schedule
 
         data = {
             "name": "bad-command-not-allowed",
@@ -77,7 +77,7 @@ class TestCreateScheduleCommandValidation:
 
     def test_create_command_path_separator_raises(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev")
-        from lionagi.studio.services.schedules import create_schedule
+        from lionhub.serve.daemon.services.schedules import create_schedule
 
         data = {
             "name": "bad-command-path",
@@ -90,7 +90,7 @@ class TestCreateScheduleCommandValidation:
 
     def test_create_command_args_not_a_list_raises(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev")
-        from lionagi.studio.services.schedules import create_schedule
+        from lionhub.serve.daemon.services.schedules import create_schedule
 
         data = {
             "name": "bad-command-args-type",
@@ -104,7 +104,7 @@ class TestCreateScheduleCommandValidation:
 
     def test_create_valid_command_does_not_raise(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev")
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -120,7 +120,7 @@ class TestCreateScheduleCommandValidation:
             }
             result = self._run(
                 __import__(
-                    "lionagi.studio.services.schedules", fromlist=["create_schedule"]
+                    "lionhub.serve.daemon.services.schedules", fromlist=["create_schedule"]
                 ).create_schedule(data)
             )
         assert "id" in result
@@ -144,11 +144,11 @@ class TestUpdateScheduleCommandValidation:
         return _MockDB()
 
     def _run_update(self, existing: dict, fields: dict):
-        from lionagi.studio.services.schedules import update_schedule
+        from lionhub.serve.daemon.services.schedules import update_schedule
 
         async def _go():
             with patch(
-                "lionagi.studio.services.schedules.StateDB",
+                "lionhub.serve.daemon.services.schedules.StateDB",
                 return_value=self._mock_db(existing),
             ):
                 return await update_schedule(existing["id"], fields)

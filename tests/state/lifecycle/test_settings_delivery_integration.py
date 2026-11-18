@@ -53,6 +53,84 @@ def _settings(monkeypatch, adapter):
     return calls
 
 
+async def test_exec_replay_of_historical_transition_uses_null_run_context(tmp_path, monkeypatch):
+    store = tmp_path / "state.db"
+    async with StateDB(store) as db:
+        transition_id = await _seed(db)
+        transition = await db.fetch_one(
+            "SELECT entity_id, created_at, CAST(metadata AS TEXT) AS metadata "
+            "FROM status_transitions WHERE id = :id",
+            {"id": transition_id},
+        )
+        assert transition is not None
+        assert json.loads(transition["metadata"]) == {}
+
+    adapter = {"kind": "exec", "argv": ["fake-test-adapter"]}
+    settings_calls = _settings(monkeypatch, adapter)
+    launches = []
+    payloads = []
+
+    class FakeProcess:
+        pid = None
+        returncode = 0
+
+        async def communicate(self, payload):
+            payloads.append(json.loads(payload))
+            return b"", b""
+
+    async def launch(*argv, **kwargs):
+        launches.append(argv)
+        return FakeProcess()
+
+    monkeypatch.setattr(notify_settings.asyncio, "create_subprocess_exec", launch)
+    monkeypatch.setattr("lionagi.ln._proc.observe_process_group_leader", lambda *a, **k: None)
+
+    async with StateDB(store) as db:
+        reconciler = TerminalReconciler(
+            CONSUMER, terminal_reconciliation.prepare_global_settings_delivery
+        )
+        result = await reconciler.run_pass(db)
+        assert result["attempted"] == result["acknowledged"] == 1
+        assert result["failed"] == 0
+        assert await is_acknowledged(db, transition_id, CONSUMER)
+        assert await reconcile_unacknowledged(db, CONSUMER) == []
+
+        restarted = TerminalReconciler(
+            CONSUMER, terminal_reconciliation.prepare_global_settings_delivery
+        )
+        result = await restarted.run_pass(db)
+        assert result["attempted"] == result["acknowledged"] == 0
+
+    assert settings_calls == [adapter]
+    assert launches == [("fake-test-adapter",)]
+    assert payloads == [
+        {
+            "schema": "lionagi.run-terminal",
+            "schema_version": 1,
+            "event_id": transition_id,
+            "durable": True,
+            "entity": {"kind": "session", "id": transition["entity_id"]},
+            "previous_status": "running",
+            "terminal_status": "failed",
+            "status": "failed",
+            "reason_code": "session.stale.no_heartbeat",
+            "occurred_at": transition["created_at"],
+            "correlation": {
+                "invocation_id": None,
+                "session_id": transition["entity_id"],
+                "schedule_run_id": None,
+                "run_id": None,
+            },
+            "artifacts": [],
+            "run_id": None,
+            "label": None,
+            "sender": None,
+            "cwd": None,
+            "output_dir": None,
+        }
+    ]
+
+
 async def _failure_then_retry(db, reconciler, transition_id, clock, seen):
     failed = await reconciler.run_pass(db)
     assert failed["attempted"] == 1 and failed["failed"] == 1

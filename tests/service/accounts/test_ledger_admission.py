@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from lionagi.service.accounts._types import (
     AccountRoutingError,
     AccountSpec,
     Quote,
+    RejectionZero,
     Reservation,
     RouterErrorCode,
     Scope,
@@ -216,6 +218,128 @@ async def test_caller_cancelled_while_operation_runs_still_commits(tmp_path, mon
     assert caller_scope.cancelled_caught
     status = await ledger.status("anthropic", "2026-01")
     assert (status[0].open_attempts, status[0].open_ceiling_nusd) == (1, 1)
+
+
+async def _cancel_after_admission(caller, admitted, release, finished, cancels):
+    """Cancel *caller* natively *cancels* times once its worker holds a thread token.
+
+    Each cancellation must leave the caller waiting and the token borrowed until
+    the worker is released; the caller then sees CancelledError.
+    """
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    try:
+        with anyio.fail_after(_TEST_DEADLINE_S):
+            while not admitted.is_set():
+                await anyio.sleep(0.001)
+            borrowed = limiter.borrowed_tokens
+            for _ in range(cancels):
+                assert caller.cancel()
+                await anyio.wait_all_tasks_blocked()
+                assert not caller.done(), "native cancellation reached the caller before commit"
+                assert limiter.borrowed_tokens == borrowed, "the thread token was released early"
+
+        release.set()
+        with anyio.fail_after(_TEST_DEADLINE_S), pytest.raises(asyncio.CancelledError):
+            await caller
+        assert finished.is_set()
+    finally:
+        release.set()
+        with anyio.fail_after(_TEST_DEADLINE_S):
+            if admitted.is_set():
+                while not finished.is_set():
+                    await anyio.sleep(0.001)
+            await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("cancels", [1, 2], ids=["one-cancel", "repeated-cancel"])
+async def test_native_cancel_waits_for_ledger_commit_and_full_timing(
+    anyio_backend, cancels, tmp_path, caplog
+):
+    ledger = make_ledger(tmp_path)
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        connection.execute("CREATE TABLE witness (id INTEGER PRIMARY KEY)")
+
+    admitted = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    worker_durations = []
+
+    def write():
+        started = time.monotonic()
+        try:
+            with closing(sqlite3.connect(ledger.path)) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                admitted.set()
+                assert release.wait(_TEST_DEADLINE_S), "test did not release the worker"
+                connection.execute("INSERT INTO witness VALUES (1)")
+                connection.commit()
+            worker_durations.append(time.monotonic() - started)
+        finally:
+            finished.set()
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        caller = asyncio.create_task(ledger._run(write))
+        await _cancel_after_admission(caller, admitted, release, finished, cancels)
+
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        assert connection.execute("SELECT id FROM witness").fetchall() == [(1,)]
+
+    (event,) = ledger_events(caplog)
+    (worker_duration,) = worker_durations
+    assert event.outcome == "CancelledError"
+    assert event.admission_wait_s >= 0
+    assert event.sqlite_wait_s >= worker_duration
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("cancels", [1, 2], ids=["one-cancel", "repeated-cancel"])
+async def test_native_cancel_waits_for_a_billing_rejection_settlement(
+    anyio_backend, cancels, tmp_path, monkeypatch, caplog
+):
+    ledger = make_ledger(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve(
+        Scope("branch", uuid4(), "anthropic"),
+        attempt,
+        Quote("model-a", 1, "price-a", "a" * 64),
+        (AccountSpec("alpha", "ALPHA_KEY", 10),),
+    )
+    evidence = RejectionZero(400, "invalid_request_error", "credit_balance_low", "request_rejected")
+
+    admitted = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    original_connect = CredentialLedger._connect
+
+    def gated_connect(self):
+        try:
+            admitted.set()
+            assert release.wait(_TEST_DEADLINE_S), "test did not release the worker"
+            return original_connect(self)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(CredentialLedger, "_connect", gated_connect)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        caller = asyncio.create_task(ledger.settle_billing_rejection(attempt, evidence))
+        await _cancel_after_admission(caller, admitted, release, finished, cancels)
+    monkeypatch.undo()
+
+    with closing(sqlite3.connect(ledger.path)) as connection:
+        assert connection.execute(
+            "SELECT block_reason FROM account WHERE name = 'alpha'"
+        ).fetchall() == [("credit_balance_low",)]
+        (settled,) = connection.execute(
+            "SELECT settlement_evidence_json FROM attempt WHERE id = ?", (str(attempt),)
+        ).fetchone()
+    assert settled is not None
+    (event,) = ledger_events(caplog)
+    assert event.outcome == "CancelledError"
+    assert event.sqlite_wait_s >= 0
 
 
 @pytest.mark.anyio

@@ -37,10 +37,19 @@ def _assert_drop_warning(caplog, *, inherited_file: bool, config_arg: str) -> No
         assert config_arg in warnings[0]
 
 
+def _stub_existing_config_file(monkeypatch, path: str) -> None:
+    """Exercise warning guards independently of the host's filename limits."""
+    is_file = os.path.isfile
+    monkeypatch.setattr(
+        os.path, "isfile", lambda candidate: candidate == path or is_file(candidate)
+    )
+
+
 @pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
-def test_dropped_config_path_is_named_once(caplog, as_path):
-    path = Path("agent-config.json") if as_path else "agent-config.json"
-    kwargs = {"mcp_config": path}
+def test_dropped_config_path_is_named_once(caplog, tmp_path, as_path):
+    path = tmp_path / "agent-config.json"
+    path.write_text("{}", encoding="utf-8")
+    kwargs = {"mcp_config": path if as_path else str(path)}
 
     with caplog.at_level(logging.WARNING):
         assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
@@ -49,6 +58,74 @@ def test_dropped_config_path_is_named_once(caplog, as_path):
     assert kwargs["mcp_servers"] == {}
     assert kwargs["strict_mcp_config"] is True
     _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
+
+
+def test_dropped_bare_config_token_is_not_logged(caplog):
+    marker = "private-config-token"
+    kwargs = {"mcp_config": marker}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "non-path config" in caplog.text
+    assert marker not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-ant-api03-AbCd/EfGh+IjKl/MnOp==",
+        "Authorization: Bearer abc/def",
+        "C:\\token\\value",
+        "Bearer example.json",
+    ],
+    ids=["base64", "header", "backslash", "json-suffix"],
+)
+def test_dropped_non_file_text_is_not_logged(caplog, secret):
+    kwargs = {"mcp_config": secret}
+
+    with caplog.at_level(logging.DEBUG):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "non-path config" in caplog.text
+    assert secret not in caplog.text
+    assert "abc/def" not in caplog.text and "EfGh" not in caplog.text
+
+
+def test_dropped_directory_with_json_suffix_is_not_named(caplog, tmp_path):
+    path = tmp_path / "config.json"
+    path.mkdir()
+    kwargs = {"mcp_config": path}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert "non-path config" in caplog.text
+    assert str(path) not in caplog.text
+
+
+def test_dropped_existing_config_file_without_json_suffix_is_named(caplog, tmp_path):
+    path = tmp_path / "agent-mcp.conf"
+    path.write_text("{}")
+    kwargs = {"mcp_config": str(path)}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
+
+
+def test_dropped_long_config_path_is_truncated(caplog, monkeypatch):
+    path = "configs/" + "a" * 1200 + ".json"
+    _stub_existing_config_file(monkeypatch, path)
+    kwargs = {"mcp_config": path}
+
+    with caplog.at_level(logging.WARNING):
+        assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
+
+    assert f"{path[:1024]}... (truncated)" in caplog.text
+    assert path not in caplog.text
+    assert len(caplog.text) < 1200
 
 
 @pytest.mark.parametrize("prefix", ["", " \n\t"], ids=["plain", "whitespace"])
@@ -144,13 +221,15 @@ def test_bom_prefixed_inline_config_is_identified_without_logging_content(caplog
     assert "mcp_config" not in kwargs
 
 
-def test_bytes_path_with_surrogate_is_not_logged_or_unencodable(caplog):
+def test_bytes_path_with_surrogate_is_not_logged_or_unencodable(caplog, monkeypatch):
     class BytesPath(os.PathLike):
         def __fspath__(self):
             return b"agent-\xff.json"
 
     path = BytesPath()
-    assert "\udcff" in os.fsdecode(path)
+    decoded = os.fsdecode(path)
+    assert "\udcff" in decoded
+    _stub_existing_config_file(monkeypatch, decoded)
     kwargs = {"mcp_config": path}
     output = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
     handler = logging.StreamHandler(output)
@@ -234,9 +313,11 @@ def test_control_prefixed_inline_config_cannot_inject_log_content(caplog, prefix
         "figure-space",
     ],
 )
-def test_unprintable_or_unsafe_separator_in_path_is_not_logged(caplog, separator):
+def test_unprintable_or_unsafe_separator_in_path_is_not_logged(caplog, monkeypatch, separator):
     marker = "fixture-value-do-not-log"
-    kwargs = {"mcp_config": "agent" + separator + marker + ".json"}
+    path = "agent" + separator + marker + ".json"
+    _stub_existing_config_file(monkeypatch, path)
+    kwargs = {"mcp_config": path}
 
     with caplog.at_level(logging.DEBUG):
         assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
@@ -257,9 +338,10 @@ def test_unprintable_or_unsafe_separator_in_path_is_not_logged(caplog, separator
 
 
 @pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
-def test_line_break_in_config_path_cannot_forge_a_log_record(caplog, as_path):
+def test_line_break_in_config_path_cannot_forge_a_log_record(caplog, monkeypatch, as_path):
     marker = "fixture-forged-record"
     path = "ordinary.json\n" + marker
+    _stub_existing_config_file(monkeypatch, path)
     kwargs = {"mcp_config": Path(path) if as_path else path}
 
     with caplog.at_level(logging.DEBUG):
@@ -281,15 +363,17 @@ def test_line_break_in_config_path_cannot_forge_a_log_record(caplog, as_path):
 
 
 @pytest.mark.parametrize("as_path", [False, True], ids=["string", "pathlike"])
-def test_printable_unicode_config_path_is_named(caplog, as_path):
-    path = "café/服务器 配置.json"
-    kwargs = {"mcp_config": Path(path) if as_path else path}
+def test_printable_unicode_config_path_is_named(caplog, tmp_path, as_path):
+    path = tmp_path / "café" / "服务器 配置.json"
+    path.parent.mkdir()
+    path.write_text("{}", encoding="utf-8")
+    kwargs = {"mcp_config": path if as_path else str(path)}
 
     with caplog.at_level(logging.DEBUG):
         assert apply_forwarded_mcp_servers(kwargs, {}, provider="claude_code", exclusive=True)
 
     assert "mcp_config" not in kwargs
-    _assert_drop_warning(caplog, inherited_file=True, config_arg=path)
+    _assert_drop_warning(caplog, inherited_file=True, config_arg=str(path))
 
 
 def test_none_config_is_removed_without_warning(caplog):

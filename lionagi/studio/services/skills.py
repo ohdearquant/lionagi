@@ -12,9 +12,9 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.frontmatter import parse_frontmatter_strict as _parse_frontmatter_strict
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln.concurrency import run_sync
+from lionhub.serve.daemon.services._path_safety import public_path, safe_path_join
 
 from ..registry import studio_route
-from ._path_safety import public_path, safe_path_join
 
 SKILLS_ROOT = LIONAGI_HOME / "skills"
 

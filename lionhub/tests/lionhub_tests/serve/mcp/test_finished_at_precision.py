@@ -27,7 +27,7 @@ _SPAWNED_AT = 1_700_000_000.0
 @pytest.fixture
 def sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(config, "li_command", lambda: ["echo"])
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
     return tmp_path

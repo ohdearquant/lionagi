@@ -40,27 +40,16 @@
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\"",
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
     ],
-    "lionagi/studio/_traceback_dump.py": [
-      "os.environ.get:_ENV_INTERVAL",
-      "os.environ.get:_ENV_PATH"
-    ],
     "lionagi/studio/app.py": [
       "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
       "os.getenv:\"LIONAGI_STUDIO_HOST\""
     ],
     "lionagi/studio/config.py": [
-      "os.environ.get:\"CORS_ORIGINS\"",
-      "os.environ.get:\"LIONAGI_HOME\"",
-      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
-      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
-      "os.environ.get:OPERATOR_CWD_ENV_VAR",
-      "os.environ.get:env_var"
+      "os.environ.get:OPERATOR_CWD_ENV_VAR"
     ],
     "lionagi/studio/operator/_common.py": [
       "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
@@ -86,15 +75,9 @@
       "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
       "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
     ],
-    "lionagi/studio/services/identity.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
-    ],
     "lionagi/studio/services/leo.py": [
       "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
       "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
-    ],
-    "lionagi/studio/services/pairing.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
     ],
     "lionagi/studio/services/redaction.py": [
       "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
@@ -179,14 +162,19 @@
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
     "lionhub/src/lionhub/serve/cli/agent.py": [
-      "os.environ.get:JOB_MARKER_ENV_VAR",
-      "os.environ.get:_API_ACCOUNT_ENV"
+      "os.environ.get:_API_ACCOUNT_ENV",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR"
     ],
     "lionhub/src/lionhub/serve/cli/engine.py": [
       "os.getenv:\"LIONAGI_INVOCATION_ID\""
     ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
       "os.environ.get:\"LIONAGI_SESSION_ID\""
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV",
+      "os.environ.get:token_env"
     ],
     "lionhub/src/lionhub/serve/cli/studio.py": [
       "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
@@ -196,6 +184,33 @@
       "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
       "os.environ:\"LIONAGI_STUDIO_HOST\"",
       "os.environ:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
+      "os.environ.get:_ENV_INTERVAL",
+      "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "os.environ.get:_MAX_LAUNCHES_ENV",
+      "os.environ.get:_TOKEN_ENV"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/identity.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/pairing.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "os.environ.get:\"CORS_ORIGINS\"",
+      "os.environ.get:\"LIONAGI_HOME\"",
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:env_var"
     ],
     "lionhub/src/lionhub/serve/mcp/_notify_hook.py": [
       "os.environ.get:\"LIONAGI_MCP_NOTIFY_COMMAND\"",
@@ -280,7 +295,7 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.tools\", \"lionhub.tools\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.agent\", \"lionhub.agent\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.casts\", \"lionhub.agent.casts\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.hooks.external\", \"lionhub.hooks.external\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli\", \"lionhub.serve.cli\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.tools\", \"lionhub.tools\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.agent\", \"lionhub.agent\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.casts\", \"lionhub.agent.casts\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.hooks.external\", \"lionhub.hooks.external\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli\", \"lionhub.serve.cli\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.integrations\", \"lionhub.integrations\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio._host\",\n        \"lionhub.serve.daemon._host\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._traceback_dump\",\n        \"lionhub.serve.daemon._traceback_dump\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.daemon_log\",\n        \"lionhub.serve.daemon.daemon_log\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.reconnect\",\n        \"lionhub.serve.daemon.reconnect\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._io\",\n        \"lionhub.serve.daemon.services._io\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._path_safety\",\n        \"lionhub.serve.daemon.services._path_safety\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._sse\",\n        \"lionhub.serve.daemon.services._sse\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.artifact_verification\",\n        \"lionhub.serve.daemon.services.artifact_verification\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.signals\",\n        \"lionhub.serve.daemon.services.signals\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_view\",\n        \"lionhub.serve.daemon.services.run_view\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.task_applications\",\n        \"lionhub.serve.daemon.services.task_applications\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.operator.redact\", \"lionhub.serve.daemon.services.redact\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.studio.launch_access\", \"lionhub.serve.daemon.launch_access\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.studio.services.runs\", \"lionhub.serve.daemon.services.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.run_resume\",\n        \"lionhub.serve.daemon.services.run_resume\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_resume_worker\",\n        \"lionhub.serve.daemon.services.run_resume_worker\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.engine_runs\",\n        \"lionhub.serve.daemon.services.engine_runs\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.invocations\",\n        \"lionhub.serve.daemon.services.invocations\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.launches\",\n        \"lionhub.serve.daemon.services.launches\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.identity\",\n        \"lionhub.serve.daemon.services.identity\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.pairing\",\n        \"lionhub.serve.daemon.services.pairing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.sessions\",\n        \"lionhub.serve.daemon.services.sessions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.admin\", \"lionhub.serve.daemon.services.admin\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.studio.services.schedules\",\n        \"lionhub.serve.daemon.services.schedules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._session_tail\",\n        \"lionhub.serve.daemon.services._session_tail\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
     "lionagi/__init__.py": [
       "import logging",
@@ -394,20 +409,6 @@
     ],
     "lionagi/hooks/persist.py": [
       "__all__ = (\n    \"route_message_persistence\",\n    \"unroute_message_persistence\",\n)"
-    ],
-    "lionagi/integrations/__init__.py": [
-      "from __future__ import annotations",
-      "__all__ = ()"
-    ],
-    "lionagi/integrations/ruvector/__init__.py": [
-      "from __future__ import annotations",
-      "__all__ = (\"RuVectorMemoryStore\", \"RuVectorStore\", \"SearchHit\")"
-    ],
-    "lionagi/integrations/ruvector/memory.py": [
-      "__all__ = (\"RuVectorMemoryStore\",)"
-    ],
-    "lionagi/integrations/ruvector/store.py": [
-      "__all__ = (\"RuVectorStore\", \"SearchHit\")"
     ],
     "lionagi/libs/__init__.py": [
       "from .nested import (\n    deep_merge,\n    deep_update,\n    flatten,\n    get_target_container,\n    nget,\n    npop,\n    nset,\n    unflatten,\n)",
@@ -966,15 +967,6 @@
     "lionagi/state/transitions.py": [
       "__all__ = (\n    \"Actor\",\n    \"StateReason\",\n    \"TransitionRequest\",\n    \"TransitionResult\",\n    \"transition\",\n)"
     ],
-    "lionagi/studio/_host.py": [
-      "__all__ = (\"admitted_host_names\", \"is_unspecified_host\", \"normalize_host\")"
-    ],
-    "lionagi/studio/daemon_log.py": [
-      "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
-    ],
-    "lionagi/studio/launch_access.py": [
-      "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
-    ],
     "lionagi/studio/operator/__init__.py": [
       "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
       "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
@@ -985,9 +977,6 @@
     "lionagi/studio/operator/conversation_metadata.py": [
       "__all__ = (\"UpdateConversationInput\", \"normalize_description\")"
     ],
-    "lionagi/studio/operator/redact.py": [
-      "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
-    ],
     "lionagi/studio/operator/run_detail.py": [
       "__all__ = (\"RunDetailInput\", \"run_detail\")"
     ],
@@ -996,24 +985,6 @@
     ],
     "lionagi/studio/operator/run_progress.py": [
       "__all__ = (\"MissingOwnerContextError\", \"RunProgressInput\", \"resolve_run\", \"run_progress\")"
-    ],
-    "lionagi/studio/reconnect.py": [
-      "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
-    ],
-    "lionagi/studio/services/_session_tail.py": [
-      "__all__ = (\"SessionTailRegistry\", \"StreamResyncError\", \"capture_frontiers\")"
-    ],
-    "lionagi/studio/services/artifact_verification.py": [
-      "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
-    ],
-    "lionagi/studio/services/run_view.py": [
-      "__all__ = (\n    \"build_outcome\",\n    \"build_run_view\",\n    \"build_run_view_for\",\n    \"exit_code_for_view\",\n    \"get_run_view\",\n    \"get_schedule_status_view\",\n    \"list_run_views\",\n)"
-    ],
-    "lionagi/studio/services/signals.py": [
-      "__all__ = (\"get_signals_after\",)"
-    ],
-    "lionagi/studio/services/task_applications.py": [
-      "__all__ = (\"AdmissionRejectedError\", \"TaskApplication\", \"cancel_task\", \"submit_task\")"
     ],
     "lionagi/studio/services/workflow_compile.py": [
       "__all__ = (\n    \"StudioExprCondition\",\n    \"UnsafeExpressionError\",\n    \"WorkflowCompileError\",\n    \"EXECUTABLE_NODE_KINDS\",\n    \"DROPPED_NODE_KINDS\",\n    \"compile_workflow_def\",\n    \"build_early_graph\",\n    \"make_engine_operation\",\n)"
@@ -1128,6 +1099,20 @@
     ],
     "lionhub/src/lionhub/hooks/external.py": [
       "__all__ = (\n    \"BLOCKING_EVENTS\",\n    \"PROFILE_VERSION\",\n    \"SUPPORTED_EVENTS\",\n    \"ExternalHookConfigError\",\n    \"HookVerdict\",\n    \"build_envelope\",\n    \"compute_command_hash\",\n    \"compute_executable_digest\",\n    \"compute_trust_record\",\n    \"external_hook_adapter\",\n    \"is_command_trusted\",\n    \"match_hook\",\n    \"resolve_hook_executable\",\n    \"validate_argv\",\n)"
+    ],
+    "lionhub/src/lionhub/integrations/__init__.py": [
+      "from __future__ import annotations",
+      "__all__ = ()"
+    ],
+    "lionhub/src/lionhub/integrations/ruvector/__init__.py": [
+      "from __future__ import annotations",
+      "__all__ = (\"RuVectorMemoryStore\", \"RuVectorStore\", \"SearchHit\")"
+    ],
+    "lionhub/src/lionhub/integrations/ruvector/memory.py": [
+      "__all__ = (\"RuVectorMemoryStore\",)"
+    ],
+    "lionhub/src/lionhub/integrations/ruvector/store.py": [
+      "__all__ = (\"RuVectorStore\", \"SearchHit\")"
     ],
     "lionhub/src/lionhub/lndl/__init__.py": [
       "from .assembler import (\n    NOTE_NAMESPACE,\n    assemble,\n    assemble_spec_value,\n    build_action_call,\n    collect_actions,\n    collect_notes,\n    replace_actions,\n)",
@@ -1614,6 +1599,9 @@
     "lionhub/src/lionhub/serve/cli/orchestrate/_round_records.py": [
       "__all__ = (\n    \"ROUND_VERSION\",\n    \"ROUND_STATE_PENDING\",\n    \"ROUND_STATE_COMPLETE\",\n    \"RESULT_COMPLETED\",\n    \"RESULT_PARTIAL\",\n    \"RESULT_FAILED\",\n    \"LEG_SUCCEEDED\",\n    \"LEG_FAILED\",\n    \"LEG_TIMED_OUT\",\n    \"LEG_CANCELLED\",\n    \"LEG_KILLED\",\n    \"RECORDED_BY_RUNNER\",\n    \"RECORDED_BY_KILL_REAPER\",\n    \"RECORDED_BY_ORPHAN_REAPER\",\n    \"LegDispatch\",\n    \"legs_dir\",\n    \"round_path\",\n    \"write_leg_dispatch\",\n    \"complete_leg_record\",\n    \"read_leg_records\",\n    \"ControlGroupDomain\",\n    \"control_group_domain\",\n    \"recorded_control_groups\",\n    \"write_round_summary\",\n    \"read_round_summary\",\n    \"flip_round_complete\",\n    \"round_result\",\n)"
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "__all__ = (\n    \"RemoteError\",\n    \"add_remote_subparser\",\n    \"load_remote\",\n    \"run_remote\",\n)"
+    ],
     "lionhub/src/lionhub/serve/cli/state.py": [
       "__all__ = [\n    # import helpers\n    \"RUNS_ROOT\",\n    \"_mtime_as_float\",\n    \"_msg_from_collection_entry\",\n    \"_import_runs\",\n    \"_STATUS_MAP\",\n    \"_EXIT_CODE_STATUS_MAP\",\n    \"_derive_import_status\",\n    \"_derive_timestamps\",\n    \"_import_one_run\",\n    \"_import_teams\",\n    # ops helpers\n    \"_format_bytes\",\n    \"_list_sessions\",\n    \"_print_stats\",\n    \"_collect_message_breakdown\",\n    \"_checkpoint\",\n    \"_vacuum\",\n    \"_prune\",\n    \"_prune_candidates\",\n    \"_null_content\",\n    \"_null_content_candidates\",\n    \"_null_content_targets\",\n    \"_doctor\",\n    # CLI entrypoints\n    \"add_state_subparser\",\n    \"run_state\",\n    \"machine_result\",\n]"
     ],
@@ -1623,8 +1611,59 @@
     "lionhub/src/lionhub/serve/cli/status.py": [
       "__all__ = (\n    \"run_agent_status\",\n    \"run_play_status\",\n    \"run_ctl_status\",\n)"
     ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "__all__ = (\n    \"STUDIO_TOKEN_ENV\",\n    \"STUDIO_UNAUTHORIZED_HINT\",\n    \"studio_request\",\n    \"with_unauthorized_hint\",\n)"
+    ],
     "lionhub/src/lionhub/serve/cli/wait.py": [
       "__all__ = (\n    \"wait_for_terminal\",\n    \"run_wait\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_host.py": [
+      "__all__ = (\"admitted_host_names\", \"is_unspecified_host\", \"normalize_host\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
+      "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/launch_access.py": [
+      "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "__all__ = (\n    \"LEG_HOST_ENV\",\n    \"LegLaunch\",\n    \"LegSetupError\",\n    \"LegRepo\",\n    \"capabilities\",\n    \"enabled\",\n    \"leg_env\",\n    \"load_repos\",\n    \"make_worktree\",\n    \"max_launches\",\n    \"read_result\",\n    \"remove_worktree\",\n    \"result_path\",\n    \"startup_refusals\",\n    \"sweep_worktrees\",\n    \"validate_launch\",\n    \"worktree_refusal\",\n    \"write_result\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/reconnect.py": [
+      "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "__all__ = (\n    \"DAEMON_ROUTE_MODULES\",\n    \"HttpMethod\",\n    \"RouteModule\",\n    \"StudioRoute\",\n    \"iter_studio_routes\",\n    \"load_route_modules\",\n    \"studio_route\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_session_tail.py": [
+      "__all__ = (\"SessionTailRegistry\", \"StreamResyncError\", \"capture_frontiers\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
+      "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "__all__ = (\"session_has_control_consumer\",)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "__all__ = (\n    \"get_engine_def\",\n    \"get_engine_def_by_name\",\n    \"is_registered_engine_kind\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/redact.py": [
+      "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "__all__ = (\"add_tag\", \"remove_tag\", \"session_ids_with_tags\", \"tags_for_sessions\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
+      "__all__ = (\n    \"build_outcome\",\n    \"build_run_view\",\n    \"build_run_view_for\",\n    \"exit_code_for_view\",\n    \"get_run_view\",\n    \"get_schedule_status_view\",\n    \"list_run_views\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/signals.py": [
+      "__all__ = (\"get_signals_after\",)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/task_applications.py": [
+      "__all__ = (\"AdmissionRejectedError\", \"TaskApplication\", \"cancel_task\", \"submit_task\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "__all__ = (\n    \"CORS_ORIGINS\",\n    \"HOST\",\n    \"MIRROR_CLAUDE_ENABLED\",\n    \"MIRROR_CLAUDE_INTERVAL\",\n    \"MIRROR_CLAUDE_ROOT\",\n    \"MIRROR_CLAUDE_SINCE\",\n    \"MIRROR_CODEX_ROOT\",\n    \"MIRROR_IMPORT_AMBIENT\",\n    \"MIRROR_SOURCE\",\n    \"STUDIO_PORT\",\n)"
     ],
     "lionhub/src/lionhub/serve/diagnostics.py": [
       "__all__ = (\n    \"code_identity\",\n    \"git_identity\",\n    \"snapshot_git_position\",\n    \"GIT_TIMEOUT_SECONDS\",\n    \"IDENTITY_BUDGET_SECONDS\",\n)"
@@ -1714,9 +1753,7 @@
       "build_cli_parser",
       "command_exists",
       "iter_cli_seeds",
-      "iter_http",
       "load_cli_command",
-      "load_http_modules",
       "seed_for"
     ],
     "lionagi/_checkpoint_v3_codec.py": [
@@ -1909,13 +1946,6 @@
     "lionagi/hooks/persist.py": [
       "route_message_persistence",
       "unroute_message_persistence"
-    ],
-    "lionagi/integrations/ruvector/memory.py": [
-      "RuVectorMemoryStore"
-    ],
-    "lionagi/integrations/ruvector/store.py": [
-      "RuVectorStore",
-      "SearchHit"
     ],
     "lionagi/libs/credential_fields.py": [
       "fold_field_name",
@@ -2663,6 +2693,7 @@
     ],
     "lionagi/service/accounts/_router.py": [
       "AccountRouter",
+      "RoutedCacheEvidence",
       "RouterAttempt",
       "StreamTextRedactor",
       "StreamingSecretRedactor",
@@ -2733,6 +2764,7 @@
       "uses_developer_messages"
     ],
     "lionagi/service/connections/_provider_compat.py": [
+      "codex_unset_effort_1x",
       "default_provider_catalog"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
@@ -3068,7 +3100,10 @@
       "NotifyProvenance",
       "ResolvedNotifyHandler",
       "RunNotifyRecord",
+      "TerminalNoticeContext",
+      "bind_terminal_notice_context",
       "build_handler",
+      "build_terminal_notice_payload",
       "classify_notify_provenance",
       "record_notify_outcome_to_run",
       "record_notify_rejection_to_run",
@@ -3138,14 +3173,6 @@
       "TransitionResult",
       "transition"
     ],
-    "lionagi/studio/_host.py": [
-      "admitted_host_names",
-      "is_unspecified_host"
-    ],
-    "lionagi/studio/_traceback_dump.py": [
-      "arm_traceback_dump",
-      "disarm_traceback_dump"
-    ],
     "lionagi/studio/app.py": [
       "create_app",
       "lifespan",
@@ -3154,24 +3181,6 @@
     "lionagi/studio/config.py": [
       "OperatorExecutionRootResolution",
       "resolve_operator_execution_root_config"
-    ],
-    "lionagi/studio/daemon_log.py": [
-      "daemon_log_handler"
-    ],
-    "lionagi/studio/launch_access.py": [
-      "DecisionPrincipal",
-      "PairingGrant",
-      "begin_serving",
-      "daemon_epoch",
-      "is_launch_origin",
-      "launch_bearer",
-      "mint_decision_capability",
-      "mint_pairing_code",
-      "redeem_pairing_code",
-      "redeem_pairing_grant",
-      "reset_launch_access",
-      "resolve_decision_capability",
-      "revoke_decision_capability"
     ],
     "lionagi/studio/operator/_common.py": [
       "wait_for_proposal"
@@ -3212,8 +3221,11 @@
     ],
     "lionagi/studio/operator/cancel_run.py": [
       "AmbiguousRunReferenceError",
+      "CancelFailureReason",
       "CancelRunInput",
       "MissingOwnerContextError",
+      "apply_cancel_command",
+      "await_cancel_completion",
       "cancel_run",
       "execute_cancel_command"
     ],
@@ -3250,15 +3262,6 @@
     "lionagi/studio/operator/permission_mcp.py": [
       "request_permission"
     ],
-    "lionagi/studio/operator/redact.py": [
-      "cap_by_bytes",
-      "cap_payload_by_bytes",
-      "known_secret_values",
-      "public_project",
-      "redact_arguments",
-      "redact_scalar",
-      "scrub_text"
-    ],
     "lionagi/studio/operator/rename_session.py": [
       "RenameSessionInput",
       "execute_rename_session_command",
@@ -3280,7 +3283,6 @@
       "execute_steer_run_command",
       "pause_run",
       "release_run_pause",
-      "session_has_control_consumer",
       "steer_run"
     ],
     "lionagi/studio/operator/run_detail.py": [
@@ -3321,61 +3323,8 @@
       "UpdateConversationRequest",
       "WireModel"
     ],
-    "lionagi/studio/reconnect.py": [
-      "ReconnectChannel",
-      "current_uid",
-      "default_socket_path",
-      "peer_uid",
-      "port_proof",
-      "read_reconnect_reply",
-      "state_dir",
-      "unix_sockets_supported"
-    ],
     "lionagi/studio/registry.py": [
-      "StudioRoute",
-      "iter_studio_routes",
-      "load_studio_route_modules",
-      "studio_route"
-    ],
-    "lionagi/studio/services/_io.py": [
-      "JsonRead",
-      "parse_json_col",
-      "read_json_file_checked"
-    ],
-    "lionagi/studio/services/_path_safety.py": [
-      "public_path",
-      "safe_path_join",
-      "validate_name_component"
-    ],
-    "lionagi/studio/services/_session_tail.py": [
-      "SessionTailRegistry",
-      "StreamResyncError",
-      "capture_frontiers"
-    ],
-    "lionagi/studio/services/_sse.py": [
-      "sse_response"
-    ],
-    "lionagi/studio/services/admin.py": [
-      "MaintenanceBody",
-      "PruneBody",
-      "PruneOldDataBody",
-      "TransitionBody",
-      "admin_events_route",
-      "db_health",
-      "doctor",
-      "doctor_route",
-      "health_report",
-      "health_route",
-      "list_admin_events",
-      "prune_old_data_route",
-      "prune_phantom_sessions",
-      "prune_route",
-      "prune_sessions",
-      "readiness_route",
-      "run_maintenance_route",
-      "store_probe",
-      "transition_route",
-      "transition_sessions"
+      "load_studio_route_modules"
     ],
     "lionagi/studio/services/agents.py": [
       "AgentExistsError",
@@ -3405,10 +3354,6 @@
       "require_approval",
       "verify_approval_evidence_route",
       "verify_evidence_chain"
-    ],
-    "lionagi/studio/services/artifact_verification.py": [
-      "provisional_artifact_verification",
-      "resolve_artifact_verification"
     ],
     "lionagi/studio/services/attention.py": [
       "delete_attention_disposition_route",
@@ -3451,8 +3396,6 @@
       "engine_catalog_blueprints_route",
       "get_engine_catalog_preset",
       "get_engine_catalog_preset_route",
-      "get_engine_def",
-      "get_engine_def_by_name",
       "get_engine_def_route",
       "list_engine_catalog_presets",
       "list_engine_catalog_presets_route",
@@ -3460,13 +3403,6 @@
       "list_engine_defs_route",
       "update_engine_def",
       "update_engine_def_route"
-    ],
-    "lionagi/studio/services/engine_runs.py": [
-      "get_engine_run",
-      "get_engine_run_route",
-      "list_engine_run_page",
-      "list_engine_runs",
-      "list_engine_runs_route"
     ],
     "lionagi/studio/services/hooks_library.py": [
       "HookLibraryError",
@@ -3479,30 +3415,6 @@
       "upsert_hook",
       "validate_attachments",
       "validate_hook_def"
-    ],
-    "lionagi/studio/services/identity.py": [
-      "get_identity_route"
-    ],
-    "lionagi/studio/services/invocations.py": [
-      "count_invocations",
-      "get_artifact",
-      "get_artifact_route",
-      "get_invocation",
-      "get_invocation_route",
-      "list_artifacts_for_session",
-      "list_for_session",
-      "list_invocations",
-      "list_invocations_route"
-    ],
-    "lionagi/studio/services/launches.py": [
-      "LaunchRequest",
-      "LiExecutableUnavailableError",
-      "TooManyLaunchesError",
-      "cancel_launch",
-      "launch",
-      "launch_detached_argv",
-      "launch_run",
-      "shutdown_launches"
     ],
     "lionagi/studio/services/leo.py": [
       "LeoSession",
@@ -3573,12 +3485,6 @@
       "validate_config",
       "write_config"
     ],
-    "lionagi/studio/services/pairing.py": [
-      "PairRequest",
-      "create_pairing_code_route",
-      "disconnect_decision_capability_route",
-      "redeem_pairing_code_route"
-    ],
     "lionagi/studio/services/playbooks.py": [
       "create_playbook",
       "create_playbook_route",
@@ -3636,105 +3542,10 @@
       "redact_agent_markdown",
       "reject_if_redacted_payload"
     ],
-    "lionagi/studio/services/run_resume.py": [
-      "RunBranchConflictError",
-      "RunBranchMembershipError",
-      "RunNotFoundError",
-      "RunResumeCheckpointError",
-      "RunResumeInProgressError",
-      "RunResumeRequest",
-      "RunResumeUnavailableError",
-      "RunResumeUnsupportedKindError",
-      "resume_availability",
-      "resume_availability_route",
-      "resume_run",
-      "resume_run_route"
-    ],
-    "lionagi/studio/services/run_resume_worker.py": [
-      "main",
-      "run_worker"
-    ],
     "lionagi/studio/services/run_tags.py": [
       "TagBody",
       "add_run_tag",
-      "add_tag",
-      "remove_run_tag",
-      "remove_tag",
-      "session_ids_with_tags",
-      "tags_for_sessions"
-    ],
-    "lionagi/studio/services/run_view.py": [
-      "build_outcome",
-      "build_run_view",
-      "build_run_view_for",
-      "exit_code_for_view",
-      "get_run_view",
-      "get_schedule_status_view",
-      "list_run_views"
-    ],
-    "lionagi/studio/services/runs.py": [
-      "get_run",
-      "get_run_file",
-      "get_run_file_route",
-      "get_run_route",
-      "list_run_projects_route",
-      "list_runs",
-      "list_runs_route",
-      "paginate_runs"
-    ],
-    "lionagi/studio/services/schedules.py": [
-      "CreateScheduleRequest",
-      "DisableScheduleRequest",
-      "NameConflictError",
-      "UpdateScheduleRequest",
-      "compute_schedule_health",
-      "create_schedule",
-      "create_schedule_route",
-      "delete_schedule",
-      "delete_schedule_route",
-      "disable_schedule",
-      "disable_schedule_route",
-      "enable_schedule",
-      "enable_schedule_route",
-      "get_schedule",
-      "get_schedule_by_name",
-      "get_schedule_route",
-      "get_schedule_run",
-      "get_schedule_run_route",
-      "get_schedule_status",
-      "get_schedule_status_route",
-      "list_schedule_run_views",
-      "list_schedule_runs",
-      "list_schedule_runs_route",
-      "list_schedules",
-      "list_schedules_route",
-      "schedule_limits_route",
-      "trigger_schedule_route",
-      "update_schedule",
-      "update_schedule_route"
-    ],
-    "lionagi/studio/services/sessions.py": [
-      "MessageCursorError",
-      "SessionFilter",
-      "SessionLabelBody",
-      "SessionStreamCursorError",
-      "count_sessions",
-      "display_cost",
-      "display_model",
-      "get_session",
-      "get_session_by_cc_id",
-      "get_session_messages_after",
-      "get_session_route",
-      "get_session_stream_state",
-      "is_session_stream_done",
-      "label_session_route",
-      "list_project_counts",
-      "list_sessions",
-      "list_sessions_route",
-      "session_exists",
-      "session_signals_page",
-      "stream_session_route",
-      "stream_signals"
+      "remove_run_tag"
     ],
     "lionagi/studio/services/shows.py": [
       "get_show",
@@ -3747,9 +3558,6 @@
       "list_shows_route",
       "stream_show",
       "watch_show"
-    ],
-    "lionagi/studio/services/signals.py": [
-      "get_signals_after"
     ],
     "lionagi/studio/services/skills.py": [
       "SkillValidateBody",
@@ -3770,12 +3578,6 @@
       "get_spend_stats_route",
       "get_stats",
       "get_stats_route"
-    ],
-    "lionagi/studio/services/task_applications.py": [
-      "AdmissionRejectedError",
-      "TaskApplication",
-      "cancel_task",
-      "submit_task"
     ],
     "lionagi/studio/services/teams.py": [
       "get_team",
@@ -4004,6 +3806,13 @@
       "resolve_hook_executable",
       "validate_argv"
     ],
+    "lionhub/src/lionhub/integrations/ruvector/memory.py": [
+      "RuVectorMemoryStore"
+    ],
+    "lionhub/src/lionhub/integrations/ruvector/store.py": [
+      "RuVectorStore",
+      "SearchHit"
+    ],
     "lionhub/src/lionhub/lndl/_parse_function_call.py": [
       "parse_batch_function_calls",
       "parse_function_call",
@@ -4208,6 +4017,9 @@
       "validate_cwd_exists"
     ],
     "lionhub/src/lionhub/orchestration/kill.py": [
+      "CancelPersistenceError",
+      "CancelTargetResult",
+      "cancel_targets",
       "check_pid_identity",
       "imported_degraded_process_is_live",
       "kill_one",
@@ -4484,6 +4296,7 @@
       "Redacted",
       "SpawnedProcess",
       "build_declarative_cli_args",
+      "claude_code_auth_env",
       "cli_fallback_bin_dirs",
       "declarative_cli_flags",
       "discover_cli",
@@ -4536,7 +4349,8 @@
     "lionhub/src/lionhub/providers/anthropic/_prompt_cache.py": [
       "Point",
       "place",
-      "points"
+      "points",
+      "routed_cache_evidence"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "ClaudeCodeCLIEndpoint",
@@ -4691,6 +4505,7 @@
       "codex_config_defining_profile",
       "codex_config_setting_default_permissions",
       "codex_home_for_env",
+      "codex_unset_effort_from_config",
       "configured_codex_profile",
       "global_codex_reasoning_effort",
       "is_generated_codex_profile",
@@ -4933,6 +4748,7 @@
     ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_notify.py": [
       "deliver_flow_notify_now",
+      "notice_context_for_run",
       "register_flow_notify_scope",
       "unregister_flow_notify_scope"
     ],
@@ -4999,6 +4815,13 @@
       "machine_result",
       "run_plugin"
     ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "Remote",
+      "RemoteError",
+      "add_remote_subparser",
+      "load_remote",
+      "run_remote"
+    ],
     "lionhub/src/lionhub/serve/cli/schedule.py": [
       "run_schedule",
       "run_schedule_quick_create"
@@ -5030,6 +4853,10 @@
       "add_studio_subparser",
       "run_studio"
     ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "studio_request",
+      "with_unauthorized_hint"
+    ],
     "lionhub/src/lionhub/serve/cli/team.py": [
       "QuiescenceState",
       "add_team_subparser",
@@ -5050,6 +4877,273 @@
       "format_wait_line",
       "run_wait",
       "wait_for_terminal"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_host.py": [
+      "admitted_host_names",
+      "is_unspecified_host"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
+      "arm_traceback_dump",
+      "disarm_traceback_dump"
+    ],
+    "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
+      "daemon_log_handler"
+    ],
+    "lionhub/src/lionhub/serve/daemon/launch_access.py": [
+      "DecisionPrincipal",
+      "PairingGrant",
+      "begin_serving",
+      "daemon_epoch",
+      "is_launch_origin",
+      "launch_bearer",
+      "mint_decision_capability",
+      "mint_pairing_code",
+      "redeem_pairing_code",
+      "redeem_pairing_grant",
+      "reset_launch_access",
+      "resolve_decision_capability",
+      "revoke_decision_capability"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "LegLaunch",
+      "LegRepo",
+      "LegSetupError",
+      "capabilities",
+      "enabled",
+      "leg_env",
+      "load_repos",
+      "make_worktree",
+      "max_launches",
+      "read_result",
+      "remove_worktree",
+      "result_path",
+      "startup_refusals",
+      "sweep_worktrees",
+      "validate_launch",
+      "worktree_refusal",
+      "write_result"
+    ],
+    "lionhub/src/lionhub/serve/daemon/reconnect.py": [
+      "ReconnectChannel",
+      "current_uid",
+      "default_socket_path",
+      "peer_uid",
+      "port_proof",
+      "read_reconnect_reply",
+      "state_dir",
+      "unix_sockets_supported"
+    ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "RouteModule",
+      "StudioRoute",
+      "iter_studio_routes",
+      "load_route_modules",
+      "studio_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_io.py": [
+      "JsonRead",
+      "parse_json_col",
+      "read_json_file_checked"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_path_safety.py": [
+      "public_path",
+      "safe_path_join",
+      "validate_name_component"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_session_tail.py": [
+      "SessionTailRegistry",
+      "StreamResyncError",
+      "capture_frontiers"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_sse.py": [
+      "sse_response"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/admin.py": [
+      "MaintenanceBody",
+      "PruneBody",
+      "PruneOldDataBody",
+      "TransitionBody",
+      "admin_events_route",
+      "db_health",
+      "doctor",
+      "doctor_route",
+      "health_report",
+      "health_route",
+      "list_admin_events",
+      "prune_old_data_route",
+      "prune_phantom_sessions",
+      "prune_route",
+      "prune_sessions",
+      "readiness_route",
+      "run_maintenance_route",
+      "store_probe",
+      "transition_route",
+      "transition_sessions"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
+      "provisional_artifact_verification",
+      "resolve_artifact_verification"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "session_has_control_consumer"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "get_engine_def",
+      "get_engine_def_by_name"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_runs.py": [
+      "get_engine_run",
+      "get_engine_run_route",
+      "list_engine_run_page",
+      "list_engine_runs",
+      "list_engine_runs_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/identity.py": [
+      "get_identity_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/invocations.py": [
+      "count_invocations",
+      "get_artifact",
+      "get_artifact_route",
+      "get_invocation",
+      "get_invocation_route",
+      "list_artifacts_for_session",
+      "list_for_session",
+      "list_invocations",
+      "list_invocations_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/launches.py": [
+      "LaunchRequest",
+      "LiExecutableUnavailableError",
+      "TooManyLaunchesError",
+      "cancel_launch",
+      "launch",
+      "launch_capabilities",
+      "launch_detached_argv",
+      "launch_result",
+      "launch_run",
+      "shutdown_launches"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/pairing.py": [
+      "PairRequest",
+      "create_pairing_code_route",
+      "disconnect_decision_capability_route",
+      "redeem_pairing_code_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/redact.py": [
+      "cap_by_bytes",
+      "cap_payload_by_bytes",
+      "known_secret_values",
+      "public_project",
+      "redact_arguments",
+      "redact_scalar",
+      "scrub_text"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_resume.py": [
+      "RunBranchConflictError",
+      "RunBranchMembershipError",
+      "RunNotFoundError",
+      "RunResumeCheckpointError",
+      "RunResumeInProgressError",
+      "RunResumeRequest",
+      "RunResumeUnavailableError",
+      "RunResumeUnsupportedKindError",
+      "resume_availability",
+      "resume_availability_route",
+      "resume_run",
+      "resume_run_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_resume_worker.py": [
+      "main",
+      "run_worker"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "add_tag",
+      "remove_tag",
+      "session_ids_with_tags",
+      "tags_for_sessions"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
+      "build_outcome",
+      "build_run_view",
+      "build_run_view_for",
+      "exit_code_for_view",
+      "get_run_view",
+      "get_schedule_status_view",
+      "list_run_views"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/runs.py": [
+      "get_run",
+      "get_run_file",
+      "get_run_file_route",
+      "get_run_route",
+      "list_run_projects_route",
+      "list_runs",
+      "list_runs_route",
+      "paginate_runs"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/schedules.py": [
+      "CreateScheduleRequest",
+      "DisableScheduleRequest",
+      "NameConflictError",
+      "UpdateScheduleRequest",
+      "compute_schedule_health",
+      "create_schedule",
+      "create_schedule_route",
+      "delete_schedule",
+      "delete_schedule_route",
+      "disable_schedule",
+      "disable_schedule_route",
+      "enable_schedule",
+      "enable_schedule_route",
+      "get_schedule",
+      "get_schedule_by_name",
+      "get_schedule_route",
+      "get_schedule_run",
+      "get_schedule_run_route",
+      "get_schedule_status",
+      "get_schedule_status_route",
+      "list_schedule_run_views",
+      "list_schedule_runs",
+      "list_schedule_runs_route",
+      "list_schedules",
+      "list_schedules_route",
+      "schedule_limits_route",
+      "trigger_schedule_route",
+      "update_schedule",
+      "update_schedule_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/sessions.py": [
+      "MessageCursorError",
+      "SessionFilter",
+      "SessionLabelBody",
+      "SessionStreamCursorError",
+      "count_sessions",
+      "display_cost",
+      "display_model",
+      "get_session",
+      "get_session_by_cc_id",
+      "get_session_messages_after",
+      "get_session_route",
+      "get_session_stream_state",
+      "is_session_stream_done",
+      "label_session_route",
+      "list_project_counts",
+      "list_sessions",
+      "list_sessions_route",
+      "session_exists",
+      "session_signals_page",
+      "stream_session_route",
+      "stream_signals"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/signals.py": [
+      "get_signals_after"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/task_applications.py": [
+      "AdmissionRejectedError",
+      "TaskApplication",
+      "cancel_task",
+      "submit_task"
     ],
     "lionhub/src/lionhub/serve/diagnostics.py": [
       "code_identity",
@@ -5094,6 +5188,7 @@
     "lionhub/src/lionhub/serve/mcp/dispatch.py": [
       "OpError",
       "catalog",
+      "preload",
       "render_argv",
       "request",
       "schema_fingerprint",

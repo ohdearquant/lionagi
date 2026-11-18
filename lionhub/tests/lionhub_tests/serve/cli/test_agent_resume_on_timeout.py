@@ -602,6 +602,148 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reply_state", ["fresh-reply", "empty-resume", "write-error"])
+async def test_mcp_job_output_uses_only_the_terminal_leg_reply(monkeypatch, tmp_path, reply_state):
+    from lionagi import Branch
+    from lionagi.protocols.messages import AssistantResponse
+    from lionhub.orchestration import runs
+    from lionhub.serve.cli import agent as agent_cli
+    from lionhub.serve.mcp import config, jobs
+    from lionhub.serve.mcp.dispatch import request
+
+    _wire_agent_stubs_real_persist(monkeypatch, tmp_path, operate_side_effect=lambda _: None)
+    home = tmp_path / "configured-home"
+    runs_root = home / "runs"
+    submitter, reader = tmp_path / "submitter", tmp_path / "reader"
+    submitter.mkdir()
+    reader.mkdir()
+    monkeypatch.setattr(config, "LIONAGI_HOME", home)
+    monkeypatch.setattr(config, "JOBS_DIR", home / "mcp" / "jobs")
+    monkeypatch.setattr(runs, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(agent_cli, "allocate_run", runs.allocate_run)
+    monkeypatch.setattr(agent_cli, "find_branch", runs.find_branch)
+    monkeypatch.setattr(
+        jobs, "_run_process_liveness", lambda *_: jobs.ProcessLiveness(True, "alive", "pid_match")
+    )
+    monkeypatch.setattr(jobs, "_process_create_time", lambda _pid: ("found", 100.0))
+    monkeypatch.setattr(jobs, "_spawned_pgid", lambda _pid: 4242)
+    monkeypatch.setattr(config, "li_command", lambda: ["unused-fixture"])
+
+    launched_env = {}
+
+    def popen(_argv, *, env, **_kwargs):
+        for name in ("LIONAGI_HOME", config.RUN_ID_ENV_VAR, config.JOB_MARKER_ENV_VAR):
+            launched_env[name] = env[name]
+        return SimpleNamespace(pid=4242, wait=lambda: 0)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    with monkeypatch.context() as first_caller:
+        first_caller.chdir(submitter)
+        help_info = await request(help="agent.submit")
+        submitted = await request(
+            ops=[
+                {
+                    "op": "agent.submit",
+                    "args": {
+                        "query": ["claude_code/sonnet"],
+                        "prompt": "return a synthetic value",
+                        "no_mcp_config": True,
+                    },
+                    "schema_fingerprint": help_info["schema_fingerprint"],
+                }
+            ]
+        )
+    assert submitted["status"] == "success", submitted
+    run_id = submitted["ops"][0]["result"]["run_id"]
+    assert jobs._read_job(run_id)["submit_cwd"] == str(submitter.resolve())
+    assert launched_env["LIONAGI_HOME"] == str(home)
+    for name in (config.RUN_ID_ENV_VAR, config.JOB_MARKER_ENV_VAR):
+        assert launched_env[name] == run_id
+        monkeypatch.setenv(name, launched_env[name])
+
+    console = config.job_dir(run_id) / "console.log"
+    console.write_text("resuming\nformatted terminal summary\n", encoding="utf-8")
+    artifact = runs_root / run_id / "job-final-response.md"
+    final = "  The resumed answer ✓.\nThe second line stays.\n"
+    leg_ids = []
+    terminal_deferred = []
+    if reply_state == "write-error":
+
+        def refuse_write(self, text):
+            raise OSError("synthetic artifact write failure")
+
+        monkeypatch.setattr(runs.RunDir, "_write_mcp_final_response", refuse_write)
+
+    async def job_output():
+        with monkeypatch.context() as second_caller:
+            second_caller.chdir(reader)
+            answer = await request(
+                ops=[{"op": "job.output", "args": {"run_id": run_id, "tail_chars": 8}}]
+            )
+        assert answer["status"] == "success", answer
+        return answer["ops"][0]["result"]
+
+    async def operate(branch, instruction=None, **kwargs):
+        snapshot = Path(kwargs["snapshot_dir"])
+        leg_ids.append(snapshot.parent.name)
+        if len(leg_ids) == 1:
+            await branch.msgs.a_add_message(assistant_response="Interim answer before timeout.")
+            snapshot.mkdir(parents=True, exist_ok=True)
+            (snapshot / f"{branch.id}.json").write_text(json.dumps(branch.to_dict()))
+            raise TimeoutError("start the resumed leg")
+
+        live = await job_output()
+        assert live["terminal"] is False and live["final"] is None and live["final_path"] is None
+        assert not artifact.exists()
+        assert branch.msgs.last_response.response == "Interim answer before timeout."
+        if reply_state == "empty-resume":
+            return ""
+        reply = await branch.msgs.a_add_message(assistant_response=final)
+        await branch.msgs.a_add_message(
+            assistant_response=AssistantResponse(
+                content={"assistant_response": "Clipped representation."},
+                metadata={"clipped_from": str(reply.id)},
+            )
+        )
+        return "formatted terminal summary"
+
+    real_teardown = agent_cli.teardown_agent_persist
+
+    async def observe_teardown(*args, **kwargs):
+        deferred = kwargs["defer_terminal"]
+        terminal_deferred.append(deferred)
+        if reply_state == "fresh-reply" and not deferred:
+            assert artifact.read_bytes() == final.encode("utf-8")
+        else:
+            assert not artifact.exists()
+        return await real_teardown(*args, **kwargs)
+
+    monkeypatch.setattr(agent_cli, "teardown_agent_persist", observe_teardown)
+    monkeypatch.setattr(Branch, "operate", operate)
+    _, _, _, status, _ = await agent_cli._run_agent(
+        "claude_code/sonnet",
+        "return a synthetic value",
+        timeout=30,
+        resume_on_timeout=True,
+        no_mcp_config=True,
+    )
+    assert terminal_deferred == [True, False]
+    assert len(leg_ids) == 2 and leg_ids[0] == run_id and leg_ids[1] != run_id
+    assert status == ("failed" if reply_state == "empty-resume" else "completed")
+
+    jobs.mark_terminal(run_id, status)
+    view = await job_output()
+    assert view["known"] and view["terminal"] and view["status"] == status
+    assert view["console"] == "summary\n"
+    assert view["run_dir"] == str(artifact.parent)
+    assert view["final"] == (final if reply_state == "fresh-reply" else None)
+    assert view["final_path"] == (str(artifact) if reply_state == "fresh-reply" else None)
+    if reply_state == "fresh-reply":
+        assert Path(view["final_path"]).read_bytes() == view["final"].encode("utf-8")
+    assert not (config.run_dir(leg_ids[1]) / artifact.name).exists()
+
+
+@pytest.mark.asyncio
 async def test_manual_resume_accumulates_persisted_injection_stats(
     monkeypatch,
     tmp_path,

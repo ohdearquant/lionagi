@@ -16,7 +16,9 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
+| `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
 
 ## Moved imports
@@ -79,6 +81,39 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedule_export` | `lionhub.orchestration.schedule.export` |
 | `lionagi.studio.services.project_lookup` | `lionhub.orchestration.project_store` |
 | `lionagi.studio.services._db` | `lionhub.orchestration.state_store` |
+| `lionagi.integrations` | `lionhub.integrations` |
+| `lionagi.studio._host` | `lionhub.serve.daemon._host` |
+| `lionagi.studio._traceback_dump` | `lionhub.serve.daemon._traceback_dump` |
+| `lionagi.studio.daemon_log` | `lionhub.serve.daemon.daemon_log` |
+| `lionagi.studio.reconnect` | `lionhub.serve.daemon.reconnect` |
+| `lionagi.studio.services._io` | `lionhub.serve.daemon.services._io` |
+| `lionagi.studio.services._path_safety` | `lionhub.serve.daemon.services._path_safety` |
+| `lionagi.studio.services._sse` | `lionhub.serve.daemon.services._sse` |
+| `lionagi.studio.services.artifact_verification` | `lionhub.serve.daemon.services.artifact_verification` |
+| `lionagi.studio.services.signals` | `lionhub.serve.daemon.services.signals` |
+| `lionagi.studio.services.run_view` | `lionhub.serve.daemon.services.run_view` |
+| `lionagi.studio.services.task_applications` | `lionhub.serve.daemon.services.task_applications` |
+| `lionagi.studio.operator.redact` | `lionhub.serve.daemon.services.redact` |
+| `lionagi.studio.launch_access` | `lionhub.serve.daemon.launch_access` |
+| `lionagi.studio.services.runs` | `lionhub.serve.daemon.services.runs` |
+| `lionagi.studio.services.run_resume` | `lionhub.serve.daemon.services.run_resume` |
+| `lionagi.studio.services.run_resume_worker` | `lionhub.serve.daemon.services.run_resume_worker` |
+| `lionagi.studio.services.engine_runs` | `lionhub.serve.daemon.services.engine_runs` |
+| `lionagi.studio.services.invocations` | `lionhub.serve.daemon.services.invocations` |
+| `lionagi.studio.services.launches` | `lionhub.serve.daemon.services.launches` |
+| `lionagi.studio.services.identity` | `lionhub.serve.daemon.services.identity` |
+| `lionagi.studio.services.pairing` | `lionhub.serve.daemon.services.pairing` |
+| `lionagi.studio.services.sessions` | `lionhub.serve.daemon.services.sessions` |
+| `lionagi.studio.services.admin` | `lionhub.serve.daemon.services.admin` |
+| `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
+| `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
+
+## Logger names
+
+Moved modules keep their original logger names so existing log handlers and filters
+still match. New modules use `logging.getLogger(__name__)` by default and follow an
+existing logging namespace where their package documents one. The scheduler documents
+its namespace in the [orchestration README](src/lionhub/orchestration/README.md).
 
 ## Tests
 

@@ -207,46 +207,82 @@ async def test_the_marker_is_on_disk_while_the_run_goes_on_with_the_writer_refus
 async def test_emits_do_not_wait_on_the_run_directory_lock_and_the_marker_lands_when_it_is_freed(
     monkeypatch, tmp_path
 ):
-    """Another descriptor holds the run directory's manifest lock for HOLD_S seconds. The emits
-    return at once, the marker is not on disk while the lock is held, and lands after it."""
+    """The emits finish while the marker writer is contending for the manifest lock."""
     from lionagi.session.signal import NodeStarted
     from lionhub.serve.cli.agent import _run_agent
 
-    hold_s = 1.5
     _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
     run = _run(monkeypatch, tmp_path)
-    measured: dict = {}
+    marker_landed = False
 
     async def body(observer, blocker):
-        lock_fd = os.open(run.state_root / ".run.json.lock", os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        nonlocal marker_landed
+        timeout = 30
+        lock_path = run.state_root / ".run.json.lock"
+        flock = fcntl.flock
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        watchdog_expired = threading.Event()
+        marker_contended = threading.Event()
 
-        def release() -> None:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
+        def marker_written() -> bool:
+            return SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD in _manifest(run)
 
-        timer = threading.Timer(hold_s, release)
-        started = time.monotonic()
-        timer.start()
+        def hold_lock() -> None:
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                flock(fd, fcntl.LOCK_EX)
+                lock_held.set()
+                # Release even if an inline marker write blocks the event loop.
+                if not release_lock.wait(timeout):
+                    watchdog_expired.set()
+            finally:
+                os.close(fd)
+
+        holder = threading.Thread(target=hold_lock, daemon=True)
+        holder.start()
         try:
-            for i in range(SIGNALS):
-                await observer.emit(NodeStarted(op_id=f"held-{i}", name="step"))
-            measured["emitted_in"] = time.monotonic() - started
-            measured["on_disk_while_held"] = SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD in _manifest(run)
-            await _until(
-                lambda: SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD in _manifest(run), "the marker"
-            )
-            measured["landed_after"] = time.monotonic() - started
+            await _until(lock_held.is_set, "the test manifest lock", timeout)
+            held_file = lock_path.stat()
+
+            def observe_flock(fd, operation):
+                if (
+                    operation == fcntl.LOCK_EX
+                    and isinstance(fd, int)
+                    and os.path.samestat(os.fstat(fd), held_file)
+                ):
+                    # Record contention on the marker's own descriptor.
+                    try:
+                        return flock(fd, operation | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        marker_contended.set()
+                return flock(fd, operation)
+
+            with monkeypatch.context() as patched:
+                patched.setattr(fcntl, "flock", observe_flock)
+                for i in range(SIGNALS):
+                    await observer.emit(NodeStarted(op_id=f"held-{i}", name="step"))
+                await _until(
+                    lambda: marker_contended.is_set() or marker_written(),
+                    "the marker's write attempt",
+                    timeout,
+                )
+                marker_before_release = marker_written()
         finally:
-            timer.join()
+            release_lock.set()
+            holder.join(timeout)
+
+        assert not holder.is_alive(), "the manifest lock holder did not exit"
+        assert not watchdog_expired.is_set(), "the manifest lock watchdog expired before release"
+        assert not marker_before_release, "the marker was written while the lock was held"
+        assert marker_contended.is_set(), "the marker did not contend for the manifest lock"
+        await _until(marker_written, "the marker after release", timeout)
+        marker_landed = True
 
     _operate_with_the_writer_held(monkeypatch, tmp_path, body)
 
     await _run_agent("claude/sonnet", "go")
-
-    assert measured["emitted_in"] < hold_s / 2, measured
-    assert measured["on_disk_while_held"] is False
-    assert measured["landed_after"] >= hold_s, measured
+    assert marker_landed, "the run did not exercise the marker write during operation"
 
 
 @pytest.mark.asyncio

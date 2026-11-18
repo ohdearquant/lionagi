@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -89,6 +90,7 @@ DEFAULT_DENY_READ: tuple[str, ...] = (
     "~/.config/rclone",
     "~/.pgpass",
     "~/.my.cnf",
+    "~/.secrets",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
     "~/.claude.json",
@@ -141,10 +143,11 @@ DEFAULT_DENY_EDIT: tuple[str, ...] = (
 #: Configuration Claude Code and lionagi load from a working directory, its parents or the git
 #: root: project settings, hooks, commands, agents and skills under ``.claude``, project MCP
 #: servers, memory files, lionagi's project settings, agent profiles and playbooks, which
-#: are searched before the global ones, and the dotenv files lionagi's settings load from the
-#: working directory over the user-wide one (``lionagi.config.AppSettings``). A child can write its own working directory and any
-#: project directory it is handed, so these names are denied to the file tools wherever they
-#: sit, and the next child launched there cannot be handed configuration this one wrote.
+#: are searched before the global ones, the per-run actor config that sets a child's identity
+#: and namespace scope, and the dotenv files lionagi's settings load from the working directory
+#: over the user-wide one (``lionagi.config.AppSettings``). A child can write its own working
+#: directory and any project directory it is handed, so the file tools are denied these names
+#: at every depth. The next child launched there cannot be handed configuration this one wrote.
 PROJECT_CONFIG_NAMES: tuple[str, ...] = (
     ".claude",
     ".mcp.json",
@@ -153,6 +156,7 @@ PROJECT_CONFIG_NAMES: tuple[str, ...] = (
     ".lionagi/settings.yaml",
     ".lionagi/agents",
     ".lionagi/playbooks",
+    ".khive/config.toml",
     ".env",
     ".env.local",
     ".secrets.env",
@@ -171,6 +175,75 @@ _warned_project_files: set[str] = set()
 def _refusal(message: str) -> ConfigurationError:
     """A ``ConfigurationError`` whose text ends with the one-sentence opt-out."""
     return ConfigurationError(f"{message.rstrip().rstrip('.;:')}. {CHILD_SANDBOX_OPT_OUT}")
+
+
+def _home_directories(env: Any = None) -> set[str]:
+    """Every directory that is this account's home, resolved: this process's ``HOME``, the
+    child's ``HOME`` when ``env`` carries one, and the account's home in the password
+    database. The last one stays the real home when a parent was started with ``HOME``
+    pointing somewhere else, as a harness, a scheduled job or a scratch-home test does.
+    """
+    homes = {os.path.realpath(os.path.expanduser("~"))}
+    child_home = env.get("HOME") if hasattr(env, "get") else None
+    if isinstance(child_home, str) and child_home:
+        homes.add(os.path.realpath(os.path.expanduser(child_home)))
+    try:
+        import pwd
+
+        account_home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError, AttributeError):
+        account_home = None
+    if account_home:
+        homes.add(os.path.realpath(account_home))
+    return homes
+
+
+def _reaches_home(path: str | Path, env: Any = None) -> bool:
+    """Whether ``path`` is the home directory or an ancestor of it.
+
+    The homes are those of ``_home_directories``. A path that exists is compared by identity
+    (device and inode) with each home and each of its ancestors, since a spelling is not an
+    identity: on a case-insensitive volume ``/users/u`` is the home ``/Users/u`` and
+    ``realpath`` keeps the case it was given. The spelling comparison, after ``~`` expansion
+    and link resolution, covers a path that does not exist yet.
+    """
+    homes = _home_directories(env)
+    identities: set[tuple[int, int]] = set()
+    for home in homes:
+        for directory in (home, *map(str, Path(home).parents)):
+            try:
+                found = os.stat(directory)
+            except OSError:
+                continue
+            identities.add((found.st_dev, found.st_ino))
+    real = os.path.realpath(os.path.expanduser(os.fspath(path)))
+    try:
+        found = os.stat(real)
+        if (found.st_dev, found.st_ino) in identities:
+            return True
+    except OSError:
+        pass
+    return any(real == home or home.startswith(real.rstrip(os.sep) + os.sep) for home in homes)
+
+
+def _refuse_a_home_workspace(
+    workspace: str | Path, env: Any = None, *, enabled: bool | None = None
+) -> None:
+    """Refuse a child whose working directory is the home directory or an ancestor of it.
+
+    The working directory is writable to a confined child by construction, so a workspace at
+    the home directory, ``/Users`` or ``/`` makes the whole home writable: the same outcome as
+    no sandbox. Applied while the child sandbox is enabled; ``enabled`` is the caller's already
+    resolved switch, and ``None`` resolves the global one.
+    """
+    if enabled is None:
+        enabled = resolve_child_sandbox(None).enabled
+    if enabled and _reaches_home(workspace, env):
+        raise _refusal(
+            f"child_sandbox: the working directory {os.fspath(workspace)!r} is the home "
+            "directory or an ancestor of it, which would make the whole home writable to the "
+            "child; start the agent from a project directory"
+        )
 
 
 @dataclass(frozen=True)
@@ -589,7 +662,100 @@ def effective_policy(stored: ChildSandboxPolicy) -> ChildSandboxPolicy:
     )
 
 
-def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
+#: The file tools a ``PreToolUse`` hook holds to the working directory and ``allow_write``.
+_FILE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+
+#: Run by the child's ``PreToolUse`` hook as ``python -I -S -c <this> <roots JSON>``. It reads
+#: the tool call from stdin and exits 0 when the target, symlinks resolved, is inside one of the
+#: roots, and 2 (Claude Code's blocking exit) otherwise. The path is read from the key the named
+#: tool writes (``notebook_path`` for NotebookEdit, ``file_path`` for the others); a call naming
+#: another tool, carrying both keys, or giving a path that is not absolute is refused, since the
+#: hook cannot know where Claude Code would resolve it. Every failure exits 2 as well: any
+#: other code is a non-blocking hook error to Claude Code, and the write would go ahead.
+_FILE_TOOL_SCOPE_CHILD = r"""
+import json, os, sys
+
+PATH_KEYS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path",
+             "NotebookEdit": "notebook_path"}
+
+def refuse(message):
+    sys.stderr.write("lionagi file-tool scope: " + message + "\n")
+    sys.exit(2)
+
+def main():
+    try:
+        roots = json.loads(sys.argv[1])
+        event = json.load(sys.stdin)
+        tool = event.get("tool_name")
+        tool_input = event.get("tool_input") or {}
+        keys = [key for key in ("file_path", "notebook_path") if key in tool_input]
+    except Exception as exc:
+        refuse("cannot read the tool call (%s); the write is refused" % type(exc).__name__)
+    if tool not in PATH_KEYS:
+        refuse("%r is not a file tool this check knows; the write is refused" % (tool,))
+    if keys != [PATH_KEYS[tool]]:
+        refuse("a %s call must carry %s and no other path; the write is refused"
+               % (tool, PATH_KEYS[tool]))
+    target = tool_input[PATH_KEYS[tool]]
+    if not isinstance(target, str) or not target or "\0" in target:
+        refuse("the tool call names no usable file path; the write is refused")
+    if not os.path.isabs(target):
+        refuse("%s is not an absolute path; the write is refused" % target)
+    real = os.path.realpath(target)
+    for root in roots:
+        base = os.path.realpath(root)
+        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+            sys.exit(0)
+    refuse(
+        "%s is outside the working directory and the writable caches; file tools may write "
+        "only under %s" % (target, ", ".join(roots))
+    )
+
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as exc:
+    refuse("the scope check failed (%s); the write is refused" % type(exc).__name__)
+"""
+
+
+def _file_tool_scope_hook(workspace: str | Path, allow_write: tuple[str, ...]) -> dict[str, Any]:
+    """The ``hooks`` settings that refuse file-tool writes outside ``workspace`` and ``allow_write``.
+
+    The sandbox confines Bash only, and ``permissions.deny`` can name paths to refuse but not a
+    set to allow, so a hook carries the allow list. It runs under ``bypassPermissions`` too.
+    """
+    if not sys.executable:
+        raise _refusal(
+            "child_sandbox: no Python interpreter to run the file-tool hook, so the child's "
+            "Edit and Write tools cannot be confined"
+        )
+    roots = [str(Path(workspace).expanduser())]
+    roots += [os.path.expanduser(path) for path in allow_write]
+    # ``|| exit 2`` turns an interpreter that fails to start (127, 126) into a refusal too.
+    command = (
+        shlex.join([sys.executable, "-I", "-S", "-c", _FILE_TOOL_SCOPE_CHILD, json.dumps(roots)])
+        + " || exit 2"
+    )
+    # ``disableAllHooks`` from the workspace's own ``.claude/settings.json`` or
+    # ``settings.local.json`` would switch the hook off; this settings level is above those.
+    return {
+        "disableAllHooks": False,
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": _FILE_TOOL_MATCHER,
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        },
+    }
+
+
+def claude_settings_for(
+    policy: ChildSandboxPolicy, workspace: str | Path | None = None
+) -> dict[str, Any]:
     """Claude Code settings that confine a child to ``policy`` (``{}`` when disabled).
 
     ``sandbox.filesystem.denyRead`` stops Bash reads; the Read tool is stopped by the
@@ -598,7 +764,9 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
     them ``policy.deny_edit``, ``DEFAULT_DENY_EDIT``, the read list, the run files
     (``run_state_paths``), the configuration later runs load from the lionagi home
     (``lionagi_home_config_paths``) and every ``PROJECT_CONFIG_NAMES`` entry at any depth. Every
-    other path outside the working directory stays writable to the file tools. Claude Code
+    other path outside the working directory stays writable to the file tools unless
+    ``workspace`` is given: then a ``PreToolUse`` hook also refuses Edit, Write, MultiEdit and
+    NotebookEdit on any target outside ``workspace`` and ``allow_write``. Claude Code
     also applies ``Edit`` denials to the sandbox's write limit, so Bash is refused the same
     paths inside the working directory. In permission rules an absolute ``/x`` is written
     ``//x``, because a single leading slash is relative to the settings source.
@@ -623,7 +791,7 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
         rules += [f"Edit({rule_path(path)})", f"Edit({rule_path(path)}/**)"]
     for name in PROJECT_CONFIG_NAMES:
         rules += [f"Edit(//**/{name})", f"Edit(//**/{name}/**)"]
-    return {
+    settings: dict[str, Any] = {
         "sandbox": {
             "enabled": True,
             "failIfUnavailable": True,
@@ -635,6 +803,39 @@ def claude_settings_for(policy: ChildSandboxPolicy) -> dict[str, Any]:
         },
         "permissions": {"deny": rules},
     }
+    if workspace is not None:
+        settings.update(_file_tool_scope_hook(workspace, policy.allow_write))
+    return settings
+
+
+#: The settings sources a confined child may load. The project's ``.claude/settings.json`` and
+#: ``settings.local.json`` belong to the working directory the child is confined to, which may be
+#: a checkout under review: hooks, helper commands and plugins named there run outside the
+#: sandbox, and ``disableAllHooks`` there would switch off the file-tool hook.
+_CHILD_SETTING_SOURCES: tuple[str, ...] = ("user",)
+
+
+def _child_setting_sources(requested: str | None) -> str:
+    """The ``--setting-sources`` value for a confined child.
+
+    ``None`` or a value naming no source becomes ``user``: without the flag Claude Code loads
+    every source. A request naming ``project`` or ``local``, or a source Claude Code does not
+    know, is refused; a request naming only ``user`` is kept.
+    """
+    names = [name.strip() for name in (requested or "").split(",") if name.strip()]
+    if not names:
+        return ",".join(_CHILD_SETTING_SOURCES)
+    unknown = [name for name in names if name not in ("user", "project", "local")]
+    if unknown:
+        raise _refusal(f"child_sandbox: unknown setting sources {unknown!r}")
+    loose = [name for name in names if name not in _CHILD_SETTING_SOURCES]
+    if loose:
+        raise _refusal(
+            f"child_sandbox: a confined child cannot load the {', '.join(loose)} settings: they "
+            "come from the working directory, and hooks or helper commands named there run "
+            "outside the sandbox"
+        )
+    return ",".join(names)
 
 
 def _read_settings_value(value: Any, base_dir: Any = None) -> dict:
@@ -678,7 +879,10 @@ def _merge(base: dict, ours: dict) -> dict:
 
 
 def claude_settings_argument(
-    policy: ChildSandboxPolicy, existing: Any = None, base_dir: Any = None
+    policy: ChildSandboxPolicy,
+    existing: Any = None,
+    base_dir: Any = None,
+    workspace: str | Path | None = None,
 ) -> str:
     """One inline-JSON ``--settings`` value: ``existing`` (if any) merged with the policy.
 
@@ -692,7 +896,13 @@ def claude_settings_argument(
             "child_sandbox: the settings handed to the child carry a sandbox block; configure "
             "the sandbox through child_sandbox in ~/.lionagi/settings.yaml instead"
         )
-    return json.dumps(_merge(base, claude_settings_for(policy)))
+    ours = claude_settings_for(policy, workspace)
+    if "disableAllHooks" in ours and base.get("disableAllHooks", False) is not False:
+        raise _refusal(
+            "child_sandbox: the settings handed to the child set disableAllHooks, which would "
+            "switch off the hook that keeps its file tools inside the working directory"
+        )
+    return json.dumps(_merge(base, ours))
 
 
 #: Versions read so far, by binary. Only a successful read is kept, so a failed probe is

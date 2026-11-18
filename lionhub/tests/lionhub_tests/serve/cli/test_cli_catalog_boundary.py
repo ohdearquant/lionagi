@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[5]
+from ..._test_support_repo import lionagi_pyproject
+
+PYPROJECT = lionagi_pyproject(Path(__file__).resolve())
+assert PYPROJECT is not None, "CLI catalog tests require a LionAGI source checkout"
+ROOT = PYPROJECT.parent
 CORE = ROOT / "lionagi"
 CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "serve" / "cli" / "catalog.py"
 
@@ -145,7 +149,7 @@ print(json.dumps({
     expected = json.loads((ROOT / "tests/contracts/data/cli.json").read_text())
     assert actual["top_level"] == expected["top_level"]
     assert actual["name_map"] == expected["name_map"]
-    assert len(actual["top_level"]) == 21
+    assert len(actual["top_level"]) == 22
 
     # Each command starts with only the composition root imported, independently.
     source = """

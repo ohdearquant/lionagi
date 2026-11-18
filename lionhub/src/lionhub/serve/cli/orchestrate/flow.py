@@ -58,7 +58,11 @@ from ._common import (
     _post_results_to_team,
     retarget_artifact_section,
 )
-from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
+from ._notify import (
+    notice_context_for_run,
+    register_flow_notify_scope,
+    unregister_flow_notify_scope,
+)
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -3288,6 +3292,7 @@ async def _run_flow(
     allow_degraded_context: bool = False,
     retry_failed: bool = False,
     notify: str | None = None,
+    notify_sender: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
     mcp_submit_snapshot: str | None = None,
@@ -3412,6 +3417,7 @@ async def _run_flow(
         _notify_scope_name: str | None = None
         _notify_entity_kind = "invocation" if invocation_id else "session"
         _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
+        notice_context = notice_context_for_run(env.run, cwd=cwd, sender=notify_sender)
         if notify:
             from lionagi.state.lifecycle.notify_settings import (
                 record_notify_rejection_to_run,
@@ -3443,6 +3449,7 @@ async def _run_flow(
         # a late outcome lands here or nowhere, never on a later run. Skipped when
         # --notify already owns this entity (a second override would double-fire).
         from lionagi.state.lifecycle.notify_settings import (
+            bind_terminal_notice_context,
             register_run_notify_outcome_scope,
             unregister_run_notify_outcome_scope,
         )
@@ -3455,6 +3462,7 @@ async def _run_flow(
                 entity_kind=_notify_entity_kind,
                 entity_id=_notify_entity_id,
                 project_dir=cwd,
+                notice_context=notice_context,
             )
         )
 
@@ -3582,7 +3590,10 @@ async def _run_flow(
                 _control_session_id = (_worker_stop_ctx or {}).get("session_id")
                 try:
                     try:
-                        effective_status = await stop_live_persist(env, status=_terminal_status)
+                        with bind_terminal_notice_context(
+                            "session", _control_session_id or str(env.session.id), notice_context
+                        ):
+                            effective_status = await stop_live_persist(env, status=_terminal_status)
                     except cancelled_exc_classes() as exc:
                         _pending_worker_cancel = exc
                         effective_status = (_worker_stop_ctx or {}).get(
@@ -4101,9 +4112,10 @@ async def _resume_flow(
     dry_run: bool = False,
     show_graph: bool = False,
     notify: str | None = None,
+    notify_sender: str | None = None,
 ) -> tuple[str, str]:
     """Resolve a checkpointed run/session id and replay it through _run_flow.
-    dry_run/show_graph/notify come from the CURRENT invocation (presentation
+    dry_run/show_graph/notify/notify_sender come from the current invocation (presentation
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
@@ -4190,6 +4202,7 @@ async def _resume_flow(
     config["show_graph"] = show_graph
     if notify is not None:
         config["notify"] = notify
+    config["notify_sender"] = notify_sender
     try:
         return await _run_flow(
             prompt=checkpoint.get("prompt", ""),

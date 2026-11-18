@@ -15,11 +15,11 @@ import pytest_asyncio
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedules import compute_schedule_health
 from lionhub.orchestration.scheduler import github as github_module
 from lionhub.orchestration.scheduler import subprocess as subprocess_module
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+from lionhub.serve.daemon.services.schedules import compute_schedule_health
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
 _NOW = 2_000_000_000.0
@@ -372,7 +372,7 @@ async def test_capped_poll_health_explains_recovery(stores, client):
 async def test_capped_poll_records_limit_from_start_despite_concurrent_edit(
     stores, client, monkeypatch
 ):
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     db, editor, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
@@ -412,7 +412,7 @@ async def test_capped_poll_records_limit_from_start_despite_concurrent_edit(
 async def test_target_patch_clears_stagnation_but_limit_only_preserves_it(
     stores, client, monkeypatch, patch, retained
 ):
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     db, editor, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
@@ -443,7 +443,7 @@ async def test_target_patch_clears_stagnation_but_limit_only_preserves_it(
 async def test_old_inflight_poll_cannot_restore_stagnation_after_target_patch(
     stores, client, monkeypatch, restore_old_target
 ):
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     db, editor, reader = stores
     schedule = await _schedule(

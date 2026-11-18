@@ -8,6 +8,7 @@ import argparse
 import importlib
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
@@ -116,6 +117,19 @@ def _check_core_deps() -> dict[str, dict[str, str]]:
     return results
 
 
+def _check_mcp_extra() -> dict[str, str]:
+    try:
+        importlib.import_module("fastmcp")
+    except Exception as exc:  # noqa: BLE001 — report the cause of a broken install
+        if isinstance(exc, ModuleNotFoundError) and exc.name == "fastmcp":
+            return _result(
+                "warn",
+                'fastmcp is missing. Install the MCP extra with pip install "lionagi[mcp]"',
+            )
+        return _result("fail", f"{type(exc).__name__}: {exc}")
+    return _result("ok", "fastmcp importable")
+
+
 def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
     """Turn a readiness response body into a check result.
 
@@ -175,22 +189,33 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
     import urllib.request
 
     from lionagi.ln._ssrf import open_url
+    from lionhub.serve.cli.studio_client import studio_request, with_unauthorized_hint
 
     target = url or _STUDIO_READINESS_URL_DEFAULT
     try:
-        req = urllib.request.Request(target, method="GET")  # noqa: S310
+        req = studio_request(target)
         with open_url(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
             body = resp.read()
-    except Exception as exc:  # noqa: BLE001 — connection refused, timeout, DNS, etc.
+    except urllib.error.HTTPError as exc:
+        # The daemon answered, so it is reachable: report what it said.
         return _result(
             "warn",
-            f"Studio daemon unreachable at {target} ({type(exc).__name__}: {exc}) — "
-            "optional; scheduled/agent-spawn actions that route through it will fail "
-            "until `li studio` is running.",
+            with_unauthorized_hint(exc.code, f"Studio daemon at {target} returned HTTP {exc.code}"),
         )
+    except Exception as exc:  # noqa: BLE001 — connection refused, timeout, DNS, etc.
+        return _unreachable(target, exc)
     return _readiness_verdict(target, body)
+
+
+def _unreachable(target: str, exc: BaseException) -> dict[str, str]:
+    return _result(
+        "warn",
+        f"Studio daemon unreachable at {target} ({type(exc).__name__}: {exc}) — "
+        "optional; scheduled/agent-spawn actions that route through it will fail "
+        "until `li studio` is running.",
+    )
 
 
 def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:
@@ -271,9 +296,37 @@ def collect_checks() -> dict[str, dict[str, str]]:
         checks[f"import:{mod}"] = result
     for dep, result in _check_core_deps().items():
         checks[f"dep:{dep}"] = result
+    checks["extra:mcp"] = _check_mcp_extra()
     checks["studio_daemon"] = _check_studio_daemon()
     checks["lionagi_home"] = _check_lionagi_home()
     return checks
+
+
+async def _probe_anthropic_account(name: str):
+    from lionagi.service.connections.match_endpoint import match_endpoint
+
+    endpoint = match_endpoint("anthropic", "messages")
+    return await endpoint.probe_blocked_account(name)
+
+
+def _run_account_probe(name: str, *, json_output: bool) -> int:
+    from lionagi.ln.concurrency import run_async
+    from lionagi.service.accounts._types import AccountRoutingError
+
+    try:
+        result = run_async(_probe_anthropic_account(name))
+    except AccountRoutingError as exc:
+        # The message carries only the code and validated fields (account, reason).
+        print(f"Account probe refused ({exc}).", file=sys.stderr)
+        return 1
+
+    fields = asdict(result)
+    if json_output:
+        print(json.dumps(fields, indent=2))
+    else:
+        for field, value in fields.items():
+            print(f"{field}: {value}")
+    return 0 if result.cleared else 1
 
 
 def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -290,7 +343,16 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--json",
         action="store_true",
-        help="Emit a JSON object of check name -> {status, detail} instead of plain text.",
+        help="Emit JSON instead of plain text.",
+    )
+    p.add_argument(
+        "--probe-anthropic-account",
+        metavar="NAME",
+        help=(
+            "Send one billed request on a named account blocked for low credit or its spend "
+            "limit. Lift its block only on a 2xx response. Runs instead of the ordinary "
+            "environment checks, and only from an interactive terminal."
+        ),
     )
 
 
@@ -298,6 +360,19 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     area="doctor", cli=CliDeclaration(seed="doctor", parser_factory=add_doctor_subparser)
 )
 def run_doctor(args: argparse.Namespace) -> int:
+    account = getattr(args, "probe_anthropic_account", None)
+    if account is not None:
+        # The probe spends a billed request and may lift a block, so it is an
+        # operator action: refuse it when no one is at a terminal, as from an
+        # agent's shell or an MCP server.
+        if not sys.stdin.isatty():
+            print(
+                "The account probe sends a billed request and runs only from an "
+                "interactive terminal.",
+                file=sys.stderr,
+            )
+            return 2
+        return _run_account_probe(account, json_output=getattr(args, "json", False))
     checks = collect_checks()
     if getattr(args, "json", False):
         print(json.dumps(checks, indent=2))

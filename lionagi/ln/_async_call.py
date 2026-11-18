@@ -179,7 +179,12 @@ async def alcall(
     return_exceptions: bool = False,
     **kwargs: Any,
 ) -> list[T | BaseException]:
-    """Apply func to each item concurrently with retry, timeout, and concurrency controls; return ordered results."""
+    """Apply func to each item concurrently with retry, timeout, and concurrency controls; return ordered results.
+
+    ``retry_timeout`` ends a coroutine function's call when it expires. A synchronous
+    ``func`` runs in a worker thread that the timeout cannot interrupt: the call ends
+    when the thread returns, and returns that result or error even after the timeout.
+    """
     _lazy.ensure(_do_init)
 
     func = _validate_func(func)

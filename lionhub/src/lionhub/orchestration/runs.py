@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -57,12 +58,31 @@ __all__ = (
 _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
+_MCP_JOB_RUN_ID_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
+_MCP_AGENT_RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}-[0-9a-f]{6}")
+_MCP_FINAL_RESPONSE_FILENAME = "job-final-response.md"
+_SUBSCRIPTION_SWITCH_KEY = "subscription_switch"
 PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 # The terminal status a run decided and its store did not take, with the reason code and the time
 TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
 # When the run's signal persistence first stopped waiting on a store that refused the writer lock
 SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
 _SETUP_RECOVERY_TIMEOUT_SECONDS = 2.0
+
+
+class _SubscriptionFallbackResumeError(ValueError):
+    """The saved branch moved to a subscription route that cannot be replayed."""
+
+
+def _subscription_fallback_resume_refusal(metadata: dict[str, Any]) -> str | None:
+    # The subscription process's reduced environment is runtime state outside the snapshot.
+    if metadata.get(_SUBSCRIPTION_SWITCH_KEY):
+        return (
+            "this branch moved from the Anthropic API route to the subscription route, and "
+            "the reduced environment its Claude Code process ran with is not saved with the "
+            "branch; it cannot be resumed. Start a new branch."
+        )
+    return None
 
 
 def _new_run_id() -> str:
@@ -376,6 +396,10 @@ class RunDir:
         path = self.state_root / "notify-final-response.txt"
         _atomic_write_bytes(path, data)
         return path.absolute()
+
+    def _write_mcp_final_response(self, text: str) -> None:
+        """Atomically publish the original job's answer in a mode-0600 file."""
+        _atomic_write_bytes(self.state_root / _MCP_FINAL_RESPONSE_FILENAME, text.encode("utf-8"))
 
     @property
     def notify_stderr_path(self) -> Path:
@@ -1794,7 +1818,7 @@ async def teardown_orchestration_persist(*args, **kwargs) -> str:
     """Deprecated alias for :func:`teardown_persist`; delegates unchanged."""
     warnings.warn(
         "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
-        "use lionagi.cli._runs.teardown_persist instead.",
+        "use lionhub.orchestration.runs.teardown_persist instead.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -2684,7 +2708,7 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
             _log.warning("session recovery database close did not complete: %s", close_error)
 
 
-def _resolved_run_state_dir(run_id: str) -> Path | None:
+def _resolved_run_state_dir(run_id: str, *, runs_root: Path | None = None) -> Path | None:
     """Resolve a single run ID only when it names its own direct child directory."""
     if (
         not isinstance(run_id, str)
@@ -2696,7 +2720,7 @@ def _resolved_run_state_dir(run_id: str) -> Path | None:
         or (os.altsep is not None and os.altsep in run_id)
     ):
         return None
-    root = RUNS_ROOT.resolve()
+    root = (RUNS_ROOT if runs_root is None else runs_root).resolve()
     path = root / run_id
     if path.resolve() != path:
         return None

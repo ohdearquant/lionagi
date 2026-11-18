@@ -306,9 +306,42 @@ def _values(node: object, key: str) -> list[object]:
 
 
 def _yaml_files() -> list[Path]:
-    # Workflows with either suffix, and any composite action kept under .github.
+    # The nightly job stages its setup action under .github, along with other
+    # files from the sparse checkout. Read workflow and action definitions.
     root = WORKFLOWS.parent
-    return sorted([*root.rglob("*.yml"), *root.rglob("*.yaml")])
+    return sorted(
+        {
+            *WORKFLOWS.glob("*.yml"),
+            *WORKFLOWS.glob("*.yaml"),
+            *root.rglob("action.yml"),
+            *root.rglob("action.yaml"),
+        }
+    )
+
+
+def test_yaml_inventory_reads_workflows_and_staged_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = tmp_path / ".github"
+    workflows = github / "workflows"
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+    configs = {
+        workflows / "ci.yml": "jobs: {}\n",
+        workflows / "docs.yaml": "jobs: {}\n",
+        github / "actions/setup/action.yml": "runs: {using: composite, steps: []}\n",
+        github / ".workflow-source/.github/actions/setup/action.yaml": (
+            "runs: {using: composite, steps: []}\n"
+        ),
+    }
+    for path, text in configs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (github / ".workflow-source/mkdocs.yml").write_text(
+        "emoji_index: !!python/name:material.emoji.twemoji\n"
+    )
+
+    assert _yaml_files() == sorted(configs)
+    assert not any(_reads_a_variable(path) for path in _yaml_files())
 
 
 class _DuplicateKeyError(ValueError):
@@ -516,7 +549,7 @@ def _local_target(uses: str) -> str | None:
 
 def test_a_local_action_lives_where_the_variable_search_reads() -> None:
     # A composite action used by path runs inside the job that uses it, so it is
-    # searched like a workflow, and the search covers .github only. The path is
+    # searched like a workflow, and action metadata is read under .github. The path is
     # read after resolving `..`, so `./.github/../actions/x` counts as outside.
     uses = [value for path in _yaml_files() for value in _values(_parse(path.read_text()), "uses")]
     assert uses

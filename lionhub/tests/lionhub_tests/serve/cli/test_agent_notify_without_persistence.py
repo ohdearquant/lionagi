@@ -179,6 +179,78 @@ async def test_agent_notice_carries_the_last_assistant_message(
 
 
 @pytest.mark.asyncio
+async def test_agent_configured_exec_notice_uses_its_run_context(
+    monkeypatch, tmp_path, captured_notify
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi.state.lifecycle import notify_settings
+    from lionagi.state.lifecycle.callbacks import (
+        DEFAULT_TERMINAL_CALLBACKS,
+        EntityRef,
+        RunTerminalEnvelope,
+    )
+
+    session_id = "agent-notify-session"
+    run = _wire_agent_stubs(
+        monkeypatch,
+        tmp_path,
+        persist={"session_id": session_id, "worker_spawns_unrecorded": True},
+    )
+    monkeypatch.setattr("lionagi.state.compat.is_compatibility_store", lambda _db: True)
+    monkeypatch.setattr(DEFAULT_TERMINAL_CALLBACKS, "_registrations", {})
+    monkeypatch.setattr(
+        notify_settings,
+        "load_settings",
+        lambda **_: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "exec", "argv": ["capture-notify"]},
+                }
+            }
+        },
+    )
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    assert notify_settings.register_settings_terminal_callback(project_dir=str(repo_dir))
+
+    async def teardown(_ctx, *, status, **_kwargs):
+        await DEFAULT_TERMINAL_CALLBACKS.emit(
+            RunTerminalEnvelope(
+                event_id="agent-notify-event",
+                entity=EntityRef(kind="session", id=session_id),
+                previous_status="running",
+                terminal_status=status,
+                reason_code=RunReasons.COMPLETED_OK,
+                occurred_at=2.0,
+            )
+        )
+        return status
+
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+    await agent_mod._run_agent(
+        "codex/model",
+        "perform the task",
+        cwd=str(repo_dir),
+        notify_sender="Review desk",
+    )
+
+    [payload] = captured_notify
+    assert payload["entity"] == {"kind": "session", "id": session_id}
+    expected = {
+        "schema_version": 1,
+        "run_id": run.run_id,
+        "status": "completed",
+        "reason_code": RunReasons.COMPLETED_OK,
+        "label": None,
+        "sender": "Review desk",
+        "cwd": str(repo_dir),
+        "output_dir": str(run.artifact_root),
+    }
+    assert {field: payload[field] for field in expected} == expected
+
+
+@pytest.mark.asyncio
 async def test_failed_resume_notice_omits_the_previous_assistant_reply(
     monkeypatch, tmp_path, captured_notify
 ):
@@ -367,14 +439,13 @@ async def test_a_leg_that_will_auto_resume_leaves_the_notice_to_the_resumed_leg(
     async def operate(self, instruction=None, **kw):
         turns["n"] += 1
         if turns["n"] == 1:
+            (tmp_path / f"{self.id}.json").write_text(json.dumps({"id": str(self.id)}))
             raise LionTimeoutError("synthetic")
         return "the resumed leg concluded the task"
 
     monkeypatch.setattr(Branch, "operate", operate)
-    branch_file = tmp_path / "branch.json"
-    branch_file.write_text("{}")
-    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, branch_file))
-    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: Branch()))
+    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, tmp_path / f"{rid}.json"))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: cls(id=data["id"])))
 
     result = await agent_mod._run_agent(
         "codex/model",

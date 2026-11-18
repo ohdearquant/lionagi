@@ -74,10 +74,27 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/cli/orchestrate/_checkpoint.py:188@ee589cb2",
         "lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2",
         "lionagi/cli/orchestrate/_manifest.py:333@72461356",
+        "lionagi/cli/orchestrate/flow.py:1092-1103@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1102-1103@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1197-1208@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1229-1237@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1255-1263@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1265-1273@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1275-1285@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1290-1306@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1308-1351@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1353-1376@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:1519-1527@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:2858@ee589cb2",
+        "lionagi/cli/orchestrate/flow.py:2860-2872@ee589cb2",
     ),
     "ADR-0117-normalized-progression-membership-and-online-cutover.md": (
         "lionagi/cli/_runs.py:1922@e1800c3b",
         "lionagi/cli/_runs.py:2236-2237@e1800c3b",
+        "lionagi/cli/orchestrate/_orchestration.py:2268@e1800c3b",
+        "lionagi/cli/state.py:507@e1800c3b",
+        "lionagi/cli/state.py:555@e1800c3b",
+        "lionagi/cli/state.py:560@e1800c3b",
         "lionagi/studio/services/db_maintenance.py:328@e1800c3b",
     ),
     "ADR-0126-provider-credential-routing-and-monthly-account-budgets.md": (
@@ -85,6 +102,7 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/providers/anthropic/messages.py:981-1011@04e03ffe",
         "lionagi/service/accounts/_ledger.py:548@c6ac2d97",
         "lionagi/service/accounts/_ledger.py:1624@02fcd3b0",
+        "lionhub/src/lionhub/providers/anthropic/messages.py:478-503@c6a3b4af",
     ),
     "ADR-0130-per-request-input-ceiling-and-context-management-past-it.md": (
         "lionagi/providers/anthropic/messages.py:988@2a8b69c9",
@@ -117,6 +135,11 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/scheduler/subprocess.py:279@c4abb363",
     ),
     "ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md": (
+        "lionagi/_auto.py:116@264f3e19",
+        "lionagi/_auto.py:191@264f3e19",
+        "lionagi/_auto.py:201@264f3e19",
+        "lionagi/_auto.py:225@264f3e19",
+        "lionagi/_auto.py:236@264f3e19",
         "lionagi/cli/_schedule_parsing.py:32-79@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:358@fa46d0e8",
         "lionagi/cli/_schedule_parsing.py:429-441@fa46d0e8",
@@ -126,9 +149,11 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/cli/machine_schedule.py:515@fa46d0e8",
         "lionagi/cli/machine_schedule.py:73-76@fa46d0e8",
         "lionagi/cli/mirror.py:21@b4a3bebf",
+        "lionagi/studio/app.py:27@c83e53d7",
         "lionagi/studio/app.py:349-364@8c119ecc",
         "lionagi/studio/app.py:349-364@b4a3bebf",
         "lionagi/studio/cli.py:1203-1226@b4a3bebf",
+        "lionagi/studio/operator/coordinator.py:24@c83e53d7",
         "lionagi/studio/scheduler/engine.py:44@ee589cb2",
         "lionagi/studio/scheduler/engine.py:433@b4a3bebf",
         "lionagi/studio/scheduler/engine.py:356@b4a3bebf",
@@ -151,6 +176,10 @@ KNOWN_PINS: dict[str, tuple[str, ...]] = {
         "lionagi/studio/services/schedule_declaration.py:482@8c119ecc",
         "lionagi/studio/services/schedule_declaration.py:482@b4a3bebf",
         "lionagi/studio/services/schedule_declaration.py:534@b4a3bebf",
+        "lionagi/studio/services/operator.py:15@c83e53d7",
+        "lionagi/studio/services/pairing.py:21@c83e53d7",
+        "lionhub/src/lionhub/serve/cli/studio.py:27@c83e53d7",
+        "lionhub/src/lionhub/serve/cli/studio.py:313@c83e53d7",
     ),
     "ADR-0139-cli-package-location-and-console-script-ownership.md": (
         "lionagi/_auto.py:143@2a49c9fe",
@@ -228,7 +257,9 @@ _CODE_SPAN = re.compile(r"`(?P<span>[^`\n]+)`")
 _INLINE_PIN = re.compile(
     rf"(?P<path>[\w.-]+(?:/[\w.-]+)*){_LINE_RANGE}@(?P<sha>[0-9a-fA-F]+)(?P<annotation>.*)"
 )
-# A 19-digit bound accommodates any sequence length on supported 64-bit platforms.
+# A cited line number is refused above 19 digits before int() reads it. No file has more lines
+# than a signed 64-bit count holds, and that has 19 digits; and int() raises ValueError on a
+# number past CPython's 4300-digit conversion limit, which a typo in an ADR can reach.
 _MAX_LINE_DIGITS = 19
 # ``path.py::Class.method`` and ``path.py::NAME``.
 _SYMBOL = re.compile(rf"(?<![\w./-])(?P<path>{_PATH})::(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)")
@@ -907,8 +938,13 @@ def test_non_python_pin_refuses_a_missing_commit_or_blob() -> None:
     ]
 
 
+def _head(git_source: GitSource) -> str:
+    """The checkout's HEAD commit: these tests cite files of the repository as it is checked out."""
+    return git_source._git("rev-parse", "HEAD").stdout.strip()
+
+
 def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource) -> None:
-    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    sha = _head(git_source)
     records = {"adr.md": f"See `lionagi/state:1@{sha}`.\n"}
     assert check_pins_exist(records, git_source) == [
         f"adr.md:1: lionagi/state:1@{sha} cites lionagi/state, which is not in that commit"
@@ -916,10 +952,11 @@ def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource)
 
 
 def test_non_python_pin_reports_the_out_of_range_schema_citation(git_source: GitSource) -> None:
-    sha = git_source._git("rev-parse", "HEAD").stdout.strip()
+    sha = _head(git_source)
     path = "lionagi/state/schema.sql"
     schema = git_source.text_at(sha, path)
-    assert schema is not None
+    if schema is None:
+        pytest.fail(f"{path} is not in HEAD {sha}: this test cites the real schema file")
     last_line = len(schema.splitlines())
     records = {
         "adr.md": f"See `{path}:{last_line}@{sha}`.\nNot `{path}:{last_line + 1}@{sha}`.\n",
@@ -962,6 +999,9 @@ def test_python_stub_pin_accepts_eight_digits() -> None:
     ids=["sql", "python"],
 )
 def test_pin_with_text_inside_the_code_span(path: str, sha: str, diagnostic: str) -> None:
+    """A non-Python pin is read only as a whole code span, so text after it inside the span
+    makes the span malformed. A Python pin is read wherever it stands in prose, inside a code
+    span or not, so text after it is prose and the pin itself is checked."""
     source = MemorySource(files={}, commits={sha: {path: "one\ntwo\n"}})
     records = {"adr.md": f"Schema details.\nSee `{path}:3@{sha} after the migration`.\n"}
     (problem,) = check_pins_exist(records, source)
@@ -969,10 +1009,24 @@ def test_pin_with_text_inside_the_code_span(path: str, sha: str, diagnostic: str
     assert diagnostic in problem
 
 
+@pytest.mark.parametrize(
+    ("digits", "diagnostic"),
+    [(19, "cites lines the file does not have at that commit"), (20, "line number is too long")],
+    ids=["19-digits", "20-digits"],
+)
+def test_the_line_number_digit_cap_is_19(digits: int, diagnostic: str) -> None:
+    path = "pkg/schema.sql"
+    source = MemorySource(files={}, commits={FULL_PIN: {path: "one\ntwo\n"}})
+    records = {"adr.md": f"See `{path}:{'9' * digits}@{FULL_PIN}`.\n"}
+    (problem,) = check_pins_exist(records, source)
+    assert diagnostic in problem
+
+
 @pytest.mark.parametrize("oversized_end", [False, True], ids=["start", "end"])
 def test_pin_with_an_oversized_line_number_is_reported(oversized_end: bool) -> None:
     path = "pkg/schema.sql"
     source = MemorySource(files={}, commits={FULL_PIN: {path: "one\ntwo\n"}})
+    # Past CPython's 4300-digit int() conversion limit, where int() itself would raise.
     long_number = "1" * 4301
     lines = f"1-{long_number}" if oversized_end else f"{long_number}-2"
     records = {"adr.md": f"Schema details.\nSee `{path}:{lines}@{FULL_PIN}`.\n"}

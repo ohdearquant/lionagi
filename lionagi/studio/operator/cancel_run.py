@@ -5,12 +5,10 @@
 Cancels one Studio run (a `sessions` row) by reference -- a run id, an id
 prefix, a name substring, or ``"current"`` -- gated on the same durable
 human allow/deny proposal flow ``launch_playbook`` uses
-(`application_mcp.py::launch_playbook`). Real in-process cancellation only:
-the state-changing act reuses the exact primitives ``li kill`` uses
-(``lionhub.orchestration.job.fetch_unique_row`` for id/prefix resolution,
-``lionhub.orchestration.kill.kill_one`` for identity-checked termination), so a
-cancellation through the Operator is indistinguishable from one run through
-``li kill`` directly -- no subprocess is spawned. See
+(`application_mcp.py::launch_playbook`). The Operator and ``li kill`` share
+identity-checked signalling and guarded settlement in
+``lionhub.orchestration.kill``. The Operator sends TERM deepest first and
+shares one grace period across the run and its children. See
 docs/internals/studio.md ("Turn identity and the propose/poll/execute
 pattern") for why ``resume_run`` is a separate operation rather than an
 un-gate of a cancelled run's status.
@@ -20,25 +18,43 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Awaitable, Callable, Coroutine
+from enum import Enum
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.state.session_naming import resolve_display_name
+from lionhub.serve.daemon.services.redact import MAX_CANDIDATES, public_project
 
 from . import _common
-from .redact import MAX_CANDIDATES, public_project
 from .store import OperatorStore
+
+if TYPE_CHECKING:
+    from lionhub.orchestration.kill import CancelPersistenceError
 
 CANCEL_RUN_COMMAND_TYPE = "cancel"
 
+_Result = TypeVar("_Result")
+
+
+class CancelFailureReason(str, Enum):
+    """Stable reason codes used by cancellation execution and proposal audit."""
+
+    STATE_WRITE_FAILED = "cancel_state_write_failed"
+    STALE_CONTEXT = "stale_context"
+    CONFLICT = "conflict"
+    MISSING = "missing"
+    REJECTED = "rejected"
+    GENERATION_UNAVAILABLE = "generation_unavailable"
+    NOT_TERMINAL = "not_terminal"
+
+
 CANCEL_RUN_DESCRIPTION = (
     "Cancel a running run by id, session id, name, or 'current'. This sends a "
-    "termination signal to the run's process through the exact in-process "
-    "path `li kill` uses -- no shell subprocess is spawned. "
+    "termination signal using the same process identity checks as `li kill`. "
     "Cancellation goes through a human approval flow; it is never automatic. "
     "A denied proposal leaves the run untouched. "
     "Safe to call on an already-terminated run: it reports the existing "
@@ -288,21 +304,26 @@ def _redacted_cancel_result(proposal: dict[str, Any], run_id: str) -> dict[str, 
     raw = proposal.get("result")
     result = raw if isinstance(raw, dict) else {}
     if proposal["status"] != "succeeded":
-        if proposal.get("errorCode") == "cancel_state_write_failed":
+        error_code = proposal.get("errorCode")
+        if error_code == CancelFailureReason.STATE_WRITE_FAILED:
             return {
                 "cancelled": False,
                 "status": "indeterminate",
-                "reason": "cancel_state_write_failed",
+                "reason": CancelFailureReason.STATE_WRITE_FAILED.value,
                 "signal_sent": result.get("signal_sent"),
                 "failed_entity_kind": result.get("failed_entity_kind"),
                 "run_untouched": None,
                 "id": run_id,
             }
-        reason = "denied" if proposal["status"] == "cancelled" else proposal["status"]
+        status = proposal["status"]
+        reason = "denied" if status == "cancelled" else status
+        untouched = status in {"cancelled", "expired"} or (
+            status == "conflict" and error_code == CancelFailureReason.STALE_CONTEXT
+        )
         return {
             "cancelled": False,
             "reason": reason,
-            "run_untouched": True if proposal["status"] in {"cancelled", "expired"} else None,
+            "run_untouched": True if untouched else None,
             "id": run_id,
         }
     # A "succeeded" proposal only means the executor ran without raising --
@@ -442,35 +463,36 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
-    """The real state-changing act -- the adapter's other half.
+    """Execute a stand-alone cancel and defer caller cancellation until it settles."""
+    return await await_cancel_completion(apply_cancel_command(command))
 
-    Wire this into `OperatorCoordinator`'s ``command_executor`` for
-    ``command_type == "cancel"``. Re-resolves the session by exact id and
-    re-checks ownership at execution time rather than trusting the
-    resolution `cancel_run` captured. `_persist_cancel` is a no-op once the
-    row is no longer 'running', so a race here degrades to
-    ``already_terminal`` -- never a double cancel, never a wrong-run cancel.
-    Reuses `lionhub.orchestration.kill`'s deepest-first child traversal
-    (``list_running_children``/``kill_one``) so a still-running owning
-    invocation is reaped exactly the way ``li kill --recursive`` does,
-    rather than orphaned when the parent session goes terminal.
 
-    If the caller is cancelled after this work starts, complete the signalling
-    and persistence before delivering cancellation. Each process has its own
-    termination grace; the complete command has no fixed wall-clock bound.
+async def await_cancel_completion(
+    operation: Coroutine[Any, Any, _Result],
+    *,
+    audit_persistence_failure: Callable[[CancelPersistenceError], Awaitable[_Result]] | None = None,
+) -> _Result:
+    """Own a cancel through settlement and optional terminal audit.
+
+    A normal caller receives the audited result of a failed write. A cancelled
+    caller receives the original persistence failure after audit. If the audit
+    itself raises, that exception takes precedence for either caller.
     """
-    return await _await_deferred_cancel(_execute_cancel_command(command))
+    from lionhub.orchestration.kill import CancelPersistenceError
 
+    persistence_error: CancelPersistenceError | None = None
 
-@dataclass(frozen=True)
-class _DeferredCancelResult:
-    result: dict[str, Any]
-    error: Exception
+    async def run() -> _Result:
+        nonlocal persistence_error
+        try:
+            return await operation
+        except CancelPersistenceError as exc:
+            if audit_persistence_failure is None:
+                raise
+            persistence_error = exc
+            return await audit_persistence_failure(exc)
 
-
-async def _await_deferred_cancel(operation):
-    """Finish an owned operation before delivering cancellation to its caller."""
-    task = asyncio.create_task(operation)
+    task = asyncio.create_task(run())
     cancelled = None
     while not task.done():
         try:
@@ -482,18 +504,21 @@ async def _await_deferred_cancel(operation):
         except Exception:
             break
     result = task.result()
-    if isinstance(result, _DeferredCancelResult):
-        if cancelled is not None:
-            raise result.error
-        return result.result
     if cancelled is not None:
+        if persistence_error is not None:
+            raise persistence_error
         raise cancelled
     return result
 
 
-async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
+async def apply_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
+    """Execute a cancel inside its caller's cancellation and audit scope."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
-    from lionhub.orchestration.kill import NOT_STOPPED_SIGNALS, kill_one, list_running_children
+    from lionhub.orchestration.kill import (
+        NOT_STOPPED_SIGNALS,
+        cancel_targets,
+        list_running_children,
+    )
 
     run_id = command.get("session_id")
     if not isinstance(run_id, str) or not run_id:
@@ -524,87 +549,62 @@ async def _execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if row_dict.get("status") != "running":
             return {"status": "already_terminal", "id": run_id}
 
-        # Deepest first: a running child is signalled before its parent, so
-        # it is never left orphaned by the parent going terminal ahead of it.
-        # Best-effort per child -- an identity-mismatched or already-gone
-        # child does not block the parent's own cancellation below.
         children = await list_running_children(db, "session", run_id)
-        signal_record: list[int] = []
-        state_record: list[bool] = []
+        targets = [
+            (child_type, child_row["id"], child_row) for _, child_type, child_row in children
+        ]
+        targets.append(("session", run_id, row_dict))
+        results = await cancel_targets(db, targets, user_reason=user_reason)
+        outcome = results[-1]
+        signal_sent = any(result.signal_sent for result in results)
+        effects = {
+            "signal_sent": signal_sent,
+            "run_untouched": not (signal_sent or any(result.state_committed for result in results)),
+        }
+        if outcome.signal in NOT_STOPPED_SIGNALS:
+            return {"status": "not_stopped", "id": run_id, "signal": outcome.signal, **effects}
 
-        def effects() -> dict[str, bool]:
-            return {
-                "signal_sent": bool(signal_record),
-                "run_untouched": not (signal_record or state_record),
-            }
-
-        for _table, child_type, child_row in children:
-            await kill_one(
-                db,
-                child_type,
-                child_row["id"],
-                child_row,
-                user_reason=user_reason,
-                offload_signals=True,
-                _signal_record=signal_record,
-                _state_record=state_record,
-            )
-
-        outcome = await kill_one(
-            db,
-            "session",
-            run_id,
-            row_dict,
-            user_reason=user_reason,
-            offload_signals=True,
-            _signal_record=signal_record,
-            _state_record=state_record,
-        )
-        if outcome["signal"] in NOT_STOPPED_SIGNALS:
-            # kill_one() leaves the row unchanged when it cannot stop the
-            # process. Preserve that distinction from an already-terminal row.
-            return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"], **effects()}
-
-        cancel_status = outcome.get("cancel_status")
-        if cancel_status in {"conflict", "missing", "rejected", "generation_unavailable"}:
+        cancel_status = outcome.cancel_status
+        if cancel_status in {
+            CancelFailureReason.CONFLICT,
+            CancelFailureReason.MISSING,
+            CancelFailureReason.REJECTED,
+            CancelFailureReason.GENERATION_UNAVAILABLE,
+        }:
             return {
                 "status": "not_stopped",
                 "id": run_id,
-                "signal": outcome["signal"],
-                "reason": cancel_status,
-                **effects(),
+                "signal": outcome.signal,
+                "reason": CancelFailureReason(cancel_status).value,
+                **effects,
             }
 
-        # `_persist_cancel` guards its write on the row still being 'running'
-        # at persist time (lionhub/src/lionhub/serve/cli/kill.py) -- a race that lets the run
-        # finish naturally during the human approval window makes that write
-        # a no-op rather than an overwrite. Re-read the row instead of
-        # inferring success from the OS-signal outcome, so this adapter never
-        # claims a cancellation the database does not actually hold.
+        # The guarded write can race with a terminal transition or a resume.
+        # Confirm the generation and terminal row before reporting success.
         after = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
         after_dict = db._row_to_dict(after) if after is not None else None
 
     if after_dict is None:
-        reason = "missing"
+        reason = CancelFailureReason.MISSING
     elif after_dict.get("cli_worker_generation") != row_dict.get("cli_worker_generation"):
-        reason = "conflict"
+        reason = CancelFailureReason.CONFLICT
     elif after_dict.get("status") == "cancelled" and (
-        cancel_status == "applied" or (cancel_status == "already_terminal" and signal_record)
+        cancel_status == "applied" or (cancel_status == "already_terminal" and outcome.signal_sent)
     ):
-        return {"status": "terminal", "id": run_id, "signal": outcome["signal"]}
+        return {"status": "terminal", "id": run_id, "signal": outcome.signal}
     elif after_dict.get("status") in SESSION_TERMINAL_STATUSES:
         return {
             "status": "already_terminal",
             "id": run_id,
-            "signal": outcome["signal"],
-            **effects(),
+            "signal": outcome.signal,
+            **effects,
         }
     else:
-        reason = "not_terminal"
+        reason = CancelFailureReason.NOT_TERMINAL
     return {
         "status": "not_stopped",
         "id": run_id,
-        "signal": outcome["signal"],
-        "reason": reason,
-        **effects(),
+        "signal": outcome.signal,
+        "reason": reason.value,
+        **effects,
     }

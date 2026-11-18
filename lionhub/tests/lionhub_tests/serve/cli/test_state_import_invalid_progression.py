@@ -55,7 +55,7 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
     _branch(
         branches / "second.json",
         "branch-2",
-        [_message(invalid_id, "bad")],
+        [_message("first-in-branch", "valid"), _message(invalid_id, "bad")],
         order=[invalid_id] if ordered else (),
         stamp=2,
     )
@@ -75,10 +75,20 @@ async def test_invalid_later_branch_leaves_no_partial_import_and_can_be_retried(
         )
         await db.append_to_progression(progression, "shared")
         before = await _snapshot(db)
-        with pytest.raises(ValueError, match="non-empty string") as caught:
-            await state_mod._import_one_run(db, "run-1", run_dir, manifest)
-        assert "second.json" in str(caught.value)
-        assert re.search(r"\b0\b", str(caught.value))
+
+        def unexpected_write_transaction():
+            pytest.fail("CLI preflight reached a write transaction")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(db, "_tx", unexpected_write_transaction)
+            with pytest.raises(ValueError, match="non-empty string") as caught:
+                await state_mod._import_one_run(db, "run-1", run_dir, manifest)
+        cause = caught.value.__cause__
+        assert isinstance(cause, ValueError)
+        assert re.fullmatch(
+            r"progression '[0-9a-f-]{36}' requires non-empty string message IDs", str(cause)
+        )
+        assert str(caught.value) == f"second.json: message entry 1: {cause}"
         assert await _snapshot(db) == before
 
     # Correct both errors; a shared message must keep the keeper's content.

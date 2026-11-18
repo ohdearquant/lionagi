@@ -188,6 +188,141 @@ MOVED: tuple[Moved, ...] = (
         "2.0.0",
     ),
     Moved("lionagi.studio.services._db", "lionhub.orchestration.state_store", "0.38.0", "2.0.0"),
+    Moved("lionagi.integrations", "lionhub.integrations", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio._host",
+        "lionhub.serve.daemon._host",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio._traceback_dump",
+        "lionhub.serve.daemon._traceback_dump",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.daemon_log",
+        "lionhub.serve.daemon.daemon_log",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.reconnect",
+        "lionhub.serve.daemon.reconnect",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._io",
+        "lionhub.serve.daemon.services._io",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._path_safety",
+        "lionhub.serve.daemon.services._path_safety",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._sse",
+        "lionhub.serve.daemon.services._sse",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.artifact_verification",
+        "lionhub.serve.daemon.services.artifact_verification",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.signals",
+        "lionhub.serve.daemon.services.signals",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.run_view",
+        "lionhub.serve.daemon.services.run_view",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.task_applications",
+        "lionhub.serve.daemon.services.task_applications",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.operator.redact", "lionhub.serve.daemon.services.redact", "0.38.0", "2.0.0"
+    ),
+    Moved("lionagi.studio.launch_access", "lionhub.serve.daemon.launch_access", "0.38.0", "2.0.0"),
+    Moved("lionagi.studio.services.runs", "lionhub.serve.daemon.services.runs", "0.38.0", "2.0.0"),
+    Moved(
+        "lionagi.studio.services.run_resume",
+        "lionhub.serve.daemon.services.run_resume",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.run_resume_worker",
+        "lionhub.serve.daemon.services.run_resume_worker",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.engine_runs",
+        "lionhub.serve.daemon.services.engine_runs",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.invocations",
+        "lionhub.serve.daemon.services.invocations",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.launches",
+        "lionhub.serve.daemon.services.launches",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.identity",
+        "lionhub.serve.daemon.services.identity",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.pairing",
+        "lionhub.serve.daemon.services.pairing",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.sessions",
+        "lionhub.serve.daemon.services.sessions",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services.admin", "lionhub.serve.daemon.services.admin", "0.38.0", "2.0.0"
+    ),
+    Moved(
+        "lionagi.studio.services.schedules",
+        "lionhub.serve.daemon.services.schedules",
+        "0.38.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.studio.services._session_tail",
+        "lionhub.serve.daemon.services._session_tail",
+        "0.38.0",
+        "2.0.0",
+    ),
 )
 
 
@@ -299,7 +434,7 @@ def _is_import_machinery(code: CodeType) -> bool:
     )
 
 
-def _caller_stacklevel() -> int:
+def _warning_origin() -> tuple[int, bool]:
     # Point the warning at the code that wrote the import. ``warnings`` already skips
     # the frozen importlib frames without counting them, so count only the frames it
     # counts: this module's own, ``importlib.import_module``, and a root lazy export's two.
@@ -312,8 +447,24 @@ def _caller_stacklevel() -> int:
             continue
         level += 1
         if not _is_import_machinery(frame.f_code):
-            break
-    return level
+            command_line = (
+                frame.f_globals.get("__name__") == "runpy"
+                and frame.f_code.co_name == "_get_module_details"
+                and sys.argv[:1] == ["-m"]
+            )
+            return level, command_line
+    return level, False
+
+
+def _has_aliased_parent(fullname: str) -> bool:
+    parent_name = fullname.rpartition(".")[0]
+    parent = sys.modules.get(parent_name)
+    canonical_parent = resolve(parent_name)
+    return (
+        parent is not None
+        and canonical_parent is not None
+        and parent is sys.modules.get(canonical_parent)
+    )
 
 
 class _AliasLoader(importlib.abc.Loader):
@@ -330,22 +481,37 @@ class _AliasLoader(importlib.abc.Loader):
 
     def exec_module(self, module: ModuleType) -> None:
         moved = _import_new(self._new_name)
-        warnings.warn(
-            f"{module.__name__} moved to {self._new_name}; the old import path is removed "
-            f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead.",
-            DeprecationWarning,
-            stacklevel=_caller_stacklevel(),
-        )
+        self._warn_moved(module.__name__)
         sys.modules[module.__name__] = moved
+
+    def _warn_moved(self, old_name: str, *, loading_code: bool = False) -> None:
+        stacklevel, command_line = _warning_origin()
+        if command_line and not loading_code:
+            # runpy imports the parents first. Warn for the entry when it gets code.
+            return
+        if loading_code and not command_line and _has_aliased_parent(old_name):
+            # An aliased parent already warned during a programmatic runpy import.
+            return
+        message = (
+            f"{old_name} moved to {self._new_name}; the old import path is removed "
+            f"in lionagi {self._row.removed_in}. Import from {self._new_name} instead."
+        )
+        if command_line:
+            warnings.warn_explicit(
+                message, DeprecationWarning, "<command line>", 1, module="__main__"
+            )
+        else:
+            warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
 
     def get_data(self, path: str) -> bytes:
         # Resource readers such as ``pkgutil.get_data`` ask the old name's loader.
         return importlib.import_module(self._new_name).__spec__.loader.get_data(path)
 
     def get_code(self, fullname: str) -> CodeType | None:
-        # ``python -m <old name>`` runs a module's code instead of importing it, so runpy
-        # asks the old name's loader for the code of the module at the new name.
-        return importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
+        code = importlib.util.find_spec(self._new_name).loader.get_code(self._new_name)
+        if code is not None:
+            self._warn_moved(fullname, loading_code=True)
+        return code
 
 
 class _MovedFinder(importlib.abc.MetaPathFinder):

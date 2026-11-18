@@ -797,6 +797,104 @@ def test_main_routes_engine_command(monkeypatch):
     assert run_engine_calls[0].command == "engine"
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_status", "expected_reason", "exit_code"),
+    [
+        pytest.param("persist", "completed", "run.completed.ok", 0, id="completed"),
+        pytest.param("fail", "failed", "run.failed.exception", 1, id="failed"),
+        pytest.param("no-persist", None, None, 0, id="no-persist"),
+    ],
+)
+def test_engine_run_terminal_notice_uses_cli_sender(
+    monkeypatch, tmp_path, mode, expected_status, expected_reason, exit_code
+):
+    pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+    import lionagi.state.db as db_mod
+    import lionhub.serve.cli.engine as engine_mod
+    from lionagi.state.lifecycle import notify_settings
+    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.serve.cli.main import main
+
+    db_path = tmp_path / "state.db"
+    output_dir = tmp_path / "export"
+    state_db = db_mod.StateDB
+    monkeypatch.setattr(db_mod, "StateDB", lambda: state_db(db_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(DEFAULT_TERMINAL_CALLBACKS, "_registrations", {})
+    settings = {
+        "notify": {
+            "on_terminal": {
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["capture-notice"]},
+            },
+        },
+    }
+    monkeypatch.setattr(notify_settings, "load_settings", lambda **_: settings)
+    notices = []
+
+    class FakeNotifier:
+        returncode = 0
+
+        async def communicate(self, payload):
+            notices.append(json.loads(payload))
+            return b"", b""
+
+    async def fake_spawn(argv, _env, _group_marker):
+        assert argv == ("capture-notice",)
+        return FakeNotifier(), None
+
+    monkeypatch.setattr(notify_settings, "_spawn_in_group", fake_spawn)
+
+    class FakeEngine:
+        async def run(self, spec, *, on_event, session, export_dir):
+            assert export_dir == str(output_dir)
+            settings.clear()  # The process-wide handler owns the startup settings snapshot.
+            if mode == "fail":
+                raise RuntimeError("engine failed")
+            return "done"
+
+    monkeypatch.setattr(engine_mod, "import_engine_class", lambda *_: FakeEngine)
+    argv = [
+        "engine",
+        "run",
+        "hypothesis",
+        "Finding: X causes Y",
+        "--notify-sender",
+        "Review desk",
+        "--export-dir",
+        str(output_dir),
+    ]
+    if mode == "no-persist":
+        argv.append("--no-persist")
+
+    assert main(argv) == exit_code
+    if mode == "no-persist":
+        assert notices == []
+        assert not db_path.exists()
+        return
+
+    async def persisted_run():
+        async with state_db(db_path) as db:
+            (row,) = await db.list_engine_runs()
+            return row, await db.get_session(row["id"])
+
+    engine_row, session_row = asyncio.run(persisted_run())
+    run_id = engine_row["id"]
+    assert engine_row["status"] == session_row["status"] == expected_status
+    (notice,) = notices
+    assert notice["schema_version"] == 1
+    assert notice["run_id"] == run_id
+    assert notice["entity"] == {"kind": "session", "id": session_row["id"]}
+    assert notice["status"] == expected_status
+    assert notice["reason_code"] == expected_reason
+    assert notice["label"] is None
+    assert notice["sender"] == "Review desk"
+    assert notice["cwd"] == str(tmp_path.resolve())
+    assert notice["output_dir"] == (str(output_dir) if mode == "persist" else None)
+    assert f"notify.settings.on_terminal.session.{run_id}" not in DEFAULT_TERMINAL_CALLBACKS
+
+
 # Signal persistence integration: engine run → session_signals table
 
 

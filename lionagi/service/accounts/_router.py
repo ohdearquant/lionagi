@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -33,6 +33,7 @@ from ._types import (
     AccountRoutingError,
     AccountSpec,
     CompleteUsage,
+    Evidence,
     ProvenNotSent,
     RejectionZero,
     Reservation,
@@ -62,6 +63,15 @@ _router: AccountRouter | None = None
 _router_lock = threading.Lock()
 _test_ledger_path: Any = _UNSET
 _test_sources: Any = _UNSET
+
+
+@dataclass(frozen=True, slots=True)
+class RoutedCacheEvidence:
+    """Cache facts supplied by the selected adapter for the frozen request."""
+
+    cert: str | None
+    hour_after_key: bool
+    server_tools: bool
 
 
 @dataclass(slots=True)
@@ -112,6 +122,7 @@ class AccountRouter:
         endpoint: Any,
         request_kwargs: Mapping[str, Any],
         body_kwargs: Mapping[str, Any],
+        cache_evidence_for: Callable[[dict[str, Any]], RoutedCacheEvidence],
         client_kwargs: Mapping[str, Any] | None = None,
         url: str | None = None,
         method: str | None = None,
@@ -136,19 +147,37 @@ class AccountRouter:
             final_payload["service_tier"] = "standard_only"
         ttls = request_ttls(final_payload)
         body = freeze_request(final_payload)
-        # Imported here because that module imports the Messages endpoint, which uses this one.
-        from lionhub.providers.anthropic._prompt_cache import _server_tools
-
-        parsed = json.loads(body)
-        cert, hour_after_key = _warm_evidence(parsed)
-        server_tools = _server_tools(parsed)
+        cache = cache_evidence_for(json.loads(body))
         quote = quote_ceiling(self.revision, body)
         attempt_id = uuid4()
         # Shielded so a cancelled caller cannot leave a committed reservation unknown to it.
         with CancelScope(shield=True):
             reservation = await self.ledger.reserve(
-                scope, attempt_id, quote, self.accounts, cert=cert
+                scope, attempt_id, quote, self.accounts, cert=cache.cert
             )
+        attempt = await self._attempt_with_key(reservation, body, ttls, cache)
+        label = attempt.account
+        if (
+            not isinstance(label, str)
+            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", label) is None
+            or "sk-ant" in label.lower()
+            or mask_key_runs(label, attempt.key) != label
+        ):
+            label = None
+        record_selected_attempt(
+            attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
+        )
+        # The prompt-cache entries this attempt writes or reads are evidenced on its account.
+        note_attempt(label)
+        return attempt
+
+    async def _attempt_with_key(
+        self,
+        reservation: Reservation,
+        body: bytes,
+        ttls: frozenset[str],
+        cache: RoutedCacheEvidence,
+    ) -> RouterAttempt:
         account = next(spec for spec in self.accounts if spec.name == reservation.account)
         try:
             key = await resolve_account_key(account.key_env, self.sources)
@@ -164,29 +193,67 @@ class AccountRouter:
             caller_cancelled = isinstance(exc, (get_cancelled_exc_class(), GeneratorExit))
             await self.settle_reservation_not_sent(reservation, caller_cancelled=caller_cancelled)
             raise
-        attempt = RouterAttempt(
+        return RouterAttempt(
             reservation,
             body,
             ttls,
             key,
-            cert=cert,
-            hour_after_key=hour_after_key,
-            server_tools=server_tools,
+            cert=cache.cert,
+            hour_after_key=cache.hour_after_key,
+            server_tools=cache.server_tools,
         )
-        label = attempt.account
-        if (
-            not isinstance(label, str)
-            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", label) is None
-            or "sk-ant" in label.lower()
-            or mask_key_runs(label, key) != label
-        ):
-            label = None
-        record_selected_attempt(
-            attempt_id=str(attempt.attempt_id), provider="anthropic", account_label=label
+
+    async def begin_probe(self, name: str) -> RouterAttempt:
+        """Reserve the smallest fixed probe on a named account with a billing block."""
+        account = next((spec for spec in self.accounts if spec.name == name), None)
+        if account is None:
+            raise AccountRoutingError(RouterErrorCode.PROBE_ACCOUNT_UNKNOWN)
+        candidates = []
+        for model in self.revision.models:
+            body = freeze_request(
+                {
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "Reply OK."}],
+                    "service_tier": "standard_only",
+                }
+            )
+            candidates.append((quote_ceiling(self.revision, body), body))
+        quote, body = min(
+            candidates,
+            key=lambda candidate: (candidate[0].ceiling_nusd, candidate[0].requested_model),
         )
-        # The prompt-cache entries this attempt writes or reads are evidenced on its account.
-        note_attempt(label)
-        return attempt
+        with CancelScope(shield=True):
+            reservation = await self.ledger.reserve_probe(account, uuid4(), quote)
+        return await self._attempt_with_key(
+            reservation, body, frozenset(), RoutedCacheEvidence(None, False, False)
+        )
+
+    def probe_usage(self, body: Any) -> CompleteUsage | UnknownOutcome:
+        if isinstance(body, Mapping):
+            evidence = usage_outcome(
+                self.revision, frozenset(), body.get("model"), body.get("usage"), None
+            )
+            if isinstance(evidence, CompleteUsage):
+                return evidence
+        # Ordinary pricing refusals can name a field from the provider payload.
+        return UnknownOutcome("usage_incomplete")
+
+    async def finish_probe(
+        self,
+        attempt: RouterAttempt,
+        evidence: Evidence,
+        *,
+        http_status: int | None,
+        provider_error_type: str | None,
+    ) -> bool:
+        with CancelScope(shield=True):
+            return await self.ledger.settle_probe(
+                attempt.attempt_id,
+                evidence,
+                http_status=http_status,
+                provider_error_type=provider_error_type,
+            )
 
     async def settle_response(
         self, attempt: RouterAttempt, body: Any, *, http_status: int | None = None
@@ -243,10 +310,12 @@ class AccountRouter:
     async def settle_reservation_not_sent(
         self, reservation: Reservation, *, caller_cancelled: bool = False
     ) -> None:
+        evidence = ProvenNotSent(caller_cancelled=caller_cancelled)
         with CancelScope(shield=True):
-            await self.ledger.settle(
-                reservation.attempt_id, ProvenNotSent(caller_cancelled=caller_cancelled)
-            )
+            if reservation.scope.kind == "probe":
+                await self.ledger.settle_probe(reservation.attempt_id, evidence, http_status=None)
+            else:
+                await self.ledger.settle(reservation.attempt_id, evidence)
 
     async def block(self, attempt: RouterAttempt, reason: str) -> None:
         with CancelScope(shield=True):
@@ -298,62 +367,6 @@ class AccountRouter:
                 attempt.attempt_id, evidence, http_status=http_status
             )
             return reason
-
-
-def _has_hour_mark(value: Any) -> bool:
-    """Whether ``value`` holds a cache mark of one hour at any depth."""
-    if isinstance(value, dict):
-        mark = value.get("cache_control")
-        if isinstance(mark, dict) and mark.get("ttl") == "1h":
-            return True
-        return any(_has_hour_mark(inner) for inner in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_has_hour_mark(inner) for inner in value)
-    return False
-
-
-def _warm_evidence(parsed: Mapping[str, Any]) -> tuple[str | None, bool]:
-    """The cache point a request is certified by, and whether a one-hour mark follows it.
-
-    The point is the last block of the tools or the system that takes a mark and carries a
-    one-hour one, and its certificate names the prefix up to and including that block. A request
-    with no such block has no point and yields ``(None, False)``. The flag is true when a block
-    read after the point carries a one-hour mark, at any depth, or when the request's own
-    top-level one-hour mark has a block after the point to land on. A system or message content
-    given as a string carries no mark.
-    """
-    # Imported here because that module imports the Messages endpoint, which uses this one.
-    from lionhub.providers.anthropic._prompt_cache import points
-
-    blocks, _ = points(parsed)
-    keys = [
-        point
-        for point in blocks
-        if point.tier in ("tools", "system") and point.markable and point.mark == "1h"
-    ]
-    if not keys:
-        return None, False
-    key = keys[-1]
-    tools = parsed.get("tools")
-    system = parsed.get("system")
-    later: list[Any] = []
-    if key.tier == "tools":
-        if isinstance(tools, list):
-            later.extend(tools[key.slot + 1 :])
-        if isinstance(system, list):
-            later.extend(system)
-    elif isinstance(system, list):
-        later.extend(system[key.slot + 1 :])
-    for message in parsed.get("messages") or ():
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            later.extend(content)
-    if _has_hour_mark(later):
-        return key.cert, True
-    top = parsed.get("cache_control")
-    if isinstance(top, dict) and top.get("ttl") == "1h":
-        return key.cert, any(point.markable and point.index > key.index for point in blocks)
-    return key.cert, False
 
 
 def _refuse(code: RouterErrorCode) -> AccountRoutingError:

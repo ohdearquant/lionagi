@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .machine import MachineError, available, unavailable
+from .studio_client import studio_request, with_unauthorized_hint
 
 __all__ = ("dispatch_schedule",)
 
@@ -54,14 +55,7 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
     from lionagi.ln._ssrf import open_url
 
     url = f"{_studio_url()}/api/schedules{path}"
-    data = json.dumps(body).encode() if body is not None else None
-    declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
-    request = urllib.request.Request(  # noqa: S310 — fixed http(s) Studio base URL
-        url,
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"} if declares_json else {},
-    )
+    request = studio_request(url, method=method, body=body)
     started_at = time.monotonic()
     try:
         with open_url(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:
@@ -126,7 +120,7 @@ def _http_message(code: int, detail: str) -> str:
             detail = parsed["detail"]
     except json.JSONDecodeError:
         pass
-    return f"Studio refused with HTTP {code}: {detail}"
+    return with_unauthorized_hint(code, f"Studio refused with HTTP {code}: {detail}")
 
 
 # ── argv, parsed by the parser the CLI itself builds ─────────────────────────

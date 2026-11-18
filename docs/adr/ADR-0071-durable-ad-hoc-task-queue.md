@@ -68,7 +68,7 @@ Out of scope:
 The shipped contract is:
 
 ```python
-# lionagi/studio/services/task_applications.py
+# lionhub/src/lionhub/serve/daemon/services/task_applications.py
 @dataclass(frozen=True)
 class TaskApplication:
     action_kind: str
@@ -115,7 +115,7 @@ Why this way: one dataclass gives future CLI and HTTP bindings the same library 
 rejecting the dormant idempotency field is safer than accepting a contract the database does not
 enforce.
 
-Code anchor: `lionagi/studio/services/task_applications.py` (`TaskApplication`, `_validate`,
+Code anchor: `lionhub/src/lionhub/serve/daemon/services/task_applications.py` (`TaskApplication`, `_validate`,
 `submit_task`).
 
 ### D2 — Ad-hoc tasks reuse `schedule_runs`

@@ -35,7 +35,11 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
-from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
+from ._notify import (
+    notice_context_for_run,
+    register_flow_notify_scope,
+    unregister_flow_notify_scope,
+)
 from ._orchestration import (
     OrchestrationEnv,
     _hand_mcp_servers,
@@ -186,6 +190,7 @@ async def _run_fanout(
     project: str | None = None,
     pack: str | None = None,
     notify: str | None = None,
+    notify_sender: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
     mcp_submit_snapshot: str | None = None,
@@ -253,6 +258,7 @@ async def _run_fanout(
         _pending_worker_cancel = None
         _notify_scope_name = None
         _notify_outcome_scope_name = None
+        notice_context = notice_context_for_run(env.run, cwd=cwd, sender=notify_sender)
         try:
             await start_live_persist(
                 env,
@@ -324,6 +330,7 @@ async def _run_fanout(
                     entity_kind="session",
                     entity_id=str(env.session.id),
                     project_dir=cwd,
+                    notice_context=notice_context,
                 )
             )
 

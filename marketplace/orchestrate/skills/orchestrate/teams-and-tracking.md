@@ -135,5 +135,5 @@ follow-up actions. Chains are recursive (DAG of DAGs) with a depth cap at 10.
 
 - Scheduler engine: `lionhub/src/lionhub/orchestration/scheduler/engine.py`
 - GitHub poller: `lionhub/src/lionhub/orchestration/scheduler/github.py`
-- REST endpoints: `lionagi/studio/services/schedules.py`
+- REST endpoints: `lionhub/src/lionhub/serve/daemon/services/schedules.py`
 - Schema: `lionagi/state/schema.sql` (schedules + schedule_runs tables)

@@ -17,7 +17,7 @@ This ADR answers six concrete problems in the shipped extension.
 
 **P1 — Editor observability must not create a second data model.** Direct SQLite reads
 would duplicate joins, lifecycle classification, auth, and live-stream behavior already
-owned by the daemon (`apps/vscode/src/api/*`; `lionagi/studio/services/runs.py`).
+owned by the daemon (`apps/vscode/src/api/*`; `lionhub/src/lionhub/serve/daemon/services/runs.py`).
 
 **P2 — “Read-only” must distinguish application state from process supervision.** The
 extension starts or stops a Python child, but its `StudioClient` only issues GET requests.

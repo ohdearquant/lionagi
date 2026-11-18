@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from lionagi import Branch, MemoryItem, MemoryQuery, Node
-from lionagi.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
+from lionhub.integrations.ruvector import RuVectorMemoryStore, RuVectorStore
 
 
 async def example_embedding(text: str) -> list[float]:

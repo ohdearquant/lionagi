@@ -207,6 +207,7 @@ nav:
       - Studio model: concepts/studio-model.md
       - Studio surfaces: reference/studio-surfaces.md
       - Scheduling workflows: guides/scheduling-workflows.md
+      - Remote legs: guides/remote-legs.md
       - Connect an MCP client: guides/mcp-setup.md
       - MCP server: reference/mcp-server.md
       - Providers: reference/providers.md

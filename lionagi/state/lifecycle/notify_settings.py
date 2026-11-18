@@ -13,7 +13,9 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -34,6 +36,7 @@ from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
     EXECUTION_ENTITY_KINDS,
     HANDLER_BUDGET_SECONDS,
+    SCHEMA_VERSION,
     RunTerminalEnvelope,
     TerminalCallbackHandler,
     TerminalCallbackRegistry,
@@ -70,33 +73,6 @@ def _looks_like_shell(command: str) -> bool:
     return bool(_SHELL_FEATURE_RE.search(unquoted))
 
 
-def _resolution_warning(safe: bool, message: str, *args: Any) -> None:
-    if not safe:
-        logger.warning(message, *args)
-
-
-def _warn_empty_argv(scope: str, *, safe: bool = False) -> None:
-    _resolution_warning(
-        safe,
-        "notify.on_terminal (%s) resolved to an empty command; use the "
-        "argv-list mapping form ({adapter: {kind: exec, argv: [...]}}) to "
-        "configure a real command. Resolving to disabled.",
-        scope,
-    )
-
-
-def _warn_shell_feature(command: str, scope: str, *, safe: bool = False) -> None:
-    _resolution_warning(
-        safe,
-        "notify.on_terminal (%s) value %r requires shell features (pipes, "
-        "redirection, conjunction, or variable expansion) that are never "
-        "honored -- no configuration shape reaches a shell. Use the "
-        "argv-list mapping form instead. Resolving to disabled.",
-        scope,
-        command,
-    )
-
-
 @dataclass(frozen=True)
 class ResolvedNotifyHandler:
     """A validated, launchable adapter -- exactly one of argv/python_ref is set."""
@@ -114,8 +90,8 @@ class NotifyConfigResolution:
     ``reason`` is set iff a notifier was asked for and rejected -- chosen
     silence (nothing configured, or explicitly off) carries no reason, so a
     misconfigured notifier stays distinguishable from an absent one. Reasons
-    are short stable identifiers, never interpolated user data (persisted and
-    read back); the offending value goes in the matching warning instead.
+    are short stable identifiers suitable for persistence. Legacy diagnostics
+    may describe the offending value. Durable diagnostics carry scope and reason.
     """
 
     handler: ResolvedNotifyHandler | None = None
@@ -161,6 +137,40 @@ def _rejected(reason: str) -> NotifyConfigResolution:
     return NotifyConfigResolution(reason=reason)
 
 
+class _ResolutionReporter(Protocol):
+    def reject(self, reason: str, diagnostic: str, /, *args: Any) -> NotifyConfigResolution: ...
+
+
+@dataclass(frozen=True)
+class _LegacyResolutionReporter:
+    scope: str
+
+    def reject(self, reason: str, diagnostic: str, /, *args: Any) -> NotifyConfigResolution:
+        logger.warning("notify.on_terminal (%s) " + diagnostic, self.scope, *args)
+        return _rejected(reason)
+
+
+@dataclass(frozen=True)
+class _DurableResolutionReporter:
+    scope: str
+
+    def warn_rejection(self, reason: str) -> None:
+        logger.warning("notify.on_terminal %s configuration rejected: %s", self.scope, reason)
+
+    def reject(self, reason: str, _diagnostic: str = "", /, *_args: Any) -> NotifyConfigResolution:
+        self.warn_rejection(reason)
+        return _rejected(reason)
+
+
+def _reject_empty_argv(reporter: _ResolutionReporter) -> NotifyConfigResolution:
+    return reporter.reject(
+        "on_terminal_command_is_empty",
+        "resolved to an empty command; use the "
+        "argv-list mapping form ({adapter: {kind: exec, argv: [...]}}) to "
+        "configure a real command. Resolving to disabled.",
+    )
+
+
 def _raw_terminal_layer(settings: Any) -> tuple[Any, str | None]:
     if not isinstance(settings, dict):
         return None, "settings_root_not_mapping"
@@ -173,22 +183,21 @@ def _raw_terminal_layer(settings: Any) -> tuple[Any, str | None]:
 
 
 def _resolve_durable_config(settings: Any, *, scope: str) -> NotifyConfigResolution:
+    reporter = _DurableResolutionReporter(scope)
     source, reason = _raw_terminal_layer(settings)
     if reason is not None:
-        resolution = _rejected(reason)
-    elif source is None:
-        resolution = _NOT_CONFIGURED
-    elif isinstance(source, dict) and type(source.get("enabled", True)) is not bool:
-        resolution = _rejected("enabled_not_boolean")
-    elif isinstance(source, dict) and source.get("enabled", True) is False:
-        resolution = _NOT_CONFIGURED
-    elif isinstance(source, dict) and not isinstance(source.get("adapter"), dict):
-        resolution = _rejected("enabled_without_adapter")
-    else:
-        resolution = _resolve_shape(source, scope=scope, safe=True)
-    if resolution.reason is not None:
-        logger.warning("notify.on_terminal %s configuration rejected: %s", scope, resolution.reason)
-    return resolution
+        return reporter.reject(reason)
+    if source is None:
+        return _NOT_CONFIGURED
+    if isinstance(source, dict):
+        enabled = source.get("enabled", True)
+        if type(enabled) is not bool:
+            return reporter.reject("enabled_not_boolean")
+        if not enabled:
+            return _NOT_CONFIGURED
+        if not isinstance(source.get("adapter"), dict):
+            return reporter.reject("enabled_without_adapter")
+    return _resolve_shape(source, reporter=reporter)
 
 
 def resolve_durable_global_config(settings: Any) -> NotifyConfigResolution:
@@ -213,8 +222,7 @@ def classify_notify_provenance(
     elif project_source is not None and not isinstance(project_source, str):
         project_reason = "on_terminal_not_string_or_mapping"
     if declared and project_reason is not None:
-        project_config = _rejected(project_reason)
-        logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
+        project_config = _DurableResolutionReporter("project").reject(project_reason)
     elif declared:
         project_config = _resolve_durable_config(
             {"notify": {"on_terminal": project_source}}, scope="project"
@@ -222,18 +230,15 @@ def classify_notify_provenance(
     else:
         project_config = _NOT_CONFIGURED
         if project_reason is not None:
-            logger.warning("notify.on_terminal project configuration rejected: %s", project_reason)
+            _DurableResolutionReporter("project").warn_rejection(project_reason)
     run_declared = override is not None
+    run_reporter = _DurableResolutionReporter("override")
     if isinstance(override, dict) and type(override.get("enabled", True)) is not bool:
-        run_config = _rejected("enabled_not_boolean")
+        run_config = run_reporter.reject("enabled_not_boolean")
     else:
         run_config = (
-            _resolve_shape(override, scope="override", safe=True)
-            if run_declared
-            else _NOT_CONFIGURED
+            _resolve_shape(override, reporter=run_reporter) if run_declared else _NOT_CONFIGURED
         )
-    if run_config.reason is not None:
-        logger.warning("notify.on_terminal override configuration rejected: %s", run_config.reason)
     return NotifyProvenance(
         global_config=global_config,
         project_declared=declared,
@@ -258,7 +263,7 @@ def resolve_notify_config(
     notifier is distinguished from an unconfigured one.
     """
     if override is not None:
-        return _resolve_shape(override, scope="override")
+        return _resolve_shape(override, reporter=_LegacyResolutionReporter("override"))
 
     if settings is None:
         try:
@@ -270,52 +275,52 @@ def resolve_notify_config(
     source = notify_cfg.get("on_terminal") if isinstance(notify_cfg, dict) else None
     if source is None:
         return _NOT_CONFIGURED  # no notifier configured -- the documented default
-    return _resolve_shape(source, scope="settings")
+    return _resolve_shape(source, reporter=_LegacyResolutionReporter("settings"))
 
 
-def _resolve_shape(source: Any, *, scope: str, safe: bool = False) -> NotifyConfigResolution:
+def _resolve_shape(source: Any, *, reporter: _ResolutionReporter) -> NotifyConfigResolution:
     if isinstance(source, str):
-        return _resolve_string(source, scope=scope, safe=safe)
+        return _resolve_string(source, reporter=reporter)
     if isinstance(source, dict):
-        return _resolve_mapping(source, scope=scope, safe=safe)
-    _resolution_warning(
-        safe,
-        "notify.on_terminal (%s) must be a string or mapping, got %s: %r",
-        scope,
+        return _resolve_mapping(source, reporter=reporter)
+    return reporter.reject(
+        "on_terminal_not_string_or_mapping",
+        "must be a string or mapping, got %s: %r",
         type(source).__name__,
         source,
     )
-    return _rejected("on_terminal_not_string_or_mapping")
 
 
-def _resolve_string(command: str, *, scope: str, safe: bool = False) -> NotifyConfigResolution:
+def _resolve_string(command: str, *, reporter: _ResolutionReporter) -> NotifyConfigResolution:
     if not command.strip():
-        _warn_empty_argv(scope, safe=safe)
-        return _rejected("on_terminal_command_is_empty")
+        return _reject_empty_argv(reporter)
     if _looks_like_shell(command):
-        _warn_shell_feature(command, scope, safe=safe)
-        return _rejected("on_terminal_command_requires_shell_features")
+        return reporter.reject(
+            "on_terminal_command_requires_shell_features",
+            "value %r requires shell features (pipes, "
+            "redirection, conjunction, or variable expansion) that are never "
+            "honored -- no configuration shape reaches a shell. Use the "
+            "argv-list mapping form instead. Resolving to disabled.",
+            command,
+        )
     try:
         argv = shlex.split(command)
     except ValueError as exc:
-        _resolution_warning(
-            safe,
-            "notify.on_terminal (%s) value %r failed to parse as an argv "
+        return reporter.reject(
+            "on_terminal_command_not_parseable",
+            "value %r failed to parse as an argv "
             "command (%s); use the argv-list mapping form instead. "
             "Resolving to disabled.",
-            scope,
             command,
             exc,
         )
-        return _rejected("on_terminal_command_not_parseable")
     if not argv:
-        _warn_empty_argv(scope, safe=safe)
-        return _rejected("on_terminal_command_is_empty")
+        return _reject_empty_argv(reporter)
     return NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=tuple(argv)))
 
 
 def _resolve_mapping(
-    cfg: dict[str, Any], *, scope: str, safe: bool = False
+    cfg: dict[str, Any], *, reporter: _ResolutionReporter
 ) -> NotifyConfigResolution:
     if cfg.get("enabled") is False:
         # Notification was configured off. Nothing was rejected, so this is the
@@ -327,25 +332,20 @@ def _resolve_mapping(
     if "filter" in cfg:
         filt = cfg["filter"]
         if not isinstance(filt, Mapping) or not filt:
-            _resolution_warning(
-                safe,
-                "notify.on_terminal (%s) filter must be a non-empty mapping, "
-                "got %r; resolving to disabled.",
-                scope,
+            return reporter.reject(
+                "filter_not_a_mapping",
+                "filter must be a non-empty mapping, got %r; resolving to disabled.",
                 filt,
             )
-            return _rejected("filter_not_a_mapping")
 
         unknown_keys = tuple(key for key in filt if key not in {"kinds", "ids"})
         if unknown_keys:
-            _resolution_warning(
-                safe,
-                "notify.on_terminal (%s) filter keys must be 'kinds' and/or "
+            return reporter.reject(
+                "filter_has_unknown_keys",
+                "filter keys must be 'kinds' and/or "
                 "'ids', got unknown keys %r; resolving to disabled.",
-                scope,
                 unknown_keys,
             )
-            return _rejected("filter_has_unknown_keys")
 
         if "kinds" in filt:
             kinds = filt["kinds"]
@@ -354,25 +354,21 @@ def _resolve_mapping(
                 or not kinds
                 or not all(isinstance(kind, str) for kind in kinds)
             ):
-                _resolution_warning(
-                    safe,
-                    "notify.on_terminal (%s) filter.kinds must be a list of "
+                return reporter.reject(
+                    "filter_kinds_not_a_list_of_strings",
+                    "filter.kinds must be a list of "
                     "strings with at least one value, got %r; resolving to disabled.",
-                    scope,
                     kinds,
                 )
-                return _rejected("filter_kinds_not_a_list_of_strings")
             unsupported_kinds = tuple(kind for kind in kinds if kind not in EXECUTION_ENTITY_KINDS)
             if unsupported_kinds:
-                _resolution_warning(
-                    safe,
-                    "notify.on_terminal (%s) filter.kinds contains unsupported "
+                return reporter.reject(
+                    "filter_kinds_unsupported",
+                    "filter.kinds contains unsupported "
                     "terminal entity kinds %r; expected only %r; resolving to disabled.",
-                    scope,
                     unsupported_kinds,
                     tuple(sorted(EXECUTION_ENTITY_KINDS)),
                 )
-                return _rejected("filter_kinds_unsupported")
             filter_kinds = tuple(kinds)
 
         if "ids" in filt:
@@ -382,26 +378,21 @@ def _resolve_mapping(
                 or not ids
                 or not all(isinstance(entity_id, str) and bool(entity_id) for entity_id in ids)
             ):
-                _resolution_warning(
-                    safe,
-                    "notify.on_terminal (%s) filter.ids must be a list of "
+                return reporter.reject(
+                    "filter_ids_not_a_list_of_strings",
+                    "filter.ids must be a list of "
                     "strings with at least one value, got %r; resolving to disabled.",
-                    scope,
                     ids,
                 )
-                return _rejected("filter_ids_not_a_list_of_strings")
             filter_ids = tuple(ids)
 
     adapter = cfg.get("adapter")
     if not isinstance(adapter, dict):
         if cfg.get("enabled"):
-            _resolution_warning(
-                safe,
-                "notify.on_terminal (%s) mapping form is enabled with no "
-                "adapter configured; resolving to disabled.",
-                scope,
+            return reporter.reject(
+                "enabled_without_adapter",
+                "mapping form is enabled with no adapter configured; resolving to disabled.",
             )
-            return _rejected("enabled_without_adapter")
         # A mapping that never asked to be enabled and names no adapter asked
         # for nothing; that is the chosen silence, not a rejected notifier.
         return _NOT_CONFIGURED
@@ -410,17 +401,13 @@ def _resolve_mapping(
     if kind == "exec":
         argv = adapter.get("argv")
         if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
-            _resolution_warning(
-                safe,
-                "notify.on_terminal (%s) exec adapter requires an argv "
-                "list of strings, got %r; resolving to disabled.",
-                scope,
+            return reporter.reject(
+                "exec_adapter_argv_not_a_list_of_strings",
+                "exec adapter requires an argv list of strings, got %r; resolving to disabled.",
                 argv,
             )
-            return _rejected("exec_adapter_argv_not_a_list_of_strings")
         if not argv:
-            _warn_empty_argv(scope, safe=safe)
-            return _rejected("on_terminal_command_is_empty")
+            return _reject_empty_argv(reporter)
         return NotifyConfigResolution(
             handler=ResolvedNotifyHandler(
                 argv=tuple(argv), filter_kinds=filter_kinds, filter_ids=filter_ids
@@ -430,28 +417,22 @@ def _resolve_mapping(
     if kind == "python":
         ref = adapter.get("ref")
         if not isinstance(ref, str) or ":" not in ref:
-            _resolution_warning(
-                safe,
-                "notify.on_terminal (%s) python adapter requires a "
-                "'module:callable' ref, got %r; resolving to disabled.",
-                scope,
+            return reporter.reject(
+                "python_adapter_ref_invalid",
+                "python adapter requires a 'module:callable' ref, got %r; resolving to disabled.",
                 ref,
             )
-            return _rejected("python_adapter_ref_invalid")
         return NotifyConfigResolution(
             handler=ResolvedNotifyHandler(
                 python_ref=ref, filter_kinds=filter_kinds, filter_ids=filter_ids
             )
         )
 
-    _resolution_warning(
-        safe,
-        "notify.on_terminal (%s) adapter kind must be 'exec' or 'python', "
-        "got %r; resolving to disabled.",
-        scope,
+    return reporter.reject(
+        "adapter_kind_unsupported",
+        "adapter kind must be 'exec' or 'python', got %r; resolving to disabled.",
         kind,
     )
-    return _rejected("adapter_kind_unsupported")
 
 
 class RunNotifyRecord(Protocol):
@@ -597,8 +578,86 @@ ArgvBuilder = Callable[[tuple[str, ...], RunTerminalEnvelope], Sequence[str]]
 EnvBuilder = Callable[[RunTerminalEnvelope], Mapping[str, str]]
 
 
+@dataclass(frozen=True)
+class TerminalNoticeContext:
+    """Optional run facts supplied by the execution surface."""
+
+    run_id: str | None = None
+    label: str | None = None
+    sender: str | None = None
+    cwd: str | None = None
+    output_dir: str | None = None
+
+    def payload(self, envelope: RunTerminalEnvelope) -> dict[str, Any]:
+        output_dir = self.output_dir or next(
+            (
+                artifact["location"]
+                for artifact in envelope.artifacts
+                if artifact.get("kind") in {"run_dir", "artifact_root"}
+                and isinstance(artifact.get("location"), str)
+            ),
+            None,
+        )
+        return build_terminal_notice_payload(
+            run_id=self.run_id or envelope.correlation.run_id,
+            status=envelope.terminal_status,
+            reason_code=envelope.reason_code,
+            label=self.label,
+            sender=self.sender,
+            cwd=self.cwd,
+            output_dir=output_dir,
+            extensions=envelope.to_dict(),
+        )
+
+
+def build_terminal_notice_payload(
+    *,
+    status: str,
+    run_id: str | None = None,
+    reason_code: str | None = None,
+    label: str | None = None,
+    sender: str | None = None,
+    cwd: str | None = None,
+    output_dir: str | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the common executable-notifier fields and retain existing extension fields."""
+    payload = dict(extensions or {})
+    payload.setdefault("schema_version", SCHEMA_VERSION)
+    payload.update(
+        run_id=run_id,
+        status=status,
+        reason_code=reason_code,
+        label=label,
+        sender=sender,
+        cwd=cwd,
+        output_dir=output_dir,
+    )
+    return payload
+
+
+_notice_scope: ContextVar[tuple[str, str, TerminalNoticeContext] | None] = ContextVar(
+    "terminal_notice_scope", default=None
+)
+
+
+@contextmanager
+def bind_terminal_notice_context(
+    entity_kind: str, entity_id: str, context: TerminalNoticeContext
+) -> Iterator[None]:
+    """Supply exec payload context for one entity without changing handler selection."""
+    token = _notice_scope.set((entity_kind, entity_id, context))
+    try:
+        yield
+    finally:
+        _notice_scope.reset(token)
+
+
 def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
-    return envelope.to_dict()
+    scope = _notice_scope.get()
+    if scope is not None and (envelope.entity.kind, envelope.entity.id) == scope[:2]:
+        return scope[2].payload(envelope)
+    return TerminalNoticeContext().payload(envelope)
 
 
 def _noop_outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
@@ -869,10 +928,12 @@ def register_run_notify_outcome_scope(
     entity_id: str,
     registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
     project_dir: str | None = None,
+    notice_context: TerminalNoticeContext | None = None,
 ) -> str | None:
-    """Bind the settings-driven notify.on_terminal exec adapter's outcome to
-    *run*, scoped to this run's own terminal entity. An override registration,
-    so it takes over dispatch for this entity from the process-wide default.
+    """Bind a settings notifier to one terminal entity and record the outcome on *run*.
+
+    The scoped registration takes over dispatch for that entity from the
+    process-wide default.
     Returns the registration name (pass to
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
     ``None`` if disabled or filtered out (never raises); a notifier this run
@@ -900,7 +961,12 @@ def register_run_notify_outcome_scope(
     def _build_failure(reason: str) -> None:
         record_notify_rejection_to_run(run, reason)
 
-    handler = build_handler(resolved, outcome_fn=_outcome_fn, on_build_failure=_build_failure)
+    handler = build_handler(
+        resolved,
+        payload_fn=notice_context.payload if notice_context is not None else _default_payload,
+        outcome_fn=_outcome_fn,
+        on_build_failure=_build_failure,
+    )
     if handler is None:
         return None
     name = f"notify.settings.on_terminal.{entity_kind}.{entity_id}"

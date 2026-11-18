@@ -22,8 +22,8 @@ import yaml
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.studio.services.playbooks import _check_spec_fields
-from lionagi.studio.services.schedules import _validate_flow_yaml_spec
 from lionhub.serve.cli.orchestrate import _FLOW_SPEC_FIELDS, _validate_spec_fields
+from lionhub.serve.daemon.services.schedules import _validate_flow_yaml_spec
 
 
 def _schedule_spec(spec: dict) -> str | None:

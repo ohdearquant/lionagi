@@ -11,9 +11,11 @@ import math
 import os
 import re
 import shutil
+import signal
+import socket
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
@@ -23,7 +25,19 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
-from lionagi.ln._proc import env_without_state_db_url
+from lionagi.ln._proc import (
+    _PROCESS_GROUP_MARKER,
+    _await_child_exit,
+    _group_has_members,
+    _marker_matches,
+    _RecordedWorkerIdentity,
+    env_without_state_db_url,
+    kill_group_now,
+    live_group_members,
+    safe_pgid_value,
+    signal_group_if_witnessed,
+)
+from lionagi.ln.concurrency.errors import shield_quietly
 from lionhub.orchestration.schedule.action_validation import (
     _COMMAND_ALLOWLIST_ENV,  # noqa: F401
     _COMMAND_RE,  # noqa: F401
@@ -429,6 +443,81 @@ class SubprocessDeadlineExceededError(TimeoutError):
         )
 
 
+class _CommandProcessPublicationError(RuntimeError):
+    """A scheduled command could not be given a durable process identity."""
+
+
+class _CommandProcessPublicationRefusedError(_CommandProcessPublicationError):
+    """The invocation changed before the process identity write could land."""
+
+
+def _kill_unpublished_command_group(proc: asyncio.subprocess.Process, group_marker: str) -> bool:
+    """End a command session from this producer's own successful spawn."""
+    pgid = safe_pgid_value(proc.pid)
+    if os.name != "posix" or pgid is None:
+        return False
+
+    # A direct child still leading the session it started anchors the group
+    # even when its durable identity could not be read or committed.
+    if proc.returncode is None:
+        import psutil
+
+        try:
+            owns_session = (
+                os.getsid(pgid) == pgid == os.getpgid(pgid)
+                and psutil.Process(pgid).ppid() == os.getpid()
+            )
+        except (OSError, psutil.Error):
+            owns_session = False
+        if owns_session:
+            return kill_group_now(pgid)
+
+    # Once the leader is gone, only a live member carrying the marker from this
+    # launch can distinguish our old group from a reused numeric ID.
+    members, _ = live_group_members(pgid, marker_var=_PROCESS_GROUP_MARKER)
+    marked = tuple(
+        (pid, created)
+        for pid, created, marker, marker_read in members
+        if marker_read and _marker_matches(marker, group_marker)
+    )
+    return signal_group_if_witnessed(pgid, marked, signal.SIGKILL)
+
+
+async def _publish_command_process(
+    proc: asyncio.subprocess.Process,
+    leader_created: float | None,
+    publish: Callable[[_RecordedWorkerIdentity], Awaitable[bool]],
+) -> None:
+    if leader_created is None:
+        # A short command can exit before observation. Continue only if the
+        # owned handle has reaped it and the group is gone too.
+        pgid = safe_pgid_value(proc.pid)
+        if proc.returncode is not None and pgid is not None and not _group_has_members(pgid):
+            return
+        raise _CommandProcessPublicationError("Could not identify the scheduled command process.")
+
+    try:
+        import psutil
+
+        host = socket.gethostname()
+        boot_time = psutil.boot_time()
+        if not host.strip() or not math.isfinite(boot_time):
+            raise ValueError("Incomplete local host identity")
+        published = await publish(
+            _RecordedWorkerIdentity(proc.pid, proc.pid, leader_created, host, boot_time, "local")
+        )
+    except Exception:
+        # Storage errors can include request context. The scheduler records
+        # this error on the run, so carry only the stable diagnostic.
+        raise _CommandProcessPublicationError(
+            "Could not record the scheduled command process."
+        ) from None
+    if not published:
+        raise _CommandProcessPublicationRefusedError(
+            "Invocation changed before the scheduled command process could be recorded."
+        )
+
+
 def _validated_deadline_seconds(value: str | int | float) -> float:
     try:
         seconds = float(value)
@@ -439,13 +528,16 @@ def _validated_deadline_seconds(value: str | int | float) -> float:
     return seconds
 
 
-async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
+async def _drain_tail(
+    stream: asyncio.StreamReader | None, limit: int, *, counter: list[int] | None = None
+) -> bytes:
     """Read a pipe to EOF, keeping only its last *limit* bytes.
 
     Reading has to continue to EOF even though nearly all of it is thrown away.
     A child writing to a pipe nobody drains blocks once the OS buffer fills, so
     "read what I want and stop" is a deadlock for any process that outproduces
-    the buffer — which is every streaming agent leg.
+    the buffer — which is every streaming agent leg. *counter*, if given, has its
+    first item increased by every byte read.
     """
     if stream is None:
         return b""
@@ -454,6 +546,8 @@ async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
         chunk = await stream.read(8192)
         if not chunk:
             return tail
+        if counter is not None:
+            counter[0] += len(chunk)
         tail = (tail + chunk)[-limit:]
 
 
@@ -482,7 +576,11 @@ async def spawn_and_wait(
     cwd: str | None = None,
     action_kind: str | None = None,
     on_launched: Callable[[], Awaitable[None]] | None = None,
+    publish_command_process: Callable[[_RecordedWorkerIdentity], Awaitable[bool]] | None = None,
     deadline_seconds: float | None = None,
+    env: Mapping[str, str] | None = None,
+    stdout_sink: Callable[[bytes, int], None] | None = None,
+    stdout_sink_bytes: int = _TAIL_BYTES,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
@@ -497,9 +595,19 @@ async def spawn_and_wait(
     the allow-list re-check race this closes and why streams can't drain
     sequentially.
 
+    *publish_command_process*, if given, records the owned command identity
+    after the dispatch callback. A refused or failed publish ends the group
+    before reporting the launch failure.
+
     *deadline_seconds* defaults to the validated global/per-action-kind
     Studio setting; expiry terminates the owned process group before
     raising :class:`SubprocessDeadlineExceededError`.
+
+    *env*, if given, is the whole environment the child starts with in place of
+    the daemon's own (the invocation id is still added). *stdout_sink*, if given,
+    is called once after a normal exit with the last *stdout_sink_bytes* of
+    standard output and the total byte count, so a caller can keep more of it than
+    the diagnostic tail holds.
     """
     if deadline_seconds is None:
         from lionhub.orchestration.scheduler.settings import invocation_deadline_seconds
@@ -512,7 +620,7 @@ async def spawn_and_wait(
         _validate_action_command(command)
         _validate_command_allowlisted(command)
 
-    base_env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    base_env = {**(os.environ if env is None else env), "LIONAGI_INVOCATION_ID": invocation_id}
     if action_kind == "command":
         # A command is an arbitrary program, often run by another interpreter with its own
         # lionagi; see env_without_state_db_url. Every `li` child keeps the URL, so its run
@@ -539,18 +647,30 @@ async def spawn_and_wait(
     )
     # Pgid == proc.pid; cleanup authority remains bound to this spawn identity.
 
+    stdout_total = [0]
     drain = asyncio.gather(
-        _drain_tail(proc.stdout, _TAIL_BYTES),
+        _drain_tail(
+            proc.stdout,
+            max(_TAIL_BYTES, stdout_sink_bytes) if stdout_sink is not None else _TAIL_BYTES,
+            counter=stdout_total,
+        ),
         _drain_tail(proc.stderr, _TAIL_BYTES),
     )
 
-    async def _stop_child() -> None:
-        # SIGTERM then SIGKILL the whole group. The readers are cancelled first: they
-        # are blocked on pipes belonging to the process being killed, and an
-        # un-cancelled reader outlives it.
+    async def _stop_child(*, failed_publication: bool = False) -> None:
+        # Send the launch-abort signal while the dedicated session still has its
+        # original child. Stop the readers before the ordinary termination path.
+        group_killed = (
+            failed_publication
+            and action_kind == "command"
+            and _kill_unpublished_command_group(proc, group_marker)
+        )
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
+        if group_killed:
+            await _await_child_exit(proc)
+            return
         group_witnesses = (
             capture_group_witnesses(
                 proc,
@@ -578,11 +698,16 @@ async def spawn_and_wait(
                         "is already running regardless",
                         invocation_id,
                     )
+            if publish_command_process is not None:
+                await _publish_command_process(proc, leader_created, publish_command_process)
             stdout_tail, stderr_tail = await drain
             await proc.wait()
             return stdout_tail, stderr_tail
 
         stdout, stderr = await asyncio.wait_for(_wait_for_exit(), timeout=deadline_seconds)
+    except _CommandProcessPublicationError:
+        await shield_quietly(_stop_child(failed_publication=True))
+        raise
     except asyncio.TimeoutError as exc:
         _log.warning(
             "spawn_and_wait deadline exceeded; terminating child for %s after %ss",
@@ -606,7 +731,12 @@ async def spawn_and_wait(
                 os.unlink(tmp_path)
 
     exit_code = proc.returncode or 0
-    output_tail = _diagnostic_tail(stdout, stderr)
+    if stdout_sink is not None:
+        try:
+            stdout_sink(stdout, stdout_total[0])
+        except Exception:
+            _log.exception("stdout sink failed for invocation %s", invocation_id)
+    output_tail = _diagnostic_tail(stdout[-_TAIL_BYTES:], stderr)
 
     _log.info("Process exited with code %d", exit_code)
     return exit_code, output_tail

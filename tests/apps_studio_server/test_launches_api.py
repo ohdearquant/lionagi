@@ -47,7 +47,7 @@ def _stub_db_and_spawn(monkeypatch):
     db_ctx.__aexit__ = AsyncMock(return_value=False)
 
     monkeypatch.setattr(
-        "lionagi.studio.services.launches.StateDB",
+        "lionhub.serve.daemon.services.launches.StateDB",
         lambda *a, **kw: db_ctx,
     )
 
@@ -57,7 +57,7 @@ def _stub_db_and_spawn(monkeypatch):
         return MagicMock()
 
     monkeypatch.setattr(
-        "lionagi.studio.services.launches.asyncio.create_task",
+        "lionhub.serve.daemon.services.launches.asyncio.create_task",
         _consume_create_task,
     )
     return mock_db
@@ -66,7 +66,7 @@ def _stub_db_and_spawn(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_launch_state():
     """Reset module-global launch state to prevent slot and task-ref leaks between tests."""
-    import lionagi.studio.services.launches as svc
+    import lionhub.serve.daemon.services.launches as svc
 
     svc._launch_semaphore = None
     svc._detached_tasks.clear()
@@ -340,14 +340,16 @@ class TestLaunchArgvPath:
             return ([*executable_prefix, "agent", "--", "sonnet", "hi"], None)
 
         with (
-            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
             patch(
-                "lionagi.studio.services.launches.resolve_li_executable",
+                "lionhub.serve.daemon.services.launches.build_argv", side_effect=_fake_build_argv
+            ),
+            patch(
+                "lionhub.serve.daemon.services.launches.resolve_li_executable",
                 return_value=(["/opt/lionagi/bin/li"], None),
             ),
-            patch("lionagi.studio.services.launches.StateDB") as MockDB,
+            patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
             patch(
-                "lionagi.studio.services.launches.asyncio.create_task",
+                "lionhub.serve.daemon.services.launches.asyncio.create_task",
                 side_effect=_consume,
             ),
         ):
@@ -357,7 +359,7 @@ class TestLaunchArgvPath:
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
 
             self._run(
-                __import__("lionagi.studio.services.launches", fromlist=["launch"]).launch(
+                __import__("lionhub.serve.daemon.services.launches", fromlist=["launch"]).launch(
                     {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"}
                 )
             )
@@ -377,8 +379,10 @@ class TestLaunchArgvPath:
             return MagicMock()
 
         with (
-            patch("lionagi.studio.services.launches.StateDB") as MockDB,
-            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+            patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
+            patch(
+                "lionhub.serve.daemon.services.launches.asyncio.create_task", side_effect=_consume
+            ),
         ):
             mock_db = AsyncMock()
             mock_db.create_invocation = AsyncMock()
@@ -386,7 +390,7 @@ class TestLaunchArgvPath:
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
 
             result = self._run(
-                __import__("lionagi.studio.services.launches", fromlist=["launch"]).launch(
+                __import__("lionhub.serve.daemon.services.launches", fromlist=["launch"]).launch(
                     {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"}
                 )
             )
@@ -397,7 +401,7 @@ class TestLaunchArgvPath:
     def test_unresolved_installed_li_returns_503_before_recording(self, tmp_path, monkeypatch):
         """A pip-installed daemon with no resolvable console script fails clearly."""
         monkeypatch.setattr(
-            "lionagi.studio.services.launches.resolve_li_executable",
+            "lionhub.serve.daemon.services.launches.resolve_li_executable",
             lambda: (None, "no 'li' console_scripts entry point registered"),
         )
         mock_db = _stub_db_and_spawn(monkeypatch)
@@ -414,28 +418,28 @@ class TestLaunchArgvPath:
 
     def test_validate_request_rejects_flag_model(self):
         """_validate_request must reject action_model starting with '-'."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         with pytest.raises(ValueError, match="starts with '-'"):
             _validate_request({"action_kind": "agent", "action_model": "--bypass"})
 
     def test_validate_request_rejects_unknown_kind(self):
         """_validate_request must reject unknown action_kind."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         with pytest.raises(ValueError, match="not supported"):
             _validate_request({"action_kind": "unknown"})
 
     def test_validate_request_rejects_flow_yaml_without_spec(self):
         """_validate_request must reject flow_yaml when action_flow_yaml is absent."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         with pytest.raises(ValueError, match="required"):
             _validate_request({"action_kind": "flow_yaml"})
 
     def test_validate_request_accepts_valid_flow_yaml(self):
         """_validate_request must not raise for a valid flow_yaml request."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         _validate_request(
             {
@@ -447,7 +451,7 @@ class TestLaunchArgvPath:
 
     def test_validate_request_accepts_valid_agent(self):
         """_validate_request must not raise for a clean agent request."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         _validate_request(
             {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"}
@@ -455,9 +459,112 @@ class TestLaunchArgvPath:
 
     def test_validate_request_accepts_valid_play(self):
         """_validate_request must not raise for a clean play request."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         _validate_request({"action_kind": "play", "action_playbook": "my-playbook"})
+
+
+# action_cwd: the directory an on-demand launch runs in
+
+
+def _record_spawns(monkeypatch) -> list[dict]:
+    """Replace _spawn_detached with a recorder.
+
+    It records at call time, because the stubbed create_task closes the coroutine
+    it is handed without running it.
+    """
+    calls: list[dict] = []
+
+    def _recorded(argv, inv_id, **kwargs):
+        calls.append(kwargs)
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr("lionhub.serve.daemon.services.launches._spawn_detached", _recorded)
+    return calls
+
+
+_AGENT = {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hello"}
+
+
+@pytest.mark.integration
+class TestLaunchActionCwd:
+    def test_a_valid_cwd_reaches_the_spawn_and_the_row(self, tmp_path, monkeypatch):
+        workdir = tmp_path / "checkout"
+        workdir.mkdir()
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json={**_AGENT, "action_cwd": str(workdir)})
+        assert resp.status_code == 202, resp.text
+
+        assert [call["cwd"] for call in spawns] == [str(workdir)]
+        (payload,), _kwargs = mock_db.create_invocation.await_args
+        assert payload["node_metadata"] == {"cwd": str(workdir), "action_kind": "agent"}
+
+    def test_no_cwd_keeps_the_daemons_own_directory(self, tmp_path, monkeypatch):
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json=_AGENT)
+        assert resp.status_code == 202, resp.text
+
+        assert [call["cwd"] for call in spawns] == [None]
+        (payload,), _kwargs = mock_db.create_invocation.await_args
+        assert payload["node_metadata"] == {"action_kind": "agent"}
+
+    @pytest.mark.parametrize("shape", ["relative", "missing", "file", "empty"])
+    def test_an_unusable_cwd_is_refused_and_nothing_starts(self, shape, tmp_path, monkeypatch):
+        a_file = tmp_path / "not-a-dir.txt"
+        a_file.write_text("x")
+        cwd = {
+            "relative": "some/checkout",
+            "missing": str(tmp_path / "pruned-worktree"),
+            "file": str(a_file),
+            "empty": "",
+        }[shape]
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        spawns = _record_spawns(monkeypatch)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post("/api/launches", json={**_AGENT, "action_cwd": cwd})
+
+        assert resp.status_code == 422, resp.text
+        assert "action_cwd" in resp.json()["detail"]
+        mock_db.create_invocation.assert_not_awaited()
+        assert spawns == []
+
+    def test_a_nul_byte_is_refused_before_any_filesystem_check(self):
+        from lionhub.serve.daemon.services import launches
+
+        with pytest.raises(ValueError, match="action_cwd"):
+            launches._validate_request({**_AGENT, "action_cwd": "/tmp\x00/elsewhere"})
+
+    def test_spawn_detached_hands_the_cwd_to_the_process(self):
+        from lionhub.serve.daemon.services import launches
+
+        seen: dict = {}
+        mock_db = AsyncMock()
+
+        async def _fake_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
+            seen["cwd"] = cwd
+            return (0, "")
+
+        with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
+                side_effect=_fake_spawn,
+            ):
+                asyncio.run(
+                    launches._spawn_detached(
+                        ["li", "agent"], "inv-cwd1", tmp_path=None, cwd="/srv/checkout"
+                    )
+                )
+
+        assert seen == {"cwd": "/srv/checkout"}
 
 
 # _spawn_detached terminal update uses registered reason codes
@@ -467,7 +574,7 @@ class TestSpawnDetachedTerminalUpdate:
     """The post-exit invocation update must use codes the reason registry accepts."""
 
     def _capture_update(self, exit_code=0, spawn_exc=None):
-        from lionagi.studio.services import launches
+        from lionhub.serve.daemon.services import launches
 
         captured = {}
 
@@ -484,7 +591,7 @@ class TestSpawnDetachedTerminalUpdate:
 
         mock_db.update_status = _capture_status
 
-        with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
             with patch(
@@ -528,7 +635,7 @@ class TestSpawnDetachedEndedAtAtomicity:
     def test_normal_exit_never_calls_update_invocation(self):
         """The completed/failed path stamps ended_at via extra_fields; it
         must never fall back to a standalone update_invocation() call."""
-        from lionagi.studio.services import launches
+        from lionhub.serve.daemon.services import launches
 
         captured = {}
         mock_db = AsyncMock()
@@ -541,7 +648,7 @@ class TestSpawnDetachedEndedAtAtomicity:
         async def _fake_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
             return (0, "")
 
-        with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
             with patch(
@@ -558,7 +665,7 @@ class TestSpawnDetachedEndedAtAtomicity:
     def test_cancelled_never_calls_update_invocation(self):
         """The cancellation path stamps ended_at via extra_fields too; it
         must never fall back to a standalone update_invocation() call."""
-        from lionagi.studio.services import launches
+        from lionhub.serve.daemon.services import launches
 
         captured = {}
         mock_db = AsyncMock()
@@ -574,7 +681,7 @@ class TestSpawnDetachedEndedAtAtomicity:
 
         async def _run():
             async def _inner():
-                with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+                with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
                     MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                     MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                     with patch(
@@ -609,7 +716,7 @@ class TestLaunchAdmissionCap:
 
     def test_429_when_slots_exhausted(self, tmp_path, monkeypatch):
         """When all semaphore slots are held, the next request returns 429."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         _stub_db_and_spawn(monkeypatch)
         # A zero-value semaphore is indistinguishable from "every slot held".
@@ -625,7 +732,7 @@ class TestLaunchAdmissionCap:
 
     def test_no_row_or_task_when_saturated(self, tmp_path, monkeypatch):
         """When the cap is saturated, neither a DB row nor a task is created."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         mock_db = _stub_db_and_spawn(monkeypatch)
         spawn_calls = []
@@ -636,7 +743,7 @@ class TestLaunchAdmissionCap:
             return MagicMock()
 
         monkeypatch.setattr(
-            "lionagi.studio.services.launches.asyncio.create_task",
+            "lionhub.serve.daemon.services.launches.asyncio.create_task",
             _track_spawn,
         )
         svc._launch_semaphore = asyncio.Semaphore(0)
@@ -652,7 +759,7 @@ class TestLaunchAdmissionCap:
 
     def test_burst_admission_capped_before_any_task_runs(self, tmp_path, monkeypatch):
         """With cap 1, the second POST gets 429 before the first task starts (slots taken at admission)."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         _stub_db_and_spawn(monkeypatch)
         monkeypatch.setattr(svc.config, "MAX_LAUNCHES", 1)
@@ -673,7 +780,7 @@ class TestShutdownDrains:
 
     def test_shutdown_cancels_tasks(self):
         """shutdown_launches() cancels all tasks in _detached_tasks."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         cancelled = []
 
@@ -703,14 +810,14 @@ class TestShutdownDrains:
 
     def test_shutdown_no_tasks_is_noop(self):
         """shutdown_launches() with no tasks must not raise."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         svc._detached_tasks.clear()
         asyncio.run(svc.shutdown_launches())  # must not raise
 
     def test_spawn_detached_cancelled_writes_terminal_row(self):
         """When _spawn_detached is cancelled, it writes a cancelled row before re-raising."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
         from lionagi.state.reasons import RunReasons, validate_reason_code
 
         captured = {}
@@ -731,7 +838,7 @@ class TestShutdownDrains:
 
         async def _run():
             async def _inner():
-                with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+                with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
                     MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                     MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                     with patch(
@@ -764,7 +871,7 @@ class TestBuildArgvBeforeCreate:
 
     def test_build_argv_failure_leaves_no_invocation_row(self):
         """If build_argv raises ValueError, create_invocation must not be called."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         create_calls = []
 
@@ -773,9 +880,9 @@ class TestBuildArgvBeforeCreate:
 
         async def _run():
             with (
-                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
                 patch(
-                    "lionagi.studio.services.launches.build_argv",
+                    "lionhub.serve.daemon.services.launches.build_argv",
                     side_effect=ValueError("argv build failed"),
                 ),
             ):
@@ -796,9 +903,11 @@ class TestBuildArgvBeforeCreate:
         db_ctx = MagicMock()
         db_ctx.__aenter__ = AsyncMock(return_value=mock_db)
         db_ctx.__aexit__ = AsyncMock(return_value=False)
-        monkeypatch.setattr("lionagi.studio.services.launches.StateDB", lambda *a, **kw: db_ctx)
         monkeypatch.setattr(
-            "lionagi.studio.services.launches.build_argv",
+            "lionhub.serve.daemon.services.launches.StateDB", lambda *a, **kw: db_ctx
+        )
+        monkeypatch.setattr(
+            "lionhub.serve.daemon.services.launches.build_argv",
             lambda *a, **kw: (_ for _ in ()).throw(ValueError("forced argv failure")),
         )
 
@@ -815,8 +924,8 @@ class TestBuildArgvBeforeCreate:
 
 
 def _stub_engine_def(monkeypatch, defn: dict | None, *, by_name_only: bool = False):
-    """Patch the engine-defs lookups that _resolve_engine_def calls."""
-    import lionagi.studio.services.engine_defs as ed
+    """Patch the engine-definition lookups that _resolve_engine_def calls."""
+    import lionhub.serve.daemon.services.engine_lookup as ed
 
     monkeypatch.setattr(
         ed, "get_engine_def", AsyncMock(return_value=None if by_name_only else defn)
@@ -929,7 +1038,7 @@ class TestEngineScheduleAssembly:
     """launch() must assemble the schedule dict from the saved definition."""
 
     def _launch_and_capture(self, monkeypatch, defn, request):
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         _stub_engine_def(monkeypatch, defn)
         captured = {}
@@ -943,9 +1052,13 @@ class TestEngineScheduleAssembly:
             return MagicMock()
 
         with (
-            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
-            patch("lionagi.studio.services.launches.StateDB") as MockDB,
-            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+            patch(
+                "lionhub.serve.daemon.services.launches.build_argv", side_effect=_fake_build_argv
+            ),
+            patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
+            patch(
+                "lionhub.serve.daemon.services.launches.asyncio.create_task", side_effect=_consume
+            ),
         ):
             mock_db = AsyncMock()
             mock_db.create_invocation = AsyncMock()
@@ -1239,7 +1352,7 @@ class TestCancelLaunch:
         """cancel_launch returns {invocation_id, status:'cancelling'} for an in-flight task."""
         import contextlib
 
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         async def _run():
             svc._detached_tasks.clear()
@@ -1260,7 +1373,7 @@ class TestCancelLaunch:
         """cancel_launch raises HTTPException(404) for an unknown invocation_id."""
         from fastapi import HTTPException
 
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         async def _run():
             svc._detached_tasks.clear()
@@ -1284,7 +1397,7 @@ class TestLaunchCancelRetrySmoke:
     def test_launch_cancel_retry_end_to_end(self):
         import contextlib
 
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
         from lionagi.state.reasons import RunReasons
 
         terminal_rows: list[dict] = []
@@ -1310,10 +1423,10 @@ class TestLaunchCancelRetrySmoke:
         async def _run():
             with (
                 patch(
-                    "lionagi.studio.services.launches.build_argv",
+                    "lionhub.serve.daemon.services.launches.build_argv",
                     return_value=(["uv", "run", "li", "agent", "--", "sonnet", "hi"], None),
                 ),
-                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
                 patch(
                     "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                     side_effect=_blocking_spawn,
@@ -1400,7 +1513,7 @@ class TestLaunchFlowYamlKind:
 
     def test_flow_yaml_schedule_carries_yaml(self, monkeypatch):
         """launch() must forward action_flow_yaml into the schedule dict passed to build_argv."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         captured = {}
 
@@ -1416,9 +1529,13 @@ class TestLaunchFlowYamlKind:
             return MagicMock()
 
         with (
-            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
-            patch("lionagi.studio.services.launches.StateDB") as MockDB,
-            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+            patch(
+                "lionhub.serve.daemon.services.launches.build_argv", side_effect=_fake_build_argv
+            ),
+            patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
+            patch(
+                "lionhub.serve.daemon.services.launches.asyncio.create_task", side_effect=_consume
+            ),
         ):
             mock_db = AsyncMock()
             mock_db.create_invocation = AsyncMock()
@@ -1551,7 +1668,7 @@ class TestLaunchCommandKind:
         callers that bypass the Pydantic model (e.g. direct launch() callers,
         or a future non-HTTP caller) — a non-list action_command_args must
         still be rejected at that layer."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         monkeypatch.setenv(_COMMAND_ALLOWLIST_ENV, "echo")
         with pytest.raises(ValueError, match="must be a list"):
@@ -1565,7 +1682,7 @@ class TestLaunchCommandKind:
 
     def test_validate_request_accepts_valid_command(self, monkeypatch):
         """_validate_request must not raise for a clean, allow-listed command request."""
-        from lionagi.studio.services.launches import _validate_request
+        from lionhub.serve.daemon.services.launches import _validate_request
 
         monkeypatch.setenv(_COMMAND_ALLOWLIST_ENV, "echo")
         _validate_request(
@@ -1580,7 +1697,7 @@ class TestLaunchCommandKind:
         """launch() must forward action_command/action_command_args into the
         schedule dict passed to build_argv (mirrors
         test_flow_yaml_schedule_carries_yaml above)."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         monkeypatch.setenv(_COMMAND_ALLOWLIST_ENV, "echo")
         captured = {}
@@ -1594,9 +1711,13 @@ class TestLaunchCommandKind:
             return MagicMock()
 
         with (
-            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
-            patch("lionagi.studio.services.launches.StateDB") as MockDB,
-            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+            patch(
+                "lionhub.serve.daemon.services.launches.build_argv", side_effect=_fake_build_argv
+            ),
+            patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
+            patch(
+                "lionhub.serve.daemon.services.launches.asyncio.create_task", side_effect=_consume
+            ),
         ):
             mock_db = AsyncMock()
             mock_db.create_invocation = AsyncMock()
@@ -1624,7 +1745,7 @@ class TestLaunchCommandKind:
         awaited DB work before the process actually spawns, so a second,
         no-intervening-await check right at spawn_and_wait is required to
         observe an allow-list revoked in that window."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         captured = {}
 
@@ -1638,7 +1759,7 @@ class TestLaunchCommandKind:
         mock_db.update_status = AsyncMock()
 
         async def _run():
-            with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+            with patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB:
                 MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
                 MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
                 with patch(
@@ -1658,7 +1779,7 @@ class TestLaunchCommandKind:
         build_argv; only StateDB and the actual subprocess spawn are stubbed)
         must carry action_kind='command' all the way to the spawn-time
         re-check — the concrete on-demand-launch instance of the TOCTOU gate."""
-        import lionagi.studio.services.launches as svc
+        import lionhub.serve.daemon.services.launches as svc
 
         monkeypatch.setenv(_COMMAND_ALLOWLIST_ENV, "echo")
         captured = {}
@@ -1675,7 +1796,7 @@ class TestLaunchCommandKind:
 
         async def _run():
             with (
-                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch("lionhub.serve.daemon.services.launches.StateDB") as MockDB,
                 patch(
                     "lionhub.orchestration.scheduler.subprocess.spawn_and_wait",
                     side_effect=_fake_spawn,

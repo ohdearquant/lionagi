@@ -7,8 +7,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -41,11 +42,11 @@ from lionagi.service.providers import (
     ModelSpec,
     _clamp_claude_effort,
     _clamp_codex_effort,
-    codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
 )
 from lionhub.providers.openai._codex_profile import (
+    codex_unset_effort_from_config,
     refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
 )
@@ -147,6 +148,7 @@ def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
 
 # The tool-set fields a profile may declare for a Claude Code agent.
 _PROFILE_TOOL_FIELDS = ("tools", "allowed_tools", "disallowed_tools")
+_HYPHENATED_TOOL_FIELDS = {"allowed-tools": "allowed_tools", "disallowed-tools": "disallowed_tools"}
 
 
 def _profile_tool_settings(profile: Any) -> dict[str, Any]:
@@ -283,7 +285,7 @@ def build_imodel_from_spec(
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
-        effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
@@ -417,7 +419,7 @@ def build_chat_model(
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
-        effort = codex_unset_effort_default(model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
@@ -555,6 +557,11 @@ def add_common_cli_args(
             "Directory the agent's process runs in — the repo or worktree it acts on. "
             "Defaults to the current directory."
         ),
+    )
+    parser.add_argument(
+        "--notify-sender",
+        metavar="LABEL",
+        help="Include this sender label in the configured terminal notice.",
     )
     parser.add_argument(
         "--timeout",
@@ -1304,7 +1311,209 @@ def _keys_like_the_contain_flag(document: Any) -> list[str]:
     return found
 
 
-def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
+def _profile_line_offset(text: str, end: int) -> int:
+    """Count complete splitlines breaks before a source offset."""
+    # A frontmatter match may end between the CR and LF of one line break.
+    if end and text[end - 1 : end + 1] == "\r\n":
+        end -= 1
+    # Append a character so splitlines counts the final line even if it is empty.
+    return len((text[:end] + " ").splitlines()) - 1
+
+
+def _profile_body_layout(lines: list[str]) -> tuple[list[int], set[int], int | None]:
+    """Locate unfenced rules, fenced lines, and the final unmatched opening fence."""
+    delimiters = []
+    fenced: set[int] = set()
+    fence: str | None = None
+    fence_start = 0
+    for i, line in enumerate(lines):
+        marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence is not None:
+            fenced.add(i)
+            if (
+                marker
+                and marker[1][0] == fence[0]
+                and len(marker[1]) >= len(fence)
+                and not marker[2].strip()
+            ):
+                fence = None
+            continue
+        if marker and (marker[1][0] == "~" or "`" not in marker[2]):
+            fence = marker[1]
+            fence_start = i
+            fenced.add(i)
+            continue
+        if _DASHES.fullmatch(line.rstrip()):
+            delimiters.append(i)
+    return delimiters, fenced, fence_start if fence is not None else None
+
+
+def _profile_body_blocks(
+    name: str,
+    lines: list[str],
+    *,
+    line_offset: int,
+    layout: tuple[list[int], set[int], int | None] | None = None,
+) -> Iterator[tuple[int, str]]:
+    """Yield unfenced spans and diagnose settings inside the final unmatched fence."""
+    delimiters, fenced, unmatched = _profile_body_layout(lines) if layout is None else layout
+    # A rule in the prompt must not hide a declaration, so inspect every span.
+    # Blank fenced lines so the offsets of the remaining content stay intact.
+    for opening, end in pairwise([*delimiters, len(lines)]):
+        yield opening, "\n".join("" if i in fenced else lines[i] for i in range(opening + 1, end))
+    if unmatched is not None:
+        _warn_unclosed_fence_tool_settings(name, lines, unmatched, line_offset=line_offset)
+
+
+def _read_profile_settings(block: str) -> tuple[bool, Any]:
+    import yaml
+
+    from lionagi.libs.frontmatter import _load_frontmatter_yaml
+
+    try:
+        return True, _load_frontmatter_yaml(block)
+    except (yaml.YAMLError, RecursionError):
+        return False, None
+
+
+def _sequence_leaves(
+    root: Any, sequence_type: type, children: Callable[[Any], Iterable[Any]]
+) -> Iterator[Any]:
+    """Follow YAML sequence items, stopping at mapping values and repeated aliases."""
+    pending = [root]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(item, sequence_type):
+            pending.extend(children(item))
+        else:
+            yield item
+
+
+def _tool_setting_location(
+    block: str, document: Any, fields: tuple[str, ...], *, require_list: bool = False
+) -> tuple[int, int, str] | None:
+    declared = set()
+    for mapping in _sequence_leaves(document, list, iter):
+        if isinstance(mapping, dict):
+            declared.update(
+                key
+                for key in fields
+                if key in mapping and (not require_list or isinstance(mapping[key], list))
+            )
+    if not declared:
+        return None
+
+    import yaml
+
+    # Inspect marks only after detecting a declaration in the safe-loaded value.
+    # Flatten the same YAML merges to find where each effective key was written.
+    loader = yaml.SafeLoader(block)
+    try:
+        node = loader.get_single_node()
+        locations: list[tuple[int, int, str]] = []
+        for mapping in _sequence_leaves(node, yaml.SequenceNode, lambda seq: seq.value):
+            if isinstance(mapping, yaml.MappingNode):
+                loader.flatten_mapping(mapping)
+                effective = {
+                    key.value: (key, value)
+                    for key, value in mapping.value
+                    if isinstance(key, yaml.ScalarNode)
+                    and key.tag == "tag:yaml.org,2002:str"
+                    and key.value in declared
+                }
+                locations.extend(
+                    (key.start_mark.line, key.start_mark.column, key.value)
+                    for key, value in effective.values()
+                    if not require_list or isinstance(value, yaml.SequenceNode)
+                )
+    finally:
+        loader.dispose()
+    return min(locations)
+
+
+def _warn_unclosed_fence_tool_settings(
+    name: str, lines: list[str], fence_start: int, *, line_offset: int
+) -> None:
+    rules = [i for i in range(fence_start + 1, len(lines)) if lines[i].rstrip() == "---"]
+    for opening, end in pairwise(rules):
+        block = "\n".join(lines[opening + 1 : end])
+        reads, document = _read_profile_settings(block)
+        if reads and (
+            location := _tool_setting_location(
+                block, document, _PROFILE_TOOL_FIELDS, require_list=True
+            )
+        ):
+            from lionhub.orchestration.console import warn
+
+            line = line_offset + opening + location[0] + 2
+            warn(
+                f"agent profile {name!r}: tool settings on line {line} are inside an unclosed "
+                "code fence and have no effect. Move intended settings to the leading "
+                "frontmatter or close the example fence."
+            )
+            return
+
+
+def _refuse_readable_tool_settings(
+    name: str, block: str, document: Any, *, line_offset: int, misplaced: bool = False
+) -> None:
+    fields = tuple(_HYPHENATED_TOOL_FIELDS)
+    if misplaced:
+        fields += _PROFILE_TOOL_FIELDS
+    location = _tool_setting_location(block, document, fields)
+    if location is None:
+        return
+    offset, _, key = location
+    line = line_offset + offset + 1
+    if supported := _HYPHENATED_TOOL_FIELDS.get(key):
+        raise ConfigurationError(
+            f"agent profile {name!r}: {key!r} on line {line} is unsupported; use {supported!r}"
+        )
+    raise ConfigurationError(
+        f"agent profile {name!r}: the --- block on line {line_offset} has a "
+        f"{key} declaration on line {line} outside the leading frontmatter; "
+        "move the setting to the leading frontmatter at the top of the file"
+    )
+
+
+def _check_readable_profile_settings(
+    name: str, text: str, frontmatter: dict[str, Any], *, line_offset: int
+) -> str:
+    """Check the leading declaration names and the body, returning the leading source."""
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    text = text.strip()
+    delimiters = _FM_SPLIT.finditer(text)
+    opening, closing = next(delimiters), next(delimiters)
+    source = text[opening.end() : closing.start()]
+    _refuse_readable_tool_settings(
+        name,
+        source,
+        frontmatter,
+        line_offset=line_offset + _profile_line_offset(text, opening.end()),
+    )
+    body_line_offset = line_offset + _profile_line_offset(text, closing.end())
+    for opening_line, block in _profile_body_blocks(
+        name, text[closing.end() :].splitlines(), line_offset=body_line_offset
+    ):
+        reads, document = _read_profile_settings(block)
+        if reads:
+            _refuse_readable_tool_settings(
+                name,
+                block,
+                document,
+                line_offset=body_line_offset + opening_line + 1,
+                misplaced=True,
+            )
+    return source
+
+
+def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -> dict[str, Any]:
     """Retain containment and refuse discarded tool settings.
 
     A containment flag in a readable mapping, or a mention in an unreadable block,
@@ -1313,18 +1522,10 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
     a top-level line declaring it. Empty blocks have no settings to lose. A block
     after prompt text that declares containment or tool settings raises with its opening line.
     """
-    from itertools import pairwise
-
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml, parse_frontmatter_strict
+    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
     from lionhub.orchestration.console import warn
-
-    def read(block: str) -> tuple[bool, Any]:
-        try:
-            return True, _load_frontmatter_yaml(block)
-        except (yaml.YAMLError, RecursionError):
-            return False, None
 
     def containment_settings(block: str, document: Any) -> dict[str, Any]:
         if isinstance(document, dict):
@@ -1350,6 +1551,14 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 "fix the frontmatter to proceed"
             )
 
+    def refuse_misplaced_tools(block: str, reads: bool, document: Any, opening: int) -> None:
+        if reads:
+            _refuse_readable_tool_settings(
+                name, block, document, line_offset=line_offset + opening + 1, misplaced=True
+            )
+        else:
+            refuse_unread_tool_settings(block, key_lines_only=True)
+
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
             not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
@@ -1359,16 +1568,33 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
                 "and its mcp declaration would be ignored; move the block to the top"
             )
 
+    def refuse_misplaced_settings(block: str, opening: int) -> None:
+        reads, document = _read_profile_settings(block)
+        refuse_misplaced_mcp(block, reads, document, opening + 1)
+        declared = set(_FLAG_KEY_LINE.findall(block))
+        refuse_misplaced_tools(block, reads, document, opening)
+        if not reads or isinstance(document, dict):
+            declared.update(containment_settings(block, document))
+        if declared:
+            keys = ", ".join(sorted(declared))
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line {opening + 1} follows "
+                f"text on lines of its own, so its {keys} declaration "
+                "would be ignored; move the block to the top of the file"
+            )
+
     if text.startswith("---"):
         try:
             parse_frontmatter_strict(text)
-            return {}
         except yaml.YAMLError as exc:
             reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        else:
+            _check_readable_profile_settings(name, text, {}, line_offset=line_offset)
+            return {}
         parts = _FM_SPLIT.split(text, maxsplit=2)
         # An unclosed block runs to the end, since where it was meant to end is not known.
         block = parts[1] if len(parts) == 3 else text[3:]
-        reads, document = read(block)
+        reads, document = _read_profile_settings(block)
         # A block with no settings in it, empty or comments only, has none to lose.
         if reads and document is None:
             return {}
@@ -1380,70 +1606,33 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
         what = f"its frontmatter does not read as YAML settings ({reason})"
     else:
         lines = text.splitlines()
-        if not (lines and lines[0].rstrip().endswith("---")):
-            # Text on lines of its own ahead of a ``---`` line is the prompt of a profile with
-            # no block, as before, so nothing after it applies, the flag included. A block after
-            # that text that names the flag says so rather than lose it in silence: one with a
-            # line setting it as a key, one that reads as settings and sets it, or one that does
-            # not read and names it anywhere. A block runs from a line of three or more dashes
-            # to the next such line or, unclosed, to the end.
-            delimiters = []
-            # Fenced examples are prompt text, not misplaced frontmatter: no fenced line is a
-            # delimiter, and none is part of the text a span is checked on.
-            fence: str | None = None
-            fenced: set[int] = set()
-            for i, line in enumerate(lines):
-                marker = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
-                if fence is not None:
-                    fenced.add(i)
-                    if (
-                        marker
-                        and marker[1][0] == fence[0]
-                        and len(marker[1]) >= len(fence)
-                        and not marker[2].strip()
-                    ):
-                        fence = None
-                    continue
-                if marker and (marker[1][0] == "~" or "`" not in marker[2]):
-                    fence = marker[1]
-                    fenced.add(i)
-                    continue
-                if _DASHES.fullmatch(line.rstrip()):
-                    delimiters.append(i)
-            # Every span between consecutive ``---`` lines is read, not only alternate ones: which
-            # line opens a block depends on how many rules came before it, and a rule in the
-            # prompt must not hide a declaration from this check.
-            for opening, end in pairwise([*delimiters, len(lines)]):
-                block = "\n".join("" if j in fenced else lines[j] for j in range(opening + 1, end))
-                reads, document = read(block)
-                refuse_misplaced_mcp(block, reads, document, opening + 1)
-                declared = set(_FLAG_KEY_LINE.findall(block))
-                if not reads:
-                    refuse_unread_tool_settings(block, key_lines_only=True)
-                else:
-                    mappings = document if isinstance(document, list) else (document,)
-                    for mapping in mappings:
-                        if isinstance(mapping, dict):
-                            declared.update(key for key in _PROFILE_TOOL_FIELDS if key in mapping)
-                if not reads or isinstance(document, dict):
-                    declared.update(containment_settings(block, document))
-                if declared:
-                    keys = ", ".join(sorted(declared))
-                    raise ConfigurationError(
-                        f"agent profile {name!r}: the --- block on line {opening + 1} follows "
-                        f"text on lines of its own, so its {keys} declaration "
-                        "would be ignored; move the block to the top of the file"
-                    )
+        layout = _profile_body_layout(lines)
+        delimiters, fenced, unmatched = layout
+        if not (lines and 0 not in fenced and lines[0].rstrip().endswith("---")):
+            # A block following prompt text cannot configure tools, MCP or containment.
+            for opening, block in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=layout
+            ):
+                refuse_misplaced_settings(block, opening)
             return {}
         # Text on the line of the opening delimiter hides the block it opens, which runs to
-        # the next ``---`` line or, unclosed, to the end.
-        rest = lines[1:]
-        closing = next((i for i, line in enumerate(rest) if line.rstrip() == "---"), None)
-        block = "\n".join(rest if closing is None else rest[:closing])
-        reads, document = read(block)
+        # the next unfenced ``---`` line or, unclosed, to the end.
+        if unmatched is not None:
+            _warn_unclosed_fence_tool_settings(name, lines, unmatched, line_offset=line_offset)
+        closing = next((i for i in delimiters if lines[i].rstrip() == "---"), None)
+        end = len(lines) if closing is None else closing
+        block = "\n".join("" if i in fenced else lines[i] for i in range(1, end))
+        reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
-        if not reads:
-            refuse_unread_tool_settings(block, key_lines_only=True)
+        refuse_misplaced_tools(block, reads, document, 0)
+        if closing is not None and closing != delimiters[-1]:
+            # The closing rule opens a later span only if another rule bounds it.
+            # The final fence has already been checked.
+            remaining = [i for i in delimiters if i >= closing]
+            for opening, later in _profile_body_blocks(
+                name, lines, line_offset=line_offset, layout=(remaining, fenced, None)
+            ):
+                refuse_misplaced_settings(later, opening)
         if reads and isinstance(document, dict):
             if not document:
                 return {}
@@ -1473,15 +1662,16 @@ def _settings_of_unread_frontmatter(name: str, text: str) -> dict[str, Any]:
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    text = _strip_frontmatter_prefix(text)
+    original = text
+    text = _strip_frontmatter_prefix(original)
+    line_offset = _profile_line_offset(original, len(original) - len(text))
     _check_profile_mcp_frontmatter(name, text)
     frontmatter, body = _parse_frontmatter(text)
     if not frontmatter:
-        frontmatter = _settings_of_unread_frontmatter(name, text)
+        frontmatter = _settings_of_unread_frontmatter(name, text, line_offset=line_offset)
     else:
-        from lionagi.libs.frontmatter import _FM_SPLIT
-
-        values = _contain_flag_values(_FM_SPLIT.split(text.strip(), maxsplit=2)[1])
+        source = _check_readable_profile_settings(name, text, frontmatter, line_offset=line_offset)
+        values = _contain_flag_values(source)
         if len(values) > 1:
             # YAML keeps the last of a repeated key; the flag is off only when every one reads
             # false, so moving a line cannot turn containment off.

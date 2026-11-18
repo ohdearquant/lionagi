@@ -32,9 +32,9 @@ current heads when `depends_on` is `None`, which is chaining shorthand for a
 caller building a linear sequence. A caller of the incremental builder that wants
 a fan-out worker or a second DAG root must therefore say so, by passing an empty
 list; a caller that omits the argument gets a chain.
-`lionagi/orchestration/patterns.py`, `lionagi/operations/builder.py`,
-`lionagi/cli/orchestrate/flow.py`, and `lionagi/cli/orchestrate/fanout.py` hold
-the two conventions.
+`lionhub/src/lionhub/orchestration/patterns.py`, `lionagi/operations/builder.py`,
+`lionhub/src/lionhub/serve/cli/orchestrate/flow.py`, and `lionhub/src/lionhub/serve/cli/orchestrate/fanout.py`
+hold the two conventions.
 
 **P4 — Model-emitted work is a request, not execution authority.** A
 `SpawnRequest` can name an operation and assignee, but it must not reach arbitrary
@@ -503,11 +503,11 @@ likewise install observation and persistence around `Session.flow()`.
 ```text
 lionagi/session/session.py             public flow facade
 lionagi/operations/flow.py             scheduling and live admission
-lionagi/orchestration/patterns.py       library role/task planning and graph construction
-lionagi/engines/flow_signals.py         optional callback-to-signal adapter
-lionagi/cli/orchestrate/_orchestration.py model, branch, artifact, and persistence setup
-lionagi/cli/orchestrate/flow.py         CLI plan, topology, checkpoint, control, synthesis
-lionagi/cli/orchestrate/fanout.py       CLI fan-out construction and presentation
+lionhub/src/lionhub/orchestration/patterns.py            library role/task planning and graph construction
+lionhub/src/lionhub/orchestration/engines/flow_signals.py optional callback-to-signal adapter
+lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py model, branch, artifact, and persistence setup
+lionhub/src/lionhub/serve/cli/orchestrate/flow.py         CLI plan, topology, checkpoint, control, synthesis
+lionhub/src/lionhub/serve/cli/orchestrate/fanout.py       CLI fan-out construction and presentation
 ```
 
 **Exact semantics**:

@@ -7,6 +7,7 @@
     "team",
     "studio",
     "schedule",
+    "remote",
     "state",
     "invoke",
     "kill",
@@ -22,7 +23,7 @@
     "lifecycle",
     "mcp"
   ],
-  "registry_count": 21,
+  "registry_count": 22,
   "name_map": {
     "agent": "agent",
     "casts": "casts",
@@ -41,6 +42,7 @@
     "o": "orchestrate",
     "orchestrate": "orchestrate",
     "plugin": "plugin",
+    "remote": "remote",
     "runs": "runs",
     "schedule": "schedule",
     "state": "state",
@@ -48,7 +50,7 @@
     "studio": "studio",
     "team": "team"
   },
-  "name_map_count": 23,
+  "name_map_count": 24,
   "top_level": [
     {
       "name": "orchestrate",
@@ -85,6 +87,11 @@
     {
       "name": "schedule",
       "help": "Manage lionagi Studio schedules.",
+      "aliases": []
+    },
+    {
+      "name": "remote",
+      "help": "Run agent legs on a remote leg host.",
       "aliases": []
     },
     {
@@ -414,6 +421,17 @@
             "default": null,
             "choices": null,
             "help": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory."
+          },
+          {
+            "option_strings": [
+              "--notify-sender"
+            ],
+            "dest": "notify_sender",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "Include this sender label in the configured terminal notice."
           },
           {
             "option_strings": [
@@ -848,6 +866,17 @@
             "default": null,
             "choices": null,
             "help": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory."
+          },
+          {
+            "option_strings": [
+              "--notify-sender"
+            ],
+            "dest": "notify_sender",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "Include this sender label in the configured terminal notice."
           },
           {
             "option_strings": [
@@ -1413,6 +1442,17 @@
         },
         {
           "option_strings": [
+            "--notify-sender"
+          ],
+          "dest": "notify_sender",
+          "required": false,
+          "nargs": null,
+          "default": null,
+          "choices": null,
+          "help": "Include this sender label in the configured terminal notice."
+        },
+        {
+          "option_strings": [
             "--timeout"
           ],
           "dest": "timeout",
@@ -1530,6 +1570,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -1689,6 +1730,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -2038,6 +2097,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -2300,6 +2360,17 @@
                 },
                 {
                   "option_strings": [
+                    "--notify-sender"
+                  ],
+                  "dest": "notify_sender",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": null,
+                  "help": "Include this sender label in the configured terminal notice."
+                },
+                {
+                  "option_strings": [
                     "--no-persist"
                   ],
                   "dest": "no_persist",
@@ -2352,6 +2423,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -2701,6 +2790,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -3157,6 +3247,24 @@
           ],
           "subparsers": {}
         },
+        "remote": {
+          "prog": "li remote",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "state": {
           "prog": "li state",
           "actions": [
@@ -3490,6 +3598,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -3857,6 +3966,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -4982,6 +5109,228 @@
         }
       }
     },
+    "remote": {
+      "prog": "li remote",
+      "actions": [
+        {
+          "option_strings": [
+            "-h",
+            "--help"
+          ],
+          "dest": "help",
+          "required": false,
+          "nargs": 0,
+          "default": "==SUPPRESS==",
+          "choices": null,
+          "help": "show this help message and exit"
+        },
+        {
+          "option_strings": [],
+          "dest": "remote_action",
+          "required": true,
+          "nargs": "A...",
+          "default": null,
+          "choices": [
+            "cancel",
+            "output",
+            "run",
+            "status"
+          ],
+          "help": null
+        }
+      ],
+      "subparsers": {
+        "run": {
+          "prog": "li remote run",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            },
+            {
+              "option_strings": [],
+              "dest": "remote",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Remote name from ~/.lionagi/remotes.yaml."
+            },
+            {
+              "option_strings": [
+                "-a",
+                "--agent"
+              ],
+              "dest": "agent",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Profile name on the leg host."
+            },
+            {
+              "option_strings": [
+                "--repo"
+              ],
+              "dest": "repo",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Repository name the leg host serves."
+            },
+            {
+              "option_strings": [
+                "--head"
+              ],
+              "dest": "head",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Full 40-hex commit to run at."
+            },
+            {
+              "option_strings": [
+                "--poll"
+              ],
+              "dest": "poll",
+              "required": false,
+              "nargs": null,
+              "default": 5.0,
+              "choices": null,
+              "help": "Seconds between status reads."
+            },
+            {
+              "option_strings": [],
+              "dest": "prompt",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "The leg's prompt."
+            }
+          ],
+          "subparsers": {}
+        },
+        "status": {
+          "prog": "li remote status",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            },
+            {
+              "option_strings": [],
+              "dest": "remote",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Remote name from ~/.lionagi/remotes.yaml."
+            },
+            {
+              "option_strings": [],
+              "dest": "invocation_id",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "The remote invocation id."
+            }
+          ],
+          "subparsers": {}
+        },
+        "output": {
+          "prog": "li remote output",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            },
+            {
+              "option_strings": [],
+              "dest": "remote",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Remote name from ~/.lionagi/remotes.yaml."
+            },
+            {
+              "option_strings": [],
+              "dest": "invocation_id",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "The remote invocation id."
+            }
+          ],
+          "subparsers": {}
+        },
+        "cancel": {
+          "prog": "li remote cancel",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            },
+            {
+              "option_strings": [],
+              "dest": "remote",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Remote name from ~/.lionagi/remotes.yaml."
+            },
+            {
+              "option_strings": [],
+              "dest": "invocation_id",
+              "required": true,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "The remote invocation id."
+            }
+          ],
+          "subparsers": {}
+        }
+      }
+    },
     "state": {
       "prog": "li",
       "actions": [
@@ -5043,6 +5392,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -5182,6 +5532,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -5932,6 +6300,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -6071,6 +6440,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -6602,6 +6989,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -6741,6 +7129,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -7180,6 +7586,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -7319,6 +7726,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -7749,6 +8174,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -7888,6 +8314,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -8493,6 +8937,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -8632,6 +9077,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -9187,6 +9650,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -9326,6 +9790,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -9492,7 +9974,18 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Emit a JSON object of check name -> {status, detail} instead of plain text."
+              "help": "Emit JSON instead of plain text."
+            },
+            {
+              "option_strings": [
+                "--probe-anthropic-account"
+              ],
+              "dest": "probe_anthropic_account",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Send one billed request on a named account blocked for low credit or its spend limit. Lift its block only on a 2xx response. Runs instead of the ordinary environment checks, and only from an interactive terminal."
             }
           ],
           "subparsers": {}
@@ -9686,6 +10179,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -9825,6 +10319,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -10237,6 +10749,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -10376,6 +10889,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -10878,6 +11409,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -11017,6 +11549,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -11469,6 +12019,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -11608,6 +12159,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -11968,6 +12537,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -12107,6 +12677,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -12478,6 +13066,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -12617,6 +13206,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [
@@ -12986,6 +13593,7 @@
             "o",
             "orchestrate",
             "plugin",
+            "remote",
             "runs",
             "schedule",
             "state",
@@ -13125,6 +13733,24 @@
         },
         "schedule": {
           "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
           "actions": [
             {
               "option_strings": [

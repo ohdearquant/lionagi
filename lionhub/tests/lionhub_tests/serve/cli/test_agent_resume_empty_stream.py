@@ -1,11 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for li agent -r (resume) empty-stream detection."""
+"""Tests for li agent -r branch selection and empty-stream detection."""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -77,6 +78,203 @@ def _make_branch_json(tmp_path: Path) -> tuple[str, Path]:
     p = tmp_path / f"{branch_id}.json"
     p.write_text(json.dumps(b.to_dict()))
     return branch_id, p
+
+
+@pytest.fixture
+def resume_snapshots(tmp_path, monkeypatch):
+    from lionagi import Branch, iModel
+    from lionhub.orchestration import runs
+    from lionhub.serve.mcp import config
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runs, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(runs, "_LEGACY_AGENTS_ROOT", tmp_path / "legacy")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="resumed")
+    branch = Branch(
+        id="aaaaaaaa-0000-4000-8000-000000000001",
+        chat_model=iModel(
+            provider="codex", endpoint="query_cli", model="synthetic", api_key="dummy"
+        ),
+    )
+
+    def write(version, *, legacy=False, branch_id=None, run_id=None):
+        data = branch.to_dict()
+        data["metadata"]["snapshot_version"] = version
+        if branch_id is not None:
+            data["id"] = branch_id
+        if legacy:
+            path = runs._LEGACY_AGENTS_ROOT / "codex" / str(branch.id)
+            data = {"old_identity": {"id": data.pop("id")}, **data}
+        else:
+            run = runs.RUNS_ROOT / (run_id or version)
+            path = run / "branches" / f"{branch.id}.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        if run_id is not None:
+            runs.RunDir(run_id, run, run / "artifacts").write_manifest(
+                {"branch_id": str(branch.id)}
+            )
+            job = config.job_dir(run_id) / "job.json"
+            job.parent.mkdir(parents=True)
+            job.write_text(json.dumps({"run_id": run_id, "kind": "agent"}), encoding="utf-8")
+        if not legacy:
+            timestamp = 1_000 if version == "older" else 2_000
+            os.utime(run, (timestamp, timestamp))
+        return path
+
+    return str(branch.id), write
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_snapshot", ["wrong-id", "broken-json"])
+async def test_canonical_resume_refuses_a_bad_newest_snapshot(
+    monkeypatch, resume_snapshots, bad_snapshot
+):
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.manager import iModelManager
+    from lionhub.serve.cli import agent as agent_mod
+
+    def unexpected_allocation():
+        pytest.fail("the rejected snapshot reached run allocation")
+
+    monkeypatch.setattr(agent_mod, "allocate_run", unexpected_allocation)
+
+    branch_id, write = resume_snapshots
+    write("older")
+    newest = write("newest", branch_id="bbbbbbbb-0000-4000-8000-000000000002")
+    if bad_snapshot == "broken-json":
+        newest.write_text("[", encoding="utf-8")
+        expected = pytest.raises(json.JSONDecodeError)
+    else:
+        expected = pytest.raises(
+            ConfigurationError, match="saved branch ID does not match the requested branch ID"
+        )
+
+    with expected:
+        await agent_mod._run_agent(None, "follow up", resume=branch_id, no_mcp_config=True)
+
+    if bad_snapshot == "wrong-id":
+        iModelManager.shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["canonical", "prefix", "legacy"])
+async def test_resume_uses_the_matching_latest_snapshot_or_legacy_branch(
+    monkeypatch, resume_snapshots, reference
+):
+    from lionagi import Branch
+    from lionhub.serve.cli import agent as agent_mod
+
+    branch_id, write = resume_snapshots
+    if reference == "legacy":
+        write("legacy", legacy=True)
+        expected_version = "legacy"
+    else:
+        if reference == "canonical":
+            write("older")
+        write("newest")
+        expected_version = "newest"
+    operated = []
+
+    async def operate(self, *args, **kwargs):
+        operated.append((str(self.id), self.metadata["snapshot_version"]))
+        return "resumed"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    selector = branch_id[:8] if reference == "prefix" else branch_id
+    reply, _, resumed_id, terminal, _ = await agent_mod._run_agent(
+        None, "follow up", resume=selector, no_mcp_config=True
+    )
+
+    assert (reply, resumed_id, terminal) == ("resumed", branch_id, "completed")
+    assert operated == [(branch_id, expected_version)]
+
+
+def test_cli_resumes_the_exact_run_snapshot_when_two_runs_share_a_branch(
+    monkeypatch, resume_snapshots, capsys
+):
+    from lionagi import Branch
+    from lionhub.orchestration import runs
+    from lionhub.serve.cli.main import main
+
+    older = "20261116T000000-aaaaaa"
+    newer = "20261116T000001-bbbbbb"
+    branch_id, write = resume_snapshots
+    write("older", run_id=older)
+    newest = write("newest", run_id=newer)
+    assert runs.find_branch(branch_id) == (newer, newest)
+
+    async def operate(self, *args, **kwargs):
+        assert str(self.id) == branch_id
+        return f"resumed snapshot {self.metadata['snapshot_version']}"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+
+    assert main(["agent", "--no-mcp-config", f"--resume={older}", "follow up"]) == 0
+    assert "resumed snapshot older" in capsys.readouterr().out.splitlines()
+
+
+def test_cli_refuses_a_linked_exact_run_snapshot_before_loading(
+    monkeypatch, resume_snapshots, tmp_path
+):
+    from lionagi import Branch
+    from lionagi._errors import ConfigurationError
+    from lionhub.serve.cli.main import main
+
+    run_id = "20261116T000000-aaaaaa"
+    _, write = resume_snapshots
+    snapshot = write("older", run_id=run_id)
+    unrelated = tmp_path / "unrelated-snapshot.json"
+    snapshot.rename(unrelated)
+    snapshot.symlink_to(unrelated)
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("a linked snapshot reached branch deserialization")
+
+    monkeypatch.setattr(Branch, "from_dict", unexpected_load)
+    with pytest.raises(ConfigurationError, match="saved.*branch"):
+        main(["agent", "--no-mcp-config", f"--resume={run_id}", "follow up"])
+
+
+@pytest.mark.parametrize("matching", [True, False], ids=["matching", "different-stored-id"])
+def test_cli_normalizes_the_full_uppercase_branch_uuid_before_lookup_and_identity_check(
+    monkeypatch, resume_snapshots, matching
+):
+    from lionagi import Branch
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.manager import iModelManager
+    from lionhub.serve.cli import agent as agent_mod
+    from lionhub.serve.cli.main import main
+
+    branch_id, write = resume_snapshots
+    different_id = "bbbbbbbb-0000-4000-8000-000000000002"
+    write("newest", branch_id=None if matching else different_id)
+    find_branch = agent_mod.find_branch
+    looked_up, operated = [], []
+
+    def record_lookup(selector):
+        looked_up.append(selector)
+        return find_branch(selector)
+
+    async def operate(self, *args, **kwargs):
+        operated.append(str(self.id))
+        return "resumed"
+
+    monkeypatch.setattr(agent_mod, "find_branch", record_lookup)
+    monkeypatch.setattr(Branch, "operate", operate)
+    argv = ["agent", "--no-mcp-config", f"--resume={branch_id.upper()}", "follow up"]
+    if matching:
+        assert main(argv) == 0
+        assert operated == [branch_id]
+    else:
+        with pytest.raises(
+            ConfigurationError, match="saved branch ID does not match the requested branch ID"
+        ):
+            main(argv)
+        assert operated == []
+        iModelManager.shutdown.assert_awaited_once()
+    assert looked_up == [branch_id]
 
 
 # Test: resume with empty stream → non-zero exit + actionable message

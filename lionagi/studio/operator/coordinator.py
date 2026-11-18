@@ -10,18 +10,19 @@ import sys
 import time
 from contextlib import suppress
 from dataclasses import replace
-from typing import Any
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import sleep
+from lionhub.serve.daemon.launch_access import DecisionPrincipal
 
 from ..config import (
     OperatorExecutionRootResolution,
     resolve_operator_execution_root_config,
 )
-from ..launch_access import DecisionPrincipal
 from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
@@ -46,6 +47,9 @@ from .types import (
     OperatorEngineTurn,
     PermissionDecision,
 )
+
+if TYPE_CHECKING:
+    from lionhub.orchestration.kill import CancelPersistenceError
 
 _log = logging.getLogger(__name__)
 
@@ -171,9 +175,9 @@ async def _execute_application_command(
     command_type: str, command: dict[str, Any]
 ) -> dict[str, Any]:
     if command_type == "cancel":
-        from .cancel_run import execute_cancel_command
+        from .cancel_run import apply_cancel_command
 
-        return await execute_cancel_command(command)
+        return await apply_cancel_command(command)
     if command_type == "resume":
         from .resume_run import execute_resume_command
 
@@ -196,7 +200,7 @@ async def _execute_application_command(
         return await execute_steer_run_command(command)
     if command_type != "launch":
         raise ValueError(f"Unsupported Operator application command: {command_type!r}")
-    from lionagi.studio.services.launches import launch
+    from lionhub.serve.daemon.services.launches import launch
 
     try:
         result = await launch(command)
@@ -212,7 +216,7 @@ async def _execute_application_command(
     # A launch's canonical Run row is created by the child process. Give it a
     # short opportunity to appear so the confirmation can carry a direct run
     # link; retain the invocation link if startup takes longer.
-    from lionagi.studio.services.invocations import get_invocation
+    from lionhub.serve.daemon.services.invocations import get_invocation
 
     run_id = None
     try:
@@ -1121,12 +1125,42 @@ class OperatorCoordinator:
             return self._proposal_result(proposal)
 
         if proposal["commandType"] == "cancel":
-            from .cancel_run import _await_deferred_cancel
+            from .cancel_run import await_cancel_completion
 
-            return await _await_deferred_cancel(
-                self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+            return await await_cancel_completion(
+                self._execute_claimed_proposal(conversation_id, proposal_id, proposal),
+                audit_persistence_failure=partial(
+                    self._audit_cancel_persistence_failure, proposal_id
+                ),
             )
         return await self._execute_claimed_proposal(conversation_id, proposal_id, proposal)
+
+    async def _audit_cancel_persistence_failure(
+        self, proposal_id: str, error: CancelPersistenceError
+    ) -> dict[str, Any]:
+        from .cancel_run import CancelFailureReason
+
+        reason = CancelFailureReason.STATE_WRITE_FAILED.value
+        try:
+            proposal = await self.store.complete_proposal(
+                proposal_id,
+                status="failed",
+                error_code=reason,
+                result={
+                    "status": "indeterminate",
+                    "reason": reason,
+                    "message": str(error),
+                    "signal_sent": error.signal_sent,
+                    "failed_entity_kind": error.entity_type,
+                    "run_untouched": None,
+                },
+                audit=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise OperatorAuditUnavailableError(
+                "Command outcome is indeterminate; reconciliation is required"
+            ) from exc
+        return self._proposal_result(proposal)
 
     async def _execute_claimed_proposal(
         self, conversation_id: str, proposal_id: str, proposal: dict[str, Any]
@@ -1138,12 +1172,15 @@ class OperatorCoordinator:
             await _verify_application_target(proposal)
         except ApplicationTargetConflictError as exc:
             _log.warning("Operator application target conflict: %s", proposal_id)
+            stale_result: dict[str, Any] = {"message": str(exc)}
+            if proposal["commandType"] == "cancel":
+                stale_result["run_untouched"] = True
             try:
                 proposal = await self.store.complete_proposal(
                     proposal_id,
                     status="conflict",
                     error_code="stale_context",
-                    result={"message": str(exc)},
+                    result=stale_result,
                     audit=True,
                 )
             except Exception as persist_exc:  # noqa: BLE001
@@ -1156,31 +1193,10 @@ class OperatorCoordinator:
             result = await self.command_executor(proposal["commandType"], proposal["command"])
         except Exception as exc:  # noqa: BLE001
             if proposal["commandType"] == "cancel":
-                from lionhub.orchestration.kill import _CancelPersistenceError
+                from lionhub.orchestration.kill import CancelPersistenceError
 
-                if isinstance(exc, _CancelPersistenceError):
-                    from .cancel_run import _DeferredCancelResult
-
-                    try:
-                        proposal = await self.store.complete_proposal(
-                            proposal_id,
-                            status="failed",
-                            error_code="cancel_state_write_failed",
-                            result={
-                                "status": "indeterminate",
-                                "reason": "cancel_state_write_failed",
-                                "message": str(exc),
-                                "signal_sent": exc.signal_sent,
-                                "failed_entity_kind": exc.entity_type,
-                                "run_untouched": None,
-                            },
-                            audit=True,
-                        )
-                    except Exception as persist_exc:  # noqa: BLE001
-                        raise OperatorAuditUnavailableError(
-                            "Command outcome is indeterminate; reconciliation is required"
-                        ) from persist_exc
-                    return _DeferredCancelResult(self._proposal_result(proposal), exc)
+                if isinstance(exc, CancelPersistenceError):
+                    raise
             # A launch that failed before recording an invocation has nothing
             # durable to point at; one that failed after has an invocation_id
             # attached by _execute_application_command.

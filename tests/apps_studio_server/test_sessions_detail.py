@@ -38,7 +38,7 @@ def dag_metadata() -> dict:
 
 @pytest.fixture
 def patched_sessions_db(tmp_path, monkeypatch):
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -111,7 +111,7 @@ class _CountingMessageDB:
 
 
 async def test_full_history_role_counts_use_one_json_table_query():
-    from lionagi.studio.services.sessions import _fetch_role_counts
+    from lionhub.serve.daemon.services.sessions import _fetch_role_counts
 
     db = _CountingMessageDB()
 
@@ -123,7 +123,7 @@ async def test_full_history_role_counts_use_one_json_table_query():
 
 
 def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     assert _graph_from_metadata(None) is None
     assert _graph_from_metadata("") is None
@@ -134,7 +134,7 @@ def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
 
 
 def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     assert _graph_from_metadata(json.dumps(["not", "a", "dict"])) is None
     assert _graph_from_metadata(json.dumps({"agents": [{"id": "a1", "name": "Analyst"}]})) is None
@@ -145,7 +145,7 @@ def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
 
 
 def test_graph_from_metadata_builds_nodes_and_dependency_edges():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     graph = _graph_from_metadata(json.dumps(dag_metadata()))
 
@@ -181,7 +181,7 @@ def test_graph_from_metadata_builds_nodes_and_dependency_edges():
 
 
 def test_graph_from_metadata_filters_malformed_agents_and_operations():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [
@@ -212,7 +212,7 @@ def test_graph_from_metadata_filters_malformed_agents_and_operations():
 
 
 def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [],
@@ -233,7 +233,7 @@ def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
 
 
 def test_graph_from_metadata_malformed_depends_on_does_not_create_character_edges():
-    from lionagi.studio.services.sessions import _graph_from_metadata
+    from lionhub.serve.daemon.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [{"id": "a1", "name": "Analyst", "model": "gpt-5"}],
@@ -1002,7 +1002,7 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
 
 async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch):
     """A terminal session must drain every bounded page before its done frame."""
-    from lionagi.studio.services import sessions as svc
+    from lionhub.serve.daemon.services import sessions as svc
 
     calls: list[tuple[float, str | None]] = []
 
@@ -1071,7 +1071,7 @@ async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch
 async def test_session_message_stream_rejects_foreign_cursor_before_opening(monkeypatch):
     from fastapi import HTTPException
 
-    from lionagi.studio.services import sessions as svc
+    from lionhub.serve.daemon.services import sessions as svc
 
     async def _exists(_session_id: str) -> bool:
         return True
@@ -1396,7 +1396,7 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
 
 
 def test_branch_file_stats_only_accept_structured_file_tool_paths():
-    from lionagi.studio.services.sessions import _branch_message_stats
+    from lionhub.serve.daemon.services.sessions import _branch_message_stats
 
     action_messages = [
         {
@@ -1427,7 +1427,7 @@ def test_branch_file_stats_only_accept_structured_file_tool_paths():
 
 
 def test_branch_file_stats_capture_empty_or_missing_function_name():
-    from lionagi.studio.services.sessions import _branch_message_stats
+    from lionhub.serve.daemon.services.sessions import _branch_message_stats
 
     action_messages = [
         {
@@ -2389,7 +2389,7 @@ async def _drain_stream(response, *, limit: int = 200) -> list[dict]:
 @pytest.mark.asyncio
 async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(monkeypatch):
     """A bounded read hands back one page and defers the rest, so reaching the end of a page is not reaching the end of the session."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     pages = [
         [{"id": "m-1", "timestamp": 1.0, "branch_id": "b-1"}],
@@ -2431,7 +2431,7 @@ async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(mo
 @pytest.mark.asyncio
 async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
     """Draining is only safe while the cursor advances."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     calls = {"n": 0}
 
@@ -2461,7 +2461,7 @@ async def _true() -> bool:
 
 def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered():
     """The window is picked from the progression before anything is decoded, and the budget then admits from the newest end."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     window = ["m-1", "m-2", "m-3", "m-4"]  # oldest first, as the progression orders them
 
@@ -2481,7 +2481,7 @@ def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered(
 
 def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
     """Control: with nothing refused there is nothing to resume, so the paging anchor is the one the window logic already computed."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     window = ["m-1", "m-2"]
 
@@ -2501,7 +2501,7 @@ def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
 
 def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     """Nothing was delivered, so the window has not been read."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     has_older, anchor = svc._resume_anchor(
         ["m-1", "m-2"],
@@ -2529,7 +2529,7 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
 
 def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
     """An empty page has two causes and only one of them is a stop."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     has_older, anchor = svc._resume_anchor(
         ["gone-1", "gone-2"],
@@ -2557,7 +2557,7 @@ def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
 
 def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
     """The sentinel has to mean the same window a first read picks, or the page it resumes is not the page that was missed."""
-    import lionagi.studio.services.sessions as svc
+    import lionhub.serve.daemon.services.sessions as svc
 
     progression = ["m-1", "m-2", "m-3", "m-4", "m-5"]
     fresh = svc._window_message_ids(
@@ -3074,7 +3074,7 @@ async def test_the_scan_allowance_is_spent_across_calls_not_refreshed_by_each(
 
 def test_the_total_scan_ceiling_is_a_real_ceiling():
     """The arm above sets the constant, so it cannot see the shipped value change."""
-    from lionagi.studio.services import sessions as sessions_svc
+    from lionhub.serve.daemon.services import sessions as sessions_svc
 
     assert 0 < sessions_svc.MAX_SCANNED_CONTENT_CHARS <= 256 * 1_048_576
 

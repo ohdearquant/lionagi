@@ -655,8 +655,8 @@ async def test_postgres_capability_claim(pg_url):
     Postgres, and the keyset pager's cursor-less first page must not send a
     nullable bind parameter asyncpg cannot type.
     """
-    from lionagi.studio.services.task_applications import TaskApplication, submit_task
     from lionhub.orchestration.scheduler.worker import claim_and_execute, register_heartbeat
+    from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
 
     db = StateDB(url=pg_url)
     await db.open()
@@ -1948,7 +1948,7 @@ async def test_postgres_attach_session_invocation_decrements_off_the_value_a_con
         await db.close()
 
 
-# lionagi/studio/services/schedules.py: recent-run summary on both dialects
+# lionhub/src/lionhub/serve/daemon/services/schedules.py: recent-run summary on both dialects
 #
 # The list endpoint's recent-run read builds its id list and its per-group
 # limit with collection functions that differ between SQLite and PostgreSQL.
@@ -1992,7 +1992,7 @@ async def _seed_pg_schedule(db: StateDB, sid: str, runs: int, *, invocation: boo
 async def test_postgres_recent_run_summaries_are_available(pg_url):
     """A bounded newest-first slice, a continuation flag, joined invocation
     evidence, and an empty definition that stays an available empty slice."""
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     # A live store is shared across tests, so the ids are unique per run.
     full_id = f"pg-full-{_uid()}"
@@ -2052,7 +2052,7 @@ async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_sl
     """The per-group key read is bounded by ``fired_at`` then ``id``, so a tie
     group straddling the displayed count is cut by id rather than by row order,
     and a slice of exactly the displayed count is complete."""
-    from lionagi.studio.services import schedules
+    from lionhub.serve.daemon.services import schedules
 
     tied_id = f"pg-tied-{_uid()}"
     short_id = f"pg-short-{_uid()}"
@@ -2112,11 +2112,11 @@ async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url, m
     create_skipped_run with the scheduler's context keys, and a run naming neither."""
     import lionagi.state.db as db_mod
     from lionagi.state.reasons import ScheduleReasons
-    from lionagi.studio.services import schedules
     from lionhub.orchestration.scheduler.scheduler_state import (
         _DBSchedulerStateService,
         create_skipped_run,
     )
+    from lionhub.serve.daemon.services import schedules
 
     monkeypatch.setattr(
         db_mod, "settings", db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": pg_url})

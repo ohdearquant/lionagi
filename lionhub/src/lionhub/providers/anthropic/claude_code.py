@@ -36,6 +36,7 @@ from lionhub.providers._cli_subprocess import (
     SpawnedProcess,
     _resolve_cli_path,
     build_declarative_cli_args,
+    claude_code_auth_env,
     declarative_cli_flags,
     discover_cli,
     env_as_the_spawn_encodes_it,
@@ -703,7 +704,10 @@ class ClaudeCodeRequest(BaseModel):
         # anything launches.
         sandbox_settings = self._child_sandbox_settings()
         if sandbox_settings is not None:
+            from lionhub.agent.child_sandbox import _child_setting_sources
+
             updates["settings"] = None
+            updates["setting_sources"] = _child_setting_sources(self.setting_sources)
         source = self.model_copy(update=updates) if updates else self
         args.extend(source._build_declarative_args())
         if sandbox_settings is not None:
@@ -762,6 +766,7 @@ class ClaudeCodeRequest(BaseModel):
         policy is enabled.
         """
         from lionhub.agent.child_sandbox import (
+            _refuse_a_home_workspace,
             check_claude_cli_floor,
             check_sandbox_backend,
             claude_settings_argument,
@@ -785,6 +790,7 @@ class ClaudeCodeRequest(BaseModel):
                 )
         if not policy.enabled:
             return None
+        _refuse_a_home_workspace(self.cwd(), self.env, enabled=True)
         check_sandbox_backend()
         binary = resolve_claude_cli()
         if binary:
@@ -797,7 +803,7 @@ class ClaudeCodeRequest(BaseModel):
             text = str.__str__(existing) if isinstance(existing, str) else str(existing)
             if not text.lstrip().startswith("{"):
                 base_dir = self.cwd()
-        return claude_settings_argument(policy, existing, base_dir)
+        return claude_settings_argument(policy, existing, base_dir, self.cwd())
 
     def _build_declarative_args(self) -> list[str]:
         return build_declarative_cli_args(self)
@@ -859,6 +865,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 engine="claude",
                 workload=request.workload,
                 secret_fill_skip=request.secret_fill_skip,
+                auth_env=claude_code_auth_env(request.env),
             )
         ) as stream:
             async for obj in stream:

@@ -47,10 +47,40 @@ if TYPE_CHECKING:
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
     from lionagi.protocols.context_providers import ContextProviderRegistry
+    from lionagi.service.connections.provider_catalog import ProviderCatalog
     from lionagi.session.control import LoopControl, LoopDirective
 
 
 __all__ = ("Branch",)
+
+
+def _build_models(
+    chat_model: iModel | dict | str | None,
+    parse_model: iModel | dict | str | None,
+    *,
+    provider_catalog: "ProviderCatalog | None" = None,
+) -> tuple[iModel, iModel]:
+    selection = {} if provider_catalog is None else {"provider_catalog": provider_catalog}
+    if not chat_model:
+        chat_model = iModel(
+            provider=settings.LIONAGI_CHAT_PROVIDER,
+            model=settings.LIONAGI_CHAT_MODEL,
+            **selection,
+        )
+    if not parse_model:
+        parse_model = chat_model
+
+    if isinstance(chat_model, dict):
+        chat_model = iModel.from_dict(chat_model, **selection)
+    elif isinstance(chat_model, str):
+        chat_model = iModel(model=chat_model, **selection)
+
+    if isinstance(parse_model, dict):
+        parse_model = iModel.from_dict(parse_model, **selection)
+    elif isinstance(parse_model, str):
+        parse_model = iModel(model=parse_model, **selection)
+
+    return chat_model, parse_model
 
 
 def _strip_capability_block(text: str) -> str:
@@ -199,24 +229,7 @@ class Branch(Element, Relational):
                 sender=system_sender or self.user or MessageRole.SYSTEM,
             )
 
-        if not chat_model:
-            chat_model = iModel(
-                provider=settings.LIONAGI_CHAT_PROVIDER,
-                model=settings.LIONAGI_CHAT_MODEL,
-            )
-        if not parse_model:
-            parse_model = chat_model
-
-        if isinstance(chat_model, dict):
-            chat_model = iModel.from_dict(chat_model)
-        elif isinstance(chat_model, str):
-            chat_model = iModel(model=chat_model)
-
-        if isinstance(parse_model, dict):
-            parse_model = iModel.from_dict(parse_model)
-        elif isinstance(parse_model, str):
-            parse_model = iModel(model=parse_model)
-
+        chat_model, parse_model = _build_models(chat_model, parse_model)
         self._imodel_manager = iModelManager(chat=chat_model, parse=parse_model)
 
         self._action_manager = ActionManager()
@@ -810,8 +823,12 @@ class Branch(Element, Relational):
         *,
         chat_model: iModel | None = None,
         parse_model: iModel | None = None,
+        provider_catalog: "ProviderCatalog | None" = None,
     ):
         """Rebuild a branch from ``to_dict`` output, read as trusted input.
+
+        The caller-supplied ``provider_catalog`` is runtime-only and is never read
+        from or written to the stored branch dictionary.
 
         A stored model is rebuilt by ``iModel.from_dict``, which takes from ``data`` no
         API key, no header or setting whose name reads as a credential, no proxy and no
@@ -823,6 +840,7 @@ class Branch(Element, Relational):
         # and log_config out of the caller's snapshot, so it could not be reused
         # for a retry, comparison, or a second restoration.
         data = dict(data)
+        data.pop("provider_catalog", None)
         # The curated view is stored as a plain dict. Restored as one, every later message
         # add, evict and compaction on the branch would fail on it.
         metadata = data.get("metadata")
@@ -856,6 +874,7 @@ class Branch(Element, Relational):
                 params[k] = v
 
         params.update(dict_)
+        params.pop("provider_catalog", None)
         from pydantic import ValidationError
 
         # pydantic's message repeats a stored value and the name of a stored key the branch
@@ -863,7 +882,14 @@ class Branch(Element, Relational):
         # the fields a branch has and the reasons. It is raised outside the handler, so the
         # original error is not attached to it.
         try:
-            branch = cls(**{k: v for k, v in params.items() if v is not Unset})
+            params = {k: v for k, v in params.items() if v is not Unset}
+            if provider_catalog is not None:
+                params["chat_model"], params["parse_model"] = _build_models(
+                    params.get("chat_model"),
+                    params.get("parse_model"),
+                    provider_catalog=provider_catalog,
+                )
+            branch = cls(**params)
         except ValidationError as exc:
             errors = exc.errors(include_url=False, include_context=False, include_input=False)
             problems = "; ".join(

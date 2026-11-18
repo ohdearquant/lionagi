@@ -105,6 +105,12 @@ Three drivers, in the order they carry weight:
 Also corrected: the original D1 headed its list "Discrete core (10 tools)" while enumerating
 nine. The superseded shape was nine discrete tools plus `request`.
 
+## Implementation status
+
+**2026-11-02 (0.37.0).** The server removed the flat operation aliases and
+refuses them as unknown verbs (`not_found`). The catalog and `server.info`
+omit `synonyms_removed_after`. [Replacement verbs](../reference/mcp-server.md#compatibility)
+
 ## Depth contract
 
 This ADR decides the shape of the MCP verb surface, not its implementation schedule. The
@@ -176,9 +182,6 @@ namespaced form before dispatch, and **absent from the catalog** so they are nev
 advertised or taught. They exist for callers already scripted against the old names. They
 are accepted for exactly one release and removed in the first minor release after the one
 that introduces this surface, and no later than 2026-09-30.
-
-They have since been removed: an old name is refused as an unknown verb (`not_found`), and
-the catalog and `server.info` no longer carry `synonyms_removed_after`.
 
 **Ops are JSON, never a DSL string.** `ops` is a list of objects:
 

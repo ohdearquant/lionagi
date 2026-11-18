@@ -125,6 +125,7 @@ class _ObservedScheduler:
         child_exit=0,
         child_status="completed",
         remove_branch=None,
+        running_schedule_update=None,
         stop_before_child=False,
     ):
         real_fire = self.engine._fire
@@ -155,6 +156,9 @@ class _ObservedScheduler:
             self.launches.append("parent")
             parent = await self.db.get_schedule_run(_PARENT)
             assert parent["dispatched_at"] is not None and parent["status"] == "running"
+            if running_schedule_update is not None:
+                # Keep the action in flight until the stored definition has changed.
+                await self.db.update_schedule(_SCHEDULE, **running_schedule_update)
             await _seed_session(self.db, invocation_id, session_status)
             return 0, ""
 
@@ -274,13 +278,22 @@ async def test_completed_empty_follows_only_selected_failure_action(observed, br
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("edit", [False, True], ids=["unchanged", "removed-after-decision"])
+@pytest.mark.parametrize(
+    "edit",
+    [None, "after-decision", "while-running"],
+    ids=[
+        "unchanged",
+        "removed-after-decision",
+        "removed-while-running",
+    ],
+)
 async def test_successful_run_follows_the_selected_action(observed, edit):
     await observed.create_schedule("on_success")
     observed.observe_launches(
         session_status="completed",
         child_status="failed",
-        remove_branch="on_success" if edit else None,
+        remove_branch="on_success" if edit == "after-decision" else None,
+        running_schedule_update={"on_success": None} if edit == "while-running" else None,
     )
 
     assert await observed.fire()
@@ -300,6 +313,86 @@ async def test_successful_run_follows_the_selected_action(observed, edit):
     if edit:
         schedule = await observed.db.get_schedule(_SCHEDULE)
         assert schedule["on_success"] is None
+
+
+@pytest.mark.asyncio
+async def test_success_action_added_while_running_does_not_open_grace(observed):
+    await observed.create_schedule(None)
+    update = observed.schedule_fields("on_success")
+    observed.observe_launches(session_status="completed", running_schedule_update=update)
+
+    assert await observed.fire()
+    schedule = await observed.db.get_schedule(_SCHEDULE)
+    assert schedule["on_success"] == update["on_success"]
+    parent = await observed.db.get_schedule_run(_PARENT)
+    assert parent["status"] == "completed"
+    assert _decisions(parent) == _decision("none")
+    await observed.assert_resolved_without_child()
+    assert observed.launches == ["parent"]
+    assert await observed.wait_exit() == 0
+
+
+@pytest.mark.asyncio
+async def test_nested_child_follows_its_effective_failure_action(observed, monkeypatch):
+    grandchild_prompt = "run the nested failure action"
+    fields = observed.schedule_fields("on_success")
+    fields["on_success"]["on_fail"] = {
+        "kind": "agent",
+        "prompt": grandchild_prompt,
+        "on_success": None,
+        "on_fail": None,
+    }
+    await observed.db.create_schedule(_schedule_row(_SCHEDULE, **fields))
+    observed.observe_launches(session_status="completed", child_status="failed")
+    fire = observed.engine._fire
+    spawn = launcher.spawn_and_wait
+    grandchild_id = None
+
+    async def observe_nested_fire(schedule, run_id, *, chain_depth=0, **kwargs):
+        nonlocal grandchild_id
+        if chain_depth == 2:
+            grandchild_id = run_id
+            assert schedule["action_prompt"] == grandchild_prompt
+            [child] = await observed.children()
+            assert kwargs["chain_parent_id"] == child["id"]
+            assert (child["status"], child["exit_code"]) == ("failed", 0)
+            assert _decisions(child) == _decision("on_fail")
+            assert await observed.db.get_schedule_run(run_id) is None
+            await observed.tick()
+            assert observed.monitor["awaiting_grace"][child["id"]]["roots"] == {_PARENT}
+            assert _PARENT not in observed.monitor["resolved_roots"]
+        return await fire(schedule, run_id, chain_depth=chain_depth, **kwargs)
+
+    async def spawn_nested(argv, invocation_id, *, on_launched, **kwargs):
+        if grandchild_prompt not in argv:
+            return await spawn(argv, invocation_id, on_launched=on_launched, **kwargs)
+        await on_launched()
+        observed.launches.append("grandchild")
+        await observed.tick()
+        assert grandchild_id in observed.pending
+        await _seed_session(observed.db, invocation_id, "completed")
+        return 0, ""
+
+    monkeypatch.setattr(observed.engine, "_fire", observe_nested_fire)
+    monkeypatch.setattr(launcher, "spawn_and_wait", spawn_nested)
+
+    assert await observed.fire()
+    await observed.tick()
+    assert observed.launches == ["parent", "child", "grandchild"]
+    parent = await observed.db.get_schedule_run(_PARENT)
+    [child] = await observed.children()
+    grandchild = await observed.db.get_schedule_run(grandchild_id)
+    assert parent["schedule_id"] == child["schedule_id"] == grandchild["schedule_id"] == _SCHEDULE
+    assert (grandchild["chain_parent_id"], grandchild["chain_depth"]) == (child["id"], 2)
+    assert _decisions(parent) == _decision("on_success")
+    assert grandchild["status"] == "completed"
+    assert _decisions(grandchild) == _decision("none")
+    assert observed.pending == {}
+    assert observed.monitor["awaiting_grace"] == {}
+    assert observed.monitor["resolved_roots"] == {_PARENT}
+    assert observed.monitor["chain_tail_status"][_PARENT] == "completed"
+    assert await observed.wait_exit() == 0
+    assert (await observed.db.get_schedule(_SCHEDULE))["on_fail"] is None
 
 
 @pytest.mark.asyncio

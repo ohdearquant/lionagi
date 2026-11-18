@@ -15,12 +15,12 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from unittest.mock import AsyncMock, patch
 
-from lionagi.studio.services.schedules import create_schedule, update_schedule
 from lionhub.orchestration.schedule.parsing import (
     _MAX_CHAIN_DEPTH,
     _parse_chain_action,
     _validate_chain_kinds,
 )
+from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
 
 FIELDS = ("on_success", "on_fail")
 
@@ -87,7 +87,7 @@ def _run_create(data: dict):
     """Run create_schedule against a stubbed store; return (store, ValueError | None)."""
 
     async def _go():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -106,7 +106,7 @@ def _run_update(fields: dict, existing: dict | None = None):
     row = existing if existing is not None else _existing()
 
     async def _go():
-        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+        with patch("lionhub.serve.daemon.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.get_schedule = AsyncMock(return_value=row)
             mock_db.update_schedule = AsyncMock()
@@ -443,8 +443,10 @@ def test_same_target_bearing_kind_is_allowed_under_matching_parent(field, kind_k
         **{field: {kind_key: kind, field: None}},
     )
     with (
-        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
-        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+        patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"),
+        patch(
+            "lionhub.serve.daemon.services.schedules._validate_flow_yaml_spec", return_value=None
+        ),
     ):
         created, error = _run_create(data)
     assert error is None
@@ -482,8 +484,10 @@ def test_inherited_target_kind_remains_valid_at_each_depth(field, depth, target)
         **{field: chain},
     )
     with (
-        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
-        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+        patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"),
+        patch(
+            "lionhub.serve.daemon.services.schedules._validate_flow_yaml_spec", return_value=None
+        ),
     ):
         created, error = _run_create(data)
     assert error is None
@@ -501,8 +505,10 @@ def test_explicit_intermediate_kind_changes_the_effective_parent(field, target):
         **{field: chain},
     )
     with (
-        patch("lionagi.studio.services.schedules._svc_validate_action_command"),
-        patch("lionagi.studio.services.schedules._validate_flow_yaml_spec", return_value=None),
+        patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"),
+        patch(
+            "lionhub.serve.daemon.services.schedules._validate_flow_yaml_spec", return_value=None
+        ),
     ):
         created, error = _run_create(data)
     assert error is not None and f"{_flag(field)}.{field}.kind" in str(error)
@@ -514,7 +520,7 @@ def test_explicit_intermediate_kind_changes_the_effective_parent(field, target):
 def test_parent_kind_change_and_chain_replacement_use_new_effective_kind(field):
     stored = _existing(action_kind="agent", **{field: {"kind": "agent", field: None}})
     replacement = {"kind": "command", field: None}
-    with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+    with patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"):
         updated, error = _run_update(
             {"action_kind": "command", "action_command": "echo", field: replacement},
             existing=stored,
@@ -590,7 +596,7 @@ def test_rejects_sibling_inheritance_with_incompatible_effective_parent(operatio
         **{first: first_chain, second: second_chain},
     )
     if operation == "create":
-        with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+        with patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"):
             db, error = _run_create(data)
         write = db.create_schedule
     else:
@@ -611,7 +617,7 @@ def test_accepts_compatible_sibling_inheritance():
         on_success={"kind": "agent", "on_success": None},
         on_fail={"kind": "agent", "on_fail": None},
     )
-    with patch("lionagi.studio.services.schedules._svc_validate_action_command"):
+    with patch("lionhub.serve.daemon.services.schedules._svc_validate_action_command"):
         created, error = _run_create(data)
     assert error is None
     created.create_schedule.assert_awaited_once()

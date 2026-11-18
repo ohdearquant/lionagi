@@ -7,6 +7,8 @@ import asyncio
 import contextvars
 import gc
 import logging
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import anyio
@@ -18,6 +20,41 @@ from lionagi.protocols.types import EventStatus
 from lionagi.service.hooks import hooked_event
 from lionagi.service.hooks._types import StreamTerminalState
 from lionagi.service.hooks.hooked_event import HookedEvent
+
+
+@pytest.mark.parametrize("symbol", ["HookEvent", "HookEventTypes"])
+def test_hooked_event_import_does_not_need_package_reexports(symbol, tmp_path):
+    script = """
+import builtins
+import importlib.util
+import sys
+
+package = "lionagi.service.hooks"
+child = f"{package}.hooked_event"
+symbol = sys.argv[1]
+sys.path[:0] = sys.argv[2:]
+original_import = builtins.__import__
+
+def import_with_unavailable_reexport(name, globals=None, locals=None, fromlist=(), level=0):
+    if globals and globals.get("__name__") == child and symbol in (fromlist or ()):
+        owner = importlib.util.resolve_name("." * level + name, globals["__package__"])
+        if owner == package:
+            raise ImportError(f"hooks package re-export unavailable during import: {symbol}")
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = import_with_unavailable_reexport
+leaf = importlib.import_module(child)
+hooks = importlib.import_module(package)
+assert getattr(leaf, symbol) is getattr(hooks, symbol)
+"""
+    result = subprocess.run(  # noqa: S603 -- this interpreter, a fixed script
+        [sys.executable, "-I", "-B", "-c", script, symbol, *sys.path],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class SimpleHooked(HookedEvent):

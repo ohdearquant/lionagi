@@ -364,7 +364,7 @@ async def _import_one_run(
 ) -> tuple[int, int, int]:
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionagi.state import StateDB
 
     db._refuse_in_compatibility("import_runs", "run import is not supported in compatibility mode")
     created_at = _mtime_as_float(run_dir)
@@ -398,7 +398,7 @@ async def _import_one_run(
         for index, raw_msg in selected:
             message_id = raw_msg.get("id") if isinstance(raw_msg, dict) else None
             try:
-                StateDB._validate_progression_message_id(session_prog_id, message_id)
+                StateDB.validate_progression_message_id(session_prog_id, message_id)
             except ValueError as exc:
                 raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
         prepared_branches.append((branch_file, branch_data, [message for _, message in selected]))
@@ -1245,6 +1245,20 @@ async def _prune(
                     counts["deferred_victim_progressions"] = deferred_count
                 if survivor_count:
                     counts["non_array_survivor_progressions"] = survivor_count
+                # An array progression is kept when its owner also points at a
+                # non-array one, even when that non-array progression is shared
+                # with a survivor and so is not counted above.
+                deferred_arrays = (
+                    await conn.execute(
+                        text(
+                            f"SELECT COUNT(*) FROM {orphans} o"  # noqa: S608
+                            " JOIN progressions p ON p.id = o.id"
+                            f" WHERE o.deferred = 1 AND CASE WHEN {non_array} THEN 0 ELSE 1 END = 1"
+                        )
+                    )
+                ).scalar_one()
+                if deferred_arrays:
+                    counts["deferred_array_progressions"] = deferred_arrays
 
                 # Subtract retained IDs as a set, in the same snapshot as the
                 # DELETE. PostgreSQL can hash or sort the set without rescanning
@@ -2129,9 +2143,17 @@ def run_state(args: argparse.Namespace) -> int:
             print(f"  skipped {result['skipped_sessions']} session(s) referenced by retained rows:")
             for table, count in result["skipped_by_reference"].items():
                 print(f"    {table}: {count}")
-        if kept := result.get("deferred_victim_progressions"):
-            verb, owners = ("would keep", "selected") if args.dry_run else ("kept", "deleted")
+        kept = result.get("deferred_victim_progressions", 0)
+        kept_arrays = result.get("deferred_array_progressions", 0)
+        verb, owners = ("would keep", "selected") if args.dry_run else ("kept", "deleted")
+        if kept:
             print(f"  {verb} {kept} non-array progression(s) from {owners} sessions")
+        if kept_arrays:
+            print(
+                f"  {verb} {kept_arrays} array progression(s) from {owners} sessions "
+                "that also point at a non-array progression"
+            )
+        if kept or kept_arrays:
             print(
                 "  later session prunes leave the orphaned progressions and their messages in place"
             )

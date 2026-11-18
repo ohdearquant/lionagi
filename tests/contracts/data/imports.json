@@ -106,7 +106,7 @@
     }
   },
   "import_laziness": {
-    "seed_count": 21,
+    "seed_count": 22,
     "seed_names": [
       "orchestrate",
       "agent",
@@ -115,6 +115,7 @@
       "team",
       "studio",
       "schedule",
+      "remote",
       "state",
       "invoke",
       "kill",
@@ -312,6 +313,18 @@
         "other_seed_modules_imported": [],
         "other_seed_modules_imported_count": 0,
         "seed": "plugin"
+      },
+      "remote": {
+        "cli_realized_names": [
+          "remote"
+        ],
+        "http_registry_count": 0,
+        "http_registry_realized": false,
+        "module": "lionhub.serve.cli.remote",
+        "new_lionagi_module_count": 5,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "seed": "remote"
       },
       "runs": {
         "cli_realized_names": [

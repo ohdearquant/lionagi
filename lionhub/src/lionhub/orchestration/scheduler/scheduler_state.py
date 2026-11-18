@@ -134,6 +134,10 @@ class SchedulerStateService(Protocol):
 
     async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None: ...
 
+    async def merge_invocation_node_metadata_if_running(
+        self, inv_id: str, patch: dict[str, Any]
+    ) -> bool: ...
+
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None: ...
 
     async def compute_files_overlap(
@@ -414,6 +418,12 @@ class _DBSchedulerStateService:
     async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None:
         async with self._db_context() as db:
             await db.merge_invocation_node_metadata(inv_id, patch)
+
+    async def merge_invocation_node_metadata_if_running(
+        self, inv_id: str, patch: dict[str, Any]
+    ) -> bool:
+        async with self._db_context() as db:
+            return await db.merge_invocation_node_metadata_if_running(inv_id, patch)
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
         async with self._db_context() as db:

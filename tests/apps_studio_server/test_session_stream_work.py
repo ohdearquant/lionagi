@@ -161,7 +161,8 @@ def backend(tmp_path, monkeypatch):
     import aiosqlite
 
     import lionagi.state.db as db_mod
-    from lionagi.studio.services import sessions, signals
+    from lionagi.studio.services import signals
+    from lionhub.serve.daemon.services import sessions
 
     path = tmp_path / "stream.sqlite3"
     url = f"sqlite+aiosqlite:///{path}"
@@ -290,7 +291,7 @@ async def test_idle_tail_work_does_not_multiply_by_viewers(
     path, _url, sessions, _signals, aiosqlite = backend
     from starlette.requests import Request
 
-    from lionagi.studio.services import _session_tail
+    from lionhub.serve.daemon.services import _session_tail
 
     registry = _session_tail.SessionTailRegistry(str(path))
     request = Request(
@@ -392,7 +393,7 @@ async def test_legacy_cursorless_replay_counts_are_explicit(
     # The same persisted histories also exercise the new default detail/live handoff.
     from starlette.requests import Request
 
-    from lionagi.studio.services import _session_tail
+    from lionhub.serve.daemon.services import _session_tail
 
     registry = _session_tail.SessionTailRegistry(str(path))
     request = Request(

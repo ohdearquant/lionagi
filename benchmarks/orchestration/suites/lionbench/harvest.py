@@ -247,7 +247,7 @@ def default_oracle_command(held_out_paths: list[str]) -> str:
     # fails at COLLECTION (ModuleNotFoundError), which is indistinguishable
     # from a real regression unless you inspect the traceback. Confirmed live
     # against a harvested instance whose held-out test imports
-    # lionagi.studio.services.schedules -> fastapi.
+    # lionhub.serve.daemon.services.schedules -> fastapi.
     return f"uv run --all-extras pytest {' '.join(held_out_paths)} -q"
 
 

@@ -1,9 +1,9 @@
 # ADR-0137: Failed rounds and the output limit on API-model legs
 
-- **Status**: Accepted (2026-10-25, #3763)
+- **Status**: Accepted (2026-10-25, #3763), amended 2026-11-18 (Amendment 1)
 - **Kind**: Aspirational
 - **Implementation-status**: implemented: D1 to D4; the cost measurement has run and keeps D1's
-  limit (Consequences, Cost)
+  limit (Consequences, Cost). Amendment 1: implemented
 - **Area**: operations
 - **Date**: 2026-10-25
 - **Relations**: extends ADR-0041 Amendment 1 (API-model `li agent` legs) and ADR-0130 Amendment 1
@@ -348,3 +348,96 @@ code than a line-anchored pattern that already cannot stop inside a JSON string.
 The same decisions were first made, measured on the recorded runs, and tested on the agent route
 of a sibling runtime that shares this loop; this record carries them to this package with its own
 tests.
+
+## Amendment 1: the output limit follows the leg's effort
+
+- **Status**: Accepted
+- **Amends**: D1 (the limit an Anthropic leg sends and the request timeout beside it), P4 and the
+  out-of-scope bullet on bounding thinking, and the Cost section; D2 to D4 are unchanged.
+
+### Context
+
+D1 sized its 32,768-token limit when the leg sent no effort setting (P4). Since lionagi #3923 the
+leg forwards a profile or `--effort` value to an Anthropic request as `output_config.effort`, so
+P4 and the out-of-scope bullet on bounding thinking no longer describe the code. Effort does
+bound thinking at low settings, but at `xhigh` and `max` the output limit is again the only
+per-request bound.
+
+At `max`, Claude Haiku 5.5 can spend more than 32,768 tokens thinking before it writes anything.
+Four legs on one read-and-extract task, each at effort `max`, sent 7 requests in about 752
+seconds. Each leg ended in `FailedRoundError` after its responses stopped at the limit with one
+thinking block, no text and no tool call, and both continuations under D2 failed the same way.
+The same task at effort `medium` finished. A leg has no way to raise the limit: a profile has
+no key for it.
+
+The request timeout bounds how large the limit can be. D1 kept a margin of about four times: 32,768
+tokens at about 200 a second take some 160 seconds against a 600-second request timeout. Measured
+on one long response each at effort `low`, Claude Haiku 5.5 wrote about 151 tokens a second and
+Claude Sonnet 5.5 about 92, time to first token included. At 92 a second, 65,536 tokens take
+about 710 seconds, past 600. A request that times out is not a failed round under D2. The
+endpoint retries it as a transport error, each retry a full new request, up to its
+`max_retries` total attempts (3 by default), and the last timeout ends the turn on that error.
+Raising the limit alone would turn a cut-off into three timed-out requests and a raw error.
+
+### Decision
+
+#### D1a: a higher effort gets a higher default limit and a longer request timeout
+
+An Anthropic API-model leg whose model and profile name no output limit sends:
+
+| Effort its requests carry | `max_tokens` |
+| --- | ---: |
+| none, `low`, `medium`, `high` | 32,768 (D1, unchanged) |
+| `xhigh`, `max` | 65,536 |
+
+Both models the shipped profiles route, `claude-haiku-5-5` and `claude-sonnet-5-5`, report an
+output cap of 128,000 through the provider's models endpoint and answered a request at 65,536
+normally.
+
+#### D1b: the request timeout follows the limit
+
+When the limit a leg sends is above 32,768, whether from D1a or from D1c, the leg's request timeout
+is raised to at least one second per 50 tokens of the limit: 1,311 seconds at 65,536. That keeps
+a full response inside the timeout at the measured rates, with a margin of about 1.8 times for
+Claude Sonnet 5.5 and about 3 times for Claude Haiku 5.5. A request this long comes back whole
+without streaming: one Claude Sonnet 5.5 request at effort `max` ran 715 seconds and returned
+94,711 output tokens with HTTP 200 and stop reason `end_turn`. A model whose rate is below 50 tokens a
+second could still time out on a full response, and then fails as stated in the Context. A limit
+of 32,768 or less keeps the endpoint's timeout, 600 seconds as D1 states.
+
+#### D1c: a profile can name the limit
+
+A profile key `max_output_tokens`, a positive integer, sets `max_tokens` on every Anthropic model
+of the leg. It wins over D1, D1a, and a limit the model's own settings name. A value above the
+model's output cap is refused by the provider and reported as such. The check that the leg's
+models are Anthropic runs where they are put in place for the run, after any model override and
+before the first request; a model of another provider is refused there, naming the key and
+the provider. At effort `max` on a hard task one Claude Sonnet 5.5 request filled 65,536 tokens
+with thinking and returned no text, so D1a does not cover every such leg and D1c is the lever.
+
+#### D1d: new and resumed legs
+
+The limit and the timeout are set each time a leg starts, new or resumed, from the effort its
+models carry then. A leg's effort does not change between its turns.
+
+### Cost
+
+At `xhigh` or `max` a response that keeps cutting off now runs to 65,536 tokens. D1's worst case,
+six such responses before `FailedRoundError`, rises to about 43 minutes at Claude Haiku 5.5's
+measured rate and about 72 minutes at Claude Sonnet 5.5's. A request that stalls outright waits up
+to 1,311 seconds per attempt instead of 600, and a timed-out request is retried as a whole, so one
+stalled request can wait up to three times 1,311 seconds, about 66 minutes, before the turn ends on
+the error. Both apply only to legs whose profile or caller asked
+for those efforts or set a larger limit. The failure this replaces spent 32,768 tokens on each
+of those responses and returned nothing.
+
+### Tests
+
+- Anthropic leg, no model or profile limit: no effort and `low` to `high` send 32,768 with the
+  600-second timeout; `xhigh` and `max` send 65,536 with a 1,311-second timeout.
+- A model that names `max_tokens` keeps it at every effort when the profile names none.
+- A profile `max_output_tokens` sets the limit at every effort, wins over a model's own limit, and
+  above 32,768 raises the timeout by the same rule.
+- A leg whose model is not Anthropic and whose profile names `max_output_tokens` is refused before
+  anything changes, naming the key.
+- A profile `max_output_tokens` that is not a positive whole number is refused.

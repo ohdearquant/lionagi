@@ -284,7 +284,10 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
     proc.pid = 4242
     proc.stdout.read.return_value = b""
     proc.stderr.read.return_value = b""
-    proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    proc.wait.side_effect = [
+        subprocess.TimeoutExpired("cmd", 0.01),
+        subprocess.TimeoutExpired("cmd", 1.0),
+    ]
     witnesses = ((4242, 12.5),)
     seen: dict[str, object] = {}
 
@@ -311,8 +314,8 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
         raising=False,
     )
 
-    def _capture(child, *, expected_leader_created=None):
-        seen["capture"] = (child, expected_leader_created)
+    def _capture(child, *, expected_leader_created, expected_marker):
+        seen["capture"] = (child, expected_leader_created, expected_marker)
         return witnesses
 
     def _terminate(child, **kwargs):
@@ -331,11 +334,110 @@ def test_subprocess_timeout_passes_spawn_bound_witnesses_to_cleanup(monkeypatch)
     assert result["timed_out"] is True
     assert seen["env"] == {"ONLY": "marked"}
     assert seen["observe"] == (4242, "spawn-token")
-    assert seen["capture"] == (proc, 12.5)
+    assert seen["capture"] == (proc, 12.5, "spawn-token")
     assert seen["terminate"] == (
         proc,
         {"grace": None, "group_witnesses": witnesses},
     )
+    _, reap = proc.wait.call_args_list
+    assert 0 <= reap.kwargs["timeout"] <= 1.0
+
+
+@pytest.mark.parametrize("pipe_stays_open", [False, True], ids=["complete", "drain-timeout"])
+def test_subprocess_pipe_drains_share_the_leader_deadline(monkeypatch, pipe_stays_open):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    elapsed = 0.0
+    waits = []
+    drains = []
+    joins = []
+    signals = []
+    witnesses = ((4243, 13.0),)
+
+    class Process:
+        pid = 4242
+        returncode = None
+
+        def __init__(self):
+            self.stdout = BytesIO(b"partial output")
+            self.stderr = BytesIO(b"diagnostic")
+
+        def wait(self, timeout=None):
+            nonlocal elapsed
+            assert timeout is not None, "process reap must be bounded"
+            waits.append(timeout)
+            if self.returncode is None:
+                elapsed += 2.0
+                self.returncode = 17
+            return self.returncode
+
+    class Drain:
+        def __init__(self, *, target, daemon):
+            assert daemon, "a pipe drain must not keep the process alive"
+            self.target = target
+            self.index = len(drains)
+            self.duration = 3.0 if self.index == 0 else (float("inf") if pipe_stays_open else 2.0)
+            self.alive = False
+            drains.append(self)
+
+        def start(self):
+            self.alive = True
+
+        def join(self, timeout=None):
+            nonlocal elapsed
+            assert timeout is not None, "pipe drain join must be bounded"
+            joins.append((self.index, timeout))
+            if self.alive:
+                elapsed += min(self.duration, timeout)
+                self.duration -= timeout
+                if self.duration <= 0:
+                    self.target()
+                    self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    child = Process()
+
+    def capture(proc, *, expected_leader_created, expected_marker):
+        assert proc is child and proc.returncode == 17
+        assert expected_leader_created == 12.5 and expected_marker == "spawn-token"
+        return witnesses
+
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", lambda *a, **kw: child)
+    monkeypatch.setattr(subprocess_mod, "threading", SimpleNamespace(Thread=Drain))
+    monkeypatch.setattr(
+        subprocess_mod, "time", SimpleNamespace(monotonic=lambda: elapsed), raising=False
+    )
+    monkeypatch.setattr(
+        subprocess_mod, "prepare_process_group_env", lambda env: (env, "spawn-token")
+    )
+    monkeypatch.setattr(subprocess_mod, "observe_process_group_leader", lambda *a, **kw: 12.5)
+    monkeypatch.setattr(subprocess_mod, "capture_group_witnesses", capture)
+    monkeypatch.setattr(
+        subprocess_mod, "terminate_process_group", lambda *a, **kw: signals.append((a, kw))
+    )
+
+    result = subprocess_mod._subprocess_sync(["synthetic"], False, 8.0, None, 8000, env={})
+
+    assert waits[0] == 8.0
+    assert joins[:2] == [(0, 6.0), (1, 3.0)]
+    if pipe_stays_open:
+        assert result == {
+            "stdout": "partial output",
+            "stderr": "Command timed out after 8000 ms",
+            "returncode": -1,
+            "timed_out": True,
+        }
+        assert signals == [((child,), {"grace": None, "group_witnesses": witnesses})]
+        assert waits == [8.0, 1.0] and joins[2:] == [(0, 1.0), (1, 1.0)]
+        assert elapsed == 9.0 and drains[1].is_alive()
+    else:
+        assert result == {"stdout": "partial output", "stderr": "diagnostic", "returncode": 17}
+        assert waits == [8.0] and len(joins) == 2 and not signals
 
 
 def test_subprocess_marker_mismatch_is_direct_child_only(monkeypatch):
@@ -570,3 +672,205 @@ async def test_toolkit_bash_refuses_as_the_standalone_tool_does(tmp_path, comman
 
     assert standalone.return_code == -1
     assert from_toolkit == standalone.model_dump()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups and /bin/sh")
+def test_a_descendant_holding_the_pipe_is_bounded_and_keeps_printed_output(tmp_path):
+    """A real child that backgrounds a long sleep keeps stdout open after the leader exits.
+
+    The call must return within the deadline plus the cleanup grace, keep what the
+    leader printed, report a timeout, and leave the backgrounded process stopped.
+    """
+    import os
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    # Python on both sides: the group-kill authority reads the spawn marker from
+    # the process environment, which macOS does not expose for system binaries.
+    script = (
+        "import subprocess, sys\n"
+        "bg = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(bg.pid))\n"
+        "print('started', flush=True)\n"
+    )
+    start = time.monotonic()
+    # A generous deadline so a loaded machine still spawns the child before it fires.
+    result = subprocess_mod._subprocess_sync([sys.executable, "-c", script], False, 2.0, None)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+
+    bg_pid = int(pid_file.read_text().strip())
+    stop_by = time.monotonic() + 2.0
+    alive = True
+    while time.monotonic() < stop_by:
+        try:
+            os.kill(bg_pid, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(0.05)
+    if alive:
+        os.kill(bg_pid, 9)
+    assert not alive, "the backgrounded process outlived the call"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell background job")
+def test_output_printed_before_the_deadline_is_kept_while_a_descendant_holds_the_pipe(tmp_path):
+    """Output already in the pipe is returned even when the pipe stays open past the deadline."""
+    import os
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    script = f"echo started; sleep 30 & echo $! > {pid_file}; exit 0"
+    start = time.monotonic()
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        elapsed = time.monotonic() - start
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert elapsed < 1.0 + subprocess_mod._CLEANUP_GRACE_SECONDS + 3.0
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipes")
+def test_a_clean_exit_near_the_deadline_is_not_reported_as_a_timeout_when_the_readers_lag(
+    monkeypatch,
+):
+    """The command exits half a second before its deadline; its pipe readers finish just after
+    the deadline, within the shipped drain grace of the exit. The readers' latency is not the
+    command's: it reports its return code and output."""
+    import time
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    deadline_s = 3.0
+    real_drain = subprocess_mod._drain
+    started = time.monotonic()
+
+    def late_drain(stream, buf):
+        # A reader thread that is scheduled late, as under load: it starts reading 0.3 s after
+        # the deadline, inside the grace that follows an exit 0.5 s before it.
+        time.sleep(max(0.0, started + deadline_s + 0.3 - time.monotonic()))
+        return real_drain(stream, buf)
+
+    monkeypatch.setattr(subprocess_mod, "_drain", late_drain)
+    assert subprocess_mod._DRAIN_GRACE_SECONDS == 1.0
+    code = "import sys, time; time.sleep(2.5); sys.stdout.write('done'); sys.exit(3)"
+
+    result = subprocess_mod._subprocess_sync([sys.executable, "-c", code], False, deadline_s, None)
+
+    assert result.get("timed_out") is None
+    assert result["returncode"] == 3
+    assert result["stdout"] == "done"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell background job")
+def test_a_timed_out_command_marks_truncation_only_when_the_cap_was_reached(monkeypatch):
+    import lionhub.tools._subprocess as subprocess_mod
+
+    monkeypatch.setattr(subprocess_mod, "_MAX_OUTPUT_BYTES", 16)
+    code = "import sys, time; sys.stdout.write(sys.argv[1]); sys.stdout.flush(); time.sleep(30)"
+
+    short = subprocess_mod._subprocess_sync([sys.executable, "-c", code, "tiny"], False, 1.0, None)
+    full = subprocess_mod._subprocess_sync([sys.executable, "-c", code, "x" * 40], False, 1.0, None)
+
+    assert short["timed_out"] is True and short["stdout"] == "tiny"
+    assert full["timed_out"] is True
+    assert full["stdout"] == "x" * 16 + "\n\n[... output truncated at 16 bytes ...]\n"
+
+
+def _stopped_within(pid: int, seconds: float) -> bool:
+    import os
+    import time
+
+    stop_by = time.monotonic() + seconds
+    while time.monotonic() < stop_by:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+@pytest.mark.parametrize(
+    "leader_tail",
+    ["sleep 0.3; exit 0", "sleep 30"],
+    ids=["leader-exits-first", "leader-still-running"],
+)
+def test_a_system_shell_leader_does_not_leave_its_background_job_running(tmp_path, leader_tail):
+    """macOS discloses no environment for /bin/sh or /bin/sleep, so neither shows the spawn
+    marker. The timeout still ends the group: whether the shell has already exited and its
+    background job holds the pipe, or the shell is still running at the deadline."""
+    import os
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; {leader_tail}"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS hides a system binary's environment")
+def test_a_shell_that_exits_before_it_is_observed_does_not_leave_its_job_running(
+    tmp_path, monkeypatch
+):
+    """A thread preempted between the spawn and the leader observation sees the shell
+    already exited. The observation runs only once the shell is an uncollected zombie."""
+    import os
+    import time
+
+    import psutil
+
+    import lionhub.tools._subprocess as subprocess_mod
+
+    observe = subprocess_mod.observe_process_group_leader
+
+    def observe_after_exit(pid, **kwargs):
+        stop_by = time.monotonic() + 5.0
+        while psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < stop_by, "the shell did not exit"
+            time.sleep(0.005)
+        return observe(pid, **kwargs)
+
+    monkeypatch.setattr(subprocess_mod, "observe_process_group_leader", observe_after_exit)
+    pid_file = tmp_path / "bg.pid"
+    script = f"sleep 30 & echo $! > {pid_file}; echo started; exit 0"
+    try:
+        result = subprocess_mod._subprocess_sync(["/bin/sh", "-c", script], False, 1.0, None)
+        bg_pid = int(pid_file.read_text().strip())
+        stopped = _stopped_within(bg_pid, 2.0)
+    finally:
+        try:
+            os.kill(int(pid_file.read_text().strip()), 9)
+        except (OSError, ValueError):
+            pass
+
+    assert result["timed_out"] is True
+    assert "started" in result["stdout"]
+    assert stopped, "the background job outlived the call"

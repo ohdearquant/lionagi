@@ -77,4 +77,7 @@ EXPOSE 8765
 ENV LIONAGI_STUDIO_FRONTEND_DIST=/app/apps/studio/frontend/dist \
     LIONAGI_STUDIO_OPERATOR_CWD=/workspace
 
-CMD ["uvicorn", "lionagi.studio.app:app", "--host", "0.0.0.0", "--port", "8765"]
+# Bound graceful shutdown as the Python entry points do (3 s), so one SIGTERM from
+# `docker stop` ends the server before its own SIGKILL even with a stream open.
+CMD ["uvicorn", "lionagi.studio.app:app", "--host", "0.0.0.0", "--port", "8765", \
+     "--timeout-graceful-shutdown", "3"]

@@ -16,9 +16,9 @@ from lionagi.ln.concurrency import run_sync
 # Imported eagerly: the state package resolves attributes lazily, so this
 # reaches the small URL-handling module without pulling the database layer in.
 from lionagi.state.engine import mask_credentials
+from lionhub.serve.daemon.services._path_safety import safe_path_join, validate_name_component
 
 from ..registry import studio_route
-from ._path_safety import safe_path_join, validate_name_component
 from .agents import _canonicalize_casts, _read_agent_for_write
 from .redaction import (
     RedactedPayloadError,
