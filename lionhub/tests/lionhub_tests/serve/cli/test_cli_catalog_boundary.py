@@ -380,13 +380,14 @@ options:
 
 
 def test_cli_version_source_is_unchanged(capsys):
-    """The base commit printed this version through the composition root."""
+    """The composition root prints the package version in the base commit's format."""
+    from lionagi.version import __version__
     from lionhub.serve.cli.main import main
 
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out == "li 0.37.0\n"
+    assert capsys.readouterr().out == f"li {__version__}\n"
 
 
 def test_optional_command_feature_errors_are_unchanged(monkeypatch, capsys):
