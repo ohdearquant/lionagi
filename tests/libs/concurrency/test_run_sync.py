@@ -1,9 +1,11 @@
 """Worker offload controls and callable argument boundaries."""
 
+import asyncio
 import inspect
 import threading
 from contextvars import ContextVar
 from functools import partial
+from traceback import walk_tb
 
 import anyio
 import pytest
@@ -69,6 +71,7 @@ async def test_run_sync_preserves_uncancelled_error_identity(error_type, abandon
     with pytest.raises(error_type) as raised:
         await run_sync(worker, abandon_on_cancel=abandon_on_cancel)
     assert raised.value is error
+    assert any(frame.f_code is worker.__code__ for frame, _ in walk_tb(error.__traceback__))
 
 
 async def test_run_sync_partial_keeps_reserved_target_keywords():
@@ -174,6 +177,164 @@ async def test_run_sync_scope_cancellation_orders_host_and_worker(setting, raise
         assert outcomes == []
     else:
         assert outcomes == [error if raise_late else result]
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize(
+    ("cancel_kind", "abandon_on_cancel"),
+    [("native", False), ("scope", False), ("native", True)],
+    ids=["native-shielded", "scope-shielded", "native-abandoned"],
+)
+async def test_run_sync_active_cancellation_orders_next_worker(
+    anyio_backend, cancel_kind, abandon_on_cancel
+):
+    limiter = CapacityLimiter(1)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    successor_entered = threading.Event()
+    scopes = []
+
+    def worker():
+        entered.set()
+        try:
+            assert release.wait(_WAIT_SECONDS), "test did not release worker"
+            return "first"
+        finally:
+            finished.set()
+
+    def successor():
+        successor_entered.set()
+        return "second"
+
+    async def first_call():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            return await run_sync(worker, abandon_on_cancel=abandon_on_cancel, limiter=limiter)
+
+    first = asyncio.create_task(first_call())
+    tasks = [first]
+    try:
+        with anyio.fail_after(_WAIT_SECONDS):
+            await _wait_thread_event(entered)
+            tasks.append(asyncio.create_task(run_sync(successor, limiter=limiter)))
+            await anyio.wait_all_tasks_blocked()
+            assert limiter.borrowed_tokens == 1
+            assert not successor_entered.is_set()
+
+            if cancel_kind == "native":
+                first.cancel()
+            else:
+                scopes[0].cancel()
+            if abandon_on_cancel:
+                await _wait_thread_event(successor_entered)
+            else:
+                await anyio.wait_all_tasks_blocked()
+                if cancel_kind == "native" and not first.done():
+                    first.cancel()
+                    await anyio.wait_all_tasks_blocked()
+                assert limiter.borrowed_tokens == 1
+                assert not successor_entered.is_set()
+            assert first.done() is abandon_on_cancel
+            assert not finished.is_set()
+    finally:
+        release.set()
+        with anyio.CancelScope(shield=True), anyio.fail_after(_WAIT_SECONDS):
+            if entered.is_set():
+                await _wait_thread_event(finished)
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert successor_entered.is_set()
+    assert tasks[1].result() == "second"
+    if cancel_kind == "native":
+        assert first.cancelled()
+    else:
+        assert first.result() == "first"
+    assert limiter.borrowed_tokens == 0
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("cancel_kind", ["native", "scope"])
+async def test_run_sync_cancelled_admission_never_enters_worker(anyio_backend, cancel_kind):
+    limiter = CapacityLimiter(1)
+    entered = threading.Event()
+    scopes = []
+
+    async def waiting_call():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            await run_sync(entered.set, limiter=limiter)
+
+    async with limiter:
+        waiting = asyncio.create_task(waiting_call())
+        try:
+            with anyio.fail_after(_WAIT_SECONDS):
+                await anyio.wait_all_tasks_blocked()
+                assert limiter._lim.statistics().tasks_waiting == 1
+                if cancel_kind == "native":
+                    waiting.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await waiting
+                else:
+                    scopes[0].cancel()
+                    await waiting
+                assert not entered.is_set()
+                assert limiter._lim.statistics().tasks_waiting == 0
+        finally:
+            if not waiting.done():
+                waiting.cancel()
+                with anyio.CancelScope(shield=True), anyio.fail_after(_WAIT_SECONDS):
+                    await asyncio.gather(waiting, return_exceptions=True)
+
+    with anyio.fail_after(_WAIT_SECONDS):
+        assert await run_sync(lambda: "next", limiter=limiter) == "next"
+    assert not entered.is_set()
+    assert limiter.borrowed_tokens == 0
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("abandon_on_cancel", [False, True], ids=["default", "abandon-control"])
+async def test_wait_for_run_sync_times_out_only_after_the_worker_returns(
+    anyio_backend, abandon_on_cancel
+):
+    """A deadline around the default call waits for the worker; the abandon control does not."""
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    finished_at_timeout = []
+
+    def worker():
+        entered.set()
+        try:
+            assert release.wait(_WAIT_SECONDS), "test did not release worker"
+        finally:
+            finished.set()
+
+    async def bounded():
+        try:
+            await asyncio.wait_for(
+                run_sync(worker, abandon_on_cancel=abandon_on_cancel), timeout=0.05
+            )
+        except asyncio.TimeoutError:
+            finished_at_timeout.append(finished.is_set())
+            raise
+
+    call = asyncio.create_task(bounded())
+    try:
+        with anyio.fail_after(_WAIT_SECONDS):
+            await _wait_thread_event(entered)
+            await anyio.sleep(0.2)
+            assert call.done() is abandon_on_cancel
+            release.set()
+            with pytest.raises(asyncio.TimeoutError):
+                await call
+    finally:
+        release.set()
+        with anyio.CancelScope(shield=True), anyio.fail_after(_WAIT_SECONDS):
+            await _wait_thread_event(finished)
+            await asyncio.gather(call, return_exceptions=True)
+
+    assert finished_at_timeout == [not abandon_on_cancel]
 
 
 async def test_run_sync_ln_limiter_serializes_real_workers():
