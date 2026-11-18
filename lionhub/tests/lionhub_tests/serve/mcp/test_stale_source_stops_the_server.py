@@ -282,6 +282,29 @@ async def test_run_detail_raises_when_reading_the_session_fails_to_import_its_ow
     assert raised.value is stale
 
 
+class _SessionServiceReturning:
+    def __init__(self, session: dict) -> None:
+        self.session = session
+
+    async def get_session(self, _session_id):
+        return self.session
+
+
+async def test_run_detail_raises_when_building_nodes_fails_to_import_its_own_code(
+    one_recorded_session, monkeypatch
+):
+    """The node reshape imports the checkpoint reader; its failure is not malformed detail."""
+    import lionhub.serve.daemon.services as services
+
+    session = {"branches": [{"name": "worker"}]}
+    monkeypatch.setattr(services, "sessions", _SessionServiceReturning(session), raising=False)
+    monkeypatch.setitem(sys.modules, "lionhub.orchestration.flow.checkpoint", None)
+
+    with pytest.raises(ImportError) as raised:
+        await _run_detail.build_run_detail("run-1")
+    assert raised.value.name == "lionhub.orchestration.flow.checkpoint"
+
+
 async def test_run_detail_reports_a_session_read_that_needs_a_missing_package_as_unreadable(
     one_recorded_session, monkeypatch
 ):

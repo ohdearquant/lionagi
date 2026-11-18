@@ -106,6 +106,10 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
         }
     except UnsupportedCheckpointVersionError:
         return {"detail_unavailable": "unsupported_checkpoint_version"}
+    except ImportError as exc:
+        if _own_module(exc) is not None:
+            raise
+        return {"detail_unavailable": "malformed_session_detail"}
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
