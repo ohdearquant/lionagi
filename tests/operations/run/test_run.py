@@ -1636,6 +1636,40 @@ async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkey
     assert "idle_timeout" not in create_event_calls[0]
 
 
+async def test_a_worker_that_stalls_after_text_keeps_the_text_in_the_branch_and_the_error(
+    monkeypatch,
+):
+    """The idle stall raises inside the stream loop, not on an error chunk; the text the
+    worker delivered before it still reaches the branch and the raised error."""
+    import lionagi.config as config_module
+    from lionagi._provider_errors import WorkerLivenessError
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [(0, StreamChunk(type="text", content="delivered before the stall"))],
+        hang_after=True,
+    )
+    branch = Branch()
+    branch.chat_model = model
+    monkeypatch.setattr(
+        config_module, "settings", config_module.AppSettings(LIONAGI_WORKER_IDLE_TIMEOUT=0.03)
+    )
+
+    with pytest.raises(WorkerLivenessError) as raised:
+        await run_and_collect(
+            branch,
+            "go",
+            RunParam(imodel_kw={"timeout": 0.2, "liveness_timeout": 0.1}),
+            skip_validation=True,
+        )
+
+    assert raised.value.reason == "worker.stream_idle"
+    assert raised.value.partial_text == "delivered before the stall"
+    responses = [m for m in branch.messages if isinstance(m, AssistantResponse)]
+    assert [r.response for r in responses] == ["delivered before the stall"]
+
+
 async def test_run_idle_watchdog_resets_after_every_chunk():
     """Total stream time may exceed the idle window when each gap stays below it."""
     create_event_calls: list[dict] = []

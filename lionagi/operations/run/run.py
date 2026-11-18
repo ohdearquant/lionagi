@@ -917,7 +917,14 @@ async def run(
                 from lionagi._provider_errors import ProviderError
                 from lionagi.state.compat import StateCompatibilityRefused
 
-                if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
+                if isinstance(_exc, StateCompatibilityRefused):
+                    _run_exc = _exc
+                    raise
+                # Persist text already delivered before the failure, as the error-chunk path
+                # does: a worker that stalls after partial output raises here, not there.
+                if res := await _flush_response():
+                    yield res
+                if isinstance(_exc, ProviderError):
                     _run_exc = _exc
                     raise
                 classified = classify_provider_error(str(_exc))
@@ -1027,7 +1034,7 @@ async def run_and_collect(
                 if text:
                     all_texts.append(text)
     except ProviderError as exc:
-        # The text is already in the branch (run() flushes it before raising); the
+        # run() flushes the text into the branch before a provider error leaves it; the
         # error carries it too, so a caller holding only the exception can still
         # deliver what the turn produced.
         if all_texts and exc.partial_text is None:
