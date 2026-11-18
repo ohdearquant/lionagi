@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-18
+
+Anthropic API agent legs now size their output limit by effort (65,536 tokens at `xhigh` and
+`max`) and accept a profile `max_output_tokens`. A CLI turn that fails after it has produced text
+keeps that text and `li agent` exits 76. A default `run_sync` now holds its worker token until an
+admitted worker returns, so a native deadline around it can end later than its limit. The command
+catalog functions in the private `lionagi._auto` module are deprecated in favour of
+`lionhub.serve.cli.catalog`, and its unused HTTP route loader is removed. Eighteen security fixes
+are listed under "Security".
+
 ### Added
 
 - `ReviewVerdict.served_models` lists every leg a review run built (each reviewer, a fallback
@@ -51,6 +61,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Unreadable profile frontmatter containing MCP text or a backslash is refused until its YAML is fixed.
 
 - Added a read-only engine preset catalog with paginated browsing and availability information.
+
+- `UnparsedResponse.reason` carries the reason `parse()` gave up under `handle_validation="return_value"`:
+  no readable JSON, no text at all, a reply stopped at its output token limit, or the schema rejection
+  message. It survives `copy`, `deepcopy` and `pickle`.
+
+- API usage in run records includes the model reported by the provider when the response names one.
+
+- API run records include provider-reported request and run token counts, plus estimated costs in nanodollars when pricing is available.
+
+- Terminal `--notify` callbacks include the run's final response, capped at 4,096 bytes with a
+  truncation flag, and a path to the full response in the run directory.
+
+- `POST /api/launches/` accepts `action_cwd`, an existing absolute directory on the daemon's host that the launched process runs in; anything else is refused with 422 before the launch starts.
+
+- Use one JSON schema for executable terminal notices and accept `--notify-sender` on CLI run commands.
+
+- Leg-host mode for the Studio daemon (`LIONAGI_STUDIO_LEG_HOST=1`): it runs Claude Code agent legs for a caller on another machine, each in a detached worktree checked out at a full commit the caller names, with an allow-listed environment, no MCP servers and the child sandbox enforced, and keeps each leg's final output. Every other write route answers 403. See the remote legs guide.
+
+- `li remote {run,status,output,cancel}`: run an agent leg on a leg host named in `~/.lionagi/remotes.yaml`, whose token is read from its own `LIONAGI_REMOTE_*` variable and sent only to that host.
+
+- Let user settings quiet the missing MCP configuration warning.
+
+- Resume an MCP agent job from its own saved snapshot by full run ID. The
+  submit handle reports the resolved branch ID. Job status and terminal
+  notices report the branch ID when the job has an available, eligible saved
+  snapshot. A branch that moved to the subscription route reports null and
+  refuses resume with the CLI's reason.
+
+- Add a checked provider inventory for endpoint declarations, aliases and
+  context-window lookup order.
+
+- Add `StateDB.validate_progression_message_id` for checking progression
+  message IDs before opening a store or starting an import transaction.
+
+- Add `li doctor --probe-anthropic-account` to verify an Anthropic billing block and record a confirmed clear in the credential ledger.
+
+- Accept a runtime provider catalog when restoring a branch so its stored
+  models use the endpoints selected by the caller.
+
+- Agent profile key `max_output_tokens` sets the output limit of every Anthropic model of an API leg, over the default and over a limit the model names. On a model of another provider it is refused before the first request.
 
 ### Changed
 
@@ -185,11 +235,286 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   A run does not move, prints one warning saying why and fails with the routing error when it is pinned to an account with `LIONAGI_API_ACCOUNT`, when it was refused with `account_blocked` for any other block reason or its block reasons cannot be read, when it has the write set or any set other than the read set, when its working directory's path has a character other than letters, digits, `.`, `_`, `-` and `/`, which a permission rule cannot carry literally, or a protected name in any of its components, when the credential names to remove cannot be read, or when its Claude Code request does not take the child environment, the lookup's skip set or the permission rules.
   A refusal after a reply, any other router code, any other provider and a resumed branch still fail with the routing error, and a run moves at most once; a branch that moved is not resumed, because the reduced environment its Claude Code process ran with is not saved with it.
 
+- Added rejection zero and stream usage estimate settlement bases to the provider attempt ledger, with their evidence validated and recorded. The Anthropic Messages provider does not settle attempts through them yet.
+
+- Recorded settlement evidence and the HTTP status that ended an attempt in nullable ledger columns.
+
+- Schedule declaration parsing and export, `lionagi.studio.services.schedule_declaration` and
+  `lionagi.studio.services.schedule_export`, no longer import the scheduler runtime, the Studio application or FastAPI.
+
+- Schedule validators move into `lionagi.studio.services.schedule_action_validation` (action-field validators, from
+  `lionagi.studio.scheduler.subprocess`) and `lionagi.studio.services._schedule_validation` (`validate_rate_limit`,
+  `merged_page_limit` and the GitHub repository validator, from `lionagi.studio.scheduler.admit` and
+  `lionagi.studio.scheduler.github`). The old modules import the same objects.
+  `lionagi.studio.scheduler.subprocess._RESERVED_FLOW_FLAGS` is no longer bound there; code that patched it must patch
+  `lionagi.studio.services.schedule_action_validation`.
+
+- `lionagi.studio.scheduler.github._MERGED_MODE_MAX_PAGES` is no longer bound there; the merged-scan page limit reads
+  `lionagi.studio.services._schedule_validation._MERGED_MODE_MAX_PAGES`, so code that patched it must patch that name.
+
+- Scheduler timezone resolution, its snapshot and report move from `lionagi.studio.config` into
+  `lionagi.studio.services.schedule_timing`, together with `resolve_schedule_timezone` and
+  `resolve_schedule_cadence_seconds` from `lionagi.studio.scheduler.engine`. Execution-root resolution moves into
+  `lionagi.studio.services.schedule_execution_root`, and the stored-project lookup `get_project` into
+  `lionagi.studio.services.project_lookup`. The old modules import the same objects.
+
+- Code that patched one of these private names on its old module, such as `lionagi.studio.config.SCHEDULER_TZ`, must
+  patch the new module, because the moved functions read the new module's globals.
+
+- Codex launches started by `li agent`, orchestration planners, and orchestration workers now turn off the signed-in account's apps and plugins by default, including launches without a role profile. To opt out, launch through an agent profile that sets `contain_account_integrations: false`; naming `account_connectors` continues to grant access for that launch. A branch cloned from the orchestrator (a spawned flow node, fanout synthesis) does not carry its connectors; it is contained unless the orchestrator opted out with `contain_account_integrations: false` and named no connectors, in which case the clone keeps that opt-out. Library entry points (`AgentSpec` / `create_agent`, `OrchestrationEngine`, a codex request built directly) keep their opt-in default; see #4267.
+
+- A routed Anthropic Messages attempt refused with HTTP 400 `invalid_request_error` or HTTP 529
+  `overloaded_error` now settles at zero cost instead of staying open at its reserved ceiling. A 529
+  still raises the same retryable error, and every other refusal keeps the ceiling.
+
+- A routed Anthropic Messages stream that ends before `message_stop` after reporting its output count
+  now settles at that usage plus a margin of at least 1024 output tokens, instead of staying open at
+  its reserved ceiling. Streams with no reported output count, conflicting models or unpriceable
+  usage keep the ceiling.
+
+- `lionagi.studio.services._schedule_validation` moves to `lionhub.orchestration.schedule.validation`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedule_action_validation` moves to `lionhub.orchestration.schedule.action_validation`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedule_timing` moves to `lionhub.orchestration.schedule.timing`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio._timezone_rules` moves to `lionhub.orchestration.schedule._timezone_rules`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedule_execution_root` moves to `lionhub.orchestration.schedule.execution_root`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedule_declaration` moves to `lionhub.orchestration.schedule.declaration`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedule_export` moves to `lionhub.orchestration.schedule.export`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services.project_lookup` moves to `lionhub.orchestration.project_store`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `lionagi.studio.services._db` moves to `lionhub.orchestration.state_store`; the old path is deprecated in 0.38.0 and will be removed in 2.0.0.
+
+- `QUICK_CREATE_KINDS`, `build_quick_create_parser` and the quick-create trigger and policy flag builders now live in
+  `lionhub.orchestration.schedule.parsing`, and the nested-agent refusal printer in `lionhub.orchestration.console`.
+  `lionagi.studio.cli` imports the same objects. Code that patched one of these names on `lionagi.studio.cli` to change
+  behaviour inside its new owner must patch `lionhub.orchestration.schedule.parsing` or `lionhub.orchestration.console`.
+
+- The credential ledger now closes an open reservation older than its lease (two hours by default) at zero
+  cost on the next admission that names its account, for the current credit period only, so a leaked hold no longer
+  keeps an account's budget reserved. Each closure writes a reconciliation adjustment naming the attempt, its age
+  and its scope; complete or estimated usage that arrives later for a closed attempt is recorded as a correction at its cost (a stream estimate is checked as on an open attempt), typed zero evidence changes nothing, and none of it blocks the account (a correction too large to fit the account's signed 64-bit total is refused). ADR-0126 Amendment 11 records the decision.
+
+- The `li studio` launcher now lives in `lionhub.serve.cli.studio` and the `li schedule` client in `lionhub.serve.cli.schedule`; the
+  command catalog selects them there, and `li schedule` no longer imports `lionagi.studio.cli`. Through 1.x,
+  `lionagi.studio.cli` still exposes every name it defined, and every name it re-exported from
+  `lionhub.orchestration`, as the same object. Modules and helpers it imported only for its own use,
+  such as `json` or `lionagi._log_channels.warn`, are no longer attributes of it. A patch on a
+  `lionagi.studio.cli` attribute no longer reaches the moved code, which looks its names up in its new module: patch
+  `lionhub.serve.cli.studio` or `lionhub.serve.cli.schedule` instead.
+
+- A routed Anthropic request rejected with HTTP 400 `invalid_request_error` whose message begins with the
+  credit-balance or spend-limit text now blocks its account in the same ledger transaction as the zero settlement,
+  so new conversations stop selecting an account that cannot serve them. The call still fails with
+  `request_rejected` and is not retried on another account. `AccountRoutingError.billing_block`
+  (`credit_balance_low` or `spend_limit_reached`) and the error message name the remedy: an operator unblocks the
+  account after the credit is topped up or the spend limit resets. `CredentialLedger.settle_billing_rejection`
+  performs that settle; `CredentialLedger.settle` is unchanged. ADR-0126 Amendment 12 records the decision.
+
+- The scheduler's execution, reaper, maintenance and terminal settings, `SHOWS_ROOT` and the boolean flag parser now
+  live in `lionhub.orchestration.scheduler.settings`; process liveness, the process snapshot cache and phantom
+  detection in `lionhub.orchestration.scheduler.liveness`; the show artifact helpers and `read_json_file` in
+  `lionhub.orchestration.scheduler.show_artifacts`; and `_user_label_selection` in `lionhub.orchestration.state_store`.
+  Through 1.x, `lionagi.studio.config`, `lionagi.studio.services.admin`, `lionagi.studio.services.shows`,
+  `lionagi.studio.services._io` and `lionagi.studio.services.sessions` still expose each of these definitions as the
+  same object, with three exceptions: `_PS_SNAPSHOT_CACHE`, `_PS_SNAPSHOT_METRICS` and `_PS_SNAPSHOT_SEQUENCE`, which
+  the snapshot code reassigns at runtime. They are no longer attributes of `lionagi.studio.services.admin`; read and
+  reset them on `lionhub.orchestration.scheduler.liveness`. A patch on an old-module attribute no longer reaches the
+  moved code, which looks its names up in its new module: patch the new owner instead.
+  `lionagi.studio.services.lifecycle` no longer binds the liveness helpers it imported from the admin module
+  (`process_liveness`, `resolve_process_liveness_probe`, `process_identity_is_foreign`, `_artifacts_path`) or that
+  module as `admin_svc`; it calls them on `lionhub.orchestration.scheduler.liveness`, which is where to patch them.
+
+- `lionagi.studio.services.db_maintenance` moves to `lionhub.orchestration.scheduler.db_maintenance`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.retention_archive` moves to `lionhub.orchestration.scheduler.retention_archive`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.lifecycle` moves to `lionhub.orchestration.scheduler.lifecycle`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.terminal_reconciliation` moves to `lionhub.orchestration.scheduler.terminal_reconciliation`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.scheduler` moves to `lionhub.orchestration.scheduler`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.scheduler_state` moves to `lionhub.orchestration.scheduler.scheduler_state`; the old path will be removed in 2.0.0.
+
+- Hook trust compares canonical module names: a hook module named by its old path or by the path it moved to
+  is trusted when either name is in `trusted_hook_modules`. Trust is still never granted by prefix.
+
+- `import lionagi.agent` no longer imports its submodules; each export loads on first access and is the same
+  object as before.
+
+- Models defined in a moved module keep their sentinel-collapse policy: a policy site under a moved module's new
+  name is checked against the allowlist under the name it had.
+
+- `lionagi.tools` moves to `lionhub.tools`; the old path will be removed in 2.0.0.
+
+- `lionagi.agent` moves to `lionhub.agent`; the old path will be removed in 2.0.0.
+
+- `lionagi.casts` moves to `lionhub.agent.casts`; the old path will be removed in 2.0.0.
+
+- `lionagi.hooks.external` moves to `lionhub.hooks.external`; the old path will be removed in 2.0.0.
+
+- A configured Python hook that cannot be imported now logs a warning naming the hook and the import error; the hook is still skipped.
+
+- A runtime bill that arrives after an operator reconciled the attempt is now logged as a warning with both costs; it is still not recorded and blocks nothing.
+
+- Breaking: Claude Code children now run in Claude Code's sandbox by default. The sandbox refuses Bash reads of credential locations (`~/.ssh`, `~/.aws`, `~/.gnupg`, the `gh`, `gcloud` and `kubectl` configuration, package-registry and cloud-provider credential files, agent login files, Claude Code's `~/.claude.json` (which holds user-scope MCP servers and their environment) and its user settings files `~/.claude/settings.json` and `~/.claude/settings.local.json` (whose `env` block can hold credentials), shell history, and lionagi's own `.env` under the lionagi home), refuses the Read tool the same locations, and refuses Bash writes outside the working directory and the toolchain caches (uv, cargo, npm, pip). The sandbox's write limit covers Bash only, so the Edit and Write tools are refused, by permission rules, the configuration that decides how later children run and what Claude Code loads: `~/.lionagi/settings.yaml`, every `extends` file (by the path written and the file it resolves to), `~/.lionagi/agents`, the Claude Code user settings files and `~/.claude.json` (which holds user-scope MCP servers), `CLAUDE.md`, hooks, plugins, agents, skills, commands and project memory directories under `~/.claude`, the configuration later runs load from the lionagi home (Studio's hook library and operator hooks, the operator's MCP configuration and house rules, the MCP server registry and its synced `.mcp.json`, and the playbooks and skills directories), and every `deny_read` location, including one a profile may read. The same rules refuse, at any depth, the project configuration Claude Code and lionagi load from a working directory, its parents or the git root: `.claude` (project settings, hooks, commands, agents and skills), `.mcp.json`, `CLAUDE.md`, `CLAUDE.local.md`, a project's `.lionagi/settings.yaml`, `.lionagi/agents` and `.lionagi/playbooks`, and the `.env`, `.env.local` and `.secrets.env` files lionagi's settings load from the working directory over the user-wide `.env`, so a child can no longer edit a repository's copies of those files; and the run files a resume reads back: `run.json`, `checkpoint.json`, `branches` and `stream` in each run directory, and `logs/agents` and `last_branch.json` under the lionagi home. A run's `artifacts` directory stays writable. Claude Code applies these denials to Bash as well. A policy stored with an agent, which a resume reads back, is resolved again against the global settings at every launch: the global `enabled` decides whether the sandbox applies, so a stored policy that turns it off is overruled with a warning and the global opt-out reaches a resumed child; every path the settings deny stays denied; a profile's exemption holds only while it is still configured and the profile still resolves to the global file; and a stored policy keeps only the writable paths the settings allow. An agent built from a Claude Code model the caller supplies gets the policy for its agent profile, as one whose model the factory builds does. The `child_sandbox` key is read from the global settings file `~/.lionagi/settings.yaml` only: `deny_read`, `allow_write` and `deny_edit` add paths, `extends` loads more files carrying `deny_read`, `allow_write`, `deny_edit` and `profiles`, `profiles.<name>.allow_read` exempts listed credential locations for the agent profile `<name>` (the profile passed with `-a`, not the role it casts; the exemption applies only when that name resolves to a file in `~/.lionagi/agents`, so a project profile of the same name, which is searched first, gets the full list and a warning), and `enabled` turns the sandbox on or off. A `child_sandbox` block in a project `.lionagi/settings.yaml` is ignored, and a warning names the file. To run Claude Code children without the sandbox, set `child_sandbox: {enabled: false}` in ~/.lionagi/settings.yaml. While the sandbox is on, a machine with no sandbox backend refuses to start Claude Code children: macOS has one, native Windows and other platforms have none, and Linux and WSL2 need bubblewrap (`bwrap`) and `socat` installed. A Claude Code older than 2.1.323 or whose version cannot be read, a global settings file that cannot be read, any malformed `child_sandbox` value (paths must be absolute or start with `~/`, without `.` or `..` segments), and `--settings` handed to the child that carry a `sandbox` block of their own refuse the launch too, and every refusal names the opt-out. While the sandbox is on, the `Read(...)` deny rules in your own Claude Code settings, such as `Read(**/.env)` or `Read(**/*.pem)`, also refuse the child's commands those files under its working directory, so a test run that opens a matching file inside the checkout, such as the CA bundle of a virtual environment kept there, fails until the rule is narrowed or the run reads that file from another path (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`). A child's commands reach HTTP and HTTPS destinations through Claude Code's sandbox proxy, so package installs and git over HTTPS work; other outbound connections, such as raw TCP, are refused, and a tool whose credentials sit in a denied location, such as the GitHub CLI, cannot authenticate. A child whose working directory is a linked git worktree can commit: the sandbox lets it write the main repository's git directory, except its hooks and configuration. Flow and fanout workers write in their artifact directory, which is their working directory, and in the project root, which is passed to them as an additional directory. Limits: the sandbox confines files only, so the OS keychain and the credential helpers that talk to it stay reachable from a child's commands, and MCP servers and hooks run outside the sandbox. The Edit and Write tools are refused only the configuration listed above, so they can still write outside the working directory, shell startup files such as `~/.zshrc` and other repositories' git hooks included. Links in that configuration are denied at every link in the chain, but a link through one of a target's parent directories is not resolved, so replacing such a directory link still redirects what later runs load. The toolchain caches stay writable, and builds that run later outside the sandbox read them, so a child can leave a package there that such a build then runs. A child also inherits its launcher's environment variables, and Claude Code adds the variables of a settings `env` block to it, so a credential held in an environment variable stays readable inside the sandbox.
+
+- Response cache attribution now documents the ordering contract that distinguishes cache hits from transport executions.
+
+- The account ledger's open-lease sweep now raises `ValueError` when the admission time a reservation passes does not parse as an ISO datetime with a timezone; it used to skip the sweep silently.
+
+- Strict late settlement logs process-control failures and follows the normal reservation release path. A deferred memory-store acknowledgement retains the reservation until the drain releases it.
+
+- Clarified that late settlement retains its reservation until the effect finishes and documented the attempt timeout that bounds waiting on a foreign Future.
+
+- Scoped watchdog test thread and timer replacements to the reconciler module.
+
+- CI runs the test suite on Python 3.10 and 3.14 for a pull request into `dev/lionagi`, on 3.10 alone when every changed file in such a pull request is documentation, and on every supported version for the pull request that promotes `dev/lionagi` into `main`, for pushes to `main` and for manual runs.
+
+- The command catalog and the `li studio` and `li schedule` command modules live in `lionhub.serve.cli`.
+
+- `lionagi.cli` moves to `lionhub.serve.cli`; the old import path is removed in 2.0.0. The `li` console script targets `lionhub.serve.cli.main:main`, and `python -m lionagi.cli` keeps working until then.
+
+- Run the full Python test matrix nightly on new `dev/lionagi` commits and report scheduled failures in a single issue.
+
+- Share the environment-fault classification between CLI startup and machine dispatch.
+
+- Document that exit 78 can leave a complete diagnostic envelope without a trailing newline or an incomplete write that does not parse.
+
+- CLI and Studio session pruning share the rule that preserves legacy progressions and their message references.
+
+- State schema version 7 stores the scheduler's chain decisions. Drain existing state writers before upgrading the store.
+
+- Require explicit migration before writing to an older state store or a
+  current-version store with incomplete historical session end-time repair.
+  Run `li state migrate` during the upgrade, or set
+  `LIONAGI_STATE_AUTO_MIGRATE=1` to opt in to migration on open.
+
+- Checkpoint v3 replay rebuilds an object's member table once per group of consecutive edits.
+
+- Session statistics use one rule to decide when to reuse a branch's stored progression JSON.
+
+- `lionagi.studio._host` moves to `lionhub.serve.daemon._host`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio._traceback_dump` moves to `lionhub.serve.daemon._traceback_dump`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.daemon_log` moves to `lionhub.serve.daemon.daemon_log`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.reconnect` moves to `lionhub.serve.daemon.reconnect`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services._io` moves to `lionhub.serve.daemon.services._io`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services._path_safety` moves to `lionhub.serve.daemon.services._path_safety`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services._sse` moves to `lionhub.serve.daemon.services._sse`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.artifact_verification` moves to `lionhub.serve.daemon.services.artifact_verification`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.signals` moves to `lionhub.serve.daemon.services.signals`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.run_view` moves to `lionhub.serve.daemon.services.run_view`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.task_applications` moves to `lionhub.serve.daemon.services.task_applications`; the old path will be removed in 2.0.0.
+
+- `lionagi.integrations` moves to `lionhub.integrations`; the old path will be removed in 2.0.0. The `ruvector` extra and `uv add 'lionagi[ruvector]'` are unchanged.
+
+- `lionagi.studio.operator.redact` moves to `lionhub.serve.daemon.services.redact`; the old path will be removed in 2.0.0.
+
+- Run-tag storage, the rule that decides whether a session has a control consumer, and the
+  engine-definition lookups a launch uses moved into `lionhub.serve.daemon.services`
+  (`run_tags_store`, `control_consumers`, `engine_lookup`). The Studio modules keep the same
+  names as the same objects, and the daemon's run, session and launch routes no longer import
+  the Studio application modules that serve run tags, Operator and engine-definition editing.
+
+- Studio route registration moved to `lionhub.serve.daemon.routes`, which holds the daemon's
+  own route inventory; `lionagi.studio.registry` keeps the application's inventory and
+  re-exports the decorator. The HTTP routes and how requests are matched are unchanged; the
+  engine-definition and engine-catalog routes now register at their own module's position, so
+  they appear later in the OpenAPI path order. Loading the daemon inventory alone imports no
+  application route module.
+
+- The Studio daemon's listener, CORS and Claude Code and Codex mirror settings now live in
+  `lionhub.serve.daemon.settings`. `lionagi.studio.config` keeps every name as the same value,
+  and the Operator execution-root settings stay there.
+
+- `lionagi.studio.launch_access` moves to `lionhub.serve.daemon.launch_access`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.runs` moves to `lionhub.serve.daemon.services.runs`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.run_resume` moves to `lionhub.serve.daemon.services.run_resume`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.run_resume_worker` moves to `lionhub.serve.daemon.services.run_resume_worker`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.engine_runs` moves to `lionhub.serve.daemon.services.engine_runs`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.invocations` moves to `lionhub.serve.daemon.services.invocations`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.launches` moves to `lionhub.serve.daemon.services.launches`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.identity` moves to `lionhub.serve.daemon.services.identity`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.pairing` moves to `lionhub.serve.daemon.services.pairing`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.sessions` moves to `lionhub.serve.daemon.services.sessions`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.admin` moves to `lionhub.serve.daemon.services.admin`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services.schedules` moves to `lionhub.serve.daemon.services.schedules`; the old path will be removed in 2.0.0.
+
+- `lionagi.studio.services._session_tail` moves to `lionhub.serve.daemon.services._session_tail`; the old path will be removed in 2.0.0.
+
+- Let the selected endpoint prepare streaming requests, keeping Gemini timeout policy in its adapter.
+
+- MCP terminal notices use `null` when no sender is available.
+
+- MCP terminal notices always include `reason_code`, with `null` when no reason is available.
+
+- Let the Anthropic adapter supply cache evidence for routed requests, removing its direct dependency from core account routing.
+
+- Document logger naming for moved LionHub modules and cover both legacy hook configurations explicitly.
+
+- The remote legs guide records that the environment of a leg's Bash tool carries neither the Claude login nor the leg host's bearer, measured on a leg host, and how to repeat the check.
+
+- Let the selected Codex adapter supply the configuration reader used to resolve unset effort.
+
+- Route terminal notification configuration rejections through separate reporters
+  that preserve detailed legacy warnings and fixed durable reason codes.
+
+- Specify shared CLI and MCP command declaration ownership in ADR-0139.
+
+- Both adapters now report an invalid verdict as `invalid GateResult: <rule>`, naming the
+  broken rule. This replaces the session gate's `invalid allowed type: ...` and
+  `contradictory GateResult: ...` reasons and the legacy adapter's bare
+  `invalid GateResult`; code that matches on the old reason text needs updating.
+
+- A stdio MCP server config's `cwd` is now the directory the server starts in, both for
+  agents and for Studio's connection test. It was ignored before, and every server started
+  in the launching directory. A `cwd` that is not a string is refused.
+
+- ADR-0126 Amendment 16 states that a native cancellation of a ledger call after
+  worker admission is delivered when the worker returns; Amendment 14 is
+  Accepted. ADR-0128 D6 states that input validation runs before refusal
+  classification.
+
+- An Anthropic API leg whose requests carry effort `xhigh` or `max` now sends an output limit of 65,536 tokens instead of 32,768, so a thinking model has room to answer after it thinks. Any limit above 32,768 raises that model's request timeout to at least one second per 50 tokens of the limit (1,311 seconds at 65,536).
+
 ### Deprecated
 
 - `lionagi._auto` command catalog functions are deprecated; import
   `build_cli_parser`, `command_exists`, `iter_cli_seeds`, `load_cli_command`, and
   `seed_for` from `lionhub.serve.cli.catalog`. The lazy aliases remain until 2.0.0.
+
+- Automatic Codex effort lookup for the public compatibility wrapper and the Studio transition is scheduled for removal in 2.0.
+
+### Removed
+
+- The unused HTTP route loader in the private `lionagi._auto` module (`load_http_modules`, `iter_http` and its fixed module list). Studio routes are registered by Studio's own route decorator, which is unchanged.
 
 ### Fixed
 
@@ -408,6 +733,417 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   move to a new revision that keeps every earlier price unchanged.
   Its xhigh effort is no longer lowered to high, and a bare `mythos-5-1` under a Claude provider gets the `claude-`
   prefix like the other Claude families.
+
+- When a CLI worker fails to register after its child has started, ending the child's process group is now shielded from the launching task's cancellation and bounded by one budget, the same as the other CLI teardown paths, so a cancellation at that moment can no longer leave the group running. The original failure is still raised, the lease is finished from the cleanup outcome, and a cancellation that arrives during the cleanup is raised rather than lost.
+
+- Cancelling an engine run more than once while its first cancellation is still ending the run's child CLI processes no longer starts a second cleanup over the same process group. Each tracked process now has a single cleanup that every caller joins, so a caller that is cancelled while waiting leaves the cleanup running, and the engine's final cleanup waits for it instead of returning early.
+
+- Bounded CLI provider cleanup collects process identities on a dedicated
+  thread, so the event loop can keep scheduling other tasks while the walk
+  shares interpreter time. The walk can finish past the first grace period
+  while cleanup still reserves time for termination. If it misses that
+  cutoff, cleanup signals only the direct child and keeps the group outcome
+  unconfirmed.
+
+- The test that checks a cancelled notify exec handler still reaps its child now records the child where the operating system starts it, so a budget that expires while the child is still starting is checked instead of being reported as no child started.
+
+- A configured Python hook whose module raises `AttributeError` while loading now raises that error instead of being skipped with a warning that the hook names no attribute.
+
+- A runtime settlement that arrives after an operator reconciled the attempt no longer blocks the account; it returns `already_settled` and changes nothing.
+
+- A khive MCP server that `li agent`, the `li o flow` orchestrator and workers, `li o fanout`, or a reactively spawned flow node hands to a child agent now carries `KHIVE_ACTOR=agent:<profile>` (or `agent:anonymous`) in its environment, replacing any value configured there, so the child no longer acts anonymously or as whoever launched it. This includes codex workers that ignore the user config. The variable is a fallback: an actor config in the child's working directory still takes precedence. A node spawned from a branch the run did not register, such as a resumed orchestrator, acts as `agent:anonymous`. Agents built by the orchestration engines are not yet attributed: neither their khive servers nor their pre-turn khive client.
+
+- The pre-turn khive recall, feedback, compose and writeback client registered for a profile's `khive_injection` opt-in now is given `agent:<profile>` (or `agent:anonymous`), the actor the khive servers forwarded to that agent are given, instead of as whoever launched the process. This covers `li agent -a <profile>` with or without a role, and `li o flow` orchestrators and workers, whether their branch is built from an authored body or by the agent factory. `create_agent` takes a new `khive_actor` argument for this, and `KhiveInjectionProvider` takes an optional `actor`; either sets `KHIVE_ACTOR` in the environment of the khive MCP server the provider spawns, replacing any value configured there. The variable is a fallback, as for the servers forwarded to the agent: the server starts in the launching process's working directory, so an actor config there still takes precedence, while the forwarded servers start in the agent's working directory and obey an actor config there. When the two directories hold different actor configs, the pre-turn client and the forwarded servers act as different actors. Without an actor the server is left as configured, which is still the case for agents built by the orchestration engines and by `create_agent` callers that pass none.
+
+- Context blocks in system guidance are separated from the system text and request guidance.
+
+- A flow node spawned after a resume, from the orchestrator copy the resume makes for a retried or
+  unassigned node, now acts on khive as the profile of the branch it was copied from instead of
+  `agent:anonymous`.
+
+- `li doctor` no longer creates the default Lionagi home directory when it does not exist.
+
+- ADR-0109 cites the monitor and agent functions that read terminal session status.
+
+- ADR-0118 cites the current column sets, schema migration steps, and catalog replay.
+
+- Both deep Codex profile tests pause garbage collection during the parser call.
+
+- An agent profile whose settings block follows prompt text and names `contain_user_settings` is now
+  refused, naming the block's line and asking for it to be moved to the top of the file, instead of
+  running uncontained after a warning. A fenced example in the prompt is never read as such a block,
+  and a block whose text YAML cannot build, such as a calendar-invalid date, is treated as prompt text.
+
+- The Operator's view context renders each reported field on one line: a line break in a string or
+  structured field (CR, LF, NEL or a Unicode line or paragraph separator) no longer adds a line, so a
+  reported value cannot introduce a field the browser did not report.
+
+- A late stream-usage estimate on an attempt that a lease closed is validated before its cost is compared with the cost already recorded, so a mismatched estimate raises `ValueError` and writes nothing even when its cost is at or below the recorded one.
+
+- Late asynchronous delivery tests now wait for each callback to record its effect before asserting, avoiding scheduler-dependent results.
+
+- Foreign-future watchdog tests now wait for the watchdog to start before expiring the delivery attempt.
+
+- Read-before-edit checks avoid rescanning recorded file paths after they have been resolved.
+
+- GitHub pull request polling no longer sends an ETag that is not stored by schedules.
+
+- A dropped Claude MCP configuration is named in its warning only when it is a `.json` file name or a file that exists, and a long name is cut at 1024 characters; any other value, including one with a slash such as a token or header, is reported as a non-path config without its text.
+
+- The zombie-reaping check waits for child exit instead of relying on a fixed delay.
+
+- `li monitor`'s live stream tail now shows the last text records even when later non-text records
+  fill the window, no longer stops on a legacy record whose text is not a string, and keeps zero-width
+  joiners and soft hyphens. A JSON line that is not an object is skipped rather than shown raw. The
+  buffer writer and reader share one record marker. The reader never reads a legacy record's
+  `content` field, but when the writer cannot serialize a legacy chunk it keeps that chunk's `content`
+  as the fallback record's `text`, which the tail shows, and a complete line that is not valid JSON
+  is shown as written.
+
+- `li monitor` and `li kill` now label a quarantine record whose recorded process no longer matches
+  as stale, and a record whose host could not be probed as a probe failure, instead of calling both
+  unreadable. A quarantine record whose host field is present but not a non-empty string is no longer
+  treated as local, so it cannot be resolved or counted for this host.
+
+- A failure to import the Anthropic rejection classifier's error names now fails at import instead of
+  recording every rejected request as `other`.
+
+- A recorded validation error no longer keeps traceback frames, or a linked cause or context that
+  reaches one, so the rejected input held in those frames' locals is not retained through it. A
+  non-validation error recorded with it (raised from it, or beside it in an exception group) still
+  keeps its own frames; that case is tracked in #4350.
+
+- An agent profile whose frontmatter nests collections deeper than 64 levels is refused with a `ConfigurationError` that names the bound. Before, whether such a profile was read depended on the interpreter's recursion limit: at the default limit a closed block raised `RecursionError` or was refused, and at a raised limit the same block was read, including its `mcp` setting.
+
+- `li monitor`'s live stream tail parses the buffer's lines from the end and stops once it has the
+  lines it shows, instead of parsing every line on each render, and a line nested too deeply for the
+  JSON parser is shown as written instead of stopping the monitor with `RecursionError`.
+
+- Match run IDs and their prefixes as a single path component when resolving flow checkpoints.
+
+- Report a disconnected Claude Code stream when it closes without a result event. A streamed call keeps the partial output it already sent, and both streamed and buffered calls keep the session ID.
+
+- Handle invalid calendar dates in YAML frontmatter through the same validation as malformed YAML.
+
+- Keep Studio system agents protected when their frontmatter cannot be read or starts after a byte-order mark or other invisible format character.
+
+- Preserve containment from user settings, account integrations, or a light workload when profile frontmatter cannot be read.
+
+- Refuse profiles whose unreadable frontmatter mentions tool settings to prevent starting without those settings.
+
+- Refuse partial Studio agent updates when the existing frontmatter cannot be read, preserving its settings.
+
+- Emit a machine-readable error when a missing dependency prevents the CLI from starting in machine mode.
+
+- Clean up a terminal notification's process group when cancellation arrives before the spawn returns its process handle.
+
+- Mark incomplete GitHub flake reports and return a nonzero exit status while retaining failures from readable artifacts.
+
+- Run the SQLite compatibility matrix when LionHub's run persistence module changes.
+
+- Retain sessions with terminal deliveries still owed to active consumers, and clean up acknowledgements when their transitions are pruned.
+
+- Run the Python test matrix against the runner's PostgreSQL 16 instead of pulling a PostgreSQL image from Docker Hub, so an image pull limit no longer fails the tests.
+
+- Fix `li state prune` on PostgreSQL while preserving messages still referenced by retained sessions or branches.
+
+- Fix Studio session pruning and scheduled retention on PostgreSQL while preserving messages still referenced by retained history.
+
+- `li monitor run` now uses the final run's stored status for its command exit,
+  including recovered runs whose subprocess exit code is unavailable.
+
+- Compatibility CI now runs for changes to LionHub dependencies loaded through
+  transitive imports, package initializers, or literal imports in test support.
+
+- The Python CI setup only supplies runner-local PostgreSQL when the checked-out
+  tests support a separate database for each worker.
+
+- Session pruning on SQLite and PostgreSQL now preserves messages referenced by
+  legacy non-array progressions. It reports non-array survivors and deferred
+  message cleanup separately while continuing to remove eligible sessions.
+
+- MCP reports CLI startup environment failures as unavailable even when the
+  command cannot write a complete machine result.
+
+- Studio now refuses unsupported schedule action kinds before saving.
+
+- The scheduler checks raw engine kinds against the installed registry before
+  starting a manual or automatic launch.
+
+- Studio sends replayed terminal notifications to the configured global handler when session or project context is missing or ambiguous.
+
+- `li state prune` explains which legacy progressions and messages stay in place after their sessions are deleted.
+
+- An agent profile that does not open with its settings block now refuses a readable block after the prompt that declares `tools`, `allowed_tools` or `disallowed_tools`, and tells the author to move the block to the top.
+
+- `li monitor run` follows the chain action selected by the scheduler, including startup recovery when there is no subprocess exit code.
+
+- A scheduler that loses the terminal status write leaves follow-up launches to the winning writer.
+
+- Back off repeated capped merged pull request scans so stalled schedules use fewer GitHub requests.
+
+- `GateResult` rejects a non-boolean `allowed` or `errored`, and a result that both allows the
+  action and is marked errored, when it is constructed.
+
+- Reject non-string and empty message IDs before live or batched
+  persistence appends them to a progression.
+
+- Preserve Studio's write protection for system agent profiles whose frontmatter
+  opener is malformed, including files with a leading UTF-8 BOM.
+
+- Scheduler startup stops an interrupted chain at its recovered child and logs
+  the stop. Run any remaining steps by hand.
+
+- Notification replay summaries distinguish context budget exhaustion from
+  failed reads and count optional context separately from delivery outcomes.
+
+- Frontmatter readers handle a malformed opening delimiter consistently with or without a leading byte-order mark.
+
+- Protect the per-run child actor configuration from file-tool edits.
+
+- Guide MCP callers to `max_wait` when `job.wait` refuses the `timeout` argument.
+
+- Restore two pinned benchmark instances whose patch paths were rewritten to a layout their base commit does not contain.
+
+- `li schedule`, the machine schedule commands and `li doctor` send `LIONAGI_STUDIO_AUTH_TOKEN` as a bearer, so they work against a token-protected Studio daemon; the header is not carried across a redirect.
+
+- The Studio CLI clients build every request through one factory that sends `LIONAGI_STUDIO_AUTH_TOKEN` only to the configured Studio origin, and warn once when that origin is plain HTTP to a non-loopback host.
+
+- Explain how to retry an MCP agent submission with the current schema fingerprint.
+
+- Have li doctor name the MCP extra when FastMCP is missing.
+
+- Name the agent profile setting when a Codex run needs sandboxed file access.
+
+- Locate the LionAGI checkout from project metadata in CLI compatibility tests.
+
+- Help for `flow.submit`, `fanout.submit` and `play.submit` states the schema-fingerprint retry rule, as `agent.submit` does.
+
+- Both `stale_schema` refusals (missing and outdated fingerprint) state the same retry rule as help, including the condition that the arguments match the returned schema. The MCP server reference now places that schema at `error.schema`, with `error.schema_ref` on later identical refusals in one response.
+
+- Verify signal marker lock ordering without a fixed timing threshold.
+
+- Cover live schedule edits and nested effective actions in scheduler chain-monitor tests.
+
+- Restore the scheduler liveness logger name `lionagi.studio.services.admin` so existing log filters continue to match.
+
+- Point the orchestration teardown deprecation warning to the current LionHub replacement.
+
+- The remote legs guide starts a leg host with `li studio --host <address>`. The variable it named before was overridden by the `--host` default, so the documented command listened on `127.0.0.1` only.
+
+- Return an MCP agent job's final reply and file path, including when the job finishes after an automatic resume.
+
+- Report canonical destinations for moved module aliases in feature boundary reports.
+
+- Restore historical CLI source citations to the paths and ranges at their recorded commits.
+
+- List all ten retired MCP operation names and their replacements in the server reference.
+
+- Keep documentation configuration from failing the nightly Python matrix's workflow checks while still checking the setup action it uses.
+
+- Document which legacy flow checkpoint versions the single-file reader accepts and when it refuses to resume.
+
+- Update CLI ownership citations and document the retained logger names and Studio compatibility policy.
+
+- Give Studio run cancellation one grace period across all targets and report when a stale approval leaves the run untouched.
+
+- Flag wheel imports that reach the Studio application through compatibility paths and restore the deprecation warning for moved module entry points.
+
+- List the accepted object fields in review engine repair prompts.
+
+- Align the SQLite session recency indexes across the SQL and SQLAlchemy schemas for new databases.
+
+- Keep detached MCP jobs and final reply artifacts in the server’s configured home when a run uses a different working directory.
+
+- Limit discarded MCP configuration warnings to safe names of existing files.
+
+- `li kill` reports when a target exited or the kernel refused escalation, and records force kill only after a successful SIGKILL.
+
+- Report misplaced agent-profile tool settings with their source line and
+  suggest the supported underscore spelling for hyphenated setting names.
+
+- Stop Anthropic rejection-body reads on cancellation and record the known
+  HTTP outcome before propagating cancellation.
+
+- Let `li kill` stop verified process groups owned by scheduled commands,
+  and preview a single target without signalling or writing state.
+
+- Filter more credential-shaped provider model values from durable run API usage
+  records and document when the served model is null.
+
+- Honor pending cancellation before reading an Anthropic rejection body.
+
+- Report the source line of misplaced tool settings in nested YAML sequences.
+  Warn when a YAML block bounded by two `---` lines inside a profile's final
+  unclosed fence has a recognized tool key with a list value.
+
+- Document that native stores with missing or noncanonical version stamps are
+  refused without rewriting the version stamp.
+
+- Creating a progression in a compatibility store now raises `ValueError`
+  naming the progression for a malformed collection or a non-string or
+  empty message ID, matching native mode. Non-string IDs previously raised
+  `StateCompatibilityRefused`. Empty-string IDs are now rejected even when
+  the run owns the message.
+
+- Replacing or appending to a progression in a compatibility store now
+  validates the collection or message ID first as well, and creating one
+  validates before the store checks that its profile names the operation. A
+  malformed input raises `ValueError` before any refusal.
+
+- Keep service hooks importable in either package initialization order.
+
+- Report array progressions kept by a session prune on their own line of the
+  preview and apply output, counted in the prune itself, including when the
+  non-array progression that keeps them is shared with a surviving session.
+
+- Report broken MCP imports as startup failures and show the install command
+  when a dependency declared by the MCP extra is missing.
+
+- On asyncio, `run_sync` now holds its thread token until an admitted worker
+  returns, and delivers a native task cancellation then. This reaches every
+  caller of `run_sync`, including the credential ledger and the Studio services.
+  A cancellation that arrives before the worker starts still stops it.
+
+- A deadline around a default `run_sync` call, such as `asyncio.wait_for` or a
+  coding stage limit, now ends when the in-flight worker returns, so it can end
+  later than the limit. A coding stage that runs past its limit records the
+  instant the limit was reached and the seconds past it in its `WorkAborted`
+  event, in the run's result measurements and in one warning log line.
+
+- Under `run_async`, SIGTERM now raises `SigtermInterrupt` after an in-flight
+  default worker returns, so the cleanup the interrupt runs starts only then.
+  Process exit already waited for that worker, because AnyIO's worker threads
+  are not daemon threads, but the cleanup used to run while the worker
+  finished. The time from SIGTERM to exit can therefore grow by up to the
+  cleanup's duration. Pass `abandon_on_cancel=True` for a call that should
+  return at once on cancellation.
+
+- Keep the event loop responsive while CLI, Studio and MCP load flow
+  checkpoints.
+
+- Reject non-regular coding tool files and bound text, image, edit, navigation,
+  and directory reads. A text read scans about the first 64 MiB of a file,
+  reports `total_lines` and `reached_eof` as unknown past that, and returns about
+  2,000,000 characters, line numbers included, ending with the line that reaches
+  that; an edit refuses a file above 16 MiB; a directory
+  listing that reaches its file or entry limit ends with a notice line, and a
+  recursive listing skips subdirectories it cannot read.
+
+- Apply the coding command timeout to process completion and output collection,
+  keeping the final cleanup waits bounded.
+
+- Bound Studio's graceful shutdown to 3 seconds, in `python -m lionagi.studio`,
+  `li studio` and the Studio container image. One SIGTERM now stops the server even
+  while a browser holds an event stream open; before, it waited for that connection
+  forever and only a second signal or SIGKILL ended it. The bound applies to every
+  request still in flight at shutdown, not only event streams.
+
+- A command that exits just before its timeout keeps its return code and output when the
+  output readers finish after it: they get at least one more second once it exits, instead of
+  the time left before the timeout. A command whose background process still holds its output
+  open after it exits is reported as timed out once the timeout has passed.
+
+- A cancelled state store open no longer waits for, or leaves running, the copy of
+  the store file that reads its lineage beside a rollback journal or write-ahead
+  log: the open returns at once, and the copy of the store file stops at its next
+  1 MiB chunk and removes what it copied. A copy of the journal or log already under
+  way, and on Windows a copy of the store file already under way, runs to its end
+  first.
+
+- `li mcp serve` imports, before it answers anything, every lionagi and lionhub module its
+  verbs import inside their functions, followed through the modules those reach. If one
+  of its own modules cannot be imported or no longer parses, at start or later because
+  the installed source changed under it, the server exits with code 78 and a message
+  naming the module instead of answering with some verbs refused, so the client starts
+  a fresh server. A module that fails for another reason, such as a rejected setting, is
+  logged by name and exception type and reported by the verbs that use it. A verb that
+  needs a package which is not installed is reported on its catalog entry as before, and
+  `job.status` detail still reports a missing `studio` extra as
+  `studio_extra_not_installed`. Loading these modules up front adds about half a second
+  and 50 MB to server start.
+
+- `GateResult` construction now also refuses a `mutated_args` that is not a dict or
+  `None` and a `control`, `tool_name`, `action` or `reason` that is not a string. The
+  session gate applies the same rules as the legacy-hook adapter, so a session verdict
+  with a non-string reason or a list of rewritten arguments is denied as an evaluator
+  failure instead of honored.
+
+- A legacy-hook control called with a non-string `control`, `tool_name` or `action`,
+  including an `action` an earlier control's rewrite set, now returns an errored deny
+  instead of raising out of the gate pass. The hook is not called.
+
+- The khive client a profile's `khive_injection` opt-in uses for pre-turn recall and
+  writeback now starts in the same directory as the khive servers handed to the agent:
+  a CLI agent's working directory (`--cwd`, or the directory a worker runs in), or the
+  launching directory for an API agent. khive reads an actor's visible namespaces from
+  the configuration in that directory even when `--actor` names the actor, so recall now
+  reads what the agent itself can read.
+
+- On macOS, a coding command that times out now ends its whole process group when the
+  group's leader is a system binary such as `/bin/sh`, `/bin/bash` or `/usr/bin/make`.
+  macOS discloses no environment for those binaries, so the spawn marker that proves the
+  group belongs to the call could not be read and the commands the leader started kept
+  running after the call returned. A leader whose marker cannot be read is now bound to
+  the spawn by being a child of this process, including a shell that has already exited
+  by the time it is observed, and the command's exit is observed without
+  collecting the child, so the group stays provably the call's own until the timeout
+  decision. This covers the coding bash tool, search and git helpers, and the local
+  sandbox backend's `shell=True` cells. The other spawn paths bind such a leader the same
+  way, so a group whose leader is still running at their deadline is ended too.
+
+- An MCP request row without an `op` key is now refused with a message that names `op` and lists the keys the row had, so a caller that sent another server's row shape (`tool`) sees which key to use.
+
+- Under a subagent cap, a CLI agent that exits before its start time can be read is now reported by its own exit status and output, and its slots are freed. It was refused as an admission failure, which hid the agent's real result. An agent that is still running when its start time cannot be read is refused and ended as before, and so is any agent whose run records its worker process, which needs that start time.
+
+- When a CLI provider ends a turn on an error after the turn has already delivered text, `li agent` now writes that text, then one line naming the error, and exits `76` instead of losing the text behind a traceback. The run's status stays `failed`, `run.json` adds `partial: true`, and a scheduled occurrence that ended this way reports exit `76`. `ProviderError.partial_text` carries the text a turn delivered before the error, set by `run_and_collect`.
+
+### Security
+
+- With `cache_control=True`, the response cache key no longer contains the API credential. The cached call is keyed with a truncated SHA-256 digest (64 bits) of each credential header and of each keyword argument in place of its value, so neither is held in memory or written to a networked cache backend as part of a cache key; requests made with different keys still get separate entries.
+
+- A `proxy`, `ssl` or `allow_redirects` keyword passed to an endpoint call is no longer copied into the JSON request body sent to the provider; it is used only for the HTTP request, as before. A proxy URL with a user and password was sent to the provider in the body.
+
+- A heavy codex agent in its workspace-write sandbox now writes, beyond its working directory, `add_dir` and its linked worktree's git directory, only to the child sandbox's `allow_write` list: toolchain caches by default, extended under `child_sandbox.allow_write` in `~/.lionagi/settings.yaml`. Before, it inherited every `[sandbox_workspace_write] writable_roots` entry in the user's codex config, so a config that listed a home or projects directory there let any heavy agent delete files across it. Writable roots the run's own config overrides set are kept, and `child_sandbox: {enabled: false}` leaves the user config's roots in force. Network access and temporary directories are unchanged.
+
+- The Antigravity CLI (`gemini-cli` provider) now runs under the macOS sandbox lionagi uses for its API-route tools: commands it runs can write only under the working directory, the uv cache, the temporary directory and its own state directory, `~/.gemini/antigravity-cli`. agy's own `--sandbox` restricts its terminal but not where a command writes, so before this a `yolo` child, light or not, could delete files anywhere the user could. On a host without `/usr/bin/sandbox-exec`, a `yolo` request is now refused; other requests run as before.
+
+- Claude Code children now refuse Edit, Write, MultiEdit and NotebookEdit on any file outside the working directory and the sandbox's writable caches. A `PreToolUse` hook carried in the child's `--settings` resolves the target, following symlinks, and blocks the call; a call it cannot read, or a hook interpreter that fails to start, is blocked too. Bash writes were already confined by the sandbox; the file tools were not.
+
+- A confined Claude Code child now loads only the user settings (`--setting-sources user`). The project's `.claude/settings.json` and `.claude/settings.local.json` belong to the working directory the child is confined to, which may be a checkout under review: hooks, MCP servers and helper commands named there ran outside the sandbox, and `disableAllHooks` there switched off the file-tool hook. A request that asks for the `project` or `local` source while the child sandbox is on is refused, as are caller settings that set `disableAllHooks`.
+
+- The file-tool hook reads the path from the key the named tool writes (`notebook_path` for NotebookEdit, `file_path` for the others), and refuses a call that carries both, a tool it does not know, or a path that is not absolute.
+
+- A command sandboxed with `SeatbeltPolicy(pty=True)`, as the Antigravity CLI is, can now open only the pseudo-terminals it allocated itself. Before, it could open any terminal the user owned and write into it.
+
+- While the child sandbox is enabled, a codex request that would turn codex's own sandbox off
+  (`bypass_approvals`, `danger-full-access` from the request, an override or the codex config) is
+  refused before launch. With the child sandbox disabled, codex runs as before.
+
+- While the child sandbox is enabled, a Pi request is refused before launch, since Pi has no
+  sandbox lionagi can pin. With the child sandbox disabled, Pi runs as before.
+
+- While the child sandbox is enabled, a codex `add_dir` entry or `writable_roots` override that
+  is the home directory or an ancestor of it is refused before launch. Roots inside the home
+  directory are kept.
+
+- While the child sandbox is enabled, a Claude Code, codex, Antigravity CLI or API-model child whose
+  working directory is the home directory or an ancestor of it is refused before launch, since that
+  directory would make the whole home writable to the child.
+
+- The home directory these checks protect, and the one the heavy codex writable-roots check
+  protects, now includes the account's home from the password database, so a parent started with
+  `HOME` set to a scratch directory still refuses the real home.
+
+- A Claude Code, Gemini or Pi child process, and every command it runs, no longer inherits credential-named variables (see "What a CLI child's environment holds" in the provider internals) or any variable the declared secret lookup names from the process that launched it. It keeps only its own provider's login variables; `LIONAGI_STUDIO_AUTH_TOKEN` and `LIONAGI_REMOTE_*` are removed from every CLI child, Codex included.
+
+- `~/.secrets` is on the child sandbox's default read-deny list.
+
+- A Codex child process, and every command it runs, no longer inherits credential variables from the process that launched it. It keeps `OPENAI_API_KEY`, `CODEX_*` variables and the `env_key` of each model provider defined in the user's codex config or the run's `-c` overrides.
+
+- A Studio daemon in leg-host mode no longer starts the scheduler engine or the transcript mirror. The mirror had copied the account's other Claude Code sessions into the leg host's store at start-up.
+
+- Keep nightly Python dependency downloads local to the test job and retain the ordinary CI download cache.
 
 ## [0.37.0] - 2026-11-02
 
