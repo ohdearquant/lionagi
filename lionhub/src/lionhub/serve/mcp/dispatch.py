@@ -1213,6 +1213,15 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         )
     unknown_keys = sorted(set(entry) - {"op", "args", "schema_fingerprint"})
     name = entry.get("op")
+    if name is None:
+        return _op_error(
+            "?",
+            OpError(
+                "invalid_input",
+                f"each op names its verb under 'op'; got the keys {sorted(map(str, entry))}",
+            ),
+            None,
+        )
     if not isinstance(name, str):
         return _op_error("?", OpError("invalid_input", f"op must be a string, got {name!r}"), None)
     if unknown_keys:
