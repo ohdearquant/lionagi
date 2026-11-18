@@ -1209,6 +1209,78 @@ def test_a_timeout_already_above_the_floor_is_kept():
     assert branch.chat_model.endpoint.config.timeout == 5_000
 
 
+def _resumed_at(branch, effort):
+    """The branch as a later start reads it back from its snapshot, at *effort*."""
+    from lionagi import Branch
+
+    resumed = Branch.from_dict(branch.to_dict())
+    resumed.chat_model.endpoint.config.kwargs["output_config"] = {"effort": effort}
+    return resumed
+
+
+@pytest.mark.parametrize(
+    ("first", "then", "limit", "timeout"),
+    [
+        ("max", "low", 32_768, 600),
+        ("low", "max", 65_536, 1_311),
+        ("xhigh", "medium", 32_768, 600),
+        ("high", "xhigh", 65_536, 1_311),
+    ],
+)
+def test_a_resumed_leg_rederives_the_limit_and_timeout_from_its_effort_now(
+    first, then, limit, timeout
+):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="anthropic", model="claude-sonnet-5-5", api_key="k")
+    model.endpoint.config.kwargs["output_config"] = {"effort": first}
+    branch = Branch(chat_model=model)
+    agent_mod._install_api_input_cap(branch, "none")
+
+    resumed = _resumed_at(branch, then)
+    agent_mod._install_api_input_cap(resumed, "none")
+
+    assert resumed.chat_model.endpoint.config.kwargs["max_tokens"] == limit
+    assert resumed.chat_model.endpoint.config.timeout == timeout
+
+
+def test_a_resume_without_the_profile_limit_falls_back_to_the_effort_default():
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="anthropic", model="claude-sonnet-5-5", api_key="k")
+    branch = Branch(chat_model=model)
+    agent_mod._install_api_input_cap(branch, "none", max_output_tokens=100_000)
+    assert branch.chat_model.endpoint.config.timeout == 2_000
+
+    resumed = _resumed_at(branch, "low")
+    agent_mod._install_api_input_cap(resumed, "none")
+
+    assert resumed.chat_model.endpoint.config.kwargs["max_tokens"] == 32_768
+    assert resumed.chat_model.endpoint.config.timeout == 600
+
+
+def test_a_limit_and_timeout_the_model_named_survive_a_resume_at_another_effort():
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.imodel import iModel
+
+    model = iModel(provider="anthropic", model="claude-sonnet-5-5", api_key="k")
+    model.endpoint.config.kwargs.update({"max_tokens": 12_000, "output_config": {"effort": "max"}})
+    model.endpoint.config.timeout = 5_000
+    branch = Branch(chat_model=model)
+    agent_mod._install_api_input_cap(branch, "none")
+
+    resumed = _resumed_at(branch, "low")
+    agent_mod._install_api_input_cap(resumed, "none")
+
+    assert resumed.chat_model.endpoint.config.kwargs["max_tokens"] == 12_000
+    assert resumed.chat_model.endpoint.config.timeout == 5_000
+
+
 def test_a_profile_output_limit_on_another_provider_is_refused_before_anything_changes():
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch

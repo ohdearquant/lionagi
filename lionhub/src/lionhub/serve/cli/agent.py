@@ -329,6 +329,11 @@ _API_HIGH_EFFORTS = frozenset({"xhigh", "max"})
 # this many tokens of the limit (ADR-0137 Amendment 1 D1b), so a full response at the measured
 # output rates finishes inside the timeout.
 _API_TOKENS_PER_TIMEOUT_SECOND = 50
+# Branch metadata recording, per model role, the output limit and the raised request timeout
+# _install_api_input_cap set. Both persist with the branch's models, so a resumed leg reads them
+# back as if its model had named them; the record lets each start re-derive them from the
+# effort the models carry then (ADR-0137 Amendment 1 D1d) instead of keeping an earlier run's.
+_API_INSTALLED_OUTPUT_KEY = "api_installed_output"
 
 
 def _api_default_output_limit(kwargs: dict) -> int:
@@ -745,7 +750,9 @@ def _install_api_input_cap(
     model that names no output limit is given ``_API_MAX_OUTPUT_TOKENS``, or
     ``_API_HIGH_EFFORT_MAX_OUTPUT_TOKENS`` when its requests carry effort xhigh or max. A limit
     set here above ``_API_MAX_OUTPUT_TOKENS`` raises the model's request timeout to at least one
-    second per ``_API_TOKENS_PER_TIMEOUT_SECOND`` tokens of it. A profile limit on a model of
+    second per ``_API_TOKENS_PER_TIMEOUT_SECOND`` tokens of it. A limit and a raised timeout an
+    earlier start set, recorded in the branch's metadata, are re-derived here rather than kept, so
+    a resumed leg's limit follows the effort its models carry now. A profile limit on a model of
     another provider is refused before anything changes.
     Returns the branch's ContextFold, or None when the leg runs without a cap.
     """
@@ -791,24 +798,49 @@ def _install_api_input_cap(
         if cap is not None
         else None
     )
+    earlier = branch.metadata.get(_API_INSTALLED_OUTPUT_KEY)
+    earlier = earlier if isinstance(earlier, dict) else {}
+    installed = {}
     models = {}
-    for api_model in _api_models(branch):
+    for role, api_model in zip(("chat", "parse"), _api_models(branch), strict=False):
         config = api_model.endpoint.config
         kwargs = config.kwargs or {}
+        prior = earlier.get(role)
+        prior = prior if isinstance(prior, dict) else {}
+        # A limit an earlier start set, still in place, is that start's and not the model's.
+        inherited_limit = (
+            prior.get("max_tokens") is not None and kwargs.get("max_tokens") == prior["max_tokens"]
+        )
+        base_timeout = config.timeout
+        prior_timeout = prior.get("timeout")
+        if (
+            isinstance(prior_timeout, list)
+            and len(prior_timeout) == 2
+            and config.timeout == prior_timeout[0]
+        ):
+            base_timeout = prior_timeout[1]
         output_limit = None
         if getattr(config, "provider", None) == "anthropic":
             if max_output_tokens is not None:
                 output_limit = max_output_tokens
-            elif kwargs.get("max_tokens") is None:
+            elif inherited_limit or kwargs.get("max_tokens") is None:
                 output_limit = _api_default_output_limit(kwargs)
         timeout_floor = None
         if output_limit is not None and output_limit > _API_MAX_OUTPUT_TOKENS:
             timeout_floor = -(-output_limit // _API_TOKENS_PER_TIMEOUT_SECOND)
-            if config.timeout >= timeout_floor:
+            if base_timeout >= timeout_floor:
                 timeout_floor = None
+        new_timeout = base_timeout if timeout_floor is None else timeout_floor
+        drop_limit = inherited_limit and output_limit is None
+        if output_limit is not None:
+            installed[role] = {
+                "max_tokens": output_limit,
+                "timeout": [timeout_floor, base_timeout] if timeout_floor is not None else None,
+            }
         changes = (
             output_limit is not None
-            or timeout_floor is not None
+            or drop_limit
+            or new_timeout != config.timeout
             or getattr(api_model, "tool_result_max_chars", None) != tool_result_max_chars
             or (prompt_caching is not None and config.prompt_caching != prompt_caching)
             or (
@@ -834,9 +866,18 @@ def _install_api_input_cap(
                     **(selected.endpoint.config.kwargs or {}),
                     "max_tokens": output_limit,
                 }
-            if timeout_floor is not None:
-                selected.endpoint.config.timeout = timeout_floor
+            elif drop_limit:
+                selected.endpoint.config.kwargs = {
+                    k: v
+                    for k, v in (selected.endpoint.config.kwargs or {}).items()
+                    if k != "max_tokens"
+                }
+            selected.endpoint.config.timeout = new_timeout
         models[id(api_model)] = selected
+    if installed:
+        branch.metadata[_API_INSTALLED_OUTPUT_KEY] = installed
+    else:
+        branch.metadata.pop(_API_INSTALLED_OUTPUT_KEY, None)
     chat, parse = branch.chat_model, getattr(branch, "parse_model", None)
     branch.chat_model = models[id(chat)]
     if parse is not None:
