@@ -63,6 +63,8 @@ Extends `Engine` with:
 | `auto_repair_cmds` | `None` | Optional commands run in sequence before each authoritative full test gate. Successful commands emit `AutoRepairApplied`; failed commands are reported without aborting the run. Internally normalized to `[]`. |
 | `fast_test_cmd` | `None` | Optional string or argument-list command used as an incremental gate on intermediate substantive fix rounds; the declared `test_cmd` remains the final ground-truth gate. |
 
+A synchronous tool call already running holds a turn or a stage until it returns, so `turn_timeout_s` and `stage_timeout_s` can end past their cap. A stage that does records `limit_reached_at` and `overrun_s` on its `WorkAborted`.
+
 Per-stage model routing keys: `"plan"`, `"implement"`, `"verify"`.
 
 Pipeline shape: plan → implement → test → [fix loop, up to `max_fix_rounds`] → verify → `CodeResultRecorded`.
