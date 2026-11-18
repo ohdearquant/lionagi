@@ -13,6 +13,8 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,14 +24,9 @@ from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 from lionhub.serve.mcp import _run_detail, dispatch
 
 _MCP_PACKAGE = Path(dispatch.__file__).resolve().parent
+
+
 # Modules outside the server package whose functions the verbs run in the server process.
-_IN_PROCESS_MODULES = (
-    "lionhub.serve.daemon.services.sessions",
-    "lionhub.orchestration.spawn",
-    "lionhub.serve.cli.orchestrate._orchestration",
-)
-
-
 class _Exited(Exception):
     def __init__(self, code: int) -> None:
         self.code = code
@@ -44,40 +41,51 @@ def exits(monkeypatch):
     monkeypatch.setattr(dispatch, "_exit", fake_exit)
 
 
-def _scanned_modules() -> list[tuple[Path, str]]:
-    """The server package's modules, and the modules outside it that verbs run in-process."""
-    scanned = [
-        (path, "lionhub.serve.mcp")
-        for path in sorted(_MCP_PACKAGE.glob("*.py"))
-        if path.name != "__init__.py"
-    ]
-    for module in _IN_PROCESS_MODULES:
-        spec = importlib.util.find_spec(module)
-        assert spec is not None and spec.origin is not None
-        scanned.append((Path(spec.origin), module.rsplit(".", 1)[0]))
-    return scanned
-
-
-def _function_level_own_imports() -> set[str]:
-    """Every lionagi or lionhub module the scanned modules import inside a function."""
+def _lazy_own_imports(module: str) -> set[str]:
+    """The lionagi or lionhub modules that *module* imports inside its functions."""
+    spec = importlib.util.find_spec(module)
+    if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+        return set()
+    is_package = spec.submodule_search_locations is not None
+    package = module if is_package else module.rsplit(".", 1)[0]
     found: set[str] = set()
-    for path, package in _scanned_modules():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for node in ast.walk(function):
-                if isinstance(node, ast.Import):
-                    found.update(alias.name for alias in node.names)
-                elif isinstance(node, ast.ImportFrom):
-                    if node.level == 0:
-                        found.add(node.module or "")
-                        found.update(_submodules(node.module or "", node.names))
-                    elif node.module:
-                        found.add(f"{package}.{node.module}")
-                    else:
-                        found.update(f"{package}.{alias.name}" for alias in node.names)
+    tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(function):
+            if isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0:
+                    base = node.module or ""
+                else:
+                    parts = package.split(".")
+                    base = ".".join(parts[: len(parts) - (node.level - 1)])
+                    if node.module:
+                        base = f"{base}.{node.module}"
+                found.add(base)
+                found.update(_submodules(base, node.names))
     return {name for name in found if name.split(".", 1)[0] in dispatch._OWN_PACKAGES}
+
+
+def _lazy_import_closure() -> set[str]:
+    """Every own module reachable from the server's modules through imports made inside
+    functions, followed through each module it reaches."""
+    pending = [
+        f"lionhub.serve.mcp.{path.stem}"
+        for path in sorted(_MCP_PACKAGE.glob("*.py"))
+        if path.stem not in {"__init__", "__main__"}
+    ]
+    pending.extend(dispatch._PRELOAD_MODULES)
+    seen: set[str] = set()
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        pending.extend(_lazy_own_imports(module) - seen)
+    return seen
 
 
 def _submodules(package: str, names: list[ast.alias]) -> set[str]:
@@ -91,18 +99,25 @@ def _submodules(package: str, names: list[ast.alias]) -> set[str]:
     return {name for name in candidates if importlib.util.find_spec(name) is not None}
 
 
-def test_every_module_the_server_imports_inside_a_function_is_preloaded():
-    imports = _function_level_own_imports()
-    assert "lionhub.serve.cli.machine" in imports, "the scan must see the known lazy imports"
-    assert "lionhub.serve.daemon.services.sessions" in imports, (
-        "the scan must see a module imported by name from its package"
+def test_every_module_the_verbs_import_inside_a_function_is_loaded_by_preload():
+    """Followed transitively: a module the session service imports lazily can itself import
+    another one lazily, and the server must hold both before it answers."""
+    closure = _lazy_import_closure()
+    assert "lionhub.serve.cli.machine" in closure, "the scan must see the known lazy imports"
+    assert "lionhub.serve.daemon.services.runs" in closure, "and relative ones"
+    assert "lionhub.orchestration.scheduler.liveness" in closure, "and ones two levels down"
+
+    script = (
+        "import json, sys\n"
+        "from lionhub.serve.mcp import dispatch\n"
+        "dispatch.preload()\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
     )
-    assert "lionhub.serve.daemon.services.runs" in imports, (
-        "the scan must see the session service's relative lazy imports"
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=300, check=True
     )
-    assert imports <= set(dispatch._PRELOAD_MODULES), sorted(
-        imports - set(dispatch._PRELOAD_MODULES)
-    )
+    loaded = set(json.loads(completed.stdout.strip().splitlines()[-1]))
+    assert sorted(closure - loaded - {"lionhub.serve.mcp.server"}) == []
 
 
 async def test_a_verb_whose_module_no_longer_imports_ends_the_server(exits, monkeypatch, capsys):
@@ -295,3 +310,31 @@ def test_preload_names_a_failed_module_without_its_error_text(exits, monkeypatch
     assert "ValueError" in caplog.text
     assert "canary" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_preload_ends_the_server_when_its_own_source_no_longer_parses(exits, monkeypatch):
+    own_file = str(Path(dispatch.__file__).with_name("verbs.py"))
+
+    def broken(name):
+        if name == "lionagi.state.db":
+            raise SyntaxError("invalid syntax", (own_file, 1, 1, "x", 1, 2))
+
+    monkeypatch.setattr(dispatch, "import_module", broken)
+
+    with pytest.raises(_Exited) as exited:
+        dispatch.preload()
+    assert exited.value.code == EXIT_CODE_ENVIRONMENT_ERROR
+
+
+def test_preload_leaves_a_syntax_error_in_another_package_to_its_verbs(
+    exits, monkeypatch, tmp_path
+):
+    foreign_file = str(tmp_path / "elsewhere.py")
+
+    def broken(name):
+        if name == "lionagi.state.db":
+            raise SyntaxError("invalid syntax", (foreign_file, 1, 1, "x", 1, 2))
+
+    monkeypatch.setattr(dispatch, "import_module", broken)
+
+    dispatch.preload()

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -64,47 +65,92 @@ _STARTED_MONOTONIC = time.time()
 # answers anything, so a later change to the installed source cannot leave the process holding
 # some of its modules from before the change and failing to import the others.
 _PRELOAD_MODULES = (
+    "lionagi._command_env",
+    "lionagi._command_env_metadata",
     "lionagi._flow_spec",
     "lionagi._paths",
     "lionagi._provider_errors",
+    "lionagi._types",
+    "lionagi.adapters.pandas_",
+    "lionagi.hooks",
+    "lionagi.hooks._message_retry",
+    "lionagi.hooks.bus",
+    "lionagi.libs.file.process",
     "lionagi.libs.frontmatter",
+    "lionagi.libs.schema.load_pydantic_model_from_schema",
+    "lionagi.libs.schema.minimal_yaml",
     "lionagi.ln._proc",
     "lionagi.ln.concurrency",
     "lionagi.ln.concurrency.errors",
     "lionagi.operations.node",
+    "lionagi.operations.run.stream_buffer",
     "lionagi.plugins",
+    "lionagi.protocols.action.gate",
+    "lionagi.service.accounts._router",
+    "lionagi.service.accounts._scope",
+    "lionagi.service.connections._chat_schemas",
     "lionagi.service.connections.registry",
     "lionagi.service.providers",
+    "lionagi.service.token_calculator",
     "lionagi.session.prompts",
     "lionagi.state.cli_workers",
     "lionagi.state.compat",
+    "lionagi.state.completion_evidence",
     "lionagi.state.db",
     "lionagi.state.engine",
+    "lionagi.state.health",
     "lionagi.state.lifecycle.notify_settings",
     "lionagi.state.lifecycle.policy",
     "lionagi.state.reasons",
     "lionagi.version",
     "lionhub.agent",
+    "lionhub.agent._email_in_headers",
     "lionhub.agent.casts.catalog",
     "lionhub.agent.casts.pack",
     "lionhub.agent.casts.pattern",
     "lionhub.agent.child_sandbox",
     "lionhub.agent.factory",
+    "lionhub.agent.gate",
+    "lionhub.agent.hooks",
+    "lionhub.agent.nudge",
+    "lionhub.agent.permissions",
+    "lionhub.agent.settings",
+    "lionhub.hooks.external",
     "lionhub.orchestration",
     "lionhub.orchestration.console",
     "lionhub.orchestration.job",
     "lionhub.orchestration.mcp_config",
+    "lionhub.orchestration.project_store",
     "lionhub.orchestration.runs",
+    "lionhub.orchestration.schedule.declaration",
+    "lionhub.orchestration.schedule.execution_root",
+    "lionhub.orchestration.schedule.export",
+    "lionhub.orchestration.schedule.timing",
+    "lionhub.orchestration.scheduler.db_maintenance",
+    "lionhub.orchestration.scheduler.engine",
+    "lionhub.orchestration.scheduler.github",
+    "lionhub.orchestration.scheduler.lifecycle",
+    "lionhub.orchestration.scheduler.liveness",
+    "lionhub.orchestration.scheduler.settings",
+    "lionhub.orchestration.scheduler.terminal_reconciliation",
+    "lionhub.orchestration.scheduler.worker",
     "lionhub.orchestration.spawn",
+    "lionhub.providers.anthropic.claude_code",
     "lionhub.providers.google.gemini_code",
     "lionhub.providers.openai._codex_profile",
+    "lionhub.providers.openai._codex_project_layers",
+    "lionhub.providers.openai.codex",
     "lionhub.serve.cli",
     "lionhub.serve.cli._machine_envelope",
     "lionhub.serve.cli.machine",
+    "lionhub.serve.cli.machine_schedule",
+    "lionhub.serve.cli.main",
     "lionhub.serve.cli.orchestrate",
     "lionhub.serve.cli.orchestrate._common",
+    "lionhub.serve.cli.orchestrate._control",
     "lionhub.serve.cli.orchestrate._orchestration",
     "lionhub.serve.cli.team",
+    "lionhub.serve.cli.wait",
     "lionhub.serve.daemon.services",
     "lionhub.serve.daemon.services._sse",
     "lionhub.serve.daemon.services.run_tags_store",
@@ -114,6 +160,16 @@ _PRELOAD_MODULES = (
     "lionhub.serve.diagnostics",
     "lionhub.serve.mcp._notify_hook",
     "lionhub.serve.mcp._run_detail",
+    "lionhub.tools._seatbelt",
+    "lionhub.tools.code.ast_search",
+    "lionhub.tools.code.bash",
+    "lionhub.tools.code.search",
+    "lionhub.tools.coding",
+    "lionhub.tools.context.context",
+    "lionhub.tools.file.editor",
+    "lionhub.tools.file.reader",
+    "lionhub.tools.khive_injection",
+    "lionhub.tools.sandbox",
 )
 _OWN_PACKAGES = ("lionagi", "lionhub")
 _logger = logging.getLogger(__name__)
@@ -140,6 +196,23 @@ def _stop_if_own_module_missing(exc: BaseException) -> None:
     module = _own_module(exc)
     if module is None:
         return
+    _exit_for_own_module(module, exc)
+
+
+def _own_source(path: object) -> bool:
+    """Whether *path* is a source file of this server's own packages."""
+    if not isinstance(path, str) or not path:
+        return False
+    source = Path(path).resolve()
+    for package in _OWN_PACKAGES:
+        spec = find_spec(package)
+        for root in (spec.submodule_search_locations or ()) if spec else ():
+            if source.is_relative_to(Path(root).resolve()):
+                return True
+    return False
+
+
+def _exit_for_own_module(module: str, exc: BaseException) -> None:
     sys.stderr.write(
         f"lion MCP server: its own module {module} cannot be imported "
         f"({type(exc).__name__}: {exc}). The installed source changed after this server "
@@ -152,8 +225,8 @@ def _stop_if_own_module_missing(exc: BaseException) -> None:
 def preload() -> None:
     """Import every module this server uses and build every verb's schema, before serving.
 
-    A module of this server that fails to import here ends the process before it answers
-    anything (``_stop_if_own_module_missing``). A module that needs a package which is not
+    A module of this server that fails to import here, or whose own source no longer
+    parses, ends the process before it answers anything. A module that needs a package which is not
     installed, or that raises anything else while it is imported (a configuration value it
     rejects, a settings file it cannot read), stays as it was: the verbs that use it report
     that when they are called, and the server answers the rest.
@@ -163,6 +236,14 @@ def preload() -> None:
             import_module(name)
         except ImportError as exc:
             _stop_if_own_module_missing(exc)
+        except SyntaxError as exc:
+            if _own_source(exc.filename):
+                _exit_for_own_module(name, exc)
+            _logger.warning(
+                "lion MCP server: module %s did not load (%s); the verbs that use it report why",
+                name,
+                type(exc).__name__,
+            )
         except Exception as exc:
             # The type only: an exception's text can echo a rejected setting's value.
             _logger.warning(
