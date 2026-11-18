@@ -360,6 +360,32 @@ def test_exit_code_reflects_session_terminal_status(session_status, expected):
     assert exit_code_for_view(run, invocation, [session]) == expected
 
 
+@pytest.mark.parametrize(
+    ("session_status", "process_exit", "expected"),
+    [
+        ("failed", 76, 76),
+        ("failed", 1, 1),
+        ("completed_empty", 76, 1),
+        ("timed_out", 76, 124),
+        ("completed", 76, 0),
+    ],
+)
+def test_a_failed_run_that_exited_partial_keeps_the_partial_code(
+    session_status, process_exit, expected
+):
+    """Only a failed outcome takes the partial code from the process exit; every other
+    status keeps its own code."""
+    run = _run(status="failed", exit_code=process_exit, invocation_id="inv1")
+    invocation = {"id": "inv1", "status": "failed"}
+    session = {"id": "sess1", "status": session_status, "created_at": 1.0}
+    assert exit_code_for_view(run, invocation, [session]) == expected
+
+
+def test_a_failed_invocation_that_exited_partial_keeps_the_partial_code():
+    run = _run(status="failed", exit_code=76, invocation_id="inv1")
+    assert exit_code_for_view(run, {"id": "inv1", "status": "failed"}, []) == 76
+
+
 def test_exit_code_running_is_exit_running():
     from lionhub.serve.cli.status import EXIT_RUNNING
 

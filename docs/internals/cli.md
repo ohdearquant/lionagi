@@ -970,7 +970,9 @@ outside `EXIT_CODE_BY_STATUS`, here because it qualifies the `failed` status rat
 `li agent` writes the text (carried on `ProviderError.partial_text`, which `run_and_collect` sets)
 and then one line naming the error, so a caller can use what the turn produced and can tell it
 from a complete answer by the exit status alone. It exits 76 (`EX_PROTOCOL`): the remote side
-ended the exchange on an error. A provider error before any text keeps exit 1.
+ended the exchange on an error. A provider error before any text keeps exit 1. A scheduled run
+records the process's exit status on its occurrence, so `exit_code_for_view` returns 76 for an
+occurrence graded `failed` whose process exited 76, and the status's own code otherwise.
 
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 

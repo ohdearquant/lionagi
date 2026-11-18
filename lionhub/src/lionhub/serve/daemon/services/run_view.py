@@ -220,17 +220,25 @@ def exit_code_for_view(
     lionhub.orchestration.inspection) rather than inventing a second exit-code table: 0 trusted
     completion, 1 ordinary failure/completed_empty/skip, 2 unknown/no run, 3
     running, and the existing timeout/abort/cancel codes where a session or
-    invocation status carries one."""
+    invocation status carries one. A ``failed`` outcome whose process exited with
+    ``EXIT_CODE_PARTIAL_OUTPUT`` keeps that code: the run delivered text before a
+    provider error ended it."""
     from lionhub.orchestration.inspection import EXIT_RUNNING, EXIT_UNKNOWN
-    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
+    from lionhub.orchestration.job import EXIT_CODE_BY_STATUS, EXIT_CODE_PARTIAL_OUTPUT
 
     if run is None:
         return EXIT_UNKNOWN
+
+    def _graded(status: str | None) -> int:
+        if status == "failed" and run.get("exit_code") == EXIT_CODE_PARTIAL_OUTPUT:
+            return EXIT_CODE_PARTIAL_OUTPUT
+        return EXIT_CODE_BY_STATUS.get(status or "", 1)
+
     primary = _grading_session(sessions)
     if primary is not None:
-        return EXIT_CODE_BY_STATUS.get(primary["status"], 1)
+        return _graded(primary["status"])
     if invocation is not None and invocation.get("status") in INVOCATION_TERMINAL_STATUSES:
-        return EXIT_CODE_BY_STATUS.get(invocation["status"], 1)
+        return _graded(invocation["status"])
     status = run.get("status")
     if status == "running":
         return EXIT_RUNNING
