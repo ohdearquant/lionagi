@@ -107,8 +107,8 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   child. Two refusals come after the child has started. A child whose start time cannot be read
   and that is still running is killed before the refusal is raised (D3); any process it started
   by then is not signalled: with no start time, nothing shows that its process group is still the
-  child's. A child that has already exited and been collected is not refused (D3, the bullet on a
-  child that has already exited).
+  child's. A child that has already exited and been collected is not refused by the admission
+  (D3, the bullet on a child that has already exited).
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
   A slot it cannot write is the second refusal, `SubagentAdmissionRefusedError` naming the pool:
   that slot would read free once its holder exited while the child ran, so ending the child's
@@ -208,7 +208,10 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   The cost: a process the child started before it exited has no group identity on record, so it is
   neither signalled nor counted against any cap. This decision already accepts that exposure for
   the processes a refused child started. A child that is still running and whose start time
-  cannot be read is refused and killed as stated above.
+  cannot be read is refused and killed as stated above. This rule is the admission's alone: a
+  spawn that also writes a worker record for its run still refuses a child whose start time
+  cannot be read, whether or not the child has exited, because that record (ADR-0104 Decision 1)
+  carries the start time observed at spawn.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
   any, counts every held slot at every index on disk, and takes a slot in each pool only once all
