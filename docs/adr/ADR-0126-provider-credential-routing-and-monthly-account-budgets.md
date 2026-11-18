@@ -1,10 +1,10 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09, 2026-11-10 and 2026-11-12 (see Amendments 1 to 13).
+- **Status**: Accepted, amended 2026-10-14, 2026-10-26, 2026-10-28, 2026-10-30, 2026-11-01, 2026-11-02, 2026-11-09, 2026-11-10, 2026-11-12, 2026-11-14 and 2026-11-17 (see Amendments 1 to 16; Amendments 14 and 15 are Proposed).
 - **Kind**: Aspirational
 - **Implementation-status**: partial — D1 to D5 and Amendments 1 to 8 are implemented, and so are
   D6's failure classes and shielded settlement. Within that accepted scope, two clauses remain. D4's single-use runtime ticket:
-  the reserve call returns a plain reservation. The ledger refuses a duplicate attempt id and settles an attempt once (an identical repeat changes nothing, a different one blocks the account in this implemented baseline), but nothing is consumed when the request is dispatched. D6's revoke-and-join before "not sent": the not-sent settle is chosen by whether the request was entered, with no ticket to revoke and no join of the worker. Amendment 9 is partly implemented: Decision 6's evidence types and the router calls that settle with them, and Decision 4's rule that runtime evidence after an operator reconciliation returns `already_settled` without comparison, mutation or block. The typed `reconcile(evidence=)` keyword in Decision 4 is not implemented; the preceding implementation claims otherwise apply through Amendment 8 only. Amendments 12 and 13 are implemented.
+  the reserve call returns a plain reservation. The ledger refuses a duplicate attempt id and settles an attempt once (an identical repeat changes nothing, a different one blocks the account in this implemented baseline), but nothing is consumed when the request is dispatched. D6's revoke-and-join before "not sent": the not-sent settle is chosen by whether the request was entered, with no ticket to revoke and no join of the worker. Amendment 9 is partly implemented: Decision 6's evidence types and the router calls that settle with them, and Decision 4's rule that runtime evidence after an operator reconciliation returns `already_settled` without comparison, mutation or block. The typed `reconcile(evidence=)` keyword in Decision 4 is not implemented; the preceding implementation claims otherwise apply through Amendment 8 only. Amendments 12 and 13 are implemented. Amendment 16 is not implemented at this revision; the run_sync change that follows implements it.
 - **Area**: service-providers
 - **Date**: 2026-10-12
 - **Relations**: extends ADR-0027; follows ADR-0119 and ADR-0125 D1 and D8 (carries lion1 ADR-0024 and lion1 ADR-0028 by concept); keeps ADR-0029 D4's retry classes; preserves the boundaries of ADR-0028, ADR-0030 and ADR-0043
@@ -449,7 +449,7 @@ selection reads it: the D4 ledger.
      for a 200 whose settlement never started. A cancellation that arrived while `block` ran let the
      block commit and stopped `settle_unknown`. With the shields, both writes commit.
    - The adapter delivers a pending cancellation after the failure is recorded. The routed-failure handlers call `await anyio.lowlevel.checkpoint()` before re-raising (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`), as do the non-streamed and streamed outer transport paths (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`). Amendment 9 moves latched mid-stream transport accounting before output drain and context exit: `settled=True` precedes its shielded write, followed by a cancellation checkpoint. The outer guard then skips a second write and still checkpoints before raising if reached. Cancellation at the new checkpoint re-raises from the cancellation handler, so it need not reach the old outer checkpoint. Without the applicable post-write checkpoint, a pending `fail_after` can receive the routing error instead of `TimeoutError`, and a status-code branch delivers pending cancellation only if closing the HTTP session checkpoints. Reason-only writes retain the first open reason or ignore a settled row (`lionagi/service/accounts/_ledger.py::CredentialLedger._settle_sync`). Final 400/529 evidence after a committed cancelled reason instead conflicts, retains the row and blocks/clears. Runtime evidence after reconciliation is ignored. Authentication writes still block first (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`); both calls are shielded, but a ledger error in the first stops the second and leaves the attempt ceiling held. Rewrite the comments at `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt` and `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt` to state this shielding and block-first order.
-   - The shields hold against AnyIO scope cancellation only. A native `task.cancel()` is not held: pending before worker admission it stops the write; during the worker wait it returns to the caller at once and the write commits after. The worker-dispatch boundary is `lionagi/service/accounts/_ledger.py::CredentialLedger._run`; the cancellation handler’s settlement write is at `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`. A ledger write that fails still records nothing. This limitation applies to response, unknown, block, not-sent, stream-end and rejection settlement alike. Amendment 6 bounds each call’s thread-token admission wait and SQLite lock wait (`busy_timeout_s`) at five seconds each; the former unbounded admission wait is historical. No combined timeout may report failure after an actual commit.
+   - The shields hold against AnyIO scope cancellation only. A native `task.cancel()` is not held: pending before worker admission it stops the write; during the worker wait it returns to the caller at once and the write commits after. [Amendment 16](#amendment-16-a-native-cancellation-after-worker-admission-is-delivered-when-the-worker-returns) replaces the last two clauses of that sentence. The worker-dispatch boundary is `lionagi/service/accounts/_ledger.py::CredentialLedger._run`; the cancellation handler’s settlement write is at `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._request_attempt`. A ledger write that fails still records nothing. This limitation applies to response, unknown, block, not-sent, stream-end and rejection settlement alike. Amendment 6 bounds each call’s thread-token admission wait and SQLite lock wait (`busy_timeout_s`) at five seconds each; the former unbounded admission wait is historical. No combined timeout may report failure after an actual commit.
    - The streamed adapter’s `GeneratorExit` handler (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`) selects original reason `stream_error` after an observed error event (`saw_error_event`, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt.emit_ready`) and `stream_closed` otherwise. Its end-of-stream branch selects `stream_error` after an error event and `stream_truncated` otherwise (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`). Under Amendment 9 Decision 2, an eligible estimate stores that reason in structured evidence; otherwise `UnknownOutcome` records it on the open row.
    - In the streamed attempt the existing `settled` boolean is the settlement-attempt flag. Set it before awaiting each router accounting call (the existing status branches, `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`, and `lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt.emit_ready`), including Amendment 9's latched transport-loss settlement before output drain or context exit. The outer transport-failure handler (`lionhub/src/lionhub/providers/anthropic/messages.py::AnthropicMessagesEndpoint._routed_stream_attempt`) skips accounting when the flag is true but still propagates the failure with a cancellation checkpoint if reached. A failed call is not retried by unwind. Without the flag
      and the guard, a `GeneratorExit` or an exception that the unwinding response or client raises
@@ -712,7 +712,7 @@ D6 says stream close and finalization shield an available settlement from caller
 
 - A shielded ledger call that cannot obtain a token raises `ledger_busy` within the admission bound plus a small margin. It never raises a bare timeout.
 - A call whose worker starts before the bound expires runs to its own SQLite bound and is reported by its actual outcome.
-- It does not change the native `task.cancel()` behavior that Amendment 5 describes.
+- It does not change the native `task.cancel()` behavior that Amendment 5 describes. [Amendment 16](#amendment-16-a-native-cancellation-after-worker-admission-is-delivered-when-the-worker-returns) changes that behavior after worker admission.
 - It does not change the existing busy-timeout arm, which still raises `ledger_busy` when the SQLite lock is held past `busy_timeout_s`.
 - The admission bound is not a retry. The caller decides whether to retry.
 
@@ -1780,7 +1780,7 @@ before the response status is known (Decision 4).
 4. Keep D6's typed evidence requirement and Amendment 5's accounting shield.
    The shield protects ledger work from AnyIO scope cancellation. A further
    native task cancellation retains the existing behavior at the worker
-   boundary. Keep Amendment 6's separate bounds for thread admission and the
+   boundary, as [Amendment 16](#amendment-16-a-native-cancellation-after-worker-admission-is-delivered-when-the-worker-returns) states it. Keep Amendment 6's separate bounds for thread admission and the
    SQLite wait. A failed write leaves the ceiling held. Keep Amendment 12's
    atomic zero settlement and block for a qualifying 400 with the winning
    billing class and verified message prefix. Cancellation before response
@@ -1986,3 +1986,73 @@ Verify both billing reasons can be admitted and cleared. Verify
 requesting, preserving the reason and generation, and that a billing block
 replaced by `ceiling_exceeded` during a probe survives a 2xx settlement.
 Use a synthetic transport and a temporary ledger.
+
+## Amendment 16: A native cancellation after worker admission is delivered when the worker returns
+
+- **Status**: Accepted
+- **Date**: 2026-11-17
+
+### Context
+
+Every ledger call runs its SQLite work through `CredentialLedger._run`
+(`lionagi/service/accounts/_ledger.py`), which calls the shared helper
+`lionagi.ln.concurrency.run_sync` with its default `abandon_on_cancel=False`.
+On asyncio, a native `task.cancel()` that arrived while the worker ran used to
+release the thread-limiter token at once and return the cancellation to the
+caller while the worker thread kept running, so the thread limit did not bound
+threads. The helper now holds the token until the worker returns and delivers
+the cancellation then. That change reaches every caller of `run_sync`; this
+amendment states what it means for the ledger.
+
+### Decision
+
+1. This amendment replaces the sentence of Amendment 5 Decision 8 that reads
+   "A native `task.cancel()` is not held: pending before worker admission it
+   stops the write; during the worker wait it returns to the caller at once and
+   the write commits after." The two places that carried it forward now read
+   through Decision 2 of this amendment: Amendment 6's guarantee "It does not
+   change the native `task.cancel()` behavior that Amendment 5 describes", and
+   Amendment 14 Decision 4's "A further native task cancellation retains the
+   existing behavior at the worker boundary." The replaced text stays in
+   Amendment 5 as history.
+2. A native task cancellation of a ledger call has three cases.
+   - Pending before worker admission, it stops the write. This is unchanged.
+   - Arriving after admission, it lets the write complete, and the caller still
+     receives `CancelledError`, delivered when the worker returns.
+   - The admission bound firing after the worker started still returns the
+     operation's result or error (Amendment 6 Decision 4). This is unchanged.
+
+   The settlement shield still does not hold a native cancellation, so a later
+   write of the same settlement sequence can still be skipped, as Amendment 5
+   and Amendment 14's Consequences describe. This is unchanged.
+3. Delivery of the cancellation and release of the thread token wait for the
+   worker: at most `busy_timeout_s` (five seconds by default) plus the
+   operation itself.
+4. Decision 2 holds on asyncio on the helper's default path. On Trio, and for a
+   call that passes `abandon_on_cancel=True`, the behavior is unchanged. The
+   ledger must not pass `abandon_on_cancel=True`: AnyIO would then wait for the
+   worker under an unshielded cancel scope, so `_run`'s admission scope could
+   abandon a worker that had already started and `_run` would report its unset
+   result as committed, which breaks Amendment 6 Decision 4.
+5. The timing record's definition is unchanged. Under a native cancellation
+   after admission, `sqlite_wait_s` now covers the whole worker interval,
+   because the event is emitted when the worker returns.
+
+### Consequences
+
+A caller is no longer told that a ledger call was cancelled while its write is
+still running, and the thread limit bounds the ledger's worker threads. The
+price is latency: a caller that cancels after admission waits for the worker,
+up to the bound in Decision 3.
+
+### Verification
+
+- On the real `_run`, a native cancellation after admission: the caller sees
+  `CancelledError` only after the commit, the ledger holds one row, and one
+  DEBUG event carries a `sqlite_wait_s` that covers the worker interval. The
+  test fails on the previous helper.
+- The same with a provider rejection settlement, and with a repeated native
+  cancellation: a second cancellation while the first waits neither releases
+  the token nor returns early.
+- The existing test that the admission bound never fires after the worker
+  started stays green.

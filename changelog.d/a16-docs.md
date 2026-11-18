@@ -1,0 +1,5 @@
+### Documentation
+
+- ADR-0126 Amendment 16 states that a native cancellation of a ledger call after
+  worker admission is delivered when the worker returns. ADR-0128 D6 states that
+  input validation runs before refusal classification.

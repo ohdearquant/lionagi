@@ -1,6 +1,6 @@
 # ADR-0128: Writing run state into a store another schema lineage manages
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-11-17 (D6: input validation runs before refusal)
 - **Kind**: Aspirational
 - **Implementation-status**: implemented: D1-D8. Items 7 and 9 of D8 have tests
   (`tests/state/test_compatibility_concurrency.py` and
@@ -192,7 +192,9 @@ A refusal raises `StateCompatibilityRefused` carrying the operation, the profile
 whether anything was committed. The CLI exits nonzero; MCP returns a structured tool error. The live
 persistence retry queue and setup-time persistence handlers re-raise it: a refused write never
 becomes a run that succeeded without persistence. Where an operation spans transactions, the error
-names the phases that committed.
+names the phases that committed. Input validation runs before refusal classification: a malformed
+argument raises the same ValueError as in native mode, and StateCompatibilityRefused is reserved
+for well-formed operations the profile does not admit.
 
 ### D7: lineage
 
