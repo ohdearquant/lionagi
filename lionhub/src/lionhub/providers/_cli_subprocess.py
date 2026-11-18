@@ -1593,11 +1593,15 @@ async def ndjson_from_cli(
             if (lease.slots or admission is not None) and observed.create_time is None:
                 if admission is not None:
                     raise _WorkerSpawnAdmissionError("worker start time could not be observed")
-                from lionagi._provider_errors import SubagentAdmissionRefusedError
+                # A child already collected holds nothing a start time would protect, so
+                # its own exit status and output reach the caller; any process it left
+                # has no group identity on record and is not counted against the cap.
+                if child.returncode is None:
+                    from lionagi._provider_errors import SubagentAdmissionRefusedError
 
-                raise SubagentAdmissionRefusedError(
-                    "subagent admission refused: the agent's start time could not be read"
-                )
+                    raise SubagentAdmissionRefusedError(
+                        "subagent admission refused: the agent's start time could not be read"
+                    )
             lease.record_child(observed.pid, observed.create_time)
             if admission is not None:
                 await admission.record(_worker_spawn_identity(observed))
