@@ -105,8 +105,10 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   so neither a nested agent nor an input that cannot be encoded waits for or holds a slot.
 - The lease is taken before `create_subprocess_exec`, so an agent refused for a full pool has no
   child. Two refusals come after the child has started. A child whose start time cannot be read
-  is killed before the refusal is raised (D3); any process it started by then is not signalled:
-  with no start time, nothing shows that its process group is still the child's.
+  and that is still running is killed before the refusal is raised (D3); any process it started
+  by then is not signalled: with no start time, nothing shows that its process group is still the
+  child's. A child that has already exited and been collected is not refused by the admission
+  (D3, the bullet on a child that has already exited).
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
   A slot it cannot write is the second refusal, `SubagentAdmissionRefusedError` naming the pool:
   that slot would read free once its holder exited while the child ran, so ending the child's
@@ -191,13 +193,25 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   could not look. A child whose start time cannot be read never holds a slot by its record: its
   pid alone could name a process that took the pid over, so a record without a start time reads
   free once its holder exits, even while the child still runs. The spawn observes the child once more for its start time; if
-  the second read has none too, and the admission holds at least one slot, the spawn is refused
+  the second read has none too, the child is still running, and the admission holds at least one slot, the spawn is refused
   with the same `SubagentAdmissionRefusedError` a full pool raises, the child is killed, and the
   slots are released. The processes the child has started by then are left running: signalling
   its process group needs the start-time evidence that is missing here, as when the first
   observation fails outright. So a slot that has given up its lock is held only for a child
   recorded with its start time. With no cap set there are no slots to keep, and the child runs whether or
   not its start time can be read.
+- **A child that has already exited is reported, never refused.** When neither observation reads
+  a start time because the child has already exited and the spawn has collected it, so its exit
+  status is known, the spawn is not refused: its slots are released and the caller receives the
+  child's own exit status and output, as for any child that ran to its end. A start time is needed
+  only to keep a slot for a child that outlives its holder, and a collected child holds nothing.
+  The cost: a process the child started before it exited has no group identity on record, so it is
+  neither signalled nor counted against any cap. This decision already accepts that exposure for
+  the processes a refused child started. A child that is still running and whose start time
+  cannot be read is refused and killed as stated above. This rule is the admission's alone: a
+  spawn that also writes a worker record for its run still refuses a child whose start time
+  cannot be read, whether or not the child has exited, because that record (ADR-0104 Decision 1)
+  carries the start time observed at spawn.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
   any, counts every held slot at every index on disk, and takes a slot in each pool only once all

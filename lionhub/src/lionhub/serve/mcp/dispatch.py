@@ -13,10 +13,14 @@ moves here with it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
+import sys
 import time
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +61,197 @@ _STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
 
 
+# Modules this server imports inside its functions. ``preload`` imports them before the server
+# answers anything, so a later change to the installed source cannot leave the process holding
+# some of its modules from before the change and failing to import the others.
+_PRELOAD_MODULES = (
+    "lionagi._command_env",
+    "lionagi._command_env_metadata",
+    "lionagi._flow_spec",
+    "lionagi._paths",
+    "lionagi._provider_errors",
+    "lionagi._types",
+    "lionagi.adapters.pandas_",
+    "lionagi.hooks",
+    "lionagi.hooks._message_retry",
+    "lionagi.hooks.bus",
+    "lionagi.libs.file.process",
+    "lionagi.libs.frontmatter",
+    "lionagi.libs.schema.load_pydantic_model_from_schema",
+    "lionagi.libs.schema.minimal_yaml",
+    "lionagi.ln._proc",
+    "lionagi.ln.concurrency",
+    "lionagi.ln.concurrency.errors",
+    "lionagi.operations.node",
+    "lionagi.operations.run.stream_buffer",
+    "lionagi.plugins",
+    "lionagi.protocols.action.gate",
+    "lionagi.service.accounts._router",
+    "lionagi.service.accounts._scope",
+    "lionagi.service.connections._chat_schemas",
+    "lionagi.service.connections.registry",
+    "lionagi.service.providers",
+    "lionagi.service.token_calculator",
+    "lionagi.session.prompts",
+    "lionagi.state.cli_workers",
+    "lionagi.state.compat",
+    "lionagi.state.completion_evidence",
+    "lionagi.state.db",
+    "lionagi.state.engine",
+    "lionagi.state.health",
+    "lionagi.state.lifecycle.notify_settings",
+    "lionagi.state.lifecycle.policy",
+    "lionagi.state.reasons",
+    "lionagi.version",
+    "lionhub.agent",
+    "lionhub.agent._email_in_headers",
+    "lionhub.agent.casts.catalog",
+    "lionhub.agent.casts.pack",
+    "lionhub.agent.casts.pattern",
+    "lionhub.agent.child_sandbox",
+    "lionhub.agent.factory",
+    "lionhub.agent.gate",
+    "lionhub.agent.hooks",
+    "lionhub.agent.nudge",
+    "lionhub.agent.permissions",
+    "lionhub.agent.settings",
+    "lionhub.hooks.external",
+    "lionhub.orchestration",
+    "lionhub.orchestration.console",
+    "lionhub.orchestration.job",
+    "lionhub.orchestration.mcp_config",
+    "lionhub.orchestration.project_store",
+    "lionhub.orchestration.runs",
+    "lionhub.orchestration.schedule.declaration",
+    "lionhub.orchestration.schedule.execution_root",
+    "lionhub.orchestration.schedule.export",
+    "lionhub.orchestration.schedule.timing",
+    "lionhub.orchestration.scheduler.db_maintenance",
+    "lionhub.orchestration.scheduler.engine",
+    "lionhub.orchestration.scheduler.github",
+    "lionhub.orchestration.scheduler.lifecycle",
+    "lionhub.orchestration.scheduler.liveness",
+    "lionhub.orchestration.scheduler.settings",
+    "lionhub.orchestration.scheduler.terminal_reconciliation",
+    "lionhub.orchestration.scheduler.worker",
+    "lionhub.orchestration.spawn",
+    "lionhub.providers.anthropic.claude_code",
+    "lionhub.providers.google.gemini_code",
+    "lionhub.providers.openai._codex_profile",
+    "lionhub.providers.openai._codex_project_layers",
+    "lionhub.providers.openai.codex",
+    "lionhub.serve.cli",
+    "lionhub.serve.cli._machine_envelope",
+    "lionhub.serve.cli.machine",
+    "lionhub.serve.cli.machine_schedule",
+    "lionhub.serve.cli.main",
+    "lionhub.serve.cli.orchestrate",
+    "lionhub.serve.cli.orchestrate._common",
+    "lionhub.serve.cli.orchestrate._control",
+    "lionhub.serve.cli.orchestrate._orchestration",
+    "lionhub.serve.cli.team",
+    "lionhub.serve.cli.wait",
+    "lionhub.serve.daemon.services",
+    "lionhub.serve.daemon.services._sse",
+    "lionhub.serve.daemon.services.run_tags_store",
+    "lionhub.serve.daemon.services.runs",
+    "lionhub.serve.daemon.services.sessions",
+    "lionhub.serve.daemon.services.signals",
+    "lionhub.serve.diagnostics",
+    "lionhub.serve.mcp._notify_hook",
+    "lionhub.serve.mcp._run_detail",
+    "lionhub.tools._seatbelt",
+    "lionhub.tools.code.ast_search",
+    "lionhub.tools.code.bash",
+    "lionhub.tools.code.search",
+    "lionhub.tools.coding",
+    "lionhub.tools.context.context",
+    "lionhub.tools.file.editor",
+    "lionhub.tools.file.reader",
+    "lionhub.tools.khive_injection",
+    "lionhub.tools.sandbox",
+)
+_OWN_PACKAGES = ("lionagi", "lionhub")
+_logger = logging.getLogger(__name__)
+# Replaced in tests; exiting the process is the point in production.
+_exit = os._exit
+
+
+def _own_module(exc: BaseException) -> str | None:
+    """The module *exc* failed to import when it is this server's own code, otherwise None."""
+    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+    if not module or module.split(".", 1)[0] not in _OWN_PACKAGES:
+        return None
+    return module
+
+
+def _stop_if_own_module_missing(exc: BaseException) -> None:
+    """End the process when *exc* is a failure to import this server's own code.
+
+    That is an ``ImportError`` naming one of its own modules, or a ``SyntaxError`` in one of
+    its own source files. Either means the installed source no longer matches the modules
+    this process loaded, so the server would answer with some verbs working and the rest
+    refused. It exits instead, with ``EXIT_CODE_ENVIRONMENT_ERROR`` and a message naming the
+    module or file, so the client starts a fresh server. Any other failure returns.
+    """
+    if isinstance(exc, SyntaxError):
+        if _own_source(exc.filename):
+            _exit_for_own_module(str(exc.filename), exc)
+        return
+    module = _own_module(exc)
+    if module is None:
+        return
+    _exit_for_own_module(module, exc)
+
+
+def _own_source(path: object) -> bool:
+    """Whether *path* is a source file of this server's own packages."""
+    if not isinstance(path, str) or not path:
+        return False
+    source = Path(path).resolve()
+    for package in _OWN_PACKAGES:
+        spec = find_spec(package)
+        for root in (spec.submodule_search_locations or ()) if spec else ():
+            if source.is_relative_to(Path(root).resolve()):
+                return True
+    return False
+
+
+def _exit_for_own_module(module: str, exc: BaseException) -> None:
+    sys.stderr.write(
+        f"lion MCP server: its own module {module} cannot be imported "
+        f"({type(exc).__name__}: {exc}). The installed source changed after this server "
+        "started, or is broken; exiting so the client starts a fresh server.\n"
+    )
+    sys.stderr.flush()
+    _exit(EXIT_CODE_ENVIRONMENT_ERROR)
+
+
+def preload() -> None:
+    """Import every module this server uses and build every verb's schema, before serving.
+
+    A module of this server that fails to import here, or whose own source no longer
+    parses, ends the process before it answers anything. A module that needs a package which is not
+    installed, or that raises anything else while it is imported (a configuration value it
+    rejects, a settings file it cannot read), stays as it was: the verbs that use it report
+    that when they are called, and the server answers the rest.
+    """
+    for name in _PRELOAD_MODULES:
+        try:
+            import_module(name)
+        except ImportError as exc:
+            _stop_if_own_module_missing(exc)
+        except Exception as exc:
+            _stop_if_own_module_missing(exc)
+            # The type only: an exception's text can echo a rejected setting's value.
+            _logger.warning(
+                "lion MCP server: module %s did not load (%s); the verbs that use it report why",
+                name,
+                type(exc).__name__,
+            )
+    catalog()
+
+
 class OpError(Exception):
     """A refusal of one op, carrying the kind a caller may branch on."""
 
@@ -93,6 +288,15 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
             continue
         properties[name] = spec
     properties.update({name: dict(spec) for name, spec in verb.server_params.items()})
+    if verb.name == "agent.submit" and "resume" in properties:
+        resume = properties["resume"]
+        properties["resume"] = {
+            **resume,
+            "description": (
+                f"{resume['description']} A full run ID from an agent job in this "
+                "server's home is also accepted when its branch has been saved."
+            ),
+        }
 
     required = [name for name in schema.get("required", []) if name in properties]
     required += [name for name in verb.requires if name not in required]
@@ -160,6 +364,7 @@ def catalog() -> dict[str, Any]:
             if verb.executor == "spawn":
                 _describe_fingerprint(entry, verb, schema)
         except Exception as exc:  # noqa: BLE001 — one unreadable parser must not hide the rest
+            _stop_if_own_module_missing(exc)
             entry["available"] = False
             entry["reason"] = f"schema generation failed: {type(exc).__name__}: {exc}"
         entries.append(entry)
@@ -867,9 +1072,12 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             default_name = selected
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
     write_capable = _write_capable(verb, args, profile)
-    flags = render_argv(schema, args)
     assert verb.job_kind is not None
+    resume_id = None
     try:
+        if verb.job_kind == "agent" and args.get("resume"):
+            resume_id = jobs._resolve_agent_resume_id(args["resume"])
+        flags = render_argv(schema, args)
         result = jobs.submit(
             verb.job_kind,
             flags,
@@ -901,6 +1109,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         # A submission this spawn refuses on its own terms (an exclusion it
         # cannot honour) is the caller's input to correct, not a server outage.
         raise OpError("invalid_input", str(exc)) from exc
+    if verb.job_kind == "agent":
+        result["resume_id"] = resume_id
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:
         result["playbook"] = schema.get("x-playbook")
@@ -1199,6 +1409,15 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         )
     unknown_keys = sorted(set(entry) - {"op", "args", "schema_fingerprint"})
     name = entry.get("op")
+    if name is None:
+        return _op_error(
+            "?",
+            OpError(
+                "invalid_input",
+                f"each op names its verb under 'op'; got the keys {sorted(map(str, entry))}",
+            ),
+            None,
+        )
     if not isinstance(name, str):
         return _op_error("?", OpError("invalid_input", f"op must be a string, got {name!r}"), None)
     if unknown_keys:
@@ -1271,7 +1490,19 @@ async def _run_one(entry: Any) -> dict[str, Any]:
 
 
 async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> dict[str, Any]:  # noqa: A002 — `help` is the parameter name the surface advertises
-    """Run a batch of ops, or answer a help request. Never raises for one bad op."""
+    """Run a batch of ops, or answer a help request. Never raises for one bad op.
+
+    A failure to import this server's own code, or own source that no longer parses, ends
+    the process instead of answering (``_stop_if_own_module_missing``).
+    """
+    try:
+        return await _request(ops, help)
+    except (ImportError, SyntaxError) as exc:
+        _stop_if_own_module_missing(exc)
+        raise
+
+
+async def _request(ops: list[dict[str, Any]] | None, help: Any) -> dict[str, Any]:  # noqa: A002
     # Shape checked before the help branch, or a malformed `ops` is judged on
     # truthiness (an empty dict would slip past as "no ops").
     if ops is not None and not isinstance(ops, list):

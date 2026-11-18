@@ -59,7 +59,7 @@ class _WorkerAdmission:
 
     def __init__(
         self,
-        limiter: anyio.abc.CapacityLimiter,
+        limiter: anyio.CapacityLimiter,
         borrower: object,
         caller_scope: anyio.CancelScope,
     ):
@@ -80,7 +80,7 @@ class _WorkerAdmission:
 
 
 async def _run_sync_shielded(
-    func: Callable[..., R], args: tuple[Any, ...], limiter: anyio.abc.CapacityLimiter | None
+    func: Callable[..., R], args: tuple[Any, ...], limiter: anyio.CapacityLimiter | None
 ) -> R:
     actual_limiter = (
         limiter if limiter is not None else anyio.to_thread.current_default_thread_limiter()
@@ -92,7 +92,7 @@ async def _run_sync_shielded(
     async with anyio.create_task_group() as group:
         with anyio.CancelScope() as caller_scope:
             admission = cast(
-                anyio.abc.CapacityLimiter,
+                anyio.CapacityLimiter,
                 _WorkerAdmission(actual_limiter, asyncio.current_task(), caller_scope),
             )
 

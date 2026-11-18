@@ -583,6 +583,77 @@ async def test_hanging_implement_triggers_work_aborted_and_partial_export(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_stage_limit_waits_for_an_in_flight_worker_and_records_the_overrun(
+    tmp_path, monkeypatch, caplog
+):
+    """A worker-thread tool call holds the stage past its limit; the overrun is recorded."""
+    import json
+    import logging
+    from datetime import datetime
+
+    from lionagi.ln.concurrency import run_sync
+
+    limit_s = 0.2
+    worker_s = 0.8
+    eng = CodingEngine(repair_retries=0, max_fix_rounds=0, stage_timeout_s=limit_s)
+    run = eng.new_run()
+    worker_done: list[float] = []
+
+    def tool_call():
+        time.sleep(worker_s)
+        worker_done.append(time.monotonic())
+
+    class _ToolCallBranch:
+        name = "implement"
+
+        async def operate(self, *, instruction, **kw):
+            await run_sync(tool_call)
+            await asyncio.sleep(60)
+            return "never"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [WorkPlanned(approach="slow tool")], name="plan"),
+        "implement": _ToolCallBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches.get(name, _ScriptedBranch(run, [], name=name))
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+    export_dir = tmp_path / "export"
+    events: list[dict] = []
+    run.on_event = events.append
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.engines"):
+        await eng._run(
+            run,
+            "slow tool",
+            test_cmd=[sys.executable, "-c", "exit(0)"],
+            workspace=str(tmp_path),
+            export_dir=export_dir,
+        )
+
+    (aborted,) = [e for e in events if e["type"] == "WorkAborted"]
+    assert worker_done, "the stage stopped before its worker returned"
+    assert aborted["overrun_s"] >= worker_s - limit_s - 0.1
+    assert aborted["elapsed_s"] >= worker_s - 0.1
+    assert datetime.fromisoformat(aborted["limit_reached_at"]).tzinfo is not None
+    entry = {
+        "stage": "implement",
+        "limit_reached_at": aborted["limit_reached_at"],
+        "overrun_s": aborted["overrun_s"],
+    }
+    (seed,) = json.loads((export_dir / "results.json").read_text())["hypothesis_seeds"]
+    assert json.loads(seed["measurements"])["stage_overruns"] == [entry]
+    lines = [r.getMessage() for r in caplog.records if "reached its" in r.getMessage()]
+    assert lines == [
+        f"coding stage 'implement' reached its {limit_s}s limit at "
+        f"{aborted['limit_reached_at']} and stopped {aborted['overrun_s']:.3f}s later"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_no_watchdog_progress_aborts_implement(tmp_path, monkeypatch):
     """A stage with no workspace progress within the watchdog window must abort."""
     import sys

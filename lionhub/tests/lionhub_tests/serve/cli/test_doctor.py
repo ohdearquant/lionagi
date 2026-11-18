@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 from pathlib import Path
@@ -21,9 +22,94 @@ from lionhub.serve.cli.doctor import (
     _check_version,
     _looks_editable,
     _readiness_verdict,
+    add_doctor_subparser,
     collect_checks,
     run_doctor,
 )
+
+
+def _doctor_args(*args):
+    parser = argparse.ArgumentParser()
+    add_doctor_subparser(parser.add_subparsers(required=True))
+    return parser.parse_args(["doctor", *args])
+
+
+def test_plain_doctor_sends_no_account_probe(monkeypatch, capsys):
+    from lionhub.serve.cli import doctor
+
+    async def unexpected_probe(name):
+        pytest.fail("plain doctor attempted an account probe")
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", unexpected_probe)
+    monkeypatch.setattr(
+        doctor, "collect_checks", lambda: {"python": {"status": "ok", "detail": "ready"}}
+    )
+    assert doctor.run_doctor(_doctor_args("--json")) == 0
+    assert json.loads(capsys.readouterr().out) == {"python": {"status": "ok", "detail": "ready"}}
+
+
+@pytest.fixture
+def operator_terminal(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+
+
+def test_account_probe_refuses_without_an_interactive_terminal(monkeypatch, capsys):
+    import sys
+
+    from lionhub.serve.cli import doctor
+
+    async def unexpected_probe(name):
+        pytest.fail("the probe ran without a terminal")
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", unexpected_probe)
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "only from an interactive terminal" in captured.err
+
+
+@pytest.mark.usefixtures("operator_terminal")
+def test_account_probe_uses_only_the_explicit_operator_mode(monkeypatch, capsys):
+    from lionhub.providers.anthropic.messages import _AccountProbeResult
+    from lionhub.serve.cli import doctor
+
+    async def probe(name):
+        return _AccountProbeResult(name, "probe-attempt", 200, None, True)
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", probe)
+    monkeypatch.setattr(doctor, "collect_checks", lambda: pytest.fail("probe ran ordinary checks"))
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary", "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "attempt_id": "probe-attempt",
+        "account": "primary",
+        "http_status": 200,
+        "provider_error_type": None,
+        "cleared": True,
+    }
+
+
+@pytest.mark.usefixtures("operator_terminal")
+def test_nonbilling_account_probe_reports_the_refusal_code(monkeypatch, capsys):
+    from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+    from lionhub.serve.cli import doctor
+
+    async def probe(name):
+        raise AccountRoutingError(
+            RouterErrorCode.PROBE_BLOCK_NOT_BILLING, account=name, block_reason="ceiling_exceeded"
+        )
+
+    monkeypatch.setattr(doctor, "_probe_anthropic_account", probe)
+    assert doctor.run_doctor(_doctor_args("--probe-anthropic-account", "primary", "--json")) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "Account probe refused "
+        "(probe_block_not_billing account=primary block_reason=ceiling_exceeded).\n"
+    )
+
 
 # _looks_editable
 

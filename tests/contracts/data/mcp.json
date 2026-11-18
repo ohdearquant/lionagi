@@ -636,7 +636,7 @@
         "properties": {
           "json": {
             "type": "boolean",
-            "description": "Emit a JSON object of check name -> {status, detail} instead of plain text.",
+            "description": "Emit JSON instead of plain text.",
             "default": false,
             "x-flag": "--json"
           }

@@ -20,9 +20,15 @@ class ProviderError(RuntimeError):
     on an unmodified retry (bad credentials, unsupported model/tool, context
     overflow, safety rejection). Callers that add retry/backoff logic later
     can key off this attribute instead of re-deriving it from the message.
+
+    ``partial_text`` is the assistant text the turn delivered before the error,
+    joined as a completed turn joins it, when the error ended a turn that had
+    already produced text; ``None`` when nothing was delivered or the raiser did
+    not collect it. ``run_and_collect`` sets it.
     """
 
     retryable: ClassVar[bool] = False
+    partial_text: str | None
 
     def __init__(
         self,
@@ -34,6 +40,7 @@ class ProviderError(RuntimeError):
         super().__init__(message)
         self.stderr_tail: str = stderr_tail
         self.raw: str = raw or message
+        self.partial_text = None
 
 
 class _WorkerSpawnAdmissionError(ProviderError):

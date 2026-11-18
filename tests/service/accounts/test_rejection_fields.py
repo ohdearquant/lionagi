@@ -201,12 +201,21 @@ def test_the_fields_are_refused_on_any_other_error_code(code, given):
 
 @pytest.mark.parametrize("code", NOT_REJECTED_CODES, ids=lambda code: code.value)
 def test_an_error_code_without_the_fields_is_accepted(code):
-    error = AccountRoutingError(code, provider_error_type=None, rejection_class=None)
+    # A refused non-billing probe must name its block reason; every other code takes none.
+    extra = (
+        {"block_reason": "settlement_conflict"}
+        if code is RouterErrorCode.PROBE_BLOCK_NOT_BILLING
+        else {}
+    )
+    error = AccountRoutingError(code, provider_error_type=None, rejection_class=None, **extra)
 
     assert error.code is code
     assert error.provider_error_type is None
     assert error.rejection_class is None
-    assert str(error) == code.value
+    if extra:
+        assert str(error) == f"{code.value} block_reason=settlement_conflict"
+    else:
+        assert str(error) == code.value
 
 
 def test_both_fields_are_accepted_on_a_rejected_error():

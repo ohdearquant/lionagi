@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import io
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,9 @@ from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
+from ..file._bounded_io import _read_regular_bytes
+
+_MAX_NAV_SOURCE_BYTES = 2_000_000
 
 __all__ = (
     "NavRequest",
@@ -55,11 +59,13 @@ class NavResponse(BaseModel):
 
 def _parse_file(path: str) -> tuple[ast.Module | None, str | None]:
     try:
-        src = Path(path).read_text(encoding="utf-8")
+        raw = _read_regular_bytes(Path(path), _MAX_NAV_SOURCE_BYTES)
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8") as stream:
+            src = stream.read()
         return ast.parse(src, filename=path), None
     except SyntaxError as e:
         return None, f"SyntaxError in {path}: {e}"
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         return None, f"Cannot read {path}: {e}"
 
 

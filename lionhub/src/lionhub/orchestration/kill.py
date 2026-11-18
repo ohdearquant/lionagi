@@ -28,6 +28,8 @@ from lionagi.ln._proc import (
     _RecordedGroupRefusal,
     _RecordedGroupWitness,
     _RecordedWorkerIdentity,
+    group_member_pids,
+    process_create_time,
     raw_create_time,
 )
 from lionagi.ln._proc import start_time_matches as _start_time_matches
@@ -52,6 +54,7 @@ class CancelTargetResult:
     cancel_status: str | None = None
     cancel_error: str | None = None
     state_committed: bool = False
+    pgid: int | None = None
 
     @property
     def signal_sent(self) -> bool:
@@ -117,6 +120,8 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
         "use the Studio cancel for this run"
     ),
     "foreign_mode": "records a process identity this CLI does not manage",
+    "unsafe_group": "records a process group that cannot be signalled safely",
+    "unsupported_platform": "records a process group unsupported on this platform",
     # Membership here routes this signal through the early return in `kill_one`, so no
     # cancellation is written for a process that is demonstrably still running. The kernel
     # refused the signal, so it arrives from a different direction than its neighbours --
@@ -176,7 +181,9 @@ def unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
     return None
 
 
-def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None, bool | None]:
+def _pid_addressability(
+    reason: str | None, pid: int | None, *, observational: bool = False
+) -> tuple[str | None, bool | None]:
     """Resolve a boot disagreement using one liveness probe when needed.
 
     The second value is the observed liveness, or None if no probe was needed;
@@ -184,7 +191,9 @@ def _pid_addressability(reason: str | None, pid: int | None) -> tuple[str | None
     """
     if reason != "boot_unverifiable":
         return reason, None
-    alive = pid is not None and _pid_alive(pid)
+    alive = pid is not None and (
+        process_create_time(pid)[0] != "gone" if observational else _pid_alive(pid)
+    )
     return ("boot_unverifiable" if alive else "boot_mismatch"), alive
 
 
@@ -351,6 +360,78 @@ class _TerminationTarget:
     expected_cmd: str | None
     expected_session_id: str | None = None
     expected_create_time: float | None = None
+    group: _RecordedGroupWitness | None = None
+
+
+@dataclass(frozen=True)
+class _CommandGroupInspection:
+    outcome: str
+    pid: int | None
+    pgid: int | None
+    witness: _RecordedGroupWitness | None = None
+
+
+def _command_group_is_empty(pgid: int) -> bool:
+    members, complete = group_member_pids(pgid)
+    return complete and not members
+
+
+def _inspect_cancel_command_group(
+    entity_type: str, row: dict[str, Any]
+) -> _CommandGroupInspection | None:
+    """Observe a scheduled command's recorded group without signalling or writing."""
+    meta = row.get("node_metadata")
+    if (
+        entity_type != "invocation"
+        or not isinstance(meta, dict)
+        or meta.get("action_kind") != "command"
+    ):
+        return None
+
+    pid = meta.get("pid")
+    pgid = meta.get("pgid")
+    if pid is None and pgid is None and meta.get("pid_create_time") is None:
+        return _CommandGroupInspection(unaddressable_pid_reason(meta) or "no_pid", None, None)
+    if type(pid) is not int or pid not in _OS_PID_RANGE:
+        return _CommandGroupInspection("identity_unverifiable", None, None)
+    if type(pgid) is not int or pgid not in _OS_PID_RANGE:
+        return _CommandGroupInspection("identity_unverifiable", pid, None)
+
+    identity = _RecordedWorkerIdentity(
+        pid=pid,
+        pgid=pgid,
+        pid_create_time=meta.get("pid_create_time"),
+        pid_host=meta.get("pid_host"),
+        pid_boot_time=meta.get("pid_boot_time"),
+        process_identity_mode=meta.get("process_identity_mode"),
+    )
+    admission = _admit_recorded_worker_group(identity, boot_time_tolerance=BOOT_TIME_TOLERANCE)
+    if isinstance(admission, _RecordedGroupWitness):
+        return _CommandGroupInspection("verified", pid, pgid, admission)
+    if admission.reason == "leader_not_live":
+        outcome = "already_dead" if _command_group_is_empty(pgid) else "identity_unverifiable"
+    else:
+        outcome = admission.reason
+    return _CommandGroupInspection(outcome, pid, pgid)
+
+
+def _signal_command_group(
+    witness: _RecordedGroupWitness, sig: signal.Signals, signals: list[int]
+) -> str | None:
+    escalation = sig == signal.SIGKILL
+    match = _recorded_worker_group_matches(witness)
+    if match != "matches":
+        if match == "missing" and _command_group_is_empty(witness.identity.pgid):
+            return "sigterm" if escalation else "already_dead"
+        return "identity_unverifiable_after_sigterm" if escalation else "identity_unverifiable"
+    try:
+        os.killpg(witness.identity.pgid, sig)
+    except ProcessLookupError:
+        return "already_dead"
+    except PermissionError:
+        return "permission_denied"
+    signals.append(sig)
+    return None
 
 
 def _termination_identity(target: _TerminationTarget, *, after_term: bool) -> str | None:
@@ -379,6 +460,8 @@ def _process_exited(pid: int) -> bool:
 
 
 def _begin_termination(target: _TerminationTarget, signals: list[int]) -> str | None:
+    if target.group is not None:
+        return _signal_command_group(target.group, signal.SIGTERM, signals)
     if _process_exited(target.pid):
         return "already_dead"
     refused = _termination_identity(target, after_term=False)
@@ -398,6 +481,8 @@ def _begin_termination(target: _TerminationTarget, signals: list[int]) -> str | 
 
 
 def _finish_termination(target: _TerminationTarget, signals: list[int]) -> str:
+    if target.group is not None:
+        return _signal_command_group(target.group, signal.SIGKILL, signals) or "sigkill"
     if _process_exited(target.pid):
         return "sigterm"
     # The PID may have been reused during grace. Inspect it again just before escalating.
@@ -414,6 +499,14 @@ def _finish_termination(target: _TerminationTarget, signals: list[int]) -> str:
     return "sigkill"
 
 
+def _termination_target_exited(target: _TerminationTarget) -> bool:
+    if target.group is None:
+        return _process_exited(target.pid)
+    return _recorded_worker_group_matches(target.group) == "missing" and _command_group_is_empty(
+        target.group.identity.pgid
+    )
+
+
 def _finish_terminations(
     targets: Sequence[tuple[_TerminationTarget, list[int]]], *, grace_seconds: float
 ) -> list[str]:
@@ -425,7 +518,9 @@ def _finish_terminations(
     while survivors:
         if time.monotonic() >= deadline:
             break
-        survivors = {index for index in survivors if not _process_exited(targets[index][0].pid)}
+        survivors = {
+            index for index in survivors if not _termination_target_exited(targets[index][0])
+        }
         remaining = deadline - time.monotonic()
         if not survivors or remaining <= 0:
             break
@@ -449,6 +544,12 @@ def _terminate_pid(
     """SIGTERM then SIGKILL, returning the observed outcome for one target."""
     target = _TerminationTarget(pid, expected_cmd, expected_session_id, expected_create_time)
     signals = _signal_record if _signal_record is not None else []
+    return _terminate_target(target, signals, grace_seconds=grace_seconds)
+
+
+def _terminate_target(
+    target: _TerminationTarget, signals: list[int], *, grace_seconds: float
+) -> str:
     outcome = _begin_termination(target, signals)
     if outcome is not None:
         return outcome
@@ -526,6 +627,7 @@ async def _persist_cancel(
     reason_code: str,
     reason_summary: str,
     evidence: dict[str, Any],
+    expected_updated_at: float | None = None,
 ) -> bool:
     """Write the entity's terminal status + status_transition row.
 
@@ -584,6 +686,7 @@ async def _persist_cancel(
             # Guard even a competing cancellation: a same-status write must
             # not replace the first recorded end time or its reason.
             expected_statuses={"running"} if entity_type == "invocation" else None,
+            expected_updated_at=expected_updated_at,
             # A session's live phase ends with its terminal status, in this one
             # statement: a kill can land on a row a SIGKILLed flow left at its
             # last phase, and a separate clear would be a second write that can
@@ -642,11 +745,22 @@ class _CancelAttempt:
     degraded: tuple[Path, dict[str, Any]] | None = None
 
 
-def _prepare_cancel_attempt(target: _CancelSnapshot, *, verbose: bool = False) -> _CancelAttempt:
+def _prepare_cancel_attempt(
+    target: _CancelSnapshot, *, verbose: bool = False, observational: bool = False
+) -> _CancelAttempt:
     entity_type = target.entity_type
     entity_id = target.entity_id
     meta = target.row["node_metadata"]
     result = CancelTargetResult(entity_type, entity_id, "no_pid", None)
+    command = _inspect_cancel_command_group(entity_type, target.row)
+    if command is not None:
+        result = replace(result, pid=command.pid, pgid=command.pgid)
+        if command.witness is None:
+            return _CancelAttempt(target, replace(result, signal=command.outcome))
+        process = _TerminationTarget(
+            command.witness.identity.pid, expected_cmd=None, group=command.witness
+        )
+        return _CancelAttempt(target, result, process)
     # The mode and host matter even if the record has no PID.
     unaddressable = unaddressable_pid_reason(meta)
     if unaddressable in NOT_JUDGEABLE_HERE:
@@ -656,7 +770,7 @@ def _prepare_cancel_attempt(target: _CancelSnapshot, *, verbose: bool = False) -
     if pid is not None and pid not in _OS_PID_RANGE:
         return _CancelAttempt(target, replace(result, signal="identity_unverifiable", pid=pid))
     if unaddressable == "boot_unverifiable":
-        unaddressable, _ = _pid_addressability(unaddressable, pid)
+        unaddressable, _ = _pid_addressability(unaddressable, pid, observational=observational)
         if unaddressable == "boot_unverifiable":
             return _CancelAttempt(target, replace(result, signal=unaddressable))
     if pid is not None:
@@ -752,8 +866,20 @@ async def _write_cancellation(
     }
     if user_reason:
         evidence["user_reason"] = user_reason
+    if result.pgid is not None:
+        evidence["pgid"] = result.pgid
 
     if target.entity_type != "session":
+        expected_updated_at = None
+        if target.entity_type == "invocation" and result.signal == "no_pid":
+            # A scheduler can publish a command's identity after this snapshot.
+            expected_updated_at = target.row.get("updated_at")
+            if type(expected_updated_at) not in (int, float):
+                return replace(
+                    result,
+                    cancel_status="unavailable",
+                    cancel_error="invocation version was not available in the snapshot",
+                )
         state_committed = await _persist_cancel(
             db,
             target.entity_type,
@@ -761,7 +887,14 @@ async def _write_cancellation(
             reason_code=reason_code,
             reason_summary=reason_summary,
             evidence=evidence,
+            expected_updated_at=expected_updated_at,
         )
+        if not state_committed and (expected_updated_at is not None or result.pgid is not None):
+            return replace(
+                result,
+                cancel_status="conflict",
+                cancel_error="invocation changed before cancellation was recorded",
+            )
         return replace(result, state_committed=state_committed)
     if not target.generation_present:
         return replace(
@@ -870,6 +1003,10 @@ async def kill_one(
     if attempt.degraded is not None:
         pid, outcome = _signal_degraded_process(attempt.degraded[1], grace_seconds=grace_seconds)
         attempt.result = replace(attempt.result, pid=pid, signal=outcome)
+    elif attempt.process is not None and attempt.process.group is not None:
+        signals: list[int] = []
+        outcome = _terminate_target(attempt.process, signals, grace_seconds=grace_seconds)
+        attempt.result = replace(attempt.result, signal=outcome, signals_sent=tuple(signals))
     elif (process := attempt.process) is not None:
         try:
             outcome = _terminate_pid(
@@ -905,6 +1042,8 @@ async def kill_one(
         "signal": result.signal,
         "pid": result.pid,
     }
+    if result.pgid is not None:
+        wire["pgid"] = result.pgid
     if result.cancel_status is not None:
         wire["cancel_status"] = (
             "unavailable"
@@ -950,7 +1089,7 @@ def _degraded_run(run_id: str) -> tuple[Path, dict[str, Any]] | None:
 
 
 def _degraded_termination_target(
-    manifest: dict[str, Any],
+    manifest: dict[str, Any], *, observational: bool = False
 ) -> tuple[int | None, str | None, _TerminationTarget | None]:
     try:
         pid = int(manifest["pid"])
@@ -961,7 +1100,9 @@ def _degraded_termination_target(
     if pid <= 0:
         return None, "no_recorded_process", None
 
-    refusal, _ = _pid_addressability(unaddressable_pid_reason(manifest), pid)
+    refusal, _ = _pid_addressability(
+        unaddressable_pid_reason(manifest), pid, observational=observational
+    )
     if refusal is not None:
         return pid, refusal, None
     try:

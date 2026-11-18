@@ -246,9 +246,17 @@ async def test_pre_evidence_version_one_schema_migrates_from_its_original_ddl(tm
     await CredentialLedger(path, clock=lambda: NOW).status("anthropic")
     with sqlite3.connect(path) as db:
         columns = {row[1]: row[2] for row in db.execute('PRAGMA table_info("attempt")')}
+        generation = db.execute(
+            "SELECT type, dflt_value FROM pragma_table_info('account') WHERE name = 'block_generation'"
+        ).fetchone()
+        trigger = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'account_block_generation'"
+        ).fetchone()
         version = db.execute("PRAGMA user_version").fetchone()[0]
     assert columns["settlement_evidence_json"] == "TEXT"
     assert columns["http_status"] == "INTEGER"
+    assert generation == ("INTEGER", "0")
+    assert trigger == (1,)
     assert version == 1
 
 

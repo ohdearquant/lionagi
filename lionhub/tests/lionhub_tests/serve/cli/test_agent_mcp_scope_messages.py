@@ -7,12 +7,38 @@ sees. So the text has to stay leg-scoped.
 """
 
 import logging
+from pathlib import Path
 
 import pytest
 
 from lionhub.orchestration.console import _WARN_LOGGER_NAME
-from lionhub.orchestration.mcp_config import McpResolution
+from lionhub.orchestration.mcp_config import McpResolution, resolve_spawn_mcp_servers
 from lionhub.serve.cli.agent import _report_mcp_resolution
+
+_QUIET_ON = "mcp:\n  quiet_discovery: true\n"
+_QUIET_OFF = "mcp:\n  quiet_discovery: false\n"
+
+
+@pytest.fixture
+def write_settings(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    leg = project / "work" / "leg"
+    invocation = tmp_path / "invocation"
+    leg.mkdir(parents=True)
+    invocation.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(invocation)
+
+    def write(user=None, local=None):
+        for root, contents in ((home, user), (project, local)):
+            if contents is not None:
+                layer = root / ".lionagi" / "settings.yaml"
+                layer.parent.mkdir(parents=True)
+                layer.write_text(contents, encoding="utf-8")
+        return str(leg)
+
+    return write
 
 
 def _capture_warnings(fn):
@@ -34,10 +60,12 @@ def _capture_warnings(fn):
     return records
 
 
-def test_non_claude_provider_warning_is_leg_scoped():
+@pytest.mark.parametrize("quiet", [False, True])
+def test_non_claude_provider_warning_is_leg_scoped(quiet, write_settings):
+    cwd = write_settings(user=_QUIET_ON if quiet else _QUIET_OFF)
     resolution = McpResolution({"khive": {"command": "kkernel"}}, None, "/tmp/.mcp.json", "/tmp")
     messages = _capture_warnings(
-        lambda: _report_mcp_resolution(resolution, provider="codex", cwd="/tmp", forwarded=False)
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=cwd, forwarded=False)
     )
 
     assert len(messages) == 1
@@ -49,21 +77,112 @@ def test_non_claude_provider_warning_is_leg_scoped():
     assert "only the claude cli lane accepts" not in text.lower()
 
 
-def test_no_servers_warning_is_leg_scoped():
+def test_no_servers_warning_is_leg_scoped(write_settings):
     """`forwarded=False` is the answer both callers read for a not-found
     resolution: nothing was found, so there is nothing to hand over and nothing
     to carry. The spawn starts without the servers its instructions assume, and
     the launch says so rather than leaving it to be inferred later."""
+    cwd = write_settings()
     resolution = McpResolution(None, "no_mcp_config_found", None, "/tmp")
     messages = _capture_warnings(
-        lambda: _report_mcp_resolution(
-            resolution, provider="claude_code", cwd="/tmp", forwarded=False
-        )
+        lambda: _report_mcp_resolution(resolution, provider="claude_code", cwd=cwd, forwarded=False)
     )
 
     assert len(messages) == 1
     assert "this leg" in messages[0].lower()
     assert "this run" not in messages[0].lower()
+
+
+@pytest.mark.parametrize(
+    ("user", "local", "warns"),
+    [
+        pytest.param(_QUIET_ON, None, False, id="user-on"),
+        pytest.param(_QUIET_OFF, None, True, id="user-off"),
+        pytest.param(_QUIET_ON, _QUIET_OFF, False, id="project-cannot-enable-warning"),
+        pytest.param(_QUIET_OFF, _QUIET_ON, True, id="project-cannot-silence-warning"),
+        pytest.param(None, _QUIET_ON, True, id="project-alone-cannot-silence-warning"),
+        pytest.param("mcp: {quiet_discovery: 'true'}", None, True, id="quoted-true"),
+        pytest.param("mcp: {quiet_discovery: 1}", None, True, id="integer"),
+        pytest.param("mcp: [true]", None, True, id="non-mapping-mcp"),
+        pytest.param("mcp: [", None, True, id="malformed-yaml"),
+        pytest.param(
+            "mcp: {quiet_discovery: !!bool unknown}", None, True, id="invalid-boolean-tag"
+        ),
+        pytest.param("true", None, True, id="non-mapping-document"),
+        pytest.param(_QUIET_ON, "mcp: [", False, id="project-malformed-ignored"),
+    ],
+)
+def test_missing_config_warning_honors_user_boolean_setting(write_settings, user, local, warns):
+    cwd = write_settings(user, local)
+    resolution = McpResolution(None, "no_mcp_config_found", None, "/tmp")
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=cwd, forwarded=False)
+    )
+    assert len(messages) == int(warns)
+    if warns:
+        assert "no_mcp_config_found" in messages[0]
+
+
+def test_missing_warning_uses_launch_directory_for_search_and_leg_cwd_for_provider(
+    write_settings, monkeypatch
+):
+    leg = Path(write_settings(local=_QUIET_ON))
+    launch = Path.cwd()
+    resolution = resolve_spawn_mcp_servers(launch_dir=launch)
+    (leg / ".lionagi").symlink_to(leg / "missing-settings", target_is_directory=True)
+    monkeypatch.chdir(leg.parent)
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=leg.name, forwarded=False)
+    )
+    [message] = messages
+    assert f"searched from {launch}" in message
+    assert f"discovers from {leg.name} itself" in message
+
+
+def test_launch_directory_setting_cannot_silence_missing_config_warning(write_settings):
+    leg = write_settings()
+    launch = Path.cwd()
+    settings = launch / ".lionagi" / "settings.yaml"
+    settings.parent.mkdir()
+    settings.write_text(_QUIET_ON, encoding="utf-8")
+    resolution = resolve_spawn_mcp_servers(launch_dir=launch)
+
+    [message] = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=leg, forwarded=False)
+    )
+
+    assert "no_mcp_config_found" in message
+    assert f"searched from {launch}" in message
+    assert f"discovers from {leg} itself" in message
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["mcp_config_unusable:invalid test configuration", "mcp_config_declares_no_servers"],
+)
+def test_quiet_discovery_still_reports_config_that_was_found(write_settings, reason):
+    cwd = write_settings(user=_QUIET_ON)
+    resolution = McpResolution(None, reason, "/tmp/.mcp.json", "/tmp")
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=cwd, forwarded=False)
+    )
+    assert len(messages) == 1
+    [message] = messages
+    assert reason in message
+
+
+def test_quiet_discovery_still_reports_the_forwarded_servers(monkeypatch, write_settings):
+    cwd = write_settings(user=_QUIET_ON)
+    resolution = McpResolution(
+        {"test-server": {"command": "test-tool"}}, None, "/tmp/.mcp.json", "/tmp"
+    )
+    hints: list[str] = []
+    monkeypatch.setattr("lionhub.serve.cli.agent.hint", hints.append)
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(resolution, provider="codex", cwd=cwd, forwarded=True)
+    )
+    assert messages == []
+    assert hints == ["[mcp] 1 server(s) from /tmp/.mcp.json: test-server"]
 
 
 def test_a_declared_empty_set_is_not_warned_about():

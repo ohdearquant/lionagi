@@ -7,6 +7,7 @@ Money is integer nanodollars throughout; no value here holds key material.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
@@ -39,7 +40,7 @@ __all__ = (
 NANODOLLARS_PER_USD = 10**9
 INT64_MAX = 2**63 - 1
 
-ScopeKind = Literal["branch", "imodel", "endpoint"]
+ScopeKind = Literal["branch", "imodel", "endpoint", "probe"]
 SettleResult = Literal["settled", "already_settled", "still_open"]
 
 
@@ -51,6 +52,9 @@ class RouterErrorCode(str, Enum):
     UNSUPPORTED_PRICING = "unsupported_pricing"
     BUDGET_EXHAUSTED = "budget_exhausted"
     ACCOUNT_BLOCKED = "account_blocked"
+    PROBE_ACCOUNT_UNKNOWN = "probe_account_unknown"
+    PROBE_ACCOUNT_NOT_BLOCKED = "probe_account_not_blocked"
+    PROBE_BLOCK_NOT_BILLING = "probe_block_not_billing"
     ACCOUNT_CONFIG_CONFLICT = "account_config_conflict"
     LEDGER_BUSY = "ledger_busy"
     LEDGER_UNAVAILABLE = "ledger_unavailable"
@@ -98,7 +102,8 @@ _REJECTION_CLASSES = frozenset(
     }
 )
 _BILLING_BLOCKS = frozenset({"credit_balance_low", "spend_limit_reached"})
-_REQUEST_ID_RE = __import__("re").compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _check_member(field: str, value: Any, allowed: frozenset[str]) -> None:
@@ -107,17 +112,24 @@ def _check_member(field: str, value: Any, allowed: frozenset[str]) -> None:
         raise ValueError(f"{field} is not one of its allowed values")
 
 
+def _validate_reason(reason: object) -> str:
+    if not isinstance(reason, str) or _REASON_RE.fullmatch(reason) is None:
+        raise ValueError("invalid reason code")
+    return reason
+
+
 class AccountRoutingError(Exception):
     """A routed call's refusal or failure, carrying only a code and validated fields.
 
     The message is built from the code and those validated fields alone (ids, an HTTP
-    status, and strings checked against closed sets), so no provider text, request
+    status, and validated diagnostic codes), so no provider text, request
     content or key material can reach it. Raise it ``from None`` where it replaces
     another exception, so a traceback does not print the replaced one. That exception
     stays reachable as ``__context__``, so it must carry no key material either.
 
     ``provider_error_type`` and ``rejection_class`` are accepted only with
     ``RouterErrorCode.REQUEST_REJECTED``: with any other code they raise ``ValueError``.
+    ``block_reason`` identifies the current reason for a refused non-billing probe.
     """
 
     def __init__(
@@ -130,6 +142,7 @@ class AccountRoutingError(Exception):
         provider_error_type: str | None = None,
         rejection_class: str | None = None,
         billing_block: str | None = None,
+        block_reason: str | None = None,
     ) -> None:
         _check_member("provider_error_type", provider_error_type, _PROVIDER_ERROR_TYPES)
         _check_member("rejection_class", rejection_class, _REJECTION_CLASSES)
@@ -140,6 +153,11 @@ class AccountRoutingError(Exception):
             raise ValueError(
                 "provider_error_type and rejection_class are set only on a request_rejected error"
             )
+        if code is RouterErrorCode.PROBE_BLOCK_NOT_BILLING:
+            if _validate_reason(block_reason) in _BILLING_BLOCKS:
+                raise ValueError("expected a non-billing block reason")
+        elif block_reason is not None:
+            raise ValueError("block_reason is set only on a probe_block_not_billing error")
         self.code = code
         self.account = account
         self.attempt_id = attempt_id
@@ -147,6 +165,7 @@ class AccountRoutingError(Exception):
         self.provider_error_type = provider_error_type
         self.rejection_class = rejection_class
         self.billing_block = billing_block
+        self.block_reason = block_reason
         parts = [code.value]
         if account is not None:
             parts.append(f"account={account}")
@@ -158,6 +177,8 @@ class AccountRoutingError(Exception):
             parts.append(f"type={provider_error_type}")
         if rejection_class is not None:
             parts.append(f"class={rejection_class}")
+        if block_reason is not None:
+            parts.append(f"block_reason={block_reason}")
         if billing_block is not None:
             parts.append(f"billing_block={billing_block}")
             if billing_block == "credit_balance_low":

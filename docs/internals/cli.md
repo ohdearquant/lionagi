@@ -963,6 +963,18 @@ threading a token through `run_async` into every command's async body — a chan
 concurrency primitive, for an entry point that is not supported, to turn an ambiguous report into a
 precise one. Revisit if concurrent in-process invocation ever becomes supported.
 
+**`EXIT_CODE_PARTIAL_OUTPUT` (76)** — a CLI provider ended the turn on an error after the turn had
+already delivered text. The run's status is `failed`, as for any provider error, and `run.json`
+adds `partial: true` beside it; there is no separate terminal status. Like 78 the code sits
+outside `EXIT_CODE_BY_STATUS`, here because it qualifies the `failed` status rather than naming one.
+`li agent` writes the text (carried on `ProviderError.partial_text`, which `run_and_collect` sets)
+and then, after the error line every failed run writes, a line naming the output as partial, so
+a caller can use what the turn produced and can tell it
+from a complete answer by the exit status alone. It exits 76 (`EX_PROTOCOL`): the remote side
+ended the exchange on an error. A provider error before any text keeps exit 1. A scheduled run
+records the process's exit status on its occurrence, so `exit_code_for_view` returns 76 for an
+occurrence graded `failed` whose process exited 76, and the status's own code otherwise.
+
 ## `dispatch.py` — dispatch outbox (ADR-0059)
 
 Module docstring: `li dispatch` inspects and acknowledges durable `dispatch_outbox` rows.
@@ -1173,6 +1185,12 @@ a real degradation rate — see the printed note in `_dispatch_audit`.
 
 ## `agent.py` — `li agent` run dispatch
 
+The profile loader reads tool settings from leading YAML frontmatter. In a readable
+block later in the prompt, it refuses tool keys on mappings reached through YAML
+sequences and reports the declaration's original line. Mapping values remain prompt
+material. The final unclosed Markdown fence remains part of the prompt. A paired
+YAML block with a tool list in that fence emits one warning with its declaration line.
+
 **`_run_agent` role-key validation** — a declared profile `role:` key is validated up front,
 before the resume/new-branch split: a malformed profile must fail loudly on every invocation
 shape, not only when a new branch is composed. The value itself is only USED when composing a
@@ -1364,10 +1382,11 @@ precedes transport and does not prove a network send or billed usage. Safe selec
 also appear in `account_labels`; non-routed calls have no declared label, and a malformed
 label or one overlapping the resolved credential is omitted. Keys, headers, credential
 references and prompt text are excluded from this section. `model` is the requested model.
-`served_model` is the model the provider's response named, or `null` when no response
-that names one was read: the response named none, the call failed or was cancelled
-first, or the call was still queued or in flight when its invoke stopped waiting.
-It is the provider's own report, not a verified identity.
+`served_model` records the provider's reported model when it passes the API usage
+identifier filter. The field is `null` when the name fails the identifier format,
+has a credential-shaped prefix, or is the literal `unknown`. It is also `null` if
+the provider names no model or no report is read before the invoke stops waiting.
+The value is unverified.
 
 Each request also records `cache_read_tokens` and `cache_write_tokens` from the final
 successful non-streaming response, when supplied by OpenAI or Anthropic. `null` means

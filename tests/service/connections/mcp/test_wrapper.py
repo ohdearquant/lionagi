@@ -396,6 +396,34 @@ class TestMCPConnectionPoolCreateClient:
         assert "'kserver': stdio handshake mode legacy" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_stdio_starts_the_server_in_the_configured_directory(self, tmp_path):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+        calls = []
+
+        with (
+            patch("fastmcp.Client", self._recording_client(calls, takes_mode=True)),
+            patch("fastmcp.client.transports.StdioTransport") as stdio,
+        ):
+            await MCPConnectionPool._create_client(
+                {"command": "kserver", "args": [], "cwd": str(tmp_path)}
+            )
+            await MCPConnectionPool._create_client({"command": "kserver", "args": []})
+
+        assert [call.kwargs["cwd"] for call in stdio.call_args_list] == [str(tmp_path), None]
+
+    @pytest.mark.asyncio
+    async def test_a_directory_that_is_not_a_string_is_refused_before_a_transport_exists(self):
+        MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
+
+        with patch("fastmcp.client.transports.StdioTransport") as stdio:
+            with pytest.raises(ValueError, match="'cwd' must be a string"):
+                await MCPConnectionPool._create_client(
+                    {"command": "kserver", "args": [], "cwd": ["/tmp"]}
+                )
+
+        stdio.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unknown_handshake_value_is_refused_before_a_transport_exists(self):
         MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
         calls = []

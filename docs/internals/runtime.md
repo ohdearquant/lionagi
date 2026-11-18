@@ -1015,7 +1015,11 @@ guard_paths, and the session-level gate into that shape. Legacy hooks signal den
 `PermissionError`, an argument rewrite by returning a `dict`, and an unchanged allow by
 returning `None`. A hook may also return a well-formed `GateResult`, preserving its decision
 and argument rewrite. Unknown results, malformed or contradictory verdicts, and other
-exceptions are evaluator failures and produce a fail-closed deny.
+exceptions are evaluator failures and produce a fail-closed deny. Construction enforces what a
+well-formed verdict is: `allowed` and `errored` are bools and not both true, `mutated_args` is
+`None` or a dict, and `control`, `tool_name`, `action` and `reason` are strings. The legacy-hook
+and session-gate adapters apply the same rules, from `GateResult` itself, to a verdict built
+around the constructor, and deny it with a reason naming the field and its type, never its value.
 
 A control that cannot reach a verdict at all — misconfigured, or its backend unreachable —
 raises `ControlUnavailableError`, which subclasses `PermissionError` so existing callers keep

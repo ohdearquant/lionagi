@@ -784,6 +784,22 @@ def test_team_send_to_an_unknown_team_is_a_not_found_error_via_the_dispatcher(
     assert answer["ops"][0]["error"]["kind"] == "not_found"
 
 
+def test_a_row_without_op_is_refused_with_the_key_it_needs():
+    """A caller that also uses a server whose rows say ``tool`` sees which key this one reads."""
+    answer = call(ops=[{"tool": "agent.submit", "args": {}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "invalid_input"
+    assert "under 'op'" in error["message"]
+    assert "['args', 'tool']" in error["message"]
+
+
+def test_a_non_string_op_is_refused_as_such():
+    answer = call(ops=[{"op": 7, "args": {}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "invalid_input"
+    assert error["message"] == "op must be a string, got 7"
+
+
 def test_team_create_with_bad_input_is_refused_before_ever_spawning_the_cli(tmp_path, monkeypatch):
     # Closed argument validation catches this before `_run_machine` spawns a
     # subprocess at all — the schema admits only `name`/`members`.

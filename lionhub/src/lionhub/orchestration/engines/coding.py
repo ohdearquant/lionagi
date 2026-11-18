@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shlex
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -162,6 +163,12 @@ class WorkAborted(EngineEvent):
     stage: str = Field(default="")
     reason: str = Field(default="")
     elapsed_s: float = Field(default=0.0)
+    limit_reached_at: str = Field(
+        default="", description="UTC instant the stage reached its wall-clock limit (ISO 8601)."
+    )
+    overrun_s: float = Field(
+        default=0.0, description="Seconds the stage ran past its limit before it stopped."
+    )
 
 
 class WorkerHeartbeat(EngineEvent):
@@ -352,6 +359,8 @@ class CodingRun(ChainRun):
         self._ws_delta: list[str] = []
         self._spec_lint_warnings: list[str] = []
         self._aborted: bool = False
+        # One entry per stage that ran past its wall-clock limit, for the run's result.
+        self._stage_overruns: list[dict[str, Any]] = []
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -901,6 +910,8 @@ class CodingEngine(Engine):
         }
         if run._spec_lint_warnings:
             measurements["spec_lint_warnings"] = run._spec_lint_warnings
+        if run._stage_overruns:
+            measurements["stage_overruns"] = list(run._stage_overruns)
         # Worker grants only (judge context excluded) so outcome correlates with them.
         if self.worker_extra_tools or self.worker_mcp_servers:
             measurements["worker_grants"] = {
@@ -997,18 +1008,46 @@ class CodingEngine(Engine):
         (hard=False, for plan/verify) is bounded but recoverable: the caller
         degrades gracefully (raw-task plan, or a missing advisory verdict)
         rather than failing the whole run.
+
+        The limit is enforced when the stage's in-flight tool call returns. A
+        tool call that runs in a worker thread finishes before the stage stops,
+        so a stage can end later than its limit. The instant the limit was
+        reached and the seconds past it are recorded in the WorkAborted
+        notification, in the run's result measurements and in one log line.
         """
         if self.stage_timeout_s is None:
             await stage_coro
             return False
         t0 = monotonic()
+        started_at = datetime.now(timezone.utc)
         try:
             await asyncio.wait_for(stage_coro, timeout=self.stage_timeout_s)
             return False
         except asyncio.TimeoutError:
-            elapsed = round(monotonic() - t0, 1)
+            elapsed_raw = monotonic() - t0
+            elapsed = round(elapsed_raw, 1)
+            limit_reached_at = (started_at + timedelta(seconds=self.stage_timeout_s)).isoformat()
+            overrun_s = round(max(0.0, elapsed_raw - self.stage_timeout_s), 3)
             reason = f"stage '{stage_name}' exceeded {self.stage_timeout_s}s wall-clock limit"
-            run.notify("WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed, hard=hard)
+            run._stage_overruns.append(
+                {"stage": stage_name, "limit_reached_at": limit_reached_at, "overrun_s": overrun_s}
+            )
+            logger.warning(
+                "coding stage %r reached its %ss limit at %s and stopped %.3fs later",
+                stage_name,
+                self.stage_timeout_s,
+                limit_reached_at,
+                overrun_s,
+            )
+            run.notify(
+                "WorkAborted",
+                stage=stage_name,
+                reason=reason,
+                elapsed_s=elapsed,
+                limit_reached_at=limit_reached_at,
+                overrun_s=overrun_s,
+                hard=hard,
+            )
             if hard:
                 run._aborted = True
             return True

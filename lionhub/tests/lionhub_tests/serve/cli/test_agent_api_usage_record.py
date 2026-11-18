@@ -85,15 +85,21 @@ async def test_openai_cache_counts_reach_real_run_manifest(leg, monkeypatch, tmp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "served_model",
+    ("served_model", "recorded_model"),
     [
-        pytest.param("gpt-5", id="matching"),
-        pytest.param("gpt-5.1", id="substituted"),
-        pytest.param(None, id="missing"),
+        pytest.param("gpt-5", "gpt-5", id="matching"),
+        pytest.param("gpt-5.1", "gpt-5.1", id="substituted"),
+        pytest.param(None, None, id="missing"),
+        pytest.param("unknown", None, id="unknown"),
+        pytest.param("example-model@20240620", None, id="unsupported-character"),
+        pytest.param("gsk_example", None, id="groq-shaped"),
+        pytest.param("hf_example", None, id="huggingface-shaped"),
+        pytest.param("AIza-example", None, id="google-shaped"),
+        pytest.param("AKIA-example", None, id="aws-shaped"),
     ],
 )
 async def test_openai_served_models_reach_real_run_manifest(
-    leg, monkeypatch, tmp_path, served_model
+    leg, monkeypatch, tmp_path, served_model, recorded_model
 ):
     from lionhub.providers.openai.chat import OpenaiChatEndpoint
 
@@ -118,10 +124,12 @@ async def test_openai_served_models_reach_real_run_manifest(
     _, manifest = _only_record(tmp_path)
 
     assert result[3] == manifest["status"] == "completed"
+    usage = manifest["api_usage"]
     assert [
-        (row["model"], row["model_semantics"], row["served_model"])
-        for row in manifest["api_usage"]["requests"]
-    ] == [("gpt-5", "requested", "gpt-5"), ("gpt-5", "requested", served_model)]
+        (row["model"], row["model_semantics"], row["served_model"]) for row in usage["requests"]
+    ] == [("gpt-5", "requested", "gpt-5"), ("gpt-5", "requested", recorded_model)]
+    if recorded_model is None and served_model not in (None, "unknown"):
+        assert served_model not in json.dumps(usage)
 
 
 @pytest.mark.asyncio

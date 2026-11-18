@@ -405,8 +405,12 @@ def test_degraded_cli_signal_helper_remains_synchronous(monkeypatch):
         invoked.append(threading.get_ident())
         return "sigterm"
 
+    def addressability(_reason, _pid, *, observational):
+        assert observational is False
+        return None, True
+
     monkeypatch.setattr(_kill_service, "unaddressable_pid_reason", lambda _meta: None)
-    monkeypatch.setattr(_kill_service, "_pid_addressability", lambda *_a: (None, True))
+    monkeypatch.setattr(_kill_service, "_pid_addressability", addressability)
     monkeypatch.setattr(_kill_service, "_terminate_pid", terminate)
     result = _kill_service._signal_degraded_process(
         {"pid": 1234, "pid_create_time": 1.0}, grace_seconds=1

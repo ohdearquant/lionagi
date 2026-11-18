@@ -26,6 +26,11 @@ __all__ = (
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
 
+# How long a stopping server waits for open connections before closing them. One
+# SIGTERM must end the process; this stays under the 5 s grace li kill gives
+# before SIGKILL, so the app's own shutdown runs first.
+_SHUTDOWN_GRACE_SECONDS: int = 3
+
 _raw_origins = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS: list[str] = (
     [o.strip() for o in _raw_origins.split(",") if o.strip()]

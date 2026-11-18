@@ -325,6 +325,7 @@ async def _attempt_connection(config: dict[str, Any]) -> dict[str, Any]:
                 command=config["command"],
                 args=config.get("args") or [],
                 env=env,
+                cwd=config.get("cwd"),
             )
             client = FastMCPClient(transport)
 
