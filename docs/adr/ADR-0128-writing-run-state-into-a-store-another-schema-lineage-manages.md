@@ -7,9 +7,10 @@
   `tests/state/test_compatibility_recovery.py`). For item 8 the compatibility tests also run on
   each supported aiosqlite release and on SQLAlchemy at its floor and its newest release (CI job
   `compat-deps`). The D6 amendment of 2026-11-17 (input validation runs before refusal
-  classification) is not yet implemented for `create_progression` and `set_progression`: in
-  compatibility mode neither validates the collection first, so a malformed collection there does
-  not reliably raise the `ValueError` native mode raises.
+  classification) holds for `create_progression`, `set_progression` and `append_to_progression`:
+  in compatibility mode each validates its input before any refusal, so a malformed collection or
+  message ID raises the `ValueError` native mode raises
+  (`tests/state/test_progression_input_validation.py`).
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;

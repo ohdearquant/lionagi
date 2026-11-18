@@ -2977,25 +2977,35 @@ class StateDB:
             StateDB._validate_progression_message_id(progression_id, message_id)
         return snapshot
 
-    @_operation("create_progression")
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
     ) -> None:
+        """Validate and snapshot message IDs, then create the progression.
+
+        Validation runs before the compatibility operation check, so a malformed collection
+        raises the same ``ValueError`` in both modes (ADR-0128 D6).
+        """
+        collection = self._validate_progression_collection(
+            progression_id, collection, allow_none=True
+        )
+        await self._create_progression_operation(progression_id, collection)
+
+    @_operation("create_progression")
+    async def _create_progression_operation(
+        self, progression_id: str, collection: list[str]
+    ) -> None:
         if self._compat is not None:
             # The messages a progression lists are rows this run created.
-            for message_id in collection or ():
+            for message_id in collection:
                 self._require_created("messages", message_id, "message")
             values = {
                 "id": progression_id,
                 "created_at": time.time(),
-                "collection": _to_json_column(collection or []),
+                "collection": _to_json_column(collection),
             }
             async with self._tx() as conn:
                 await self._insert_new_row(conn, "progressions", values)
             return
-        collection = self._validate_progression_collection(
-            progression_id, collection, allow_none=True
-        )
         async with self._tx() as conn:
             await self._create_progression_in_tx(conn, progression_id, collection)
 
@@ -3014,9 +3024,11 @@ class StateDB:
         )
 
     async def set_progression(self, progression_id: str, collection: list[str]) -> None:
-        """Replace a progression's collection wholesale, serializing the JSON here."""
-        if self._compat is None:
-            collection = self._validate_progression_collection(progression_id, collection)
+        """Replace a progression's collection wholesale, serializing the JSON here.
+
+        The collection is validated in both modes before any compatibility refusal (ADR-0128 D6).
+        """
+        collection = self._validate_progression_collection(progression_id, collection)
         async with self._tx() as conn:
             await self._set_progression_in_tx(conn, progression_id, collection)
 
@@ -3068,9 +3080,11 @@ class StateDB:
         )
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
-        """Idempotent append of message_id to the progression JSON array."""
-        if self._compat is None:
-            self._validate_progression_message_id(progression_id, message_id)
+        """Idempotent append of message_id to the progression JSON array.
+
+        The ID is validated in both modes before any compatibility refusal (ADR-0128 D6).
+        """
+        self._validate_progression_message_id(progression_id, message_id)
         async with self._tx() as conn:
             await self._append_to_progression_in_tx(conn, progression_id, message_id)
 
