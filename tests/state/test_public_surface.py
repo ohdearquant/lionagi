@@ -4,6 +4,8 @@
 import subprocess
 import sys
 
+import pytest
+
 import lionagi.state as state_pkg
 from lionagi.state import SchemaTooNewError, StateDB
 
@@ -34,6 +36,25 @@ def test_compatibility_names_resolve_to_their_module():
 
 def test_statedb_importable():
     assert StateDB is state_pkg.StateDB
+
+
+@pytest.mark.parametrize("message_id", ["message-1", " "])
+def test_validate_progression_message_id_accepts_nonempty_strings(message_id):
+    assert (
+        StateDB.validate_progression_message_id(
+            progression_id="progression-1", message_id=message_id
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("message_id", [None, "", 42])
+def test_validate_progression_message_id_rejects_invalid_ids(message_id):
+    with pytest.raises(ValueError) as caught:
+        StateDB.validate_progression_message_id(
+            progression_id="progression-1", message_id=message_id
+        )
+    assert str(caught.value) == "progression 'progression-1' requires non-empty string message IDs"
 
 
 def test_schema_too_new_error_importable():

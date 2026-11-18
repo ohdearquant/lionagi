@@ -364,7 +364,7 @@ async def _import_one_run(
 ) -> tuple[int, int, int]:
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionagi.state import StateDB
 
     db._refuse_in_compatibility("import_runs", "run import is not supported in compatibility mode")
     created_at = _mtime_as_float(run_dir)
@@ -398,7 +398,7 @@ async def _import_one_run(
         for index, raw_msg in selected:
             message_id = raw_msg.get("id") if isinstance(raw_msg, dict) else None
             try:
-                StateDB._validate_progression_message_id(session_prog_id, message_id)
+                StateDB.validate_progression_message_id(session_prog_id, message_id)
             except ValueError as exc:
                 raise ValueError(f"{branch_file.name}: message entry {index}: {exc}") from exc
         prepared_branches.append((branch_file, branch_data, [message for _, message in selected]))
