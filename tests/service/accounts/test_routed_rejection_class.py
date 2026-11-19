@@ -117,6 +117,33 @@ class _Rejection(StubResponse):
         self.closed = True
 
 
+class _CountingRejection(StubResponse):
+    """A rejection that counts every read of its body, by either attempt."""
+
+    def __init__(self, status: int, body: bytes) -> None:
+        super().__init__(status)
+        self._body = body
+        self.reads = 0
+
+    @property
+    def content(self):
+        self.reads += 1
+        return self._body
+
+    @content.setter
+    def content(self, value) -> None:
+        # StubResponse.__init__ assigns its own body; __init__ above replaces it.
+        self._body = value
+
+    async def aiter_bytes(self):
+        self.reads += 1
+        await anyio.lowlevel.checkpoint()
+        yield self._body
+
+    async def aclose(self):
+        self.closed = True
+
+
 class _StalledHTTPXBody(httpx.AsyncByteStream):
     def __init__(self) -> None:
         self.reading = anyio.Event()
@@ -1200,3 +1227,67 @@ def test_a_request_cannot_carry_a_top_level_key_that_starts_a_billing_message(te
         endpoint.create_payload(dict(request), **{text: 1}),
     ):
         assert text not in payload
+
+
+async def _send_counting(monkeypatch, tmp_path, response, streamed):
+    path = _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [response])
+    model.endpoint.config.max_retries = 0
+    with pytest.raises(Exception) as caught:  # noqa: PT011 - each path raises its own type
+        await _send(model, streamed)
+    return path, caught.value
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize("status", [500, 503, 599])
+async def test_a_5xx_other_than_529_keeps_its_ceiling_without_reading_its_body(
+    monkeypatch, tmp_path, streamed, status
+):
+    # The body names the type that settles a 529 at zero, so only the status decides.
+    response = _CountingRejection(status, _overloaded_of(200))
+
+    path, error = await _send_counting(monkeypatch, tmp_path, response, streamed)
+
+    assert getattr(error, "http_status", None) == status
+    assert response.reads == 0
+    assert _attempts(path)[0][2:5] == ("open", None, "provider_error")
+
+
+@pytest.mark.asyncio
+@STREAMED
+async def test_an_overloaded_529_reads_its_body_and_settles_at_zero(
+    monkeypatch, tmp_path, streamed
+):
+    """The control for the test above: the same body on a 529 is read and settles at zero."""
+    response = _CountingRejection(529, _overloaded_of(200))
+
+    path, error = await _send_counting(monkeypatch, tmp_path, response, streamed)
+
+    assert getattr(error, "http_status", None) == 529
+    assert response.reads >= 1
+    assert _attempts(path)[0][2:5] == ("settled", 0, "rejection_zero")
+
+
+@pytest.mark.asyncio
+@STREAMED
+@pytest.mark.parametrize("status", [201, 204, 299])
+async def test_a_success_status_other_than_200_is_a_rejected_request(
+    monkeypatch, tmp_path, streamed, status
+):
+    """The request paths read a message only from a 200; the probe's any-2xx rule is its own."""
+    message = {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "a reply"}],
+        "model": "claude-sonnet-5-5",
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+    }
+    path, _, error = await _reject_status(
+        monkeypatch, tmp_path, status, json.dumps(message).encode(), streamed
+    )
+
+    assert error.code is RouterErrorCode.REQUEST_REJECTED
+    assert error.http_status == status
+    assert _attempts(path)[0][2:5] == ("open", None, "request_rejected")
