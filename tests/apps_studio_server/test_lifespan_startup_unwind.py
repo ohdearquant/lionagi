@@ -447,3 +447,26 @@ async def test_finalizing_the_warmup_does_not_swallow_its_callers_cancellation()
     release.set()
     await asyncio.wait({warmup}, timeout=5)
     assert warmup.done()
+
+
+@pytest.mark.asyncio
+async def test_a_start_failure_is_logged_when_its_cleanup_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch, fail_at="reconcile")
+
+    async def mirror_stop_cancelled(stop, task):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app, "_stop_claude_mirror", mirror_stop_cancelled)
+
+    with caplog.at_level(logging.ERROR, logger=app.__name__):
+        with pytest.raises(asyncio.CancelledError):
+            await _serve_once(app)
+
+    logged = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "Studio startup failed and its cleanup was interrupted"
+    ]
+    assert [type(record.exc_info[1]) for record in logged] == [_Boom]

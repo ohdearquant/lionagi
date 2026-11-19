@@ -49,3 +49,54 @@ def test_a_thread_that_cannot_start_closes_the_listening_socket(
         finally:
             following.stop()
         assert not path.exists()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+@pytest.mark.parametrize("step", ["chmod", "listen"])
+def test_a_failure_after_bind_removes_the_socket_file(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
+        path = Path(directory) / "r.sock"
+        channel = reconnect.ReconnectChannel(
+            path, lambda: "code", _uid_reader=lambda _c: os.getuid()
+        )
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            assert path.is_socket()  # bind ran: the file this test expects removed exists
+            raise OSError(f"{step} refused")
+
+        with monkeypatch.context() as patched:
+            if step == "chmod":
+                patched.setattr(reconnect.os, "chmod", refuse)
+            else:
+                patched.setattr(socket.socket, "listen", refuse)
+            with pytest.raises(OSError, match=f"{step} refused"):
+                channel.start()
+
+        assert not path.exists()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_failed_bind_leaves_a_file_it_did_not_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
+        path = Path(directory) / "r.sock"
+        channel = reconnect.ReconnectChannel(
+            path, lambda: "code", _uid_reader=lambda _c: os.getuid()
+        )
+        other = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            other.bind(str(path))
+
+            def bind_refused(self: socket.socket, _address: object) -> None:
+                raise OSError("address in use")
+
+            with monkeypatch.context() as patched:
+                patched.setattr(reconnect, "_replace_stale_socket", lambda _p: None)
+                patched.setattr(socket.socket, "bind", bind_refused)
+                with pytest.raises(OSError, match="address in use"):
+                    channel.start()
+
+            assert path.is_socket()
+        finally:
+            other.close()

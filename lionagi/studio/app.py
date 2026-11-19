@@ -316,8 +316,9 @@ def _start_reconnect_channel() -> ReconnectChannel | None:
     """Start the same-user reconnect socket before this daemon serves.
 
     A platform without unix sockets has no reconnect; the CLI then says to
-    restart the daemon. A socket that cannot be created is logged and does not
-    stop the daemon from serving: every HTTP route is unaffected.
+    restart the daemon. An ``OSError`` creating the socket is logged and does not
+    stop the daemon from serving: every HTTP route is unaffected. Any other
+    failure, such as an accept thread that cannot start, stops the start.
     """
     if not unix_sockets_supported():
         return None
@@ -534,7 +535,13 @@ async def lifespan(app_instance):
                 await finish(scheduler.stop)
             if interrupt is not None:
                 # The shutdown was itself interrupted. Every step still ran; the interrupt
-                # propagates, and what the steps hit is logged rather than lost.
+                # propagates, and what the steps hit is logged rather than lost. A start failure
+                # the interrupt replaces is logged too.
+                if isinstance(startup_error, Exception):
+                    _log.error(
+                        "Studio startup failed and its cleanup was interrupted",
+                        exc_info=(type(startup_error), startup_error, startup_error.__traceback__),
+                    )
                 for failure in failures:
                     _log.error(
                         "A Studio shutdown step failed during an interrupted shutdown",

@@ -187,13 +187,19 @@ class ReconnectChannel:
         _checked_directory(self.path.parent)
         _replace_stale_socket(self.path)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        bound = False
         try:
             server.bind(str(self.path))
+            bound = True
             os.chmod(self.path, 0o600)
             server.listen(_BACKLOG)
             server.settimeout(_ACCEPT_TIMEOUT_S)
         except BaseException:
             server.close()
+            # Once bind succeeded the file is this channel's; a failure after it removes it.
+            # A failed bind created nothing here, so a file at the path is someone else's.
+            if bound:
+                self._remove_socket_file()
             raise
         self._server = server
         thread = threading.Thread(target=self._serve, name="studio-reconnect", daemon=True)
@@ -204,9 +210,14 @@ class ReconnectChannel:
             # close it and remove the file here, or the next daemon start finds it answering.
             self._server = None
             server.close()
-            self.path.unlink(missing_ok=True)
+            self._remove_socket_file()
             raise
         self._thread = thread
+
+    def _remove_socket_file(self) -> None:
+        """Remove the socket file at this channel's path, and nothing that is not a socket."""
+        if self.path.exists() and self.path.is_socket():
+            self.path.unlink(missing_ok=True)
 
     def _serve(self) -> None:
         server = self._server
@@ -251,8 +262,7 @@ class ReconnectChannel:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
-        if self.path.exists() and self.path.is_socket():
-            self.path.unlink(missing_ok=True)
+        self._remove_socket_file()
 
 
 def _connect(path: str, timeout: float) -> socket.socket | None:
