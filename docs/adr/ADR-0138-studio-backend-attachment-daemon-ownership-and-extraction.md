@@ -4,10 +4,10 @@
 - **Kind**: Aspirational
 - **Implementation-status**: partial — F5's scheduler state, maintenance, lifecycle reaper, schedule
   declaration, shared command parsing, and mirror and diagnostics rows are implemented in `lionhub`;
-  F1's attachment seam (the daemon factory in `lionhub.serve.daemon.app` and `attach_studio`) and
-  F2's unwinding of a failed start are implemented, without F1's compatibility-manifest check;
-  the rest of F1, F2 to F4, F6, F7, and F5's configuration, detached-launch, and
-  execution-inspection rows remain
+  F1's attachment seam (the daemon factory in `lionhub.serve.daemon.app` and `attach_studio`),
+  F2's unwinding of a failed start, and F7's compatibility manifest and its check at the old
+  application location (`lionhub.serve.daemon.compatibility`) are implemented; the rest of F1,
+  F2 to F4, F6, F7, and F5's configuration, detached-launch, and execution-inspection rows remain
 - **Area**: studio
 - **Date**: 2026-10-25
 - **Relations**: decides the Studio backend form that ADR-0136 D7 deferred and that ADR-0136 Amendment 1

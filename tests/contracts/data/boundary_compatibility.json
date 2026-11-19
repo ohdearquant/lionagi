@@ -1628,6 +1628,9 @@
     "lionhub/src/lionhub/serve/daemon/app.py": [
       "__all__ = (\"Attach\", \"Attachment\", \"DaemonServices\", \"create_daemon_app\", \"lifespan\")"
     ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "__all__ = (\n    \"ATTACHMENT_PROTOCOL\",\n    \"MANIFEST_NAME\",\n    \"IncompatibleApplicationError\",\n    \"check_attachment_compatibility\",\n)"
+    ],
     "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
       "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
     ],
@@ -4899,6 +4902,10 @@
       "create_daemon_app",
       "lifespan",
       "validate_host_header"
+    ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "IncompatibleApplicationError",
+      "check_attachment_compatibility"
     ],
     "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
       "daemon_log_handler"

@@ -36,6 +36,7 @@ from lionagi.version import __version__
 from lionhub.orchestration.state_store import StoreNotAddressableError
 from lionhub.serve.daemon._host import admitted_host_names, normalize_host
 from lionhub.serve.daemon._traceback_dump import arm_traceback_dump, disarm_traceback_dump
+from lionhub.serve.daemon.compatibility import check_attachment_compatibility
 from lionhub.serve.daemon.launch_access import (
     PAIRING_REDEEM_PATH,
     begin_serving,
@@ -698,9 +699,16 @@ def create_daemon_app(attach: Attach | None = None) -> FastAPI:
     """Build the daemon's root application, with ``attach``'s application in it when given.
 
     ``attach`` is called once, here, before any process resource starts, so an application that
-    cannot be built fails this call rather than a running daemon. With no ``attach`` the daemon
-    serves its own API alone; the application's endpoints answer the normal missing-route 404.
+    cannot be built fails this call rather than a running daemon. First the compatibility manifest
+    of the package that defines ``attach`` is read, and a missing, malformed or incompatible one
+    is refused with :class:`~lionhub.serve.daemon.compatibility.IncompatibleApplicationError`
+    before the attachment adds any route (ADR-0138 F7). With no ``attach`` the daemon serves its
+    own API alone, reads no manifest, and the application's endpoints answer the normal
+    missing-route 404.
     """
+    if attach is not None:
+        check_attachment_compatibility(attach)
+
     # The served OpenAPI document is a surface that states a version, and a
     # client reading it to decide what the server supports gets whatever it
     # says. Left unset, FastAPI supplies its own default, which is the same

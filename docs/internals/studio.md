@@ -29,6 +29,14 @@ the daemon with Studio attached. Routes from both inventories are added by inven
 then in registration order within a module. A start that fails or is cancelled before serving
 runs the shutdown sequence for the steps it had begun.
 
+**Compatibility manifest (`lionagi/studio/compatibility.json`)** — before the factory calls an
+attachment, it reads `compatibility.json` from the package that defines the attachment
+(`lionhub.serve.daemon.compatibility`). The manifest names the attachment protocol the application
+implements and the `lionagi` versions it supports, as a version specifier. A missing, malformed or
+incompatible manifest raises `IncompatibleApplicationError` before any route is added or any
+process resource starts; a daemon built with no attachment reads no manifest. In one wheel the
+versions match by construction, so the check catches a stale or partially upgraded installation.
+
 **Host-header validation (`_HOST_AUTHORITY_RE`/`validate_host_header`)** —
 strict authority grammar (`host` or `host:port`, or bracketed IPv6 `[addr]`
 with optional `:port`), deliberately stricter than `request.url.hostname`,
