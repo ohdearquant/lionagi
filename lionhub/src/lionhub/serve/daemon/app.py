@@ -549,8 +549,6 @@ async def lifespan(app_instance):
                         interrupt = exc
 
             with CancelScope(shield=True):
-                if reconnect is not None:
-                    _reconnect_keys.pop(app_instance, None)
                 registry = getattr(app_instance.state, "session_tail_registry", None)
                 if registry is not None:
                     await finish(registry.aclose)
@@ -563,6 +561,8 @@ async def lifespan(app_instance):
                     if interrupt is None:
                         interrupt = exc
                 if reconnect is not None:
+                    # The key goes before its channel stops, after the registry and the disarm.
+                    _reconnect_keys.pop(app_instance, None)
                     await finish(lambda: asyncio.to_thread(reconnect.stop))
                 await finish(lambda: _finalize_warmup(warmup_task))
                 await finish(lambda: _stop_claude_mirror(mirror_stop, mirror_task))

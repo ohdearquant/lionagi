@@ -426,9 +426,41 @@ async def test_an_interrupted_disarm_still_runs_every_later_step_and_drops_the_k
             held.append(instance in app._reconnect_keys)
 
     assert _after(events, "mirror.start") == FULL_STOP[1:]
-    # Held while serving, dropped before the interrupted step.
-    assert held == [True, False]
+    # Held while serving and through the interrupted step, dropped before its channel stops.
+    assert held == [True, True]
     assert instance not in app._reconnect_keys
+
+
+@pytest.mark.asyncio
+async def test_a_normal_stop_drops_the_reconnect_key_just_before_its_channel_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch)
+    instance = _instance()
+    held: list[tuple[str, bool]] = []
+
+    class _Registry:
+        async def aclose(self) -> None:
+            held.append(("registry.close", instance in app._reconnect_keys))
+
+    class _Channel:
+        key = b"k"
+
+        def stop(self) -> None:
+            held.append(("reconnect.stop", instance in app._reconnect_keys))
+
+    def disarm() -> None:
+        held.append(("disarm", instance in app._reconnect_keys))
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm)
+    monkeypatch.setattr(app, "_start_reconnect_channel", _Channel)
+    instance.state.session_tail_registry = _Registry()
+
+    await _serve_once(app, instance)
+
+    # The live-tail registry closes, capture is disarmed, then the key is cleared and its
+    # channel stops: the key is readable through the first two and gone by the third.
+    assert held == [("registry.close", True), ("disarm", True), ("reconnect.stop", False)]
 
 
 @pytest.mark.asyncio
