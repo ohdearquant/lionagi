@@ -363,6 +363,35 @@ async def test_blocked_account_probe_accounts_for_one_redacted_request(
         assert datum not in stored and datum not in caplog.text and datum not in repr(report)
 
 
+@pytest.mark.parametrize(
+    ("status", "error_type", "reason"),
+    [
+        (401, "authentication_error", "auth_required"),
+        (403, "permission_error", "auth_required"),
+        (429, "rate_limit_error", "rate_limited"),
+        (404, "not_found_error", "request_rejected"),
+        (400, "other", "request_rejected"),
+        (500, "api_error", "provider_error"),
+        (529, "api_error", "provider_error"),
+    ],
+)
+async def test_a_probe_rejection_that_keeps_its_ceiling_records_the_status_reason(
+    monkeypatch, tmp_path, status, error_type, reason
+):
+    path = _install_accounts(monkeypatch, tmp_path)
+    await _seed_probe_account(block_reason="credit_balance_low")
+    body = {"error": {"type": error_type, "message": "rejected"}}
+    model, _ = _model(monkeypatch, [StubResponse(status, body, pieces=[json.dumps(body).encode()])])
+
+    report = await model.endpoint.probe_blocked_account("primary")
+
+    assert not report.cleared
+    attempt = _attempts(path)[-1]
+    assert attempt[0] == report.attempt_id
+    assert attempt[2:5] == ("open", None, reason)
+    assert _block_reason(path, "primary") == "credit_balance_low"
+
+
 async def test_blocked_account_probe_keeps_unknown_usage_fields_out_of_the_ledger(
     monkeypatch, tmp_path, caplog
 ):
