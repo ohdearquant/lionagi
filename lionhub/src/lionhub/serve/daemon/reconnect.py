@@ -197,8 +197,16 @@ class ReconnectChannel:
             raise
         self._server = server
         thread = threading.Thread(target=self._serve, name="studio-reconnect", daemon=True)
+        try:
+            thread.start()
+        except BaseException:
+            # The socket is bound and listening, and the caller gets no channel to stop:
+            # close it and remove the file here, or the next daemon start finds it answering.
+            self._server = None
+            server.close()
+            self.path.unlink(missing_ok=True)
+            raise
         self._thread = thread
-        thread.start()
 
     def _serve(self) -> None:
         server = self._server

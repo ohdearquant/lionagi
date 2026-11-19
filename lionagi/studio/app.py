@@ -6,7 +6,7 @@ import ipaddress
 import logging
 import os
 import re
-from contextlib import asynccontextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -258,6 +258,11 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
         return None, None
     source = "both" if want_claude and want_codex else "claude" if want_claude else "codex"
 
+    # Said before the task exists: nothing that can raise sits between creating the task
+    # and handing it to the caller, whose shutdown is the only thing that stops it.
+    _log.info(
+        "Studio transcript mirror tail starting (source=%s, since=%s)", source, MIRROR_CLAUDE_SINCE
+    )
     stop = asyncio.Event()
     task = asyncio.create_task(
         mirror_forever(
@@ -283,26 +288,28 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
             )
 
     task.add_done_callback(_log_unexpected_exit)
-    _log.info(
-        "Studio transcript mirror tail started (source=%s, since=%s)", source, MIRROR_CLAUDE_SINCE
-    )
     return stop, task
 
 
 async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | None) -> None:
-    """Signal the mirror tail to stop and await it, cancelling as a backstop."""
+    """Signal the mirror tail to stop and await it, cancelling as a backstop.
+
+    Waits with :func:`asyncio.wait`, which returns when the tail ends however it ends, so a
+    tail that something else cancelled is not mistaken for a cancellation of this shutdown.
+    Only a cancellation of the caller propagates from here.
+    """
     if stop is None or task is None:
         return
     stop.set()
-    try:
-        await asyncio.wait_for(task, timeout=10)
-    except (asyncio.TimeoutError, TimeoutError):
+    _done, pending = await asyncio.wait({task}, timeout=10)
+    if pending:
         task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await task
-    except Exception:  # noqa: BLE001
+        await asyncio.wait({task})
+    if task.cancelled():
+        return
+    if task.exception() is not None:
         # a failed tail must not block shutdown
-        _log.warning("Claude mirror tail ended with error", exc_info=True)
+        _log.warning("Claude mirror tail ended with error", exc_info=task.exception())
 
 
 def _start_reconnect_channel() -> ReconnectChannel | None:
@@ -336,17 +343,20 @@ async def _startup_warmup() -> None:
 
 async def _finalize_warmup(task: asyncio.Task | None) -> None:
     """Cancel the warmup task if still running, then await it (avoids an
-    un-retrieved-task warning)."""
+    un-retrieved-task warning).
+
+    The task's own cancellation ends it quietly; a cancellation of the caller propagates
+    rather than being swallowed as if it were the task's.
+    """
     if task is None:
         return
     if not task.done():
         task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:  # noqa: BLE001
-        _log.warning("Startup warmup task failed (non-fatal)", exc_info=True)
+    await asyncio.wait({task})
+    if task.cancelled():
+        return
+    if task.exception() is not None:
+        _log.warning("Startup warmup task failed (non-fatal)", exc_info=task.exception())
 
 
 async def _refuse_or_prepare_leg_host() -> None:
@@ -390,11 +400,12 @@ async def lifespan(app_instance):
     # Off unless LIONAGI_STUDIO_TRACEBACK_DUMP names a path. Armed here rather
     # than later so a hang anywhere in the rest of startup is still captured.
     # A step below that fails before the daemon block disarms it again on the
-    # way out; inside the block the shutdown sequence does.
-    traceback_armed = False
+    # way out; inside the block the shutdown sequence does. The disarm runs even
+    # when arming itself raised: arming can set the timer and then fail to say so,
+    # and disarming a dump that never armed does nothing.
+    log_scope = ExitStack()
     try:
         arm_traceback_dump()
-        traceback_armed = True
 
         _emit_startup_warnings()
         await _refuse_or_prepare_leg_host()
@@ -412,21 +423,34 @@ async def lifespan(app_instance):
         # transcripts into the host's store, so neither starts there. Said on the daemon's
         # own stderr logger.
         quiet_host = leg_host.enabled()
-    except BaseException:
-        if traceback_armed:
-            try:
-                disarm_traceback_dump()
-            except Exception:  # noqa: BLE001
-                _log.error(
-                    "Disarming the traceback dump after a failed start failed", exc_info=True
-                )
+        # Entered inside this block, so a log handler that cannot be installed is a failed
+        # start like any other and the dump armed above is disarmed.
+        log_scope.enter_context(daemon_log_handler())
+    except BaseException as exc:
+        disarm_failure: Exception | None = None
+        try:
+            disarm_traceback_dump()
+        except Exception as failure:
+            disarm_failure = failure
+        if disarm_failure is not None:
+            if isinstance(exc, Exception):
+                from lionagi.ln.concurrency import ExceptionGroup
+
+                raise ExceptionGroup("Studio startup failed", [exc, disarm_failure]) from None
+            # A cancelled start stays a cancellation; what its cleanup hit is logged.
+            _log.error(
+                "Cleanup after an interrupted Studio start failed",
+                exc_info=(type(disarm_failure), disarm_failure, disarm_failure.__traceback__),
+            )
         raise
 
-    with daemon_log_handler():
+    with log_scope:
         # What startup has begun so far. A step that fails, or a cancellation, before
-        # the daemon serves runs the shutdown sequence below for these and no others, so
-        # a failed start leaves no scheduler, reconnect socket, mirror or Operator
-        # recovery running in the process that tried it.
+        # the daemon serves runs the shutdown sequence below for the reconnect socket,
+        # mirror, warmup and Operator recovery only if they were begun, so a failed start
+        # leaves none of them, nor a scheduler, running in the process that tried it. The
+        # launch and scheduler stops always run: each does nothing when nothing was
+        # started, as on a leg host, where the scheduler never starts.
         operator_entered = False
         reconnect: ReconnectChannel | None = None
         mirror_stop: asyncio.Event | None = None
@@ -474,12 +498,21 @@ async def lifespan(app_instance):
             from lionhub.serve.daemon.services.launches import shutdown_launches
 
             failures: list[Exception] = []
+            interrupt: BaseException | None = None
 
             async def finish(operation: Any) -> None:
+                # Every step runs whatever an earlier one raised. The shield holds off an
+                # AnyIO cancellation, not a native task.cancel(): one that lands inside a
+                # step is held here and re-raised after the last step, so it cannot cut the
+                # shutdown short.
+                nonlocal interrupt
                 try:
                     await operation()
                 except Exception as exc:
                     failures.append(exc)
+                except BaseException as exc:
+                    if interrupt is None:
+                        interrupt = exc
 
             with CancelScope(shield=True):
                 registry = getattr(app_instance.state, "session_tail_registry", None)
@@ -499,6 +532,15 @@ async def lifespan(app_instance):
                     await finish(operator_shutdown)
                 await finish(shutdown_launches)
                 await finish(scheduler.stop)
+            if interrupt is not None:
+                # The shutdown was itself interrupted. Every step still ran; the interrupt
+                # propagates, and what the steps hit is logged rather than lost.
+                for failure in failures:
+                    _log.error(
+                        "A Studio shutdown step failed during an interrupted shutdown",
+                        exc_info=(type(failure), failure, failure.__traceback__),
+                    )
+                raise interrupt
             if failures:
                 if startup_error is None:
                     raise ExceptionGroup("Studio shutdown failed", failures)

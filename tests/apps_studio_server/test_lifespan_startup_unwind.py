@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import nullcontext
 from importlib import import_module
 from types import SimpleNamespace
@@ -195,13 +196,98 @@ async def test_a_refused_leg_host_disarms_and_starts_nothing(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_arm_has_nothing_to_disarm(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failed_arm_is_disarmed_in_case_it_had_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arming can set the timer and then fail to say so; disarming one that never armed is safe.
     app, events = _recording_lifespan(monkeypatch, fail_at="arm")
 
     with pytest.raises(_Boom, match="arm"):
         await _serve_once(app)
 
-    assert events == []
+    assert events == ["disarm"]
+
+
+@pytest.mark.asyncio
+async def test_a_log_handler_that_cannot_install_disarms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    daemon_log = import_module("lionhub.serve.daemon.daemon_log")
+
+    class _Refuses:
+        def __enter__(self):
+            raise _Boom("log handler")
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(daemon_log, "daemon_log_handler", _Refuses)
+
+    with pytest.raises(_Boom, match="log handler"):
+        await _serve_once(app)
+
+    assert events == ["arm", "warnings", "leg_host", "notify", "disarm"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_disarm_before_the_daemon_block_is_reported_beside_the_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch, fail_at="leg_host")
+
+    def disarm_fails() -> None:
+        raise RuntimeError("disarm failed")
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_fails)
+
+    with pytest.raises(ExceptionGroup, match="Studio startup failed") as info:
+        await _serve_once(app)
+
+    assert [type(exc) for exc in info.value.exceptions] == [_Boom, RuntimeError]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_warmup_start_stops_the_mirror_it_follows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+
+    def warmup_cannot_start():
+        raise _Boom("warmup")
+
+    monkeypatch.setattr(app, "_startup_warmup", warmup_cannot_start)
+
+    with pytest.raises(_Boom, match="warmup"):
+        await _serve_once(app)
+
+    assert _after(events, "mirror.start") == [
+        "disarm",
+        "reconnect.stop",
+        "mirror.stop",
+        "operator.shutdown",
+        "launches.shutdown",
+        "scheduler.stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_while_serving_is_a_shutdown_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch)
+    engine = import_module("lionhub.orchestration.scheduler.engine")
+
+    async def stop_fails() -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(engine.scheduler, "stop", stop_fails)
+
+    with pytest.raises(ExceptionGroup, match="Studio shutdown failed") as info:
+        async with app.lifespan(_instance()):
+            raise ValueError("served, then failed")
+
+    assert [type(exc) for exc in info.value.exceptions] == [RuntimeError]
 
 
 @pytest.mark.asyncio
@@ -245,3 +331,119 @@ async def test_a_cancelled_start_stops_what_it_started_and_stays_cancelled(
         await task
 
     assert _after(events, "scheduler.start") == ["disarm", "launches.shutdown", "scheduler.stop"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_start_logs_what_its_cleanup_hit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch)
+    lifecycle = import_module("lionhub.orchestration.scheduler.lifecycle")
+    engine = import_module("lionhub.orchestration.scheduler.engine")
+    entered = asyncio.Event()
+
+    async def reconcile_hangs() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def stop_fails() -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(lifecycle, "run_startup_reconciliation", reconcile_hangs)
+    monkeypatch.setattr(engine.scheduler, "stop", stop_fails)
+
+    task = asyncio.create_task(_serve_once(app))
+    await entered.wait()
+    with caplog.at_level(logging.ERROR, logger=app.__name__):
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    logged = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "Cleanup after an interrupted Studio start failed"
+    ]
+    assert [str(record.exc_info[1]) for record in logged] == ["stop failed"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_raised_by_a_shutdown_step_does_not_skip_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+
+    async def mirror_stop_cancelled(stop, task):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app, "_stop_claude_mirror", mirror_stop_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _serve_once(app)
+
+    assert _after(events, "warmup.finish") == [
+        "operator.shutdown",
+        "launches.shutdown",
+        "scheduler.stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_during_the_shutdown_still_runs_every_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    launches = import_module("lionhub.serve.daemon.services.launches")
+    entered = asyncio.Event()
+
+    async def launches_shutdown_hangs() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(launches, "shutdown_launches", launches_shutdown_hangs)
+
+    task = asyncio.create_task(_serve_once(app))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+
+    assert events[-1] == "scheduler.stop"
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_tail_cancelled_elsewhere_is_stopped_quietly() -> None:
+    app = import_module("lionagi.studio.app")
+    tail = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    tail.cancel()
+
+    await app._stop_claude_mirror(asyncio.Event(), tail)
+
+    assert tail.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_finalizing_the_warmup_does_not_swallow_its_callers_cancellation() -> None:
+    app = import_module("lionagi.studio.app")
+    release = asyncio.Event()
+
+    async def warmup_finishes_its_write() -> None:
+        # Holds on through its own cancellation until released, as a write in flight would.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    warmup = asyncio.create_task(warmup_finishes_its_write())
+    await asyncio.sleep(0)
+    caller = asyncio.create_task(app._finalize_warmup(warmup))
+    await asyncio.sleep(0)
+    caller.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=5)
+
+    release.set()
+    await asyncio.wait({warmup}, timeout=5)
+    assert warmup.done()
