@@ -54,6 +54,7 @@ def _normalized(text: str) -> str:
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
     app = app_mod.create_app()
@@ -94,12 +95,13 @@ def test_the_no_token_startup_warning_states_that_any_local_caller_can_decide(
     """Whichever no-token warning the bind host selects, it states who can
     decide a pending proposal: any process that can reach the listener."""
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
 
-    with caplog.at_level("WARNING", logger=app_mod.__name__):
-        app_mod._emit_startup_warnings()
+    with caplog.at_level("WARNING", logger=daemon_mod.__name__):
+        daemon_mod._emit_startup_warnings()
 
     warning = _normalized(caplog.text)
     for clause in FULL_CONTRACT_CLAUSES:

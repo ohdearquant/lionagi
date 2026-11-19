@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""A start that fails part way stops what it had started, and nothing it had not."""
+"""A start that fails part way stops what it had started, and nothing it had not.\n\nThe attached application is Studio, whose hooks are its Operator startup and shutdown.\n"""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
 
     ``fail_at`` names the startup step that raises ``_Boom`` instead of recording.
     """
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     identity = import_module("lionhub.serve.diagnostics")
     daemon_log = import_module("lionhub.serve.daemon.daemon_log")
     engine = import_module("lionhub.orchestration.scheduler.engine")
@@ -111,8 +111,27 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
     return app, events
 
 
-def _instance() -> SimpleNamespace:
-    return SimpleNamespace(state=SimpleNamespace(session_tail_registry=None))
+class _Root:
+    """A root application stand-in: its state, and weak references like a real application."""
+
+    def __init__(self, state: SimpleNamespace) -> None:
+        self.state = state
+
+
+def _instance() -> _Root:
+    """A root application's state with Studio attached, its hooks read when called."""
+    from lionhub.serve.daemon.app import Attachment
+
+    operator = import_module("lionagi.studio.services.operator")
+
+    async def startup():
+        return await operator.operator_startup()
+
+    async def shutdown():
+        await operator.operator_shutdown()
+
+    attachment = Attachment(route_modules=(), startup=startup, shutdown=shutdown)
+    return _Root(SimpleNamespace(session_tail_registry=None, attachment=attachment))
 
 
 async def _serve_once(app, instance=None) -> None:
@@ -180,7 +199,7 @@ async def test_a_failed_mirror_start_closes_the_reconnect_socket(
         "launches.shutdown",
         "scheduler.stop",
     ]
-    assert instance.state.reconnect_key is None
+    assert instance not in import_module("lionhub.serve.daemon.app")._reconnect_keys
 
 
 @pytest.mark.asyncio
@@ -389,6 +408,62 @@ async def test_a_cancellation_raised_by_a_shutdown_step_does_not_skip_the_rest(
 
 
 @pytest.mark.asyncio
+async def test_an_interrupted_disarm_still_runs_every_later_step_and_drops_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    instance = _instance()
+    held: list[bool] = []
+
+    def disarm_interrupted() -> None:
+        held.append(instance in app._reconnect_keys)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        async with app.lifespan(instance):
+            held.append(instance in app._reconnect_keys)
+
+    assert _after(events, "mirror.start") == FULL_STOP[1:]
+    # Held while serving and through the interrupted step, dropped before its channel stops.
+    assert held == [True, True]
+    assert instance not in app._reconnect_keys
+
+
+@pytest.mark.asyncio
+async def test_a_normal_stop_drops_the_reconnect_key_just_before_its_channel_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _events = _recording_lifespan(monkeypatch)
+    instance = _instance()
+    held: list[tuple[str, bool]] = []
+
+    class _Registry:
+        async def aclose(self) -> None:
+            held.append(("registry.close", instance in app._reconnect_keys))
+
+    class _Channel:
+        key = b"k"
+
+        def stop(self) -> None:
+            held.append(("reconnect.stop", instance in app._reconnect_keys))
+
+    def disarm() -> None:
+        held.append(("disarm", instance in app._reconnect_keys))
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm)
+    monkeypatch.setattr(app, "_start_reconnect_channel", _Channel)
+    instance.state.session_tail_registry = _Registry()
+
+    await _serve_once(app, instance)
+
+    # The live-tail registry closes, capture is disarmed, then the key is cleared and its
+    # channel stops: the key is readable through the first two and gone by the third.
+    assert held == [("registry.close", True), ("disarm", True), ("reconnect.stop", False)]
+
+
+@pytest.mark.asyncio
 async def test_a_cancellation_during_the_shutdown_still_runs_every_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -413,7 +488,7 @@ async def test_a_cancellation_during_the_shutdown_still_runs_every_step(
 
 @pytest.mark.asyncio
 async def test_a_mirror_tail_cancelled_elsewhere_is_stopped_quietly() -> None:
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     tail = asyncio.create_task(asyncio.Event().wait())
     await asyncio.sleep(0)
     tail.cancel()
@@ -425,7 +500,7 @@ async def test_a_mirror_tail_cancelled_elsewhere_is_stopped_quietly() -> None:
 
 @pytest.mark.asyncio
 async def test_finalizing_the_warmup_does_not_swallow_its_callers_cancellation() -> None:
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     release = asyncio.Event()
 
     async def warmup_finishes_its_write() -> None:

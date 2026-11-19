@@ -58,6 +58,7 @@ def make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     other code still imports.
     """
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -435,6 +436,7 @@ class TestJsonContentTypeEnforcement:
         httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
         fake_db = tmp_path / "state.db"
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -764,9 +766,10 @@ class TestRemoteOriginNeedsToken:
 
     def test_the_startup_warning_states_the_rule(self, caplog):
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
-        with caplog.at_level("WARNING", logger=app_mod.__name__):
-            app_mod._emit_startup_warnings()
+        with caplog.at_level("WARNING", logger=daemon_mod.__name__):
+            daemon_mod._emit_startup_warnings()
 
         assert "Sec-Fetch-Site none/same-origin pass" in caplog.text
         assert "Origin outside loopback/the daemon needs the paired bearer" in caplog.text
@@ -837,7 +840,7 @@ class TestRemoteOriginWithToken:
     ],
 )
 def test_origin_accepted_without_token(origins, host, accepted):
-    from lionagi.studio.app import _origin_accepted_without_token
+    from lionhub.serve.daemon.app import _origin_accepted_without_token
 
     assert _origin_accepted_without_token(origins, host) is accepted
 
@@ -856,7 +859,7 @@ def test_origin_accepted_without_token(origins, host, accepted):
     ],
 )
 def test_fetch_site_accepted_without_origin(sites, accepted):
-    from lionagi.studio.app import _fetch_site_accepted_without_origin
+    from lionhub.serve.daemon.app import _fetch_site_accepted_without_origin
 
     assert _fetch_site_accepted_without_origin(sites) is accepted
 
@@ -1163,11 +1166,12 @@ class TestPairingWithToken:
 
 
 def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client):
+    from lionhub.serve.daemon.app import _reconnect_keys
     from lionhub.serve.daemon.reconnect import port_proof
 
     client = make_client()
     key = bytes(range(32))
-    client.app.state.reconnect_key = key
+    _reconnect_keys[client.app] = key
     challenge = "0123456789abcdef" * 2
 
     body = client.get("/health", params={"challenge": challenge}).json()
@@ -1177,12 +1181,34 @@ def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client)
     assert body["proof"] != port_proof(key, challenge, 8766)
 
 
+def test_a_reconnect_key_goes_with_its_application():
+    import gc
+    import secrets
+
+    from fastapi import FastAPI
+
+    from lionhub.serve.daemon.app import _reconnect_keys
+
+    application = FastAPI()
+    key = secrets.token_bytes(32)
+    _reconnect_keys[application] = key
+    assert key in _reconnect_keys.values()
+
+    del application
+    gc.collect()
+
+    # A later application, whatever address it gets, can read no key of the dead one's.
+    assert key not in _reconnect_keys.values()
+
+
 def test_health_signs_nothing_without_a_key_or_for_a_malformed_challenge(make_client):
+    from lionhub.serve.daemon.app import _reconnect_keys
+
     client = make_client()
-    client.app.state.reconnect_key = None
+    _reconnect_keys.pop(client.app, None)
     assert client.get("/health", params={"challenge": "0" * 32}).json() == {"status": "ok"}
 
-    client.app.state.reconnect_key = bytes(32)
+    _reconnect_keys[client.app] = bytes(32)
     for malformed in ("", "0" * 31, "0" * 33, "g" * 32, "A" * 32, "0" * 31 + "\n"):
         resp = client.get("/health", params={"challenge": malformed})
         assert resp.json() == {"status": "ok"}, malformed

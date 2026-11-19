@@ -41,12 +41,7 @@
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
     ],
     "lionagi/studio/app.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
-      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
-      "os.getenv:\"LIONAGI_STUDIO_HOST\""
+      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\""
     ],
     "lionagi/studio/config.py": [
       "os.environ.get:OPERATOR_CWD_ENV_VAR"
@@ -191,6 +186,13 @@
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "os.environ.get:_ENV_INTERVAL",
       "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\""
     ],
     "lionhub/src/lionhub/serve/daemon/leg_host.py": [
       "os.environ.get:_MAX_LAUNCHES_ENV",
@@ -967,6 +969,9 @@
     "lionagi/state/transitions.py": [
       "__all__ = (\n    \"Actor\",\n    \"StateReason\",\n    \"TransitionRequest\",\n    \"TransitionResult\",\n    \"transition\",\n)"
     ],
+    "lionagi/studio/app.py": [
+      "__all__ = (\"app\", \"attach_studio\", \"create_app\")"
+    ],
     "lionagi/studio/operator/__init__.py": [
       "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
       "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
@@ -1619,6 +1624,12 @@
     ],
     "lionhub/src/lionhub/serve/daemon/_host.py": [
       "__all__ = (\"admitted_host_names\", \"is_unspecified_host\", \"normalize_host\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "__all__ = (\"Attach\", \"Attachment\", \"DaemonServices\", \"create_daemon_app\", \"lifespan\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "__all__ = (\n    \"ATTACHMENT_PROTOCOL\",\n    \"MANIFEST_NAME\",\n    \"IncompatibleApplicationError\",\n    \"check_attachment_compatibility\",\n)"
     ],
     "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
       "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
@@ -3174,9 +3185,8 @@
       "transition"
     ],
     "lionagi/studio/app.py": [
-      "create_app",
-      "lifespan",
-      "validate_host_header"
+      "attach_studio",
+      "create_app"
     ],
     "lionagi/studio/config.py": [
       "OperatorExecutionRootResolution",
@@ -4885,6 +4895,17 @@
     "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
       "arm_traceback_dump",
       "disarm_traceback_dump"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "Attachment",
+      "DaemonServices",
+      "create_daemon_app",
+      "lifespan",
+      "validate_host_header"
+    ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "IncompatibleApplicationError",
+      "check_attachment_compatibility"
     ],
     "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
       "daemon_log_handler"

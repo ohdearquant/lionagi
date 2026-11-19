@@ -52,6 +52,7 @@ def spa_client(
     monkeypatch.setenv("LIONAGI_STUDIO_FRONTEND_DIST", str(dist_dir))
 
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     app = app_mod.create_app()
     yield TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
@@ -71,6 +72,7 @@ def no_dist_client(
     monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     app = app_mod.create_app()
     yield TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
@@ -200,8 +202,9 @@ class TestCORSAfterSPAMount:
     ) -> None:
         """HEAD must be in the CORS allowlist after SPA mount (_collect_cors_methods called after mount)."""
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
-        allowlist = {m.upper() for m in app_mod._collect_cors_methods(spa_client.app)}
+        allowlist = {m.upper() for m in daemon_mod._collect_cors_methods(spa_client.app)}
         assert "HEAD" in allowlist, (
             f"HEAD must be in CORS allowlist after SPA mount; got {sorted(allowlist)}"
         )

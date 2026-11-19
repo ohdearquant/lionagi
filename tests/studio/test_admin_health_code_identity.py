@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -130,6 +131,7 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     that point can already cause, or observe, a request.
     """
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.diagnostics as ci
     from lionhub.orchestration.scheduler.engine import scheduler
 
@@ -145,13 +147,13 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     monkeypatch.setattr(scheduler, "start", _record_start)
     monkeypatch.setattr(scheduler, "stop", _noop)
     monkeypatch.setattr(app_mod, "run_startup_reconciliation", _noop, raising=False)
-    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
-    monkeypatch.setattr(app_mod, "_stop_claude_mirror", lambda *a: _noop())
-    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
-    monkeypatch.setattr(app_mod, "_finalize_warmup", lambda *a: _noop())
+    monkeypatch.setattr(daemon_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(daemon_mod, "_stop_claude_mirror", lambda *a: _noop())
+    monkeypatch.setattr(daemon_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(daemon_mod, "_finalize_warmup", lambda *a: _noop())
 
     async def _drive() -> None:
-        async with app_mod.lifespan(app_mod.create_app()):
+        async with daemon_mod.lifespan(app_mod.create_app()):
             seen["snapshot_while_serving"] = ci._SNAPSHOT
 
     import anyio
@@ -168,6 +170,7 @@ def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
     import threading
 
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.diagnostics as ci
     from lionhub.orchestration.scheduler.engine import scheduler
 
@@ -183,14 +186,14 @@ def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
     monkeypatch.setattr(scheduler, "start", _noop)
     monkeypatch.setattr(scheduler, "stop", _noop)
     monkeypatch.setattr(app_mod, "run_startup_reconciliation", _noop, raising=False)
-    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
-    monkeypatch.setattr(app_mod, "_stop_claude_mirror", lambda *a: _noop())
-    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
-    monkeypatch.setattr(app_mod, "_finalize_warmup", lambda *a: _noop())
+    monkeypatch.setattr(daemon_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(daemon_mod, "_stop_claude_mirror", lambda *a: _noop())
+    monkeypatch.setattr(daemon_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(daemon_mod, "_finalize_warmup", lambda *a: _noop())
 
     async def _drive() -> None:
         seen["event_loop_thread"] = threading.get_ident()
-        async with app_mod.lifespan(app_mod.create_app()):
+        async with daemon_mod.lifespan(app_mod.create_app()):
             pass
 
     import anyio

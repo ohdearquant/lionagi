@@ -274,14 +274,15 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
     """_start_claude_mirror no-ops when off, spawns and threads config when on."""
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
 
     monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", False)
 
     async def _off() -> None:
-        stop, task = app_mod._start_claude_mirror()
+        stop, task = daemon_mod._start_claude_mirror()
         assert stop is None and task is None
-        await app_mod._stop_claude_mirror(stop, task)  # tolerates (None, None)
+        await daemon_mod._stop_claude_mirror(stop, task)  # tolerates (None, None)
 
     run_async(_off())
 
@@ -297,9 +298,9 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
     monkeypatch.setattr("lionhub.serve.mirror.mirror_forever", _fake_forever)
 
     async def _on() -> None:
-        stop, task = app_mod._start_claude_mirror()
+        stop, task = daemon_mod._start_claude_mirror()
         assert stop is not None and task is not None
-        await app_mod._stop_claude_mirror(stop, task)
+        await daemon_mod._stop_claude_mirror(stop, task)
         assert task.done()
 
     run_async(_on())
@@ -316,6 +317,7 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
 
@@ -350,13 +352,13 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     monkeypatch.setattr(daemon_settings, "MIRROR_CODEX_ROOT", None, raising=False)
 
     async def _body() -> tuple[object, object, list[dict]]:
-        stop, task = app_mod._start_claude_mirror()
+        stop, task = daemon_mod._start_claude_mirror()
         rows: list[dict] = []
         try:
             if task is not None:
                 rows = await _wait_for_session_count(db_path, 2)
         finally:
-            await app_mod._stop_claude_mirror(stop, task)
+            await daemon_mod._stop_claude_mirror(stop, task)
         return stop, task, rows
 
     stop, task, rows = run_async(_body())
@@ -369,6 +371,7 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     import lionagi.state.db as state_db_mod
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
 
@@ -431,12 +434,12 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
         # and schema init alone. A cold open racing the tail's writes is what
         # locks the store up under load.
         async with StateDB(db_path) as db:
-            stop, task = app_mod._start_claude_mirror()
+            stop, task = daemon_mod._start_claude_mirror()
             assert stop is not None and task is not None
             try:
                 return await _poll_session_count(db, 2)
             finally:
-                await app_mod._stop_claude_mirror(stop, task)
+                await daemon_mod._stop_claude_mirror(stop, task)
 
     rows = run_async(_body())
     names = {row["name"] for row in rows}
@@ -448,6 +451,7 @@ def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, m
     """Unexpected autostart failures stay useful without echoing paths/content."""
     import lionagi.studio.app as app_mod
     import lionagi.studio.config as config_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
 
     secret_path = tmp_path / "private" / "rollout-secret.jsonl"
@@ -465,14 +469,14 @@ def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, m
     monkeypatch.setattr("lionhub.serve.mirror.mirror_forever", _boom)
 
     async def _body() -> None:
-        stop, task = app_mod._start_claude_mirror()
+        stop, task = daemon_mod._start_claude_mirror()
         assert stop is not None and task is not None
         try:
             await asyncio.wait_for(task, timeout=2)
         except RuntimeError:
             pass
 
-    with caplog.at_level("ERROR", logger="lionagi.studio.app"):
+    with caplog.at_level("ERROR", logger="lionhub.serve.daemon.app"):
         run_async(_body())
 
     assert secret_path.as_posix() not in caplog.text

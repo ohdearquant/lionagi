@@ -28,7 +28,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 import anyio  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-_STUDIO_APP_LOGGER = "lionagi.studio.app"
+_STUDIO_APP_LOGGER = "lionhub.serve.daemon.app"
 
 
 # Handler spy infrastructure
@@ -102,6 +102,7 @@ def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
     Bare TestClient(app, base_url="http://127.0.0.1:8765") construction does NOT trigger the lifespan.
     """
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -128,6 +129,7 @@ def _bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[T
     response headers.
     """
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -357,7 +359,7 @@ class TestTheWarningNamesTheCanonicalBindValue:
         bracketed wildcard it could strip. Read through the normalizer, the case
         does not decide the answer and the address decides it in any spelling.
         """
-        from lionagi.studio.app import _host_reaches_other_machines
+        from lionhub.serve.daemon.app import _host_reaches_other_machines
 
         assert _host_reaches_other_machines(bind_host) is reaches_other
 
@@ -504,6 +506,7 @@ class TestCORSBoundedMethods:
         if any served method escapes the allowlist.
         """
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
         served: set[str] = set()
         for route in app_mod.app.routes:
@@ -511,7 +514,7 @@ class TestCORSBoundedMethods:
             if methods:
                 served.update(m.upper() for m in methods)
 
-        allowlist = {m.upper() for m in app_mod._collect_cors_methods(app_mod.app)}
+        allowlist = {m.upper() for m in daemon_mod._collect_cors_methods(app_mod.app)}
 
         missing = served - allowlist
         assert not missing, (
@@ -531,10 +534,11 @@ class TestCORSWildcardOriginWarning:
         """CORS_ORIGINS containing '*' emits a startup WARNING."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.app as daemon_mod
         import lionhub.serve.daemon.settings as daemon_settings
 
         monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", ["*"])
-        monkeypatch.setattr(app_mod, "CORS_ORIGINS", ["*"])
+        monkeypatch.setattr(daemon_mod, "CORS_ORIGINS", ["*"])
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -551,11 +555,12 @@ class TestCORSWildcardOriginWarning:
         """No CORS warning when origins are explicitly listed (not wildcard)."""
         import lionagi.studio.app as app_mod
         import lionagi.studio.config as config_mod
+        import lionhub.serve.daemon.app as daemon_mod
         import lionhub.serve.daemon.settings as daemon_settings
 
         explicit_origins = ["http://localhost:3000", "http://localhost:5173"]
         monkeypatch.setattr(daemon_settings, "CORS_ORIGINS", explicit_origins)
-        monkeypatch.setattr(app_mod, "CORS_ORIGINS", explicit_origins)
+        monkeypatch.setattr(daemon_mod, "CORS_ORIGINS", explicit_origins)
 
         with _spy_logger(_STUDIO_APP_LOGGER) as records:
             with _lifespan_client(monkeypatch, tmp_path):
@@ -659,6 +664,7 @@ def test_the_lifespan_prints_a_schedule_firing_however_the_app_is_served(
     that matters is the one emitted while serving."""
     import lionagi.studio.app as app_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     engine_log = logging.getLogger("lionagi.studio.scheduler.engine")
     started = "Scheduler engine starting"

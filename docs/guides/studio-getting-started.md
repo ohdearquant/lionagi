@@ -131,7 +131,7 @@ set inside the container its API calls get 401; the desktop shell injects a
 token for its own daemon into its frontend.
 
 Authentication, Host validation, and browser origins are defined in
-`lionagi/studio/app.py` and `lionagi/studio/config.py`, and pairing in
+`lionhub/src/lionhub/serve/daemon/app.py` and `lionagi/studio/config.py`, and pairing in
 `lionhub/src/lionhub/serve/daemon/services/pairing.py`. Operator decisions use
 `lionagi/studio/services/operator.py`; frontend credential handling is defined
 in `apps/studio/frontend/src/lib/api.ts`.

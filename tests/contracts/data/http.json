@@ -6799,8 +6799,8 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.app",
-        "qualname": "create_app.<locals>.health"
+        "module": "lionhub.serve.daemon.app",
+        "qualname": "create_daemon_app.<locals>.health"
       }
     },
     {

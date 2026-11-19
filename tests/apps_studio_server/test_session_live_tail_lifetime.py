@@ -348,7 +348,7 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
 
     from lionagi.ln.concurrency import ExceptionGroup
 
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     identity = import_module("lionhub.serve.diagnostics")
     daemon_log = import_module("lionhub.serve.daemon.daemon_log")
     engine = import_module("lionhub.orchestration.scheduler.engine")
@@ -402,8 +402,13 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
     monkeypatch.setattr(app, "_stop_claude_mirror", mirror_stop)
     monkeypatch.setattr(app, "_startup_warmup", noop)
     monkeypatch.setattr(app, "_finalize_warmup", finalize)
+    from lionhub.serve.daemon.app import Attachment
+
     instance = SimpleNamespace(
-        state=SimpleNamespace(session_tail_registry=SimpleNamespace(aclose=registry_close))
+        state=SimpleNamespace(
+            session_tail_registry=SimpleNamespace(aclose=registry_close),
+            attachment=Attachment(route_modules=(), startup=noop, shutdown=operator_stop),
+        )
     )
     with pytest.raises(ExceptionGroup) as caught:
         async with app.lifespan(instance):

@@ -42,7 +42,7 @@ two Operator decision routes record with a decision. The token is not that
 capability, but this release does not yet require one: a decision request
 without it, including one that carries only the token, is still accepted and is
 recorded unattributed.
-These behaviors follow `lionagi/studio/app.py`, `lionagi/studio/config.py`,
+These behaviors follow `lionhub/src/lionhub/serve/daemon/app.py`, `lionagi/studio/config.py`,
 `lionhub/src/lionhub/serve/daemon/services/pairing.py`, and
 `lionagi/studio/services/operator.py`; frontend credential handling is in
 `apps/studio/frontend/src/lib/api.ts`.

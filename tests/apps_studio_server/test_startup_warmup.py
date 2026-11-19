@@ -164,7 +164,7 @@ def test_checkpoint_failure_is_logged_not_fatal(monkeypatch):
     monkeypatch.setattr(_CKPT, _boom)
 
     spy = _SpyHandler()
-    logger = logging.getLogger("lionagi.studio.app")
+    logger = logging.getLogger("lionhub.serve.daemon.app")
     logger.addHandler(spy)
     try:
         with TestClient(app, base_url="http://127.0.0.1:8765") as client:

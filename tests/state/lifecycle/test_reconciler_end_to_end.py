@@ -56,6 +56,7 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
     from lionhub.serve.daemon.services import launches
 
     app_module = importlib.import_module("lionagi.studio.app")
+    daemon_module = importlib.import_module("lionhub.serve.daemon.app")
     home = tmp_path / "home"
     home.mkdir()
     config_dir = home / ".lionagi"
@@ -103,15 +104,15 @@ async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypa
         "reap_stale_schedule_runs",
     ):
         monkeypatch.setattr(lifecycle, name, noop)
-    monkeypatch.setattr(app_module, "_start_claude_mirror", lambda: (None, None))
-    monkeypatch.setattr(app_module, "_stop_claude_mirror", noop)
-    monkeypatch.setattr(app_module, "_start_reconnect_channel", lambda: None)
-    monkeypatch.setattr(app_module, "_startup_warmup", noop)
-    monkeypatch.setattr(app_module, "_finalize_warmup", noop)
-    monkeypatch.setattr(app_module, "begin_serving", lambda: None)
-    monkeypatch.setattr(app_module, "arm_traceback_dump", lambda: None)
-    monkeypatch.setattr(app_module, "disarm_traceback_dump", lambda: None)
-    monkeypatch.setattr(app_module, "_emit_startup_warnings", lambda: None)
+    monkeypatch.setattr(daemon_module, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(daemon_module, "_stop_claude_mirror", noop)
+    monkeypatch.setattr(daemon_module, "_start_reconnect_channel", lambda: None)
+    monkeypatch.setattr(daemon_module, "_startup_warmup", noop)
+    monkeypatch.setattr(daemon_module, "_finalize_warmup", noop)
+    monkeypatch.setattr(daemon_module, "begin_serving", lambda: None)
+    monkeypatch.setattr(daemon_module, "arm_traceback_dump", lambda: None)
+    monkeypatch.setattr(daemon_module, "disarm_traceback_dump", lambda: None)
+    monkeypatch.setattr(daemon_module, "_emit_startup_warnings", lambda: None)
 
     # The first startup registers the consumer; a transition that predates it is
     # acknowledged as history, never delivered.

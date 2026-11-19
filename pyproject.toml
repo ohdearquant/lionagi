@@ -287,6 +287,7 @@ artifacts = [
     "lionhub/src/lionhub/py.typed",
     "lionhub/src/lionhub/agent/casts/packs/*.yaml",
     "lionagi/studio/builtin_playbooks/*.playbook.yaml",
+    "lionagi/studio/compatibility.json",
 ]
 
 [tool.hatch.build]

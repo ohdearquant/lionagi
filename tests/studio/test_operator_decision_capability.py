@@ -569,10 +569,13 @@ def test_a_platform_without_unix_sockets_has_no_reconnect(monkeypatch):
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
 def test_the_daemon_starts_the_channel_at_its_state_directory(short_dir, monkeypatch, fresh):
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     socket_path = short_dir / "reconnect.sock"
-    monkeypatch.setattr(app_mod, "default_socket_path", lambda *args: short_dir / "reconnect.sock")
-    channel = app_mod._start_reconnect_channel()
+    monkeypatch.setattr(
+        daemon_mod, "default_socket_path", lambda *args: short_dir / "reconnect.sock"
+    )
+    channel = daemon_mod._start_reconnect_channel()
     assert channel is not None
     try:
         assert stat.S_ISSOCK(socket_path.stat().st_mode)
@@ -595,6 +598,7 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.operator as operator_mod
     import lionhub.orchestration.scheduler.lifecycle as lifecycle_mod
+    import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.services.launches as launches_mod
     import lionhub.serve.diagnostics as code_identity
     from lionhub.orchestration.scheduler.engine import scheduler
@@ -611,12 +615,12 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
     monkeypatch.setattr(operator_mod, "operator_startup", _noop)
     monkeypatch.setattr(operator_mod, "operator_shutdown", _noop)
     monkeypatch.setattr(launches_mod, "shutdown_launches", _noop)
-    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
-    monkeypatch.setattr(app_mod, "_stop_claude_mirror", _noop)
-    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
-    monkeypatch.setattr(app_mod, "_finalize_warmup", _noop)
+    monkeypatch.setattr(daemon_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(daemon_mod, "_stop_claude_mirror", _noop)
+    monkeypatch.setattr(daemon_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(daemon_mod, "_finalize_warmup", _noop)
     socket_path = short_dir / "reconnect.sock"
-    monkeypatch.setattr(app_mod, "default_socket_path", lambda *args: socket_path)
+    monkeypatch.setattr(daemon_mod, "default_socket_path", lambda *args: socket_path)
 
     application = app_mod.create_app()
     challenge = "cd" * 16
@@ -626,27 +630,29 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
         body = client.get("/health", params={"challenge": challenge}).json()
 
     assert body == {"status": "ok", "proof": reconnect.port_proof(reply[1], challenge, 8765)}
-    assert application.state.reconnect_key is None
+    assert application not in daemon_mod._reconnect_keys
     assert not socket_path.exists()
 
 
 def test_a_platform_without_unix_sockets_starts_no_channel(monkeypatch):
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
-    monkeypatch.setattr(app_mod, "unix_sockets_supported", lambda: False)
+    monkeypatch.setattr(daemon_mod, "unix_sockets_supported", lambda: False)
 
-    assert app_mod._start_reconnect_channel() is None
+    assert daemon_mod._start_reconnect_channel() is None
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
 def test_a_channel_that_cannot_be_created_leaves_the_daemon_serving(short_dir, monkeypatch):
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     blocked = short_dir / "not-a-socket"
     blocked.write_text("x")
-    monkeypatch.setattr(app_mod, "default_socket_path", lambda *args: blocked)
+    monkeypatch.setattr(daemon_mod, "default_socket_path", lambda *args: blocked)
 
-    assert app_mod._start_reconnect_channel() is None
+    assert daemon_mod._start_reconnect_channel() is None
 
 
 def test_serving_clears_what_an_earlier_daemon_issued_in_this_process(fresh):

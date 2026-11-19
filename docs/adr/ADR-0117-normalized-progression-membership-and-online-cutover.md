@@ -67,7 +67,7 @@ the exact cost at the observed 3,483-ID maximum.
 
 Mirroring is a supported recurring feature. It has a standalone loop and historical catch-up
 mode (`lionhub/src/lionhub/serve/cli/mirror.py::add_mirror_subparser`, `lionhub/src/lionhub/serve/cli/mirror.py::_run`), and Studio starts an embedded task
-(`lionagi/studio/app.py::_start_claude_mirror`, `lionagi/studio/app.py::lifespan`). Mirroring is enabled by default when the profile has eligible
+(`lionhub/src/lionhub/serve/daemon/app.py::_start_claude_mirror`, `lionhub/src/lionhub/serve/daemon/app.py::lifespan`). Mirroring is enabled by default when the profile has eligible
 sources (`lionagi/studio/config.py::_mirror_import_ambient_default`, `lionagi/studio/config.py::MIRROR_CLAUDE_ENABLED`, `lionagi/studio/config.py::_MIRROR_SOURCE_RAW`). A process-name search cannot rule out
 the embedded task. A recent-file window does not cap an active transcript's lifetime length. These line numbers are at `317e6b4cfd4bb8f05d2bfc6a947d9fc1dcd28add`.
 
