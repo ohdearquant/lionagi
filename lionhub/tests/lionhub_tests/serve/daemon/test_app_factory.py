@@ -131,8 +131,10 @@ def test_attach_is_called_once_with_the_daemons_own_services(
 
     assert len(module.calls) == 1
     assert module.calls[0][0] is application
-    assert module.calls[0][1].launches is launches
-    assert module.calls[0][1].launch_access is launch_access
+    assert module.calls[0][1].launch is launches.launch
+    assert (
+        module.calls[0][1].resolve_decision_capability is launch_access.resolve_decision_capability
+    )
     assert application.state.attachment is module.ATTACHMENT
 
 

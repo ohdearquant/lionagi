@@ -22,7 +22,6 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass
-from types import ModuleType
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -39,9 +38,11 @@ from lionhub.serve.daemon._traceback_dump import arm_traceback_dump, disarm_trac
 from lionhub.serve.daemon.compatibility import check_attachment_compatibility
 from lionhub.serve.daemon.launch_access import (
     PAIRING_REDEEM_PATH,
+    DecisionPrincipal,
     begin_serving,
     launch_bearer,
     mint_pairing_code,
+    resolve_decision_capability,
 )
 from lionhub.serve.daemon.reconnect import (
     ReconnectChannel,
@@ -69,6 +70,12 @@ _PUBLIC_PATHS = frozenset({"/health"})
 
 # A challenge is 32 lowercase hex digits, the form ``li studio`` sends.
 _RECONNECT_CHALLENGE = re.compile(r"[0-9a-f]{32}")
+
+# The reconnect key of each serving root application, by ``id``, read only by its /health. It is
+# kept here rather than on ``application.state``, which an attached application and every handler
+# reach through the request. The lifespan adds the entry while it holds the application and
+# removes it in its shielded shutdown, so an entry never outlives the object its id names.
+_reconnect_keys: dict[int, bytes] = {}
 
 # FastAPI built-in schema/docs routes that are NOT under /api but expose API
 # shape and must be bearer-guarded in token mode, just like /api/*.
@@ -502,7 +509,8 @@ async def lifespan(app_instance):
             # just before starting this daemon in the same process.
             begin_serving()
             reconnect = _start_reconnect_channel()
-            app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
+            if reconnect is not None:
+                _reconnect_keys[id(app_instance)] = reconnect.key
             if quiet_host:
                 logging.getLogger(SCHEDULER_LOGGER).info(
                     "Leg host: the transcript mirror is not started"
@@ -547,7 +555,7 @@ async def lifespan(app_instance):
                     disarm_traceback_dump()
                 except Exception as exc:
                     failures.append(exc)
-                app_instance.state.reconnect_key = None
+                _reconnect_keys.pop(id(app_instance), None)
                 if reconnect is not None:
                     await finish(lambda: asyncio.to_thread(reconnect.stop))
                 await finish(lambda: _finalize_warmup(warmup_task))
@@ -626,13 +634,16 @@ async def validate_host_header(request: Request, call_next):
 class DaemonServices:
     """The daemon-owned services an attached application calls in this process.
 
-    Each field is the daemon's own module, so an application reaches the one launch supervisor and
-    the one identity and capability store the daemon runs; attaching creates no second scheduler,
-    launch supervisor or capability store.
+    Each field is a function of the daemon's own launch supervisor or its identity and capability
+    store, so attaching creates no second scheduler, launch supervisor or capability store. None
+    returns secret material: ``launch`` returns a launch's identifiers, and
+    ``resolve_decision_capability`` returns the principal a presented capability was issued to.
+    The admission bearer, pairing codes, capability digests and the reconnect key stay inside the
+    daemon's modules; the application is handed functions, never those modules.
     """
 
-    launches: ModuleType
-    launch_access: ModuleType
+    launch: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+    resolve_decision_capability: Callable[..., DecisionPrincipal | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -824,11 +835,11 @@ def create_daemon_app(attach: Attach | None = None) -> FastAPI:
 
     attachment = None
     if attach is not None:
-        from lionhub.serve.daemon import launch_access
-        from lionhub.serve.daemon.services import launches
+        from lionhub.serve.daemon.services.launches import launch
 
         attachment = attach(
-            application, DaemonServices(launches=launches, launch_access=launch_access)
+            application,
+            DaemonServices(launch=launch, resolve_decision_capability=resolve_decision_capability),
         )
     application.state.attachment = attachment
     _mount_routes(
@@ -844,7 +855,7 @@ def create_daemon_app(attach: Attach | None = None) -> FastAPI:
         # that the daemon on the port it was given is the one holding it. The proof covers the
         # port this request arrived on, so a listener relaying to this daemon from another
         # port cannot pass it on.
-        key = getattr(request.app.state, "reconnect_key", None)
+        key = _reconnect_keys.get(id(request.app))
         server = request.scope.get("server")
         port = server[1] if server else None
         if (

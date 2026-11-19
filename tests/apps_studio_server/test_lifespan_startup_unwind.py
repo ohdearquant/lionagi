@@ -192,7 +192,7 @@ async def test_a_failed_mirror_start_closes_the_reconnect_socket(
         "launches.shutdown",
         "scheduler.stop",
     ]
-    assert instance.state.reconnect_key is None
+    assert id(instance) not in import_module("lionhub.serve.daemon.app")._reconnect_keys
 
 
 @pytest.mark.asyncio

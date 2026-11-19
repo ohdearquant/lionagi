@@ -630,7 +630,7 @@ def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
         body = client.get("/health", params={"challenge": challenge}).json()
 
     assert body == {"status": "ok", "proof": reconnect.port_proof(reply[1], challenge, 8765)}
-    assert application.state.reconnect_key is None
+    assert id(application) not in daemon_mod._reconnect_keys
     assert not socket_path.exists()
 
 
