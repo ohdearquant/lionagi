@@ -354,6 +354,12 @@ resume keeps the result under the original submitted run ID. If the file exceeds
 are null while the job is live or when a reply file is unavailable. The
 `tail_chars` argument only affects the console tail.
 
+For an `agent.submit` job, `transcript_path` names the run's saved branch, the
+JSON file that holds every message, including each tool call and its arguments.
+It is the branch the run's own `run.json` names, and it is reported whether or not
+the job has ended. It is null for other job kinds, before the branch is saved, and
+when the file is unavailable or is a link.
+
 To block instead of polling, use `job.wait`, which observes runs until they are
 terminal or the window closes and returns partial results rather than a bare
 boolean. Set the wait window in seconds with `max_wait`. A request that passes
