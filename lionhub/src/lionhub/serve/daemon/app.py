@@ -644,7 +644,9 @@ class DaemonServices:
     returns secret material: ``launch`` returns a launch's identifiers, and
     ``resolve_decision_capability`` returns the principal a presented capability was issued to.
     The admission bearer, pairing codes, capability digests and the reconnect key stay inside the
-    daemon's modules; the application is handed functions, never those modules.
+    daemon's modules; the application is handed functions, never those modules. This bounds what
+    is handed, not what in-process code can reach: the application runs in the daemon's process,
+    so a daemon module it imports, or a handed function's globals, still reach that material.
     """
 
     launch: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
