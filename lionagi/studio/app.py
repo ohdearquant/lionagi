@@ -389,52 +389,86 @@ async def lifespan(app_instance):
 
     # Off unless LIONAGI_STUDIO_TRACEBACK_DUMP names a path. Armed here rather
     # than later so a hang anywhere in the rest of startup is still captured.
-    arm_traceback_dump()
+    # A step below that fails before the daemon block disarms it again on the
+    # way out; inside the block the shutdown sequence does.
+    traceback_armed = False
+    try:
+        arm_traceback_dump()
+        traceback_armed = True
 
-    _emit_startup_warnings()
-    await _refuse_or_prepare_leg_host()
-    # The second of the two settings-driven notify bootstrap points (CLI is the first).
-    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+        _emit_startup_warnings()
+        await _refuse_or_prepare_leg_host()
+        # The second of the two settings-driven notify bootstrap points (CLI is the first).
+        from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
-    register_settings_terminal_callback()
-    # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
-    # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
-    from lionhub.serve.daemon import leg_host
-    from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
+        register_settings_terminal_callback()
+        # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
+        # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+        from lionhub.serve.daemon import leg_host
+        from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
 
-    # A leg host runs only the legs its callers launch. The scheduler engine would fire this
-    # account's schedules, and the mirror would copy this account's other transcripts into the
-    # host's store, so neither starts there. Said on the daemon's own stderr logger.
-    quiet_host = leg_host.enabled()
+        # A leg host runs only the legs its callers launch. The scheduler engine would fire
+        # this account's schedules, and the mirror would copy this account's other
+        # transcripts into the host's store, so neither starts there. Said on the daemon's
+        # own stderr logger.
+        quiet_host = leg_host.enabled()
+    except BaseException:
+        if traceback_armed:
+            try:
+                disarm_traceback_dump()
+            except Exception:  # noqa: BLE001
+                _log.error(
+                    "Disarming the traceback dump after a failed start failed", exc_info=True
+                )
+        raise
+
     with daemon_log_handler():
-        if quiet_host:
-            logging.getLogger(SCHEDULER_LOGGER).info(
-                "Leg host: the scheduler engine is not started"
-            )
-        else:
-            await scheduler.start()
-        # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
-        await run_startup_reconciliation()
-        # Recover any accepted Operator turn that was interrupted by a prior daemon
-        # exit before accepting new submissions.
-        await operator_startup()
-        # Codes and decision capabilities belong to the daemon that issued them.
-        # Serving starts a new epoch unless a launcher minted this launch's code
-        # just before starting this daemon in the same process.
-        begin_serving()
-        reconnect = _start_reconnect_channel()
-        app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
-        if quiet_host:
-            logging.getLogger(SCHEDULER_LOGGER).info(
-                "Leg host: the transcript mirror is not started"
-            )
-            mirror_stop, mirror_task = None, None
-        else:
-            mirror_stop, mirror_task = _start_claude_mirror()
-        # Pure maintenance; deferred so readiness isn't gated on it.
-        warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
+        # What startup has begun so far. A step that fails, or a cancellation, before
+        # the daemon serves runs the shutdown sequence below for these and no others, so
+        # a failed start leaves no scheduler, reconnect socket, mirror or Operator
+        # recovery running in the process that tried it.
+        operator_entered = False
+        reconnect: ReconnectChannel | None = None
+        mirror_stop: asyncio.Event | None = None
+        mirror_task: asyncio.Task | None = None
+        warmup_task: asyncio.Task | None = None
+        serving = False
+        startup_error: BaseException | None = None
         try:
+            if quiet_host:
+                logging.getLogger(SCHEDULER_LOGGER).info(
+                    "Leg host: the scheduler engine is not started"
+                )
+            else:
+                await scheduler.start()
+            # Corrects phantom/stale-status rows /api routes read directly; must precede
+            # serving.
+            await run_startup_reconciliation()
+            # Recover any accepted Operator turn that was interrupted by a prior daemon
+            # exit before accepting new submissions. Marked before the call: a recovery
+            # that fails part way may already have started coordinator tasks.
+            operator_entered = True
+            await operator_startup()
+            # Codes and decision capabilities belong to the daemon that issued them.
+            # Serving starts a new epoch unless a launcher minted this launch's code
+            # just before starting this daemon in the same process.
+            begin_serving()
+            reconnect = _start_reconnect_channel()
+            app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
+            if quiet_host:
+                logging.getLogger(SCHEDULER_LOGGER).info(
+                    "Leg host: the transcript mirror is not started"
+                )
+            else:
+                mirror_stop, mirror_task = _start_claude_mirror()
+            # Pure maintenance; deferred so readiness isn't gated on it.
+            warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
+            serving = True
             yield
+        except BaseException as exc:
+            if not serving:
+                startup_error = exc
+            raise
         finally:
             from lionagi.ln.concurrency import CancelScope, ExceptionGroup
             from lionhub.serve.daemon.services.launches import shutdown_launches
@@ -461,11 +495,21 @@ async def lifespan(app_instance):
                     await finish(lambda: asyncio.to_thread(reconnect.stop))
                 await finish(lambda: _finalize_warmup(warmup_task))
                 await finish(lambda: _stop_claude_mirror(mirror_stop, mirror_task))
-                await finish(operator_shutdown)
+                if operator_entered:
+                    await finish(operator_shutdown)
                 await finish(shutdown_launches)
                 await finish(scheduler.stop)
             if failures:
-                raise ExceptionGroup("Studio shutdown failed", failures)
+                if startup_error is None:
+                    raise ExceptionGroup("Studio shutdown failed", failures)
+                if isinstance(startup_error, Exception):
+                    raise ExceptionGroup("Studio startup failed", [startup_error, *failures])
+                # A cancelled start stays a cancellation; what its cleanup hit is logged.
+                for failure in failures:
+                    _log.error(
+                        "Cleanup after an interrupted Studio start failed",
+                        exc_info=(type(failure), failure, failure.__traceback__),
+                    )
 
 
 # Strict Host-header authority grammar, deliberately stricter than
