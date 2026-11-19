@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""A start that fails part way stops what it had started, and nothing it had not."""
+"""A start that fails part way stops what it had started, and nothing it had not.\n\nThe attached application is Studio, whose hooks are its Operator startup and shutdown.\n"""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
 
     ``fail_at`` names the startup step that raises ``_Boom`` instead of recording.
     """
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     identity = import_module("lionhub.serve.diagnostics")
     daemon_log = import_module("lionhub.serve.daemon.daemon_log")
     engine = import_module("lionhub.orchestration.scheduler.engine")
@@ -112,7 +112,19 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
 
 
 def _instance() -> SimpleNamespace:
-    return SimpleNamespace(state=SimpleNamespace(session_tail_registry=None))
+    """A root application's state with Studio attached, its hooks read when called."""
+    from lionhub.serve.daemon.app import Attachment
+
+    operator = import_module("lionagi.studio.services.operator")
+
+    async def startup():
+        return await operator.operator_startup()
+
+    async def shutdown():
+        await operator.operator_shutdown()
+
+    attachment = Attachment(route_modules=(), startup=startup, shutdown=shutdown)
+    return SimpleNamespace(state=SimpleNamespace(session_tail_registry=None, attachment=attachment))
 
 
 async def _serve_once(app, instance=None) -> None:
@@ -413,7 +425,7 @@ async def test_a_cancellation_during_the_shutdown_still_runs_every_step(
 
 @pytest.mark.asyncio
 async def test_a_mirror_tail_cancelled_elsewhere_is_stopped_quietly() -> None:
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     tail = asyncio.create_task(asyncio.Event().wait())
     await asyncio.sleep(0)
     tail.cancel()
@@ -425,7 +437,7 @@ async def test_a_mirror_tail_cancelled_elsewhere_is_stopped_quietly() -> None:
 
 @pytest.mark.asyncio
 async def test_finalizing_the_warmup_does_not_swallow_its_callers_cancellation() -> None:
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     release = asyncio.Event()
 
     async def warmup_finishes_its_write() -> None:

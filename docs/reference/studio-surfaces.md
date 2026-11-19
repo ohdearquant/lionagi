@@ -240,12 +240,13 @@ With the daemon running, open
 host and port if they differ from the default. Token-protected deployments
 require the same bearer authentication for the schema as for API calls.
 
-The schema is generated from the routes mounted by `lionagi/studio/app.py`
-and registered through `lionagi/studio/registry.py`. It describes the API of
+The schema is generated from the routes mounted by `lionhub/src/lionhub/serve/daemon/app.py`, with the
+Studio application attached by `lionagi/studio/app.py` and its routes listed in
+`lionagi/studio/registry.py`. It describes the API of
 that running version, including request schemas and response shapes. Consult
 it for exact endpoints instead of inferring an API path from a page name.
 
-Sources: `lionagi/studio/app.py`, `lionagi/studio/registry.py`, and the
+Sources: `lionhub/src/lionhub/serve/daemon/app.py`, `lionagi/studio/app.py`, `lionagi/studio/registry.py`, and the
 registered service modules.
 
 For scheduling behavior, see

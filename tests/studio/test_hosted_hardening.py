@@ -58,6 +58,7 @@ def make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     other code still imports.
     """
     import lionagi.studio.app as app_mod
+    import lionhub.serve.daemon.app as daemon_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -435,6 +436,7 @@ class TestJsonContentTypeEnforcement:
         httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
         fake_db = tmp_path / "state.db"
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -764,9 +766,10 @@ class TestRemoteOriginNeedsToken:
 
     def test_the_startup_warning_states_the_rule(self, caplog):
         import lionagi.studio.app as app_mod
+        import lionhub.serve.daemon.app as daemon_mod
 
-        with caplog.at_level("WARNING", logger=app_mod.__name__):
-            app_mod._emit_startup_warnings()
+        with caplog.at_level("WARNING", logger=daemon_mod.__name__):
+            daemon_mod._emit_startup_warnings()
 
         assert "Sec-Fetch-Site none/same-origin pass" in caplog.text
         assert "Origin outside loopback/the daemon needs the paired bearer" in caplog.text
@@ -837,7 +840,7 @@ class TestRemoteOriginWithToken:
     ],
 )
 def test_origin_accepted_without_token(origins, host, accepted):
-    from lionagi.studio.app import _origin_accepted_without_token
+    from lionhub.serve.daemon.app import _origin_accepted_without_token
 
     assert _origin_accepted_without_token(origins, host) is accepted
 
@@ -856,7 +859,7 @@ def test_origin_accepted_without_token(origins, host, accepted):
     ],
 )
 def test_fetch_site_accepted_without_origin(sites, accepted):
-    from lionagi.studio.app import _fetch_site_accepted_without_origin
+    from lionhub.serve.daemon.app import _fetch_site_accepted_without_origin
 
     assert _fetch_site_accepted_without_origin(sites) is accepted
 

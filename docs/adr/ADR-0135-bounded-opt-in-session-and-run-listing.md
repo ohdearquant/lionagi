@@ -59,7 +59,7 @@ before the listing DTO's NULL-to-zero timestamp fallback
 (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`).
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
-origin controls run before API routes (`lionagi/studio/app.py::create_app.require_studio_bearer_token`). File-store guards and
+origin controls run before API routes (`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app.require_studio_bearer_token`). File-store guards and
 configured store resolution precede listing (`lionhub/src/lionhub/orchestration/state_store.py::store_path`,
 `lionhub/src/lionhub/orchestration/state_store.py::require_file_store`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`). A project
 label is an ordinary user predicate (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). This
@@ -274,7 +274,7 @@ Both bodies contain only `detail` with `code`, `message`, and `restart_required:
 A well-formed token naming an unavailable key receives the restart response without
 trusting its payload. Foreign contexts share one response; do not expose foreign ids.
 Authentication refusal precedes token processing and keeps the existing authentication
-response, including configured-token 401 (`lionagi/studio/app.py::create_app.require_studio_bearer_token`).
+response, including configured-token 401 (`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app.require_studio_bearer_token`).
 
 Every page must execute the existing authentication/origin boundary, resolve the configured
 store independently of the token, establish current trusted scope, and validate cursor
@@ -520,7 +520,7 @@ not retry automatically or silently substitute v1. V1 remains explicitly selecta
 An absent configured file returns an exhausted empty page, with exact zero only if
 requested, and creates no database. If a supplied cursor's store has disappeared, return
 the D2 restart response. Non-file backends retain the existing unsupported-store response
-(`lionagi/studio/app.py::create_app._store_not_addressable_handler`); this ADR does not add backend support.
+(`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app._store_not_addressable_handler`); this ADR does not add backend support.
 
 The final result ORDER BY remains explicit. A final sort over at most the requested
 returned rows is allowed and must be visible in plan/work evidence. A candidate sort

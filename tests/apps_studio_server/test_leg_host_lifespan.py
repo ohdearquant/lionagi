@@ -16,7 +16,7 @@ from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
 
 def _quiet_lifespan(monkeypatch: pytest.MonkeyPatch) -> tuple[object, list[str]]:
     """The app with every startup step but the two under test replaced by a no-op."""
-    app = import_module("lionagi.studio.app")
+    app = import_module("lionhub.serve.daemon.app")
     identity = import_module("lionhub.serve.diagnostics")
     daemon_log = import_module("lionhub.serve.daemon.daemon_log")
     engine = import_module("lionhub.orchestration.scheduler.engine")

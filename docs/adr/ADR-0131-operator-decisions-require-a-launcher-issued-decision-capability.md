@@ -32,7 +32,7 @@ the capability is recorded unattributed.
 `decide()` (`lionagi/studio/operator/coordinator.py::OperatorCoordinator.decide`), which claims the proposal in the store
 (`lionagi/studio/operator/store.py::OperatorStore.decide_proposal`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py::_origin_accepted_without_token`, `lionagi/studio/app.py::_fetch_site_accepted_without_origin`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionhub/src/lionhub/serve/daemon/app.py::_origin_accepted_without_token`, `lionhub/src/lionhub/serve/daemon/app.py::_fetch_site_accepted_without_origin`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
 **P2 — a code that paired a page could be minted by any such request.** `POST

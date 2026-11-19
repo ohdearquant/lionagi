@@ -17,7 +17,17 @@ imports this module and must not pull the web stack in with it. A value that is
 not an address is returned as the stripped lowercase name, and a blank one stays
 blank.
 
-## lionagi/studio/app.py
+## lionhub/src/lionhub/serve/daemon/app.py
+
+**Daemon factory and the Studio attachment (`create_daemon_app`)** — the daemon builds the root
+application: admission middleware, its own routes, `/health` and the lifespan that owns the
+scheduler, the reconnect channel, the transcript mirror and the other process resources. With no
+attachment it serves the daemon API alone and imports no Studio module. `lionagi/studio/app.py`
+supplies the one fixed attachment, `attach_studio`, which mounts the frontend and returns the
+application's route inventory and its Operator startup and shutdown; `create_app()` and `app` are
+the daemon with Studio attached. Routes from both inventories are added by inventory position,
+then in registration order within a module. A start that fails or is cancelled before serving
+runs the shutdown sequence for the steps it had begun.
 
 **Host-header validation (`_HOST_AUTHORITY_RE`/`validate_host_header`)** —
 strict authority grammar (`host` or `host:port`, or bracketed IPv6 `[addr]`
@@ -34,7 +44,7 @@ Host checked before CORS can answer. The grammar is unchanged by
 authority carrying two ports, and the normalizer only says which address an
 authority the grammar admits names.
 
-**Middleware order** in `create_app()`: Host validation -> CORS ->
+**Middleware order** in `create_daemon_app()`: Host validation -> CORS ->
 Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
 never reaches the bearer-token/Content-Type middlewares because CORS
 answers it first.
