@@ -19,6 +19,7 @@ import ipaddress
 import logging
 import os
 import re
+import weakref
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -71,11 +72,11 @@ _PUBLIC_PATHS = frozenset({"/health"})
 # A challenge is 32 lowercase hex digits, the form ``li studio`` sends.
 _RECONNECT_CHALLENGE = re.compile(r"[0-9a-f]{32}")
 
-# The reconnect key of each serving root application, by ``id``, read only by its /health. It is
-# kept here rather than on ``application.state``, which an attached application and every handler
-# reach through the request. The lifespan adds the entry while it holds the application and
-# removes it in its shielded shutdown, so an entry never outlives the object its id names.
-_reconnect_keys: dict[int, bytes] = {}
+# The reconnect key of each serving root application, read only by its /health. It is kept here
+# rather than on ``application.state``, which an attached application and every handler reach
+# through the request. Weak keys: an entry goes with its application, so a later application can
+# never read an earlier one's key.
+_reconnect_keys: weakref.WeakKeyDictionary[Any, bytes] = weakref.WeakKeyDictionary()
 
 # FastAPI built-in schema/docs routes that are NOT under /api but expose API
 # shape and must be bearer-guarded in token mode, just like /api/*.
@@ -510,7 +511,7 @@ async def lifespan(app_instance):
             begin_serving()
             reconnect = _start_reconnect_channel()
             if reconnect is not None:
-                _reconnect_keys[id(app_instance)] = reconnect.key
+                _reconnect_keys[app_instance] = reconnect.key
             if quiet_host:
                 logging.getLogger(SCHEDULER_LOGGER).info(
                     "Leg host: the transcript mirror is not started"
@@ -547,6 +548,8 @@ async def lifespan(app_instance):
                         interrupt = exc
 
             with CancelScope(shield=True):
+                if reconnect is not None:
+                    _reconnect_keys.pop(app_instance, None)
                 registry = getattr(app_instance.state, "session_tail_registry", None)
                 if registry is not None:
                     await finish(registry.aclose)
@@ -555,7 +558,9 @@ async def lifespan(app_instance):
                     disarm_traceback_dump()
                 except Exception as exc:
                     failures.append(exc)
-                _reconnect_keys.pop(id(app_instance), None)
+                except BaseException as exc:
+                    if interrupt is None:
+                        interrupt = exc
                 if reconnect is not None:
                     await finish(lambda: asyncio.to_thread(reconnect.stop))
                 await finish(lambda: _finalize_warmup(warmup_task))
@@ -855,7 +860,7 @@ def create_daemon_app(attach: Attach | None = None) -> FastAPI:
         # that the daemon on the port it was given is the one holding it. The proof covers the
         # port this request arrived on, so a listener relaying to this daemon from another
         # port cannot pass it on.
-        key = _reconnect_keys.get(id(request.app))
+        key = _reconnect_keys.get(request.app)
         server = request.scope.get("server")
         port = server[1] if server else None
         if (

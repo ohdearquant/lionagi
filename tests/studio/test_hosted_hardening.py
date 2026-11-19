@@ -1171,7 +1171,7 @@ def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client)
 
     client = make_client()
     key = bytes(range(32))
-    _reconnect_keys[id(client.app)] = key
+    _reconnect_keys[client.app] = key
     challenge = "0123456789abcdef" * 2
 
     body = client.get("/health", params={"challenge": challenge}).json()
@@ -1181,14 +1181,34 @@ def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client)
     assert body["proof"] != port_proof(key, challenge, 8766)
 
 
+def test_a_reconnect_key_goes_with_its_application():
+    import gc
+    import secrets
+
+    from fastapi import FastAPI
+
+    from lionhub.serve.daemon.app import _reconnect_keys
+
+    application = FastAPI()
+    key = secrets.token_bytes(32)
+    _reconnect_keys[application] = key
+    assert key in _reconnect_keys.values()
+
+    del application
+    gc.collect()
+
+    # A later application, whatever address it gets, can read no key of the dead one's.
+    assert key not in _reconnect_keys.values()
+
+
 def test_health_signs_nothing_without_a_key_or_for_a_malformed_challenge(make_client):
     from lionhub.serve.daemon.app import _reconnect_keys
 
     client = make_client()
-    _reconnect_keys.pop(id(client.app), None)
+    _reconnect_keys.pop(client.app, None)
     assert client.get("/health", params={"challenge": "0" * 32}).json() == {"status": "ok"}
 
-    _reconnect_keys[id(client.app)] = bytes(32)
+    _reconnect_keys[client.app] = bytes(32)
     for malformed in ("", "0" * 31, "0" * 33, "g" * 32, "A" * 32, "0" * 31 + "\n"):
         resp = client.get("/health", params={"challenge": malformed})
         assert resp.json() == {"status": "ok"}, malformed

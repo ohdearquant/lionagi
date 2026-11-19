@@ -16,9 +16,19 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
+from functools import partial
 from pathlib import Path
-from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType, SimpleNamespace
+from types import (
+    BuiltinFunctionType,
+    FunctionType,
+    MappingProxyType,
+    MethodType,
+    ModuleType,
+    SimpleNamespace,
+)
 from typing import Any
 
 import pytest
@@ -64,62 +74,91 @@ class _Secrets:
 
     def in_text(self, text: str) -> list[str]:
         return [name for name, value in self.texts.items() if value in text] + [
-            name for name, value in self.blobs.items() if value.hex() in text
+            name for name, value in self.blobs.items() if value.hex() in text.lower()
+        ]
+
+    def in_bytes(self, data: bytes) -> list[str]:
+        return [name for name, value in self.blobs.items() if value in data] + [
+            name for name, value in self.texts.items() if value.encode() in data
         ]
 
 
+def _read(obj: Any, name: str) -> tuple[bool, Any]:
+    try:
+        return True, getattr(obj, name)
+    except Exception:  # noqa: BLE001 - an attribute that raises on reading hands a handler nothing
+        return False, None
+
+
+def _slots(klass: type) -> tuple[str, ...]:
+    slots = klass.__dict__.get("__slots__", ())
+    return (slots,) if isinstance(slots, str) else tuple(slots)
+
+
 def _children(obj: Any) -> Iterator[tuple[str, Any]]:
-    if isinstance(obj, dict):
+    """What a handler holding ``obj`` reads from it by attribute or item access."""
+    if isinstance(obj, Mapping):
         for key, value in list(obj.items()):
             yield f"[{key!r}]", value
             yield f".keys({key!r})", key
-        return
-    if isinstance(obj, (list, tuple, set, frozenset)):
+    elif isinstance(obj, (Sequence, AbstractSet)):
         for index, value in enumerate(list(obj)):
             yield f"[{index}]", value
-        return
     if isinstance(obj, MethodType):
         yield ".__self__", obj.__self__
-        return
-    try:
-        namespace = getattr(obj, "__dict__", None)
-    except Exception:  # noqa: BLE001 - an object that raises on reading hands a handler nothing
-        return
-    if isinstance(namespace, dict):
+        yield ".__func__", obj.__func__
+    if isinstance(obj, partial):
+        yield ".func", obj.func
+        yield ".args", obj.args
+        yield ".keywords", obj.keywords
+    if isinstance(obj, property):
+        yield ".fget", obj.fget
+    ok, namespace = _read(obj, "__dict__")
+    if ok and isinstance(namespace, Mapping):
         for key, value in list(namespace.items()):
             yield f".{key}", value
-    for klass in type(obj).__mro__:
-        for slot in getattr(klass, "__slots__", ()):
-            if slot in ("__dict__", "__weakref__"):
-                continue
-            try:
-                yield f".{slot}", getattr(obj, slot)
-            except Exception:  # noqa: BLE001 - an unset or raising slot holds nothing to reach
-                continue
+    if isinstance(obj, (FunctionType, type)):
+        # A function's own attributes and a class's attributes, never a function's globals or
+        # closure: those are the code the application runs, outside what it is handed.
+        return
+    klass = type(obj)
+    yield ".__class__", klass
+    for owner in klass.__mro__:
+        for slot in _slots(owner):
+            if slot not in ("__dict__", "__weakref__"):
+                ok, value = _read(obj, slot)
+                if ok:
+                    yield f".{slot}", value
+        for name, attribute in list(owner.__dict__.items()):
+            if isinstance(attribute, property):
+                ok, value = _read(obj, name)
+                if ok:
+                    yield f".{name}", value
 
 
 def _reach(root: Any, secrets: _Secrets) -> list[str]:
     """Every path from ``root`` that ends at a secret, or at a module whose globals hold them."""
     found: list[str] = []
-    seen: set[int] = set()
+    # Each visited object is kept alive here, so an id is never reused by a later object.
+    seen: dict[int, Any] = {}
     stack: list[tuple[Any, str]] = [(root, "root")]
     while stack:
         obj, path = stack.pop()
         if id(obj) in seen:
             continue
-        seen.add(id(obj))
+        seen[id(obj)] = obj
         assert len(seen) <= _MAX_OBJECTS, f"the walk left the application's graph at {path}"
         if isinstance(obj, str):
-            found += [f"{path} -> {name}" for name, v in secrets.texts.items() if v in obj]
+            found += [f"{path} -> {name}" for name in secrets.in_text(obj)]
             continue
-        if isinstance(obj, (bytes, bytearray)):
-            found += [f"{path} -> {name}" for name, v in secrets.blobs.items() if v in obj]
+        if isinstance(obj, (bytes, bytearray, memoryview)):
+            found += [f"{path} -> {name}" for name in secrets.in_bytes(bytes(obj))]
             continue
         if isinstance(obj, ModuleType):
             # A module hands its globals: the daemon's are where its secrets live.
             found.append(f"{path} -> module {obj.__name__}")
             continue
-        if isinstance(obj, (FunctionType, BuiltinFunctionType, type, int, float, complex)):
+        if isinstance(obj, (BuiltinFunctionType, int, float, complex, bool)) or obj is None:
             continue
         stack.extend((child, f"{path}{step}") for step, child in _children(obj))
     return found
@@ -144,6 +183,57 @@ def test_the_walk_finds_a_secret_and_a_module_it_is_handed() -> None:
     assert _reach(SimpleNamespace(launch_access=launch_access), secrets) == [
         "root.launch_access -> module lionhub.serve.daemon.launch_access"
     ]
+
+
+def _holders(key: bytes, bearer: str) -> dict[str, Any]:
+    """Every shape a handler reads a secret from by attribute or item access alone."""
+
+    class ClassAttribute:
+        held = key
+
+        def method(self) -> None:
+            return None
+
+    class Property:
+        @property
+        def held(self) -> bytes:
+            return key
+
+    class StringSlot:
+        __slots__ = "held"
+
+        def __init__(self) -> None:
+            self.held = key
+
+    def function() -> None:
+        return None
+
+    function.held = key  # type: ignore[attr-defined]
+
+    return {
+        "class attribute": ClassAttribute(),
+        "class object": ClassAttribute,
+        "property": Property(),
+        "string slot": StringSlot(),
+        "partial argument": partial(print, key),
+        "partial keyword": partial(print, sep=bearer),
+        "function attribute": SimpleNamespace(launch=function),
+        "mapping proxy": MappingProxyType({"held": key}),
+        "deque": deque([key]),
+        "memoryview": memoryview(key),
+        "hex text": SimpleNamespace(held=key.hex()),
+        "encoded bearer": SimpleNamespace(held=bearer.encode()),
+        "bound method": SimpleNamespace(handler=ClassAttribute().method),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_holders(b"\x02" * 32, "planted-bearer")))
+def test_the_walk_finds_a_secret_in_every_holder_shape(shape: str) -> None:
+    secrets = _Secrets()
+    secrets.blob("reconnect key", b"\x02" * 32)
+    secrets.text("bearer", "planted-bearer")
+
+    assert _reach(_holders(b"\x02" * 32, "planted-bearer")[shape], secrets) != []
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")

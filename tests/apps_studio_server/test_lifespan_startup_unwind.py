@@ -111,7 +111,14 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
     return app, events
 
 
-def _instance() -> SimpleNamespace:
+class _Root:
+    """A root application stand-in: its state, and weak references like a real application."""
+
+    def __init__(self, state: SimpleNamespace) -> None:
+        self.state = state
+
+
+def _instance() -> _Root:
     """A root application's state with Studio attached, its hooks read when called."""
     from lionhub.serve.daemon.app import Attachment
 
@@ -124,7 +131,7 @@ def _instance() -> SimpleNamespace:
         await operator.operator_shutdown()
 
     attachment = Attachment(route_modules=(), startup=startup, shutdown=shutdown)
-    return SimpleNamespace(state=SimpleNamespace(session_tail_registry=None, attachment=attachment))
+    return _Root(SimpleNamespace(session_tail_registry=None, attachment=attachment))
 
 
 async def _serve_once(app, instance=None) -> None:
@@ -192,7 +199,7 @@ async def test_a_failed_mirror_start_closes_the_reconnect_socket(
         "launches.shutdown",
         "scheduler.stop",
     ]
-    assert id(instance) not in import_module("lionhub.serve.daemon.app")._reconnect_keys
+    assert instance not in import_module("lionhub.serve.daemon.app")._reconnect_keys
 
 
 @pytest.mark.asyncio
@@ -398,6 +405,30 @@ async def test_a_cancellation_raised_by_a_shutdown_step_does_not_skip_the_rest(
         "launches.shutdown",
         "scheduler.stop",
     ]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_disarm_still_runs_every_later_step_and_drops_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    instance = _instance()
+    held: list[bool] = []
+
+    def disarm_interrupted() -> None:
+        held.append(instance in app._reconnect_keys)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        async with app.lifespan(instance):
+            held.append(instance in app._reconnect_keys)
+
+    assert _after(events, "mirror.start") == FULL_STOP[1:]
+    # Held while serving, dropped before the interrupted step.
+    assert held == [True, False]
+    assert instance not in app._reconnect_keys
 
 
 @pytest.mark.asyncio
