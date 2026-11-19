@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
-from lionhub.serve.daemon.app import (  # noqa: F401 -- names this module served before the split
+from lionhub.serve.daemon.app import (  # noqa: F401 -- lifespan, validate_host_header: see below
     Attachment,
     DaemonServices,
     create_daemon_app,
@@ -29,6 +29,9 @@ from lionhub.serve.daemon.app import (  # noqa: F401 -- names this module served
 
 from .registry import _STUDIO_ROUTE_MODULES
 
+# ``lifespan`` and ``validate_host_header`` were defined here before the daemon moved to
+# lionhub. They stay importable from this module so existing imports keep resolving, and
+# are not part of its declared surface.
 __all__ = ("app", "attach_studio", "create_app")
 
 
