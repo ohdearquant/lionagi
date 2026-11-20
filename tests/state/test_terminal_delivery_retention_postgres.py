@@ -638,7 +638,14 @@ async def test_postgresql_shared_prune_preserves_non_array_references_across_chu
                 "string-survivor",
                 "null-survivor",
             }
-        assert "deferred_victim_progressions=1 non_array_survivor_progressions=3" in caplog.text
+        # The deferred victim's chunk runs first and has no messages to delete, so it
+        # reads no other collection and counts no survivors; the ordinary victim's
+        # chunk counts them, and by then the deferred progression is one of them.
+        assert "Session prune: deferred_victim_progressions=1" in caplog.messages
+        assert (
+            "Session prune: deferred_victim_progressions=0 non_array_survivor_progressions=4"
+            in caplog.messages
+        )
 
 
 @pytest.mark.parametrize("entry", ["explicit", "age"])

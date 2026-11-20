@@ -1460,8 +1460,20 @@ async def test_shared_prune_defers_non_array_victim_message_reclamation(
             "null-survivor",
         }
 
-    assert "deferred_victim_progressions=1" in caplog.text
-    assert "non_array_survivor_progressions=3" in caplog.text
+    if chunk_rows == 8:
+        assert (
+            "Session prune: deferred_victim_progressions=1 non_array_survivor_progressions=3"
+            in caplog.messages
+        )
+    else:
+        # The deferred victim's chunk runs first and has no messages to delete, so it
+        # reads no other collection and counts no survivors; the ordinary victim's
+        # chunk counts them, and by then the deferred progression is one of them.
+        assert "Session prune: deferred_victim_progressions=1" in caplog.messages
+        assert (
+            "Session prune: deferred_victim_progressions=0 non_array_survivor_progressions=4"
+            in caplog.messages
+        )
 
 
 @pytest.mark.asyncio
@@ -1506,6 +1518,69 @@ async def test_shared_prune_rolls_back_malformed_progressions(entry, malformed):
     with pytest.raises(DBAPIError, match="malformed JSON"):
         await _shared_progression_prune(entry, ["victim"])
     assert await stored_rows() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("shared_progression_prune_store")
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+@pytest.mark.parametrize(
+    "victim_messages", [[], ["old-message"]], ids=["no-messages", "with-messages"]
+)
+async def test_shared_prune_reads_every_collection_only_for_chunks_with_messages(
+    entry, victim_messages, tmp_path, monkeypatch
+):
+    """A chunk with messages to delete parses every surviving collection, so a
+    malformed collection outside its lineage fails it before its archive is
+    written. A chunk with no messages parses nothing outside its lineage, so the
+    same damage leaves it free to finish."""
+    from sqlalchemy.exc import DBAPIError
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=8)
+    old = time.time() - 60 * 86400
+    async with StateDB() as db:
+        for message_id in victim_messages:
+            await db.insert_message(
+                {"id": message_id, "created_at": old, "role": "user", "content": {}}
+            )
+        await db.create_progression("victim-history", victim_messages)
+        await db.create_progression("damaged-history")
+        await db.execute(
+            "UPDATE progressions SET collection = '[malformed' WHERE id = 'damaged-history'"
+        )
+        await db.create_session(
+            {"id": "victim", "status": "running", "progression_id": "victim-history"}
+        )
+        assert await db.update_status(
+            "session", "victim", new_status="completed", reason_code="run.completed.ok"
+        )
+        await db.execute("UPDATE sessions SET updated_at = ? WHERE id = 'victim'", (old,))
+
+    async def stored_rows():
+        async with StateDB() as db:
+            return (
+                await db.fetch_all("SELECT * FROM sessions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM progressions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM messages ORDER BY id"),
+            )
+
+    if victim_messages:
+        before = await stored_rows()
+        with pytest.raises(DBAPIError, match="malformed JSON"):
+            await _shared_progression_prune(entry, ["victim"])
+        assert await stored_rows() == before
+        assert list(archive_dir.iterdir()) == []
+        return
+
+    assert await _shared_progression_prune(entry, ["victim"]) == 1
+    async with StateDB() as db:
+        assert await db.fetch_all("SELECT id FROM sessions") == []
+        assert [
+            (row["id"], row["collection"])
+            for row in await db.fetch_all("SELECT id, collection FROM progressions")
+        ] == [("damaged-history", "[malformed")]
+    assert len(list(archive_dir.glob("*.zip"))) == 1
 
 
 # ── pause between prune chunks ────────────────────────────────────────────────
