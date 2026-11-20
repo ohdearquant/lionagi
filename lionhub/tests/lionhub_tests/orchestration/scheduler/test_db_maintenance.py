@@ -1709,6 +1709,56 @@ def test_prune_pauses_after_a_chunk_that_deleted_nothing(tmp_path, monkeypatch):
     assert events == [("sessions", 2), pause, ("sessions", 1), pause]
 
 
+def test_session_chunk_checks_terminal_status_by_session_id(tmp_path, monkeypatch):
+    """Each statement a session chunk guards with the terminal-status condition looks
+    the referenced session up by its id. Listing every terminal session instead
+    would make each statement's cost grow with the whole store."""
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", 0.0, raising=False)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old_ts)
+
+    run_async(seed())
+
+    guarded: list[tuple[str, int]] = []
+    original = maint._exec_chunked
+
+    async def recording(conn, sql_prefix, ids, extra_params=(), suffix="", suffix_params=()):
+        if suffix_params == maint._TERMINAL_SESSION_STATUSES:
+            guarded.append((f"{sql_prefix} IN ({', '.join('?' * len(ids))}){suffix}", len(ids)))
+        return await original(conn, sql_prefix, ids, extra_params, suffix, suffix_params)
+
+    monkeypatch.setattr(maint, "_exec_chunked", recording)
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 3
+
+    # Four soft-FK nullifications and two status-history deletes, per chunk of two.
+    assert len(guarded) == 6 * 2
+    statuses = maint._TERMINAL_SESSION_STATUSES
+    with sqlite3.connect(db_path) as conn:
+        for sql, id_count in guarded:
+            params = ("none",) * id_count + statuses
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+            assert any(
+                "terminal_session" in detail and "sqlite_autoindex_sessions_1 (id=?)" in detail
+                for detail in plan
+            ), (sql, plan)
+            assert not any(
+                "sessions USING" in detail and "(status=?)" in detail for detail in plan
+            ), (sql, plan)
+
+
 def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):
     """A pause of 0 disables the wait: the chunks run back to back."""
     events = _prune_three_loops_with_pause(tmp_path, monkeypatch, 0.0)

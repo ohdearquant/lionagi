@@ -1037,7 +1037,10 @@ in that zone), and the next plan reports `UNCHANGED`.
   (artifacts/plays/team_messages/dispatch_outbox) are nullified before
   DELETE since they lack CASCADE; each of those foreign-key columns has an
   index, so the nullifying UPDATE seeks its rows instead of scanning the
-  table. After each committed chunk, including one that deleted nothing
+  table. Every such statement repeats the terminal-status condition, as a
+  correlated lookup of each referenced session by id, so its cost follows the
+  chunk rather than the number of terminal sessions in the store. After each
+  committed chunk, including one that deleted nothing
   (it still locked its candidate rows), the pass waits
   `PRUNE_CHUNK_PAUSE_SECONDS` (env `LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS`,
   default 0.5, `0` disables, a non-finite value is refused at startup) with no
