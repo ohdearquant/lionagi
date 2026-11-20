@@ -37,7 +37,7 @@ def _guard_admits(host_header: str, bind_host: str) -> bool:
     from starlette.requests import Request
     from starlette.responses import JSONResponse
 
-    from lionagi.studio.app import validate_host_header
+    from lionhub.serve.daemon.app import validate_host_header
 
     request = Request(
         {

@@ -33,27 +33,18 @@ _LAUNCH_TARGET = "lionagi.studio.app:app"
 _LAUNCH_COUNT = 2
 
 # Exact old-path imports currently used by Hub tests during Studio separation.
-# The scheduler config bindings and same-owner mocks should switch to wheel
-# code. App-only checks belong with the application. The cross-boundary and
-# compatibility witnesses need an explicit home when the application moves.
-# The counts force the inventory to shrink as that work lands.
+# What remains is app-only checks, which belong with the application, and the
+# cross-boundary and compatibility witnesses, which need an explicit home when
+# the application moves. The counts force the inventory to shrink as that work
+# lands.
 _PRE_MOVE_HUB_TESTS = {
     "lionagi.studio.config": {
-        "orchestration/scheduler/conftest.py": 1,
-        "orchestration/scheduler/test_github_poll_stagnation.py": 6,
-        "orchestration/scheduler/test_github_poll_target_race.py": 1,
-        "orchestration/scheduler/test_scheduler_deferral_visibility.py": 1,
-        "orchestration/scheduler/test_scheduler_engine.py": 3,
-        "orchestration/scheduler/test_scheduler_global_slot.py": 21,
         "serve/cli/test_mirror.py": 4,
         "serve/daemon/test_settings.py": 1,
     },
     "lionagi.studio.app": {
-        "serve/cli/test_schedule_cli.py": 1,
         "serve/cli/test_schedule_cli_route_drift.py": 1,
         "serve/cli/test_scheduler_flow_yaml.py": 2,
-        "serve/cli/test_studio_cli.py": 1,
-        "serve/cli/test_studio_docker_publish.py": 1,
     },
     "lionagi.studio.cli": {
         "serve/cli/test_schedule_cli.py": 2,
