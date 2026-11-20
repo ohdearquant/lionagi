@@ -1712,8 +1712,9 @@ def test_prune_pauses_after_a_chunk_that_deleted_nothing(tmp_path, monkeypatch):
 
 def test_session_chunk_checks_terminal_status_by_session_id(tmp_path, monkeypatch):
     """Each statement a session chunk guards with the terminal-status condition looks
-    the referenced session up by its id. Listing every terminal session instead
-    would make each statement's cost grow with the whole store."""
+    the referenced session up by its id and reaches the rows it changes through an
+    index. Listing every terminal session, or scanning the changed table, would make
+    each statement's cost grow with the whole store."""
     from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
@@ -1758,6 +1759,8 @@ def test_session_chunk_checks_terminal_status_by_session_id(tmp_path, monkeypatc
             assert not any(
                 "sessions USING" in detail and "(status=?)" in detail for detail in plan
             ), (sql, plan)
+            # The table each statement changes is reached through an index as well.
+            assert not any(detail.startswith("SCAN") for detail in plan), (sql, plan)
 
 
 def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):

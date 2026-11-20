@@ -363,8 +363,8 @@ async def _prune_session_chunk(
     session_ids = sorted(set(session_ids))
 
     # Lock every candidate row for the rest of the transaction before its
-    # status is read — see the module-level design note on this race; the
-    # same hazard applies per chunk as it did to the whole set in the
+    # status is read — see `_session_retention_predicate` in
+    # docs/internals/studio.md on this race; the same hazard applies per chunk as it did to the whole set in the
     # pre-chunking version of this function.
     await _exec_chunked(
         conn,
@@ -509,8 +509,8 @@ async def _prune_session_chunk(
             preimages=preimage_rows,
         )
 
-    # Every destructive statement carries the terminal condition itself —
-    # see the module-level design note; the same reasoning applies per chunk.
+    # Every destructive statement carries the terminal condition itself, for the
+    # same race (see `_session_retention_predicate` in docs/internals/studio.md).
     # The condition is a correlated EXISTS that looks each referenced session up
     # by id. An `IN (SELECT id FROM sessions WHERE status IN (...))` form lists
     # every terminal session in the store for every statement, so its cost grows

@@ -1039,7 +1039,13 @@ in that zone), and the next plan reports `UNCHANGED`.
   index, so the nullifying UPDATE seeks its rows instead of scanning the
   table. Every such statement repeats the terminal-status condition, as a
   correlated lookup of each referenced session by id, so its cost follows the
-  chunk rather than the number of terminal sessions in the store. After each
+  chunk rather than the number of terminal sessions in the store. Two reads in
+  each session chunk do cover the whole store, because the chunk may delete a
+  message only when nothing that survives still names it: a count of every
+  progression whose collection is not an array, which also fails the chunk on
+  malformed JSON before anything is archived, and, when the chunk has messages
+  to delete, a read of every surviving progression's collection and every
+  session's and branch's message references. After each
   committed chunk, including one that deleted nothing
   (its write transaction still held the lock), the pass waits
   `PRUNE_CHUNK_PAUSE_SECONDS` (env `LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS`,
