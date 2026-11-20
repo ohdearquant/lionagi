@@ -508,9 +508,12 @@ def _index_statements(db_path) -> dict[str, str]:
 
 
 async def test_prune_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
-    """The columns that retention pruning nulls out are covered by partial indexes in
-    schema.sql, the table metadata and the runtime index list, and each nullifying
-    UPDATE plans as an index SEARCH on a store opened through StateDB."""
+    """Each index in the prune-reference list is declared alike in schema.sql, the
+    table metadata and the runtime index list, and a bare UPDATE nulling its column
+    plans as a SEARCH on it in a store opened through StateDB. The six statements a
+    session chunk runs to clear or delete its session references are planned as the
+    prune issues them by test_session_chunk_checks_terminal_status_by_session_id
+    in lionhub/tests/lionhub_tests/orchestration/scheduler/test_db_maintenance.py."""
     from lionagi.state.db import _SCHEMA_PATH, StateDB
     from lionagi.state.schema_migrations import MIGRATION_INDEXES
 
