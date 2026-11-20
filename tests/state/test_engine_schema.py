@@ -573,6 +573,51 @@ async def test_reopening_a_store_without_run_reference_indexes_adds_them(tmp_pat
         assert f"{table}({column}) WHERE {column} IS NOT NULL" in reopened.get(name, ""), name
 
 
+async def test_a_schedule_runs_table_without_chain_parent_id_gains_it_before_its_index(tmp_path):
+    """A schedule_runs table built without chain_parent_id still opens: the column is
+    added first, then the partial index on it, and the existing row is kept."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "no_chain_parent.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE schedule_runs (
+                id              TEXT PRIMARY KEY,
+                schedule_id     TEXT,
+                invocation_id   TEXT,
+                trigger_context JSON NOT NULL,
+                action_kind     TEXT NOT NULL,
+                action_args     JSON NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'running'
+                    CHECK(status IN ('queued', 'waiting_dependency',
+                          'running', 'retry_wait', 'completed',
+                          'failed', 'timed_out', 'skipped',
+                          'cancelled')),
+                fired_at        REAL NOT NULL,
+                created_at      REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO schedule_runs (id, trigger_context, action_kind, action_args, "
+            "status, fired_at, created_at) VALUES ('r1', '{}', 'agent', '[]', 'completed', 0, 0)"
+        )
+        conn.commit()
+
+    async with StateDB(db_path):
+        pass
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule_runs)")}
+        rows = conn.execute("SELECT id, chain_parent_id FROM schedule_runs").fetchall()
+    assert "chain_parent_id" in columns
+    assert rows == [("r1", None)]
+    assert "schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL" in (
+        _index_statements(db_path).get("idx_sched_runs_chain_parent", "")
+    )
+
+
 async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_meta_engine):
     """Enum CHECK value-sets from MetaData match those from real schema.sql."""
     import re
