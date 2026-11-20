@@ -1548,6 +1548,17 @@ def test_chunk_pause_setting_rejects_a_value_that_is_not_a_number(monkeypatch):
         _reload_settings_with_pause(monkeypatch, None)
 
 
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan"])
+def test_chunk_pause_setting_rejects_a_value_that_is_not_finite(monkeypatch, raw):
+    """An infinite pause would hang the prune after its first chunk and nan would
+    be read as 0, so a non-finite value fails at import instead."""
+    try:
+        with pytest.raises(ValueError, match="must be finite"):
+            _reload_settings_with_pause(monkeypatch, raw)
+    finally:
+        _reload_settings_with_pause(monkeypatch, None)
+
+
 _PAUSE_PROBE_SECONDS = 0.0371
 
 

@@ -1037,9 +1037,9 @@ in that zone), and the next plan reports `UNCHANGED`.
   (artifacts/plays/team_messages/dispatch_outbox) are nullified before
   DELETE since they lack CASCADE. After each committed chunk the pass waits
   `PRUNE_CHUNK_PAUSE_SECONDS` (env `LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS`,
-  default 0.5, `0` disables) with no transaction open, so a writer waiting on
-  the store's busy handler can take the write lock before the next chunk
-  starts.
+  default 0.5, `0` disables, a non-finite value is refused at startup) with no
+  transaction open, so a writer waiting on the store's busy handler can take
+  the write lock before the next chunk starts.
 
 ## lionagi/studio/services/attention.py
 

@@ -171,10 +171,14 @@ PRUNE_CHUNK_ROWS: int = max(1, int(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_RO
 
 # Seconds the prune waits after each committed chunk before starting the next.
 # No transaction is open during the wait, so other writers queued behind the
-# write lock get a turn between chunks; 0 disables the wait.
-PRUNE_CHUNK_PAUSE_SECONDS: float = max(
-    0.0, float(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS", "0.5"))
-)
+# write lock get a turn between chunks; 0 disables the wait. An infinite wait
+# would never return and nan is not a duration, so a non-finite value is refused.
+_PRUNE_CHUNK_PAUSE_RAW = os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS", "0.5")
+if not math.isfinite(float(_PRUNE_CHUNK_PAUSE_RAW)):
+    raise ValueError(
+        f"LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS must be finite, got {_PRUNE_CHUNK_PAUSE_RAW!r}"
+    )
+PRUNE_CHUNK_PAUSE_SECONDS: float = max(0.0, float(_PRUNE_CHUNK_PAUSE_RAW))
 
 # Minimum seconds between automatic retention prunes from the scheduler tick;
 # 0 disables the automatic pass and leaves prune to the admin route. The gap is
