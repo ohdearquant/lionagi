@@ -760,6 +760,14 @@ Index(
     sqlite_where=text("invocation_id IS NOT NULL"),
     postgresql_where=text("invocation_id IS NOT NULL"),
 )
+# Pruning a run clears chain_parent_id on the runs that point at it; this index
+# lets that UPDATE seek the matching rows instead of scanning schedule_runs.
+Index(
+    "idx_sched_runs_chain_parent",
+    schedule_runs.c.chain_parent_id,
+    sqlite_where=text("chain_parent_id IS NOT NULL"),
+    postgresql_where=text("chain_parent_id IS NOT NULL"),
+)
 Index(
     "idx_schedule_runs_queue",
     schedule_runs.c.status,
@@ -1183,6 +1191,14 @@ Index(
     dispatch_outbox.c.next_attempt_at,
     sqlite_where=text("status IN ('pending', 'delivering')"),
     postgresql_where=text("status IN ('pending', 'delivering')"),
+)
+# Pruning a run clears schedule_run_id on the dispatches that point at it; this
+# index lets that UPDATE seek the matching rows instead of scanning the outbox.
+Index(
+    "idx_dispatch_outbox_schedule_run",
+    dispatch_outbox.c.schedule_run_id,
+    sqlite_where=text("schedule_run_id IS NOT NULL"),
+    postgresql_where=text("schedule_run_id IS NOT NULL"),
 )
 
 # run_tags
