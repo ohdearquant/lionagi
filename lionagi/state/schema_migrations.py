@@ -285,14 +285,17 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
 )
 
 # Pruning a run clears chain_parent_id on schedule_runs and schedule_run_id on
-# dispatch_outbox for every row that points at it. Neither foreign-key column had
-# an index, so each of those UPDATEs had nothing to seek with; stores created
-# before the declaration get the indexes from this table.
-_RUN_REFERENCE_INDEXES = (
+# dispatch_outbox for every row that points at it, and pruning a session clears
+# session_id on dispatch_outbox. None of those foreign-key columns had an index,
+# so each of those UPDATEs had nothing to seek with; stores created before the
+# declaration get the indexes from this table.
+_PRUNE_REFERENCE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_sched_runs_chain_parent "
     "ON schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_schedule_run "
     "ON dispatch_outbox(schedule_run_id) WHERE schedule_run_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_session "
+    "ON dispatch_outbox(session_id) WHERE session_id IS NOT NULL",
 )
 
 RECENT_VISIBLE_INDEXES = {
@@ -338,7 +341,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON status_transitions(id) WHERE delivery_eligible IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
         "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
-        *_RUN_REFERENCE_INDEXES,
+        *_PRUNE_REFERENCE_INDEXES,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -372,7 +375,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON status_transitions(id) WHERE delivery_eligible IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
         "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
-        *_RUN_REFERENCE_INDEXES,
+        *_PRUNE_REFERENCE_INDEXES,
     ),
 }
 

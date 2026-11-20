@@ -511,14 +511,23 @@ async def _prune_session_chunk(
 
     # Every destructive statement carries the terminal condition itself —
     # see the module-level design note; the same reasoning applies per chunk.
-    still_terminal = f" AND session_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+    # The condition is a correlated EXISTS that looks each referenced session up
+    # by id. An `IN (SELECT id FROM sessions WHERE status IN (...))` form lists
+    # every terminal session in the store for every statement, so its cost grows
+    # with the whole store rather than with the chunk.
+    def still_terminal(column: str) -> str:
+        return (
+            f" AND EXISTS (SELECT 1 FROM sessions terminal_session"  # noqa: S608
+            f" WHERE terminal_session.id = {column}"
+            f" AND terminal_session.status IN ({sess_ph}))"
+        )
 
     for table in ("artifacts", "plays", "team_messages", "dispatch_outbox"):
         await _exec_chunked(
             conn,
             f"UPDATE {table} SET session_id = NULL WHERE session_id",  # noqa: S608
             session_ids,
-            suffix=still_terminal,
+            suffix=still_terminal(f"{table}.session_id"),
             suffix_params=_TERMINAL_SESSION_STATUSES,
         )
     await _exec_chunked(
@@ -526,16 +535,14 @@ async def _prune_session_chunk(
         "DELETE FROM terminal_deliveries WHERE transition_id IN ("
         "SELECT id FROM status_transitions WHERE entity_type = 'session' AND entity_id",
         session_ids,
-        suffix=f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph})))",  # noqa: S608
+        suffix=still_terminal("status_transitions.entity_id") + ")",
         suffix_params=_TERMINAL_SESSION_STATUSES,
     )
     await _exec_chunked(
         conn,
         "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
         session_ids,
-        suffix=(
-            f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
-        ),
+        suffix=still_terminal("status_transitions.entity_id"),
         suffix_params=_TERMINAL_SESSION_STATUSES,
     )
     # branches cascade automatically via FK ON DELETE CASCADE
@@ -893,7 +900,10 @@ async def prune_old_data(
             # The chunk has committed and no transaction is open. A writer waiting on
             # the write lock retries on the busy handler's backoff, which sleeps up to
             # 100 ms per retry, so it cannot win a gap shorter than that sleep. Waiting
-            # here leaves the lock free long enough for it to take a turn.
+            # here leaves the lock free long enough for it to take a turn. Every chunk
+            # runs in its own write transaction, which on SQLite holds the store's single
+            # writer slot from its first statement, so a chunk that deleted nothing (all
+            # of its sessions kept) still held the lock, and the wait follows it too.
             if PRUNE_CHUNK_PAUSE_SECONDS > 0:
                 await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 
