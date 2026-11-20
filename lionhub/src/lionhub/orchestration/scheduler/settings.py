@@ -169,7 +169,7 @@ PRUNE_ARCHIVE_DIR: Path | None = (
 # prune keeps the chunks that already committed.
 PRUNE_CHUNK_ROWS: int = max(1, int(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_ROWS", "100")))
 
-# Seconds the prune waits after each committed chunk before starting the next.
+# Seconds the prune waits after each committed chunk, before it writes again.
 # No transaction is open during the wait, so other writers queued behind the
 # write lock get a turn between chunks; 0 disables the wait. An infinite wait
 # would never return and nan is not a duration, so a non-finite value is refused.
