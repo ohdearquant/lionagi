@@ -30,6 +30,10 @@ class _Boom(Exception):
     pass
 
 
+class _Interrupt(BaseException):
+    pass
+
+
 def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None = None):
     """The app with each startup and shutdown step replaced by one that records its name.
 
@@ -545,3 +549,199 @@ async def test_a_start_failure_is_logged_when_its_cleanup_is_interrupted(
         if record.getMessage() == "Studio startup failed and its cleanup was interrupted"
     ]
     assert [type(record.exc_info[1]) for record in logged] == [_Boom]
+
+
+async def _tail_that_ignores_its_stop_event() -> None:
+    while True:
+        await asyncio.sleep(0.01)
+
+
+class _ShortGrace:
+    """``asyncio`` for the daemon module, with the stop's ten second grace cut short."""
+
+    def __getattr__(self, name: str):
+        return getattr(asyncio, name)
+
+    @staticmethod
+    async def wait(fs, *, timeout=None):
+        return await asyncio.wait(fs, timeout=None if timeout is None else 0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_mirror_stop_cancels_the_tail_it_waits_on() -> None:
+    app = import_module("lionhub.serve.daemon.app")
+    tail = asyncio.create_task(_tail_that_ignores_its_stop_event())
+    try:
+        await asyncio.sleep(0)
+        caller = asyncio.create_task(app._stop_claude_mirror(asyncio.Event(), tail))
+        await asyncio.sleep(0)
+        caller.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=5)
+        await asyncio.wait({tail}, timeout=1)
+
+        assert tail.cancelled()
+    finally:
+        tail.cancel()
+        await asyncio.wait({tail})
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_mirror_stop_cancels_a_tail_the_backstop_waits_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = import_module("lionhub.serve.daemon.app")
+    monkeypatch.setattr(app, "asyncio", _ShortGrace())
+    cancelled_once = asyncio.Event()
+    never = asyncio.Event()
+
+    async def tail_that_holds_on_through_its_first_cancellation() -> None:
+        # Holds on through the backstop's cancellation, as a write in flight would.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_once.set()
+            await never.wait()
+
+    tail = asyncio.create_task(tail_that_holds_on_through_its_first_cancellation())
+    try:
+        await asyncio.sleep(0)
+        caller = asyncio.create_task(app._stop_claude_mirror(asyncio.Event(), tail))
+        await asyncio.wait_for(cancelled_once.wait(), timeout=5)
+        caller.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=5)
+        await asyncio.wait({tail}, timeout=1)
+
+        assert tail.cancelled()
+    finally:
+        tail.cancel()
+        await asyncio.wait({tail})
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_tail_cancelled_elsewhere_while_stopping_is_stopped_quietly() -> None:
+    app = import_module("lionhub.serve.daemon.app")
+    tail = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    stopping = asyncio.create_task(app._stop_claude_mirror(asyncio.Event(), tail))
+    await asyncio.sleep(0)
+    tail.cancel()
+
+    await asyncio.wait_for(stopping, timeout=5)
+
+    assert tail.cancelled()
+
+
+_FURTHER_INTERRUPT = "A further interrupt reached an already interrupted Studio shutdown"
+
+
+def _further_interrupts(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The records that report a further interrupt during an interrupted shutdown."""
+    return [record for record in caplog.records if record.getMessage() == _FURTHER_INTERRUPT]
+
+
+@pytest.mark.asyncio
+async def test_a_further_interrupt_during_an_interrupted_shutdown_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    launches = import_module("lionhub.serve.daemon.services.launches")
+    first, second = _Interrupt("first"), _Interrupt("second")
+
+    async def mirror_stop_interrupted(stop, task):
+        raise first
+
+    async def launches_shutdown_interrupted() -> None:
+        raise second
+
+    monkeypatch.setattr(app, "_stop_claude_mirror", mirror_stop_interrupted)
+    monkeypatch.setattr(launches, "shutdown_launches", launches_shutdown_interrupted)
+
+    with caplog.at_level(logging.ERROR, logger=app.__name__):
+        with pytest.raises(_Interrupt) as info:
+            await _serve_once(app)
+
+    assert info.value is first
+    assert _after(events, "warmup.finish") == ["operator.shutdown", "scheduler.stop"]
+    logged = _further_interrupts(caplog)
+    assert [record.exc_info[1] for record in logged] == [second]
+    assert [record.levelno for record in logged] == [logging.ERROR]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_after_an_interrupted_disarm_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    first, second = _Interrupt("first"), _Interrupt("second")
+
+    def disarm_interrupted() -> None:
+        raise first
+
+    async def mirror_stop_interrupted(stop, task):
+        raise second
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_interrupted)
+    monkeypatch.setattr(app, "_stop_claude_mirror", mirror_stop_interrupted)
+
+    with caplog.at_level(logging.ERROR, logger=app.__name__):
+        with pytest.raises(_Interrupt) as info:
+            await _serve_once(app)
+
+    assert info.value is first
+    assert _after(events, "mirror.start") == [
+        "reconnect.stop",
+        "warmup.finish",
+        "operator.shutdown",
+        "launches.shutdown",
+        "scheduler.stop",
+    ]
+    assert [record.exc_info[1] for record in _further_interrupts(caplog)] == [second]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_disarm_after_an_interrupted_step_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+    first, second = _Interrupt("first"), _Interrupt("second")
+
+    class _Registry:
+        async def aclose(self) -> None:
+            raise first
+
+    def disarm_interrupted() -> None:
+        raise second
+
+    instance = _instance()
+    instance.state.session_tail_registry = _Registry()
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_interrupted)
+
+    with caplog.at_level(logging.ERROR, logger=app.__name__):
+        with pytest.raises(_Interrupt) as info:
+            await _serve_once(app, instance)
+
+    assert info.value is first
+    assert _after(events, "mirror.start") == FULL_STOP[1:]
+    assert [record.exc_info[1] for record in _further_interrupts(caplog)] == [second]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_disarm_is_a_shutdown_failure_and_later_steps_still_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events = _recording_lifespan(monkeypatch)
+
+    def disarm_fails() -> None:
+        raise RuntimeError("disarm failed")
+
+    monkeypatch.setattr(app, "disarm_traceback_dump", disarm_fails)
+
+    with pytest.raises(ExceptionGroup, match="Studio shutdown failed") as info:
+        await _serve_once(app)
+
+    assert [type(exc) for exc in info.value.exceptions] == [RuntimeError]
+    assert _after(events, "mirror.start") == FULL_STOP[1:]

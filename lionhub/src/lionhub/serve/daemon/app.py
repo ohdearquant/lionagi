@@ -326,15 +326,22 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
 
     Waits with :func:`asyncio.wait`, which returns when the tail ends however it ends, so a
     tail that something else cancelled is not mistaken for a cancellation of this shutdown.
-    Only a cancellation of the caller propagates from here.
+    Only a cancellation of the caller propagates from here, and it cancels the tail first so
+    the tail is not left running with nobody waiting on it.
     """
     if stop is None or task is None:
         return
     stop.set()
-    _done, pending = await asyncio.wait({task}, timeout=10)
-    if pending:
+    try:
+        _done, pending = await asyncio.wait({task}, timeout=10)
+        if pending:
+            task.cancel()
+            await asyncio.wait({task})
+    except asyncio.CancelledError:
+        # During the backstop wait the tail was already cancelled once; cancelling it again
+        # ends a tail that held out against the first cancel.
         task.cancel()
-        await asyncio.wait({task})
+        raise
     if task.cancelled():
         return
     if task.exception() is not None:
@@ -534,32 +541,44 @@ async def lifespan(app_instance):
             failures: list[Exception] = []
             interrupt: BaseException | None = None
 
+            def record(exc: BaseException) -> None:
+                # A failure is kept for the group raised afterwards. The first interrupt is
+                # kept to be re-raised; a further one cannot be, so it is logged here instead
+                # of being dropped.
+                nonlocal interrupt
+                if isinstance(exc, Exception):
+                    failures.append(exc)
+                elif interrupt is None:
+                    interrupt = exc
+                else:
+                    _log.error(
+                        "A further interrupt reached an already interrupted Studio shutdown",
+                        exc_info=exc,
+                    )
+
             async def finish(operation: Any) -> None:
                 # Every step runs whatever an earlier one raised. The shield holds off an
                 # AnyIO cancellation, not a native task.cancel(): one that lands inside a
                 # step is held here and re-raised after the last step, so it cannot cut the
                 # shutdown short.
-                nonlocal interrupt
                 try:
                     await operation()
-                except Exception as exc:
-                    failures.append(exc)
                 except BaseException as exc:
-                    if interrupt is None:
-                        interrupt = exc
+                    record(exc)
+
+            def finish_sync(operation: Any) -> None:
+                # The same handling for a synchronous step.
+                try:
+                    operation()
+                except BaseException as exc:
+                    record(exc)
 
             with CancelScope(shield=True):
                 registry = getattr(app_instance.state, "session_tail_registry", None)
                 if registry is not None:
                     await finish(registry.aclose)
                     app_instance.state.session_tail_registry = None
-                try:
-                    disarm_traceback_dump()
-                except Exception as exc:
-                    failures.append(exc)
-                except BaseException as exc:
-                    if interrupt is None:
-                        interrupt = exc
+                finish_sync(disarm_traceback_dump)
                 if reconnect is not None:
                     # The key goes before its channel stops, after the registry and the disarm.
                     _reconnect_keys.pop(app_instance, None)
