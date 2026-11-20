@@ -893,7 +893,9 @@ async def prune_old_data(
             # The chunk has committed and no transaction is open. A writer waiting on
             # the write lock retries on the busy handler's backoff, which sleeps up to
             # 100 ms per retry, so it cannot win a gap shorter than that sleep. Waiting
-            # here leaves the lock free long enough for it to take a turn.
+            # here leaves the lock free long enough for it to take a turn. Every chunk
+            # locks its candidate rows before the recheck, so one that deleted nothing
+            # (all of its sessions kept) still held the lock, and the wait follows it too.
             if PRUNE_CHUNK_PAUSE_SECONDS > 0:
                 await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 

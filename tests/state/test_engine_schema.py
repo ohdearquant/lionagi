@@ -488,6 +488,7 @@ async def test_invocation_reaper_index_matches_every_schema_path(tmp_path, sqlit
 _RUN_REFERENCE_INDEXES = (
     ("idx_sched_runs_chain_parent", "schedule_runs", "chain_parent_id"),
     ("idx_dispatch_outbox_schedule_run", "dispatch_outbox", "schedule_run_id"),
+    ("idx_dispatch_outbox_session", "dispatch_outbox", "session_id"),
 )
 
 
@@ -508,8 +509,8 @@ def _index_statements(db_path) -> dict[str, str]:
 
 async def test_run_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
     """The columns that retention pruning nulls out are covered by partial indexes in
-    schema.sql, the table metadata and the runtime index list, and the two UPDATEs
-    plan as an index SEARCH on a store opened through StateDB."""
+    schema.sql, the table metadata and the runtime index list, and each nullifying
+    UPDATE plans as an index SEARCH on a store opened through StateDB."""
     from lionagi.state.db import _SCHEMA_PATH, StateDB
     from lionagi.state.schema_migrations import MIGRATION_INDEXES
 

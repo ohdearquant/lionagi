@@ -1003,6 +1003,9 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_due
 -- index lets that UPDATE seek the matching rows instead of scanning the outbox.
 CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_schedule_run
   ON dispatch_outbox(schedule_run_id) WHERE schedule_run_id IS NOT NULL;
+-- Pruning a session clears session_id on its dispatches the same way.
+CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_session
+  ON dispatch_outbox(session_id) WHERE session_id IS NOT NULL;
 
 -- ── Approvals (studio operator permission ledger) ──────────────────────────
 -- Server-side confirm-flow: a mutating action is proposed, a human grants or

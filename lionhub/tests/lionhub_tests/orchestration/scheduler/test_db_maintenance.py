@@ -1664,6 +1664,48 @@ def test_prune_pauses_after_each_committed_chunk_in_every_loop(tmp_path, monkeyp
     ]
 
 
+def test_prune_pauses_after_a_chunk_that_deleted_nothing(tmp_path, monkeypatch):
+    """A chunk takes the write lock before its recheck, so one whose sessions are all
+    kept still held the lock, and the pause follows it like any other chunk."""
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+    monkeypatch.setattr(
+        scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", _PAUSE_PROBE_SECONDS, raising=False
+    )
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old_ts)
+
+    run_async(seed())
+
+    async def keep_every_session(conn, session_ids, **_kwargs):
+        # The real chunk's first statement: lock the candidates, then keep them all.
+        await maint._exec_chunked(
+            conn, "UPDATE sessions SET updated_at = updated_at WHERE id", session_ids
+        )
+        return 0, len(session_ids)
+
+    monkeypatch.setattr(maint, "_prune_session_chunk", keep_every_session)
+    events: list = []
+    _record_chunks_and_pauses(monkeypatch, events, db_path)
+    result = run_async(
+        maint.prune_old_data(keep_days=30, dispatch_success_keep_days=7, actor="test")
+    )
+
+    assert result["sessions_pruned"] == 0
+    pause = ("pause", _PAUSE_PROBE_SECONDS)
+    assert events == [("sessions", 2), pause, ("sessions", 1), pause]
+
+
 def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):
     """A pause of 0 disables the wait: the chunks run back to back."""
     events = _prune_three_loops_with_pause(tmp_path, monkeypatch, 0.0)
