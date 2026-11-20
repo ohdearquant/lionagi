@@ -259,12 +259,17 @@ class TestMarketplaceSourcePaths:
 
 class TestMarketplaceRootLookup:
     @staticmethod
-    def _checkout(tmp_path: Path) -> Path:
-        """A directory under tmp_path that holds the marketplace manifest."""
-        root = tmp_path / "checkout"
+    def _project(root: Path, name: str) -> Path:
+        """Make ``root`` hold the marketplace manifest and a pyproject naming ``name``."""
         (root / ".claude-plugin").mkdir(parents=True)
         (root / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"plugins": []}))
+        (root / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "0"\n')
         return root
+
+    @classmethod
+    def _checkout(cls, tmp_path: Path) -> Path:
+        """A lionagi checkout under tmp_path."""
+        return cls._project(tmp_path / "checkout", "lionagi")
 
     def test_module_root_is_the_fixed_depth_ancestor_at_the_current_location(self):
         """In a source checkout the resolved root is the directory a fixed
@@ -301,12 +306,41 @@ class TestMarketplaceRootLookup:
         import lionagi.studio.services.plugins as plugins_mod
 
         outer = self._checkout(tmp_path)
-        inner = outer / "apps" / "inner"
-        (inner / ".claude-plugin").mkdir(parents=True)
-        (inner / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"plugins": []}))
+        inner = self._project(outer / "apps" / "inner", "lionagi")
         module_file = inner / "pkg" / "sub" / "plugins.py"
 
         assert plugins_mod._find_repo_root(module_file) == inner
+
+    def test_another_projects_marketplace_is_passed_over(self, tmp_path):
+        """A vendored copy inside another project with a marketplace keeps looking upward."""
+        import lionagi.studio.services.plugins as plugins_mod
+
+        checkout = self._checkout(tmp_path)
+        other = self._project(checkout / "work" / "other", "other-project")
+        module_file = other / "vendor" / "lionagi" / "studio" / "services" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == checkout
+
+    @pytest.mark.parametrize(
+        "pyproject",
+        [None, '[project]\nname = "lionagi-extra"\n', '[project]\n# name = "lionagi"\n'],
+        ids=["no-pyproject", "other-name", "commented-name"],
+    )
+    def test_a_manifest_without_the_lionagi_project_is_not_a_root(self, tmp_path, pyproject):
+        """The manifest alone does not make a root; the pyproject must name lionagi."""
+        import lionagi.studio.services.plugins as plugins_mod
+
+        for ancestor in (tmp_path, *tmp_path.parents):
+            if plugins_mod._is_project_root(ancestor):
+                pytest.skip("an ancestor of the temporary directory is a lionagi checkout")
+        root = tmp_path / "proj"
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"plugins": []}))
+        if pyproject is not None:
+            (root / "pyproject.toml").write_text(pyproject)
+        module_file = root / "a" / "b" / "c" / "d" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == module_file.parents[3]
 
     def test_ancestor_with_only_a_plugin_manifest_is_skipped(self, tmp_path):
         """A .claude-plugin directory without marketplace.json does not make a root."""

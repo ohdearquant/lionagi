@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -17,21 +18,34 @@ from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
 _INSTALL_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
+_PROJECT_NAME_LINE = re.compile(r'^name\s*=\s*"lionagi"\s*$', re.MULTILINE)
+
+
+def _is_project_root(directory: Path) -> bool:
+    """Whether ``directory`` is a lionagi checkout holding the plugin marketplace manifest."""
+    if not (directory / ".claude-plugin" / "marketplace.json").is_file():
+        return False
+    try:
+        pyproject = (directory / "pyproject.toml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _PROJECT_NAME_LINE.search(pyproject) is not None
 
 
 def _find_repo_root(start: Path) -> Path:
-    """Return the nearest ancestor of ``start`` holding ``.claude-plugin/marketplace.json``.
+    """Return the nearest ancestor of ``start`` that is the lionagi project root.
 
-    ``start`` is a file path, so the search begins at its directory and moves up. It stops at
-    a ``site-packages`` or ``dist-packages`` directory: an installed copy belongs to its
-    environment, and a manifest in a directory that happens to enclose that environment is
-    not this package's. When the search stops or no ancestor holds the manifest, the result
-    is ``start.parents[3]``.
+    A project root holds ``.claude-plugin/marketplace.json`` and a ``pyproject.toml`` naming
+    the project ``lionagi``, so another project's marketplace that happens to enclose this
+    copy is passed over. ``start`` is a file path, so the search begins at its directory and
+    moves up. It stops at a ``site-packages`` or ``dist-packages`` directory: an installed
+    copy belongs to its environment, even when that environment sits inside a checkout. When
+    the search stops or finds no root, the result is ``start.parents[3]``.
     """
     for ancestor in start.parents:
         if ancestor.name in _INSTALL_DIR_NAMES:
             break
-        if (ancestor / ".claude-plugin" / "marketplace.json").is_file():
+        if _is_project_root(ancestor):
             return ancestor
     return start.parents[3]
 
