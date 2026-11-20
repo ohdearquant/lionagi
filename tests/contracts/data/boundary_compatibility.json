@@ -158,6 +158,7 @@
       "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
       "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
       "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",

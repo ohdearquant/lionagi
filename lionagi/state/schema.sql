@@ -679,6 +679,10 @@ CREATE INDEX IF NOT EXISTS idx_sched_runs_status
   ON schedule_runs(status) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS idx_sched_runs_invocation
   ON schedule_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+-- Pruning a run clears chain_parent_id on the runs that point at it; this index
+-- lets that UPDATE seek the matching rows instead of scanning schedule_runs.
+CREATE INDEX IF NOT EXISTS idx_sched_runs_chain_parent
+  ON schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue
   ON schedule_runs(status, queued_at)
   WHERE status IN ('queued', 'retry_wait');
@@ -995,6 +999,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_outbox_dedup
 CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_due
   ON dispatch_outbox(status, next_attempt_at)
   WHERE status IN ('pending', 'delivering');
+-- Pruning a run clears schedule_run_id on the dispatches that point at it; this
+-- index lets that UPDATE seek the matching rows instead of scanning the outbox.
+CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_schedule_run
+  ON dispatch_outbox(schedule_run_id) WHERE schedule_run_id IS NOT NULL;
 
 -- ── Approvals (studio operator permission ledger) ──────────────────────────
 -- Server-side confirm-flow: a mutating action is proposed, a human grants or
