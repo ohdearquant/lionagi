@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.studio.test_schedule_chain_validation import (
+from tests._schedule_write_stubs import (
     _create_data,
     _existing,
     _run_create,

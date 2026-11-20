@@ -1104,7 +1104,7 @@ def _host_guard_status(host_header: str) -> int:
     from starlette.requests import Request
     from starlette.responses import JSONResponse
 
-    from lionagi.studio.app import validate_host_header
+    from lionhub.serve.daemon.app import validate_host_header
 
     request = Request(
         {

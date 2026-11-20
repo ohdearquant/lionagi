@@ -88,8 +88,6 @@ async def test_old_poll_cannot_dispatch_or_advance_a_retargeted_schedule(
 async def test_held_old_batch_is_discarded_after_target_changes_away_and_back(
     stores, client, process, monkeypatch
 ):
-    import lionagi.studio.config as config
-
     db, editor, reader = stores
     initial = github_module._cursor_for("2026-10-24T10:00:00Z", 0)
     await _schedule(db, streak=0, github_cursor=initial)

@@ -59,9 +59,12 @@ COPY lionhub/src/lionhub/ ./lionhub/src/lionhub/
 RUN pip install --no-cache-dir ".[studio]"
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
-# views resolve resources. plugins.py tries _THIS.parents[3] first then
-# falls back to LIONAGI_HOME paths; in the container, /app/lionagi/ on
-# sys.path makes parents[3] = /app.
+# views resolve resources. plugins.py walks up from its own location to the
+# nearest directory holding .claude-plugin/marketplace.json and the lionagi
+# pyproject.toml (copied above), then falls back to LIONAGI_HOME paths.
+# uvicorn puts its working directory (/app) first on sys.path, so lionagi
+# imports from /app/lionagi/ and the walk ends at /app. A copy imported from
+# site-packages stops its walk there and falls back.
 COPY marketplace/ ./marketplace/
 COPY .claude-plugin/ ./.claude-plugin/
 

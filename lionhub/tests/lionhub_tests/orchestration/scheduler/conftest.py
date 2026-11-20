@@ -8,7 +8,6 @@ import pytest
 @pytest.fixture(autouse=True)
 def _disable_claude_mirror(monkeypatch):
     """Keep Studio's in-process mirror disabled for tests that need its settings."""
-    import lionagi.studio.config as config_mod
     import lionhub.serve.daemon.settings as daemon_settings
 
     monkeypatch.setattr(daemon_settings, "MIRROR_CLAUDE_ENABLED", False)

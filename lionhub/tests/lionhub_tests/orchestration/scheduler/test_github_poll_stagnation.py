@@ -751,8 +751,6 @@ async def test_capped_filtered_scan_preserves_cursor_and_counts_as_stagnation(
 async def test_held_and_reheld_batch_are_neutral_then_no_poll_launch_resets(
     stores, client, process, monkeypatch, capped
 ):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1), _pr(2, safe=False)] if capped else [_pr(1)], more=capped)
@@ -796,8 +794,6 @@ async def test_held_and_reheld_batch_are_neutral_then_no_poll_launch_resets(
 
 @pytest.mark.asyncio
 async def test_stale_batch_uses_actual_fresh_complete_poll(stores, client, process, monkeypatch):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db)
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -817,8 +813,6 @@ async def test_stale_batch_uses_actual_fresh_complete_poll(stores, client, proce
 
 @pytest.mark.asyncio
 async def test_limit_change_keeps_held_batch_without_skipping(stores, client, process, monkeypatch):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db, streak=0, github_filter={"event": "pr_merged", "merged_page_limit": 5})
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -851,8 +845,6 @@ async def test_limit_change_keeps_held_batch_without_skipping(stores, client, pr
 async def test_fresh_pagination_error_releases_no_events_or_held_batch(
     stores, client, process, monkeypatch, status, capacity_occupied
 ):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db)
     import lionhub.orchestration.schedule.validation as schedule_validation
@@ -943,8 +935,6 @@ async def test_interrupted_poll_without_launch_is_neutral(stores, client, failur
 
 @pytest.mark.asyncio
 async def test_committed_but_unlaunched_true_is_not_progress(stores, client, process, monkeypatch):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1)])
@@ -1170,8 +1160,6 @@ async def test_initial_http_errors_leave_both_observers_unchanged(stores, client
 
 @pytest.mark.asyncio
 async def test_confirmed_exit_resets_even_without_launch_callback(stores, client, monkeypatch):
-    import lionagi.studio.config as config
-
     db, _, reader = stores
     await _schedule(db)
     client.response = _Response([_pr(1)])

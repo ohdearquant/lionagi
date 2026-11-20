@@ -17,36 +17,8 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
+from tests._stale_session_seed import _seed_stale_session  # noqa: E402
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
-
-
-async def _seed_stale_session(
-    db_path,
-    session_id: str,
-    last_message_at: float | None = None,
-    updated_at: float | None = None,
-) -> None:
-    from lionagi.state.db import StateDB
-
-    async with StateDB(db_path) as db:
-        pid = str(uuid.uuid4())
-        await db.create_progression(pid)
-        old_time = last_message_at or (time.time() - 7 * 3600)  # 7h old → stale
-        await db.create_session(
-            {
-                "id": session_id,
-                "progression_id": pid,
-                "name": "stale-session",
-                "status": "running",
-                "started_at": old_time,
-            }
-        )
-        # Set last_message_at and updated_at explicitly
-        _up = updated_at or old_time
-        await db.execute(
-            "UPDATE sessions SET last_message_at=?, updated_at=? WHERE id=?",
-            (old_time, _up, session_id),
-        )
 
 
 def _make_admin_client(tmp_path, monkeypatch, db_path):
