@@ -189,6 +189,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # Element.to_dict(mode="db") payload. NULL means no resume state
         # has been captured for this run.
         ("resume_packet", "JSON"),
+        # Every schedule_runs table this package creates has chain_parent_id. A table
+        # built another way may not, and idx_sched_runs_chain_parent below cannot be
+        # created without it.
+        ("chain_parent_id", "TEXT REFERENCES schedule_runs(id)"),
     ],
     # engine run persistence; created via schema.sql, these columns allow
     # ALTER TABLE on existing databases that pre-date this table
