@@ -364,8 +364,8 @@ async def _prune_session_chunk(
 
     # Lock every candidate row for the rest of the transaction before its
     # status is read — see `_session_retention_predicate` in
-    # docs/internals/studio.md on this race; the same hazard applies per chunk as it did to the whole set in the
-    # pre-chunking version of this function.
+    # docs/internals/studio.md on this race; the same hazard applies per chunk
+    # as it did to the whole set in the pre-chunking version of this function.
     await _exec_chunked(
         conn,
         "UPDATE sessions SET updated_at = updated_at WHERE id",
