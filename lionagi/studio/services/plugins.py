@@ -16,7 +16,21 @@ from ..registry import studio_route
 from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
-_REPO_ROOT = _THIS.parents[3]  # lionagi/studio/services/plugins.py → parents[3] = repo root
+
+
+def _find_repo_root(start: Path) -> Path:
+    """Return the nearest ancestor of ``start`` holding ``.claude-plugin/marketplace.json``.
+
+    ``start`` is a file path, so the search begins at its directory and moves up. When no
+    ancestor holds the manifest, the result is ``start.parents[3]``.
+    """
+    for ancestor in start.parents:
+        if (ancestor / ".claude-plugin" / "marketplace.json").is_file():
+            return ancestor
+    return start.parents[3]
+
+
+_REPO_ROOT = _find_repo_root(_THIS)
 MARKETPLACE_DIR = _REPO_ROOT / "marketplace"
 
 if not MARKETPLACE_DIR.exists():

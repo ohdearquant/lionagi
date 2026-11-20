@@ -59,9 +59,10 @@ COPY lionhub/src/lionhub/ ./lionhub/src/lionhub/
 RUN pip install --no-cache-dir ".[studio]"
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
-# views resolve resources. plugins.py tries _THIS.parents[3] first then
-# falls back to LIONAGI_HOME paths; in the container, /app/lionagi/ on
-# sys.path makes parents[3] = /app.
+# views resolve resources. plugins.py walks up from its own location to the
+# nearest directory holding .claude-plugin/marketplace.json, then falls back
+# to LIONAGI_HOME paths; in the container, /app/lionagi/ on sys.path puts
+# plugins.py under /app, so the walk ends at /app.
 COPY marketplace/ ./marketplace/
 COPY .claude-plugin/ ./.claude-plugin/
 
