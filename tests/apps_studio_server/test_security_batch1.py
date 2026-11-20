@@ -320,6 +320,20 @@ class TestMarketplaceRootLookup:
 
         assert plugins_mod._find_repo_root(module_file) == root
 
+    @pytest.mark.parametrize("install_dir", ["site-packages", "dist-packages"])
+    def test_installed_copy_inside_a_manifest_directory_keeps_the_fixed_depth_root(
+        self, tmp_path, install_dir
+    ):
+        """An installed copy never takes the manifest of a directory enclosing its environment."""
+        import lionagi.studio.services.plugins as plugins_mod
+
+        project = self._checkout(tmp_path)
+        install = project / ".venv" / "lib" / "python3.12" / install_dir
+        module_file = install / "lionagi" / "studio" / "services" / "plugins.py"
+
+        assert module_file.parents[3] == install
+        assert plugins_mod._find_repo_root(module_file) == install
+
     def test_without_a_manifest_the_fixed_depth_ancestor_is_returned(self, tmp_path):
         """With no manifest on the way up, the root is the fixed three-level ancestor."""
         import lionagi.studio.services.plugins as plugins_mod

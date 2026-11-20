@@ -16,15 +16,21 @@ from ..registry import studio_route
 from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
+_INSTALL_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
 
 
 def _find_repo_root(start: Path) -> Path:
     """Return the nearest ancestor of ``start`` holding ``.claude-plugin/marketplace.json``.
 
-    ``start`` is a file path, so the search begins at its directory and moves up. When no
-    ancestor holds the manifest, the result is ``start.parents[3]``.
+    ``start`` is a file path, so the search begins at its directory and moves up. It stops at
+    a ``site-packages`` or ``dist-packages`` directory: an installed copy belongs to its
+    environment, and a manifest in a directory that happens to enclose that environment is
+    not this package's. When the search stops or no ancestor holds the manifest, the result
+    is ``start.parents[3]``.
     """
     for ancestor in start.parents:
+        if ancestor.name in _INSTALL_DIR_NAMES:
+            break
         if (ancestor / ".claude-plugin" / "marketplace.json").is_file():
             return ancestor
     return start.parents[3]
