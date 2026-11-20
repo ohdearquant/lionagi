@@ -1506,3 +1506,264 @@ async def test_shared_prune_rolls_back_malformed_progressions(entry, malformed):
     with pytest.raises(DBAPIError, match="malformed JSON"):
         await _shared_progression_prune(entry, ["victim"])
     assert await stored_rows() == before
+
+
+# ── pause between prune chunks ────────────────────────────────────────────────
+
+_PAUSE_ENV = "LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS"
+
+
+def _reload_settings_with_pause(monkeypatch, raw: str | None):
+    import importlib
+
+    import lionhub.orchestration.scheduler.settings as cfg
+
+    if raw is None:
+        monkeypatch.delenv(_PAUSE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_PAUSE_ENV, raw)
+    return importlib.reload(cfg)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 0.5), ("0", 0.0), ("0.25", 0.25), ("-3", 0.0)],
+)
+def test_chunk_pause_setting_reads_seconds_and_clamps_at_zero(monkeypatch, raw, expected):
+    """The pause defaults to half a second, 0 disables it, and a negative value is
+    clamped to 0 the way a too-small chunk size is clamped to its minimum."""
+    try:
+        reloaded = _reload_settings_with_pause(monkeypatch, raw)
+        assert reloaded.PRUNE_CHUNK_PAUSE_SECONDS == expected
+    finally:
+        _reload_settings_with_pause(monkeypatch, None)
+
+
+def test_chunk_pause_setting_rejects_a_value_that_is_not_a_number(monkeypatch):
+    """An unparseable value fails at import, like the other numeric prune settings."""
+    try:
+        with pytest.raises(ValueError):
+            _reload_settings_with_pause(monkeypatch, "soon")
+    finally:
+        _reload_settings_with_pause(monkeypatch, None)
+
+
+_PAUSE_PROBE_SECONDS = 0.0371
+
+
+def _record_chunks_and_pauses(monkeypatch, events: list, db_path: Path) -> None:
+    """Append one event per chunk (taken inside its transaction) and one per pause.
+
+    A pause is recorded as ``"pause"`` only while the store's write lock is free;
+    one taken with a chunk transaction still open is ``"pause-while-locked"``.
+    Pauses return at once so the test stays fast."""
+    import asyncio
+    import sys
+
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    def make_spy(loop_name, original):
+        async def spy(conn, ids, **kwargs):
+            events.append((loop_name, len(ids)))
+            return await original(conn, ids, **kwargs)
+
+        return spy
+
+    for loop_name, fn_name in (
+        ("sessions", "_prune_session_chunk"),
+        ("runs", "_prune_run_chunk"),
+        ("dispatch", "_prune_dispatch_chunk"),
+    ):
+        monkeypatch.setattr(maint, fn_name, make_spy(loop_name, getattr(maint, fn_name)))
+
+    def write_lock_is_free() -> bool:
+        probe = sqlite3.connect(db_path, timeout=0, isolation_level=None)
+        try:
+            probe.execute("BEGIN IMMEDIATE")
+            probe.execute("ROLLBACK")
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            probe.close()
+
+    real_sleep = asyncio.sleep
+
+    def recording_sleep(delay, *args, **kwargs):
+        if sys._getframe(1).f_globals.get("__name__") == maint.__name__:
+            label = "pause" if write_lock_is_free() else "pause-while-locked"
+            events.append((label, delay))
+            return real_sleep(0)
+        return real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+
+
+def _prune_three_loops_with_pause(tmp_path, monkeypatch, seconds: float) -> list:
+    """Prune three old rows per loop in chunks of two; return the recorded events."""
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", seconds, raising=False)
+
+    old_ts = time.time() - 40 * 86400
+    old_dispatch_ts = time.time() - 10 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old_ts)
+                await _make_schedule_run(db, status="completed", fired_at=old_ts)
+                await _make_dispatch(db, status="delivered", updated_at=old_dispatch_ts)
+
+    run_async(seed())
+    events: list = []
+    _record_chunks_and_pauses(monkeypatch, events, db_path)
+    result = run_async(
+        maint.prune_old_data(keep_days=30, dispatch_success_keep_days=7, actor="test")
+    )
+    pruned = (result["sessions_pruned"], result["runs_pruned"], result["dispatch_purged"])
+    assert pruned == (3, 3, 3)
+    return events
+
+
+def test_prune_pauses_after_each_committed_chunk_in_every_loop(tmp_path, monkeypatch):
+    """Every chunk of the session, schedule-run and dispatch loops is followed by one
+    pause, taken after that chunk committed and before the next chunk's transaction."""
+    events = _prune_three_loops_with_pause(tmp_path, monkeypatch, _PAUSE_PROBE_SECONDS)
+
+    pause = ("pause", _PAUSE_PROBE_SECONDS)
+    assert events == [
+        ("sessions", 2),
+        pause,
+        ("sessions", 1),
+        pause,
+        ("runs", 2),
+        pause,
+        ("runs", 1),
+        pause,
+        ("dispatch", 2),
+        pause,
+        ("dispatch", 1),
+        pause,
+    ]
+
+
+def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):
+    """A pause of 0 disables the wait: the chunks run back to back."""
+    events = _prune_three_loops_with_pause(tmp_path, monkeypatch, 0.0)
+
+    assert events == [
+        ("sessions", 2),
+        ("sessions", 1),
+        ("runs", 2),
+        ("runs", 1),
+        ("dispatch", 2),
+        ("dispatch", 1),
+    ]
+
+
+# ── a writer waiting for the store between chunks ─────────────────────────────
+
+_CONTENTION_CHUNKS = 10
+_HOLD_SECONDS = 0.04
+_WRITER_BUSY_SECONDS = 0.12
+
+
+def _prune_runs_beside_a_waiting_writer(
+    tmp_path, monkeypatch, pause_seconds: float
+) -> tuple[list[str], float]:
+    """Prune one old schedule run per chunk on a real store file while a second
+    connection keeps trying to write; return its outcomes and the pass duration.
+
+    Each chunk's transaction stays open for ``_HOLD_SECONDS`` after its deletes. The
+    writer's busy timeout is longer than one hold and much shorter than the whole
+    pass. Its first attempt starts while the first chunk is held, and it keeps
+    attempting until the pass returns. An outcome is ``"ok"`` or the text of the
+    ``sqlite3.OperationalError`` the attempt raised."""
+    import threading
+
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=1)
+    monkeypatch.setattr(
+        scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", pause_seconds, raising=False
+    )
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(_CONTENTION_CHUNKS):
+                await _make_schedule_run(db, status="completed", fired_at=old_ts)
+
+    run_async(seed())
+    setup = sqlite3.connect(db_path)
+    setup.execute("CREATE TABLE writer_probe (id INTEGER PRIMARY KEY)")
+    setup.commit()
+    setup.close()
+
+    first_chunk_held = threading.Event()
+    pass_finished = threading.Event()
+    outcomes: list[str] = []
+    original = maint._prune_run_chunk
+
+    async def hold_the_transaction(conn, ids, **kwargs):
+        deleted = await original(conn, ids, **kwargs)
+        first_chunk_held.set()
+        # A blocking sleep on purpose: the write transaction stays open this long.
+        time.sleep(_HOLD_SECONDS)
+        return deleted
+
+    monkeypatch.setattr(maint, "_prune_run_chunk", hold_the_transaction)
+
+    def write_while_pruning():
+        first_chunk_held.wait(timeout=10)
+        while not pass_finished.is_set():
+            writer = sqlite3.connect(db_path, timeout=_WRITER_BUSY_SECONDS, isolation_level=None)
+            try:
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute("INSERT INTO writer_probe DEFAULT VALUES")
+                writer.execute("COMMIT")
+                outcomes.append("ok")
+            except sqlite3.OperationalError as exc:
+                outcomes.append(str(exc))
+            finally:
+                writer.close()
+            pass_finished.wait(timeout=0.01)
+
+    writer_thread = threading.Thread(target=write_while_pruning)
+    writer_thread.start()
+    started = time.monotonic()
+    try:
+        result = run_async(
+            maint.prune_old_data(keep_days=30, dispatch_success_keep_days=7, actor="test")
+        )
+    finally:
+        duration = time.monotonic() - started
+        first_chunk_held.set()
+        pass_finished.set()
+        writer_thread.join(timeout=10)
+    assert result["runs_pruned"] == _CONTENTION_CHUNKS
+    return outcomes, duration
+
+
+def test_a_waiting_writer_gets_in_between_chunks_when_the_pass_pauses(tmp_path, monkeypatch):
+    """A writer whose busy timeout outlasts one chunk but not the pass gets the store
+    between two chunks when the pass pauses after each chunk. Its first attempt starts
+    while the first chunk is held, with nine chunks still to run."""
+    outcomes, duration = _prune_runs_beside_a_waiting_writer(
+        tmp_path, monkeypatch, pause_seconds=0.12
+    )
+
+    assert duration > 3 * _WRITER_BUSY_SECONDS
+    assert outcomes
+    assert outcomes[0] == "ok"

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -810,7 +811,9 @@ async def prune_old_data(
     and deleted in its own short transaction, so an interrupted run keeps
     every chunk that already committed; a failed archive write aborts the
     remainder of the pass. Soft-FK children are nullified before DELETE
-    since they lack CASCADE. See studio.md.
+    since they lack CASCADE. After each committed chunk the pass waits
+    ``PRUNE_CHUNK_PAUSE_SECONDS`` (0 disables) with no transaction open, so
+    other writers can take the write lock between chunks. See studio.md.
 
     Candidate ids are read one chunk at a time as well, so the pass holds
     ``PRUNE_CHUNK_ROWS`` session ids at a time plus progression and direct
@@ -819,6 +822,7 @@ async def prune_old_data(
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
         DISPATCH_RETENTION_SUCCESS_DAYS,
         PRUNE_ARCHIVE_DIR,
+        PRUNE_CHUNK_PAUSE_SECONDS,
         PRUNE_CHUNK_ROWS,
         PRUNE_KEEP_DAYS,
     )
@@ -886,6 +890,12 @@ async def prune_old_data(
             if PRUNE_ARCHIVE_DIR is not None and chunk_pruned:
                 session_archive_ids.append(archive_id)
             await _after_prune_chunk_committed(chunk_index=chunk_index, chunk_ids=chunk_ids)
+            # The chunk has committed and no transaction is open. A writer waiting on
+            # the write lock retries on the busy handler's backoff, which sleeps up to
+            # 100 ms per retry, so it cannot win a gap shorter than that sleep. Waiting
+            # here leaves the lock free long enough for it to take a turn.
+            if PRUNE_CHUNK_PAUSE_SECONDS > 0:
+                await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 
         # ── schedule_run retention: archive-then-delete in bounded, ────────
         # independently committed chunks (ADR-R3 shape, applied to runs).
@@ -916,6 +926,9 @@ async def prune_old_data(
             if PRUNE_ARCHIVE_DIR is not None and chunk_pruned:
                 run_archive_ids.append(archive_id)
             await _after_prune_chunk_committed(chunk_index=chunk_index, chunk_ids=chunk_ids)
+            # Same wait as in the session loop: let queued writers in between chunks.
+            if PRUNE_CHUNK_PAUSE_SECONDS > 0:
+                await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 
         # ── dispatch_outbox retention (ADR-0059 delta 3): two separate ─────
         # windows for success vs dead-lettered, same chunked archive-then-
@@ -951,6 +964,9 @@ async def prune_old_data(
             if PRUNE_ARCHIVE_DIR is not None and chunk_purged:
                 dispatch_archive_ids.append(archive_id)
             await _after_prune_chunk_committed(chunk_index=chunk_index, chunk_ids=chunk_ids)
+            # Same wait as in the session loop: let queued writers in between chunks.
+            if PRUNE_CHUNK_PAUSE_SECONDS > 0:
+                await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 
         # Runs after the prune transactions commit — insert_admin_event opens its own
         # write transaction; nesting would self-deadlock on the sqlite write lock.
