@@ -189,6 +189,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # Element.to_dict(mode="db") payload. NULL means no resume state
         # has been captured for this run.
         ("resume_packet", "JSON"),
+        # Every schedule_runs table this package creates has chain_parent_id. A table
+        # built another way may not, and idx_sched_runs_chain_parent below cannot be
+        # created without it.
+        ("chain_parent_id", "TEXT REFERENCES schedule_runs(id)"),
     ],
     # engine run persistence; created via schema.sql, these columns allow
     # ALTER TABLE on existing databases that pre-date this table
@@ -280,6 +284,17 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
     "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
 )
 
+# Pruning a run clears chain_parent_id on schedule_runs and schedule_run_id on
+# dispatch_outbox for every row that points at it. Neither foreign-key column had
+# an index, so each of those UPDATEs had nothing to seek with; stores created
+# before the declaration get the indexes from this table.
+_RUN_REFERENCE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_sched_runs_chain_parent "
+    "ON schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_schedule_run "
+    "ON dispatch_outbox(schedule_run_id) WHERE schedule_run_id IS NOT NULL",
+)
+
 RECENT_VISIBLE_INDEXES = {
     direction: (
         "CREATE INDEX IF NOT EXISTS idx_sessions_recent_visible "
@@ -323,6 +338,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON status_transitions(id) WHERE delivery_eligible IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
         "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
+        *_RUN_REFERENCE_INDEXES,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
@@ -356,6 +372,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON status_transitions(id) WHERE delivery_eligible IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_status_transitions_eligible_order "
         "ON status_transitions(created_at, id) WHERE delivery_eligible IS TRUE",
+        *_RUN_REFERENCE_INDEXES,
     ),
 }
 

@@ -485,6 +485,139 @@ async def test_invocation_reaper_index_matches_every_schema_path(tmp_path, sqlit
     assert repaired_columns == expected_columns
 
 
+_RUN_REFERENCE_INDEXES = (
+    ("idx_sched_runs_chain_parent", "schedule_runs", "chain_parent_id"),
+    ("idx_dispatch_outbox_schedule_run", "dispatch_outbox", "schedule_run_id"),
+)
+
+
+def _flat_sql(sql: str) -> str:
+    """Collapse whitespace and drop the space before an opening parenthesis, so DDL
+    written by hand and DDL rendered from the table metadata compare equal."""
+    return " ".join(sql.split()).replace(" (", "(")
+
+
+def _index_statements(db_path) -> dict[str, str]:
+    """Map every index name in the store to its CREATE statement, normalised by `_flat_sql`."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+        ).fetchall()
+    return {name: _flat_sql(sql) for name, sql in rows}
+
+
+async def test_run_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
+    """The columns that retention pruning nulls out are covered by partial indexes in
+    schema.sql, the table metadata and the runtime index list, and the two UPDATEs
+    plan as an index SEARCH on a store opened through StateDB."""
+    from lionagi.state.db import _SCHEMA_PATH, StateDB
+    from lionagi.state.schema_migrations import MIGRATION_INDEXES
+
+    raw_db = tmp_path / "raw_run_reference_idx.db"
+    schema_lines = [
+        ln
+        for ln in _SCHEMA_PATH.read_text().splitlines()
+        if not ln.strip().upper().startswith("PRAGMA")
+    ]
+    with sqlite3.connect(raw_db) as conn:
+        conn.executescript("\n".join(schema_lines))
+    raw_indexes = _index_statements(raw_db)
+
+    def _metadata_indexes(sync_conn):
+        inspector = sa.inspect(sync_conn)
+        return {
+            table: {idx["name"]: idx["column_names"] for idx in inspector.get_indexes(table)}
+            for table in ("schedule_runs", "dispatch_outbox")
+        }
+
+    async with sqlite_meta_engine.connect() as conn:
+        metadata_indexes = await conn.run_sync(_metadata_indexes)
+
+    store_db = tmp_path / "store_run_reference_idx.db"
+    async with StateDB(store_db):
+        pass
+    store_indexes = _index_statements(store_db)
+
+    for name, table, column in _RUN_REFERENCE_INDEXES:
+        predicate = f"{table}({column}) WHERE {column} IS NOT NULL"
+        assert predicate in raw_indexes.get(name, ""), name
+        assert metadata_indexes[table].get(name) == [column], name
+        assert predicate in store_indexes.get(name, ""), name
+        for dialect in ("sqlite", "postgresql"):
+            statements = [_flat_sql(sql) for sql in MIGRATION_INDEXES[dialect] if name in sql]
+            assert len(statements) == 1 and predicate in statements[0], (dialect, name)
+
+        nullify = f"UPDATE {table} SET {column} = NULL WHERE {column} IN (?, ?)"
+        with sqlite3.connect(store_db) as conn:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + nullify, ("a", "b"))]
+        assert any("SEARCH" in detail and name in detail for detail in plan), plan
+        assert not any(detail.startswith("SCAN") for detail in plan), plan
+
+
+async def test_reopening_a_store_without_run_reference_indexes_adds_them(tmp_path):
+    """A store that predates the run-reference indexes gains them when StateDB opens it."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "pre_run_reference_idx.db"
+    async with StateDB(db_path):
+        pass
+    with sqlite3.connect(db_path) as conn:
+        for name, _table, _column in _RUN_REFERENCE_INDEXES:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+    assert not {name for name, _t, _c in _RUN_REFERENCE_INDEXES} & set(_index_statements(db_path))
+
+    async with StateDB(db_path):
+        pass
+    reopened = _index_statements(db_path)
+    for name, table, column in _RUN_REFERENCE_INDEXES:
+        assert f"{table}({column}) WHERE {column} IS NOT NULL" in reopened.get(name, ""), name
+
+
+async def test_a_schedule_runs_table_without_chain_parent_id_gains_it_before_its_index(tmp_path):
+    """A schedule_runs table built without chain_parent_id still opens: the column is
+    added first, then the partial index on it, and the existing row is kept."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "no_chain_parent.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE schedule_runs (
+                id              TEXT PRIMARY KEY,
+                schedule_id     TEXT,
+                invocation_id   TEXT,
+                trigger_context JSON NOT NULL,
+                action_kind     TEXT NOT NULL,
+                action_args     JSON NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'running'
+                    CHECK(status IN ('queued', 'waiting_dependency',
+                          'running', 'retry_wait', 'completed',
+                          'failed', 'timed_out', 'skipped',
+                          'cancelled')),
+                fired_at        REAL NOT NULL,
+                created_at      REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO schedule_runs (id, trigger_context, action_kind, action_args, "
+            "status, fired_at, created_at) VALUES ('r1', '{}', 'agent', '[]', 'completed', 0, 0)"
+        )
+        conn.commit()
+
+    async with StateDB(db_path):
+        pass
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule_runs)")}
+        rows = conn.execute("SELECT id, chain_parent_id FROM schedule_runs").fetchall()
+    assert "chain_parent_id" in columns
+    assert rows == [("r1", None)]
+    assert "schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL" in (
+        _index_statements(db_path).get("idx_sched_runs_chain_parent", "")
+    )
+
+
 async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_meta_engine):
     """Enum CHECK value-sets from MetaData match those from real schema.sql."""
     import re
