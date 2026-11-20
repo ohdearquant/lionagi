@@ -421,13 +421,6 @@ async def _prune_session_chunk(
         refs.extend(result.fetchall())
     progression_ids = {row.id for row in refs if row.kind == "progression"}
     non_array_ids = {row.id for row in refs if row.non_array}
-    # Validate surviving JSON before publishing any archive. Only arrays can
-    # be removed below, so the store-wide non-array count stays the same.
-    non_array_count = (
-        await conn.execute(
-            text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
-        )
-    ).scalar_one()
     deferred_progressions = {row.id for row in refs if row.kind == "progression" and row.deferred}
     candidate_prog_ids = sorted(
         progression_ids - deferred_progressions - (deferred_progression_ids or set())
@@ -449,6 +442,21 @@ async def _prune_session_chunk(
         - current_deferred_ids
         - (deferred_direct_ids or set())
     )
+
+    # The message DELETE below parses every surviving collection in the store,
+    # and it runs only when this chunk has candidate messages. Those are the
+    # chunks that read every collection here first, before any archive is
+    # written, so malformed JSON fails the chunk while nothing has been
+    # published. A chunk with no candidate messages parses no collection
+    # outside its own lineage and pays for no store-wide read. Only arrays can
+    # be removed below, so the store-wide non-array count stays the same.
+    non_array_count: int | None = None
+    if candidate_msg_ids:
+        non_array_count = (
+            await conn.execute(
+                text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
+            )
+        ).scalar_one()
 
     if archive_destination is not None:
         # Archive-before-delete: durably write this chunk's doomed rows first.
@@ -591,7 +599,6 @@ async def _prune_session_chunk(
             sorted(non_array_ids),
         )
     )
-    non_array_survivor_progressions = non_array_count - deferred_count
     if candidate_msg_ids:
         # One DELETE for the whole chunk. Its survivor check reads every progression's collection
         # in the store, and a DELETE per batch of ids repeated that read inside the write
@@ -616,11 +623,15 @@ async def _prune_session_chunk(
         )
         await conn.execute(text(f"DROP TABLE {message_table}"))
 
-    if deferred_count or non_array_survivor_progressions:
+    if non_array_count is None:
+        # Survivors were not counted, so the line names only what was.
+        if deferred_count:
+            _log.warning("Session prune: deferred_victim_progressions=%d", deferred_count)
+    elif deferred_count or non_array_count - deferred_count:
         _log.warning(
             "Session prune: deferred_victim_progressions=%d non_array_survivor_progressions=%d",
             deferred_count,
-            non_array_survivor_progressions,
+            non_array_count - deferred_count,
         )
     if deferred_direct_ids is not None:
         deferred_direct_ids.update(current_deferred_ids)
