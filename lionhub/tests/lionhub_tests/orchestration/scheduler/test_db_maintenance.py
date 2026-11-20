@@ -1694,8 +1694,10 @@ def _prune_runs_beside_a_waiting_writer(
     Each chunk's transaction stays open for ``_HOLD_SECONDS`` after its deletes. The
     writer's busy timeout is longer than one hold and much shorter than the whole
     pass. Its first attempt starts while the first chunk is held, and it keeps
-    attempting until the pass returns. An outcome is ``"ok"`` or the text of the
-    ``sqlite3.OperationalError`` the attempt raised."""
+    attempting until the pass returns. An outcome is ``"ok"`` for a write that
+    committed while the pass was still running, ``"ok after the pass"`` for one that
+    committed after it returned, or the text of the ``sqlite3.OperationalError`` the
+    attempt raised."""
     import threading
 
     from lionhub.orchestration.scheduler import db_maintenance as maint
@@ -1744,7 +1746,7 @@ def _prune_runs_beside_a_waiting_writer(
                 writer.execute("BEGIN IMMEDIATE")
                 writer.execute("INSERT INTO writer_probe DEFAULT VALUES")
                 writer.execute("COMMIT")
-                outcomes.append("ok")
+                outcomes.append("ok after the pass" if pass_finished.is_set() else "ok")
             except sqlite3.OperationalError as exc:
                 outcomes.append(str(exc))
             finally:
@@ -1770,11 +1772,16 @@ def _prune_runs_beside_a_waiting_writer(
 def test_a_waiting_writer_gets_in_between_chunks_when_the_pass_pauses(tmp_path, monkeypatch):
     """A writer whose busy timeout outlasts one chunk but not the pass gets the store
     between two chunks when the pass pauses after each chunk. Its first attempt starts
-    while the first chunk is held, with nine chunks still to run."""
+    while the first chunk is held, with nine chunks still to run.
+
+    The pause is about twice the writer's busy timeout, so a writer thread that a
+    loaded machine delays a little still finds the store free."""
     outcomes, duration = _prune_runs_beside_a_waiting_writer(
-        tmp_path, monkeypatch, pause_seconds=0.12
+        tmp_path, monkeypatch, pause_seconds=0.25
     )
 
+    # The pass outlasts the writer's busy timeout several times over, so the
+    # writer could only get in through a gap between chunks.
     assert duration > 3 * _WRITER_BUSY_SECONDS
     assert outcomes
     assert outcomes[0] == "ok"

@@ -1039,7 +1039,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   `PRUNE_CHUNK_PAUSE_SECONDS` (env `LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS`,
   default 0.5, `0` disables, a non-finite value is refused at startup) with no
   transaction open, so a writer waiting on the store's busy handler can take
-  the write lock before the next chunk starts.
+  the write lock before the pass writes again.
 
 ## lionagi/studio/services/attention.py
 
