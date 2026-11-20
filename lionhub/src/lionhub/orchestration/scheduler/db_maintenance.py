@@ -901,8 +901,9 @@ async def prune_old_data(
             # the write lock retries on the busy handler's backoff, which sleeps up to
             # 100 ms per retry, so it cannot win a gap shorter than that sleep. Waiting
             # here leaves the lock free long enough for it to take a turn. Every chunk
-            # locks its candidate rows before the recheck, so one that deleted nothing
-            # (all of its sessions kept) still held the lock, and the wait follows it too.
+            # runs in its own write transaction, which on SQLite holds the store's single
+            # writer slot from its first statement, so a chunk that deleted nothing (all
+            # of its sessions kept) still held the lock, and the wait follows it too.
             if PRUNE_CHUNK_PAUSE_SECONDS > 0:
                 await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 

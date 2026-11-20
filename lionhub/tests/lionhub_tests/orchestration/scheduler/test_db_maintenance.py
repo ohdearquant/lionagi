@@ -1667,9 +1667,10 @@ def test_prune_pauses_after_each_committed_chunk_in_every_loop(tmp_path, monkeyp
 def test_prune_pauses_after_a_chunk_that_deleted_nothing(tmp_path, monkeypatch):
     """The pause follows a chunk that reports nothing deleted, like any other chunk.
 
-    The real chunk locks its candidates before its recheck, so such a chunk still held
-    the write lock. The stand-in here runs that same locking statement and then keeps
-    every session; it covers where the loop pauses, not the chunk's own statements."""
+    The real chunk runs in its own write transaction, so such a chunk still held the
+    write lock. The stand-in here writes the same first statement inside that
+    transaction and then keeps every session; it covers where the loop pauses, not
+    the chunk's own statements."""
     from lionhub.orchestration.scheduler import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
