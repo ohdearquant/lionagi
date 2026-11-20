@@ -338,6 +338,8 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
             task.cancel()
             await asyncio.wait({task})
     except asyncio.CancelledError:
+        # During the backstop wait the tail was already cancelled once; cancelling it again
+        # ends a tail that held out against the first cancel.
         task.cancel()
         raise
     if task.cancelled():
@@ -564,15 +566,19 @@ async def lifespan(app_instance):
                 except BaseException as exc:
                     record(exc)
 
+            def finish_sync(operation: Any) -> None:
+                # The same handling for a synchronous step.
+                try:
+                    operation()
+                except BaseException as exc:
+                    record(exc)
+
             with CancelScope(shield=True):
                 registry = getattr(app_instance.state, "session_tail_registry", None)
                 if registry is not None:
                     await finish(registry.aclose)
                     app_instance.state.session_tail_registry = None
-                try:
-                    disarm_traceback_dump()
-                except BaseException as exc:
-                    record(exc)
+                finish_sync(disarm_traceback_dump)
                 if reconnect is not None:
                     # The key goes before its channel stops, after the registry and the disarm.
                     _reconnect_keys.pop(app_instance, None)
