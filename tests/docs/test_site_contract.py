@@ -226,7 +226,7 @@ def _studio_config_default_origins(monkeypatch) -> list[str]:
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     import importlib
 
-    config = importlib.import_module("lionagi.studio.config")
+    config = importlib.import_module("lionagi_studio.config")
     return config.CORS_ORIGINS
 
 

@@ -29,6 +29,7 @@ from lionagi.state.db import _LIONAGI_TABLES, _OPERATOR_TABLES, SCHEMA_VERSION
 from lionagi.state.schema_meta import metadata
 
 _REPO = Path(__file__).resolve().parents[2]
+_STUDIO = _REPO / "apps" / "studio" / "backend" / "src" / "lionagi_studio"
 _CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
@@ -178,7 +179,7 @@ def _created_tables(path: Path) -> set[str]:
 
 
 def test_the_operator_tables_are_the_ones_the_operator_store_creates():
-    created = _created_tables(_REPO / "lionagi" / "studio" / "operator" / "store.py")
+    created = _created_tables(_STUDIO / "operator" / "store.py")
     assert "studio_operator_turns" in created
     assert created == _OPERATOR_TABLES
 
@@ -187,7 +188,7 @@ def test_every_table_lionagi_creates_in_the_state_file_is_one_it_recognizes():
     """A component that starts creating a table in the StateDB file must add it here, or a store
     that component touched first would be refused."""
     sources = [_REPO / "lionagi" / "state" / "schema.sql"]
-    sources += sorted((_REPO / "lionagi" / "studio").rglob("*.py"))
+    sources += sorted(_STUDIO.rglob("*.py"))
     created = set().union(*(_created_tables(p) for p in sources))
     assert {"sessions", "approvals", "run_tags", "studio_operator_frames"} <= created
     assert created <= _LIONAGI_TABLES

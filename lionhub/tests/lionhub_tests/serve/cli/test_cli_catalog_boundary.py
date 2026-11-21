@@ -67,6 +67,7 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
                 "lionagi.cli",
                 "lionhub.serve.cli",
                 "lionagi.studio.cli",
+                "lionagi_studio.cli",
                 "lionhub.agent.casts.surfaces",
             )
             if any(value == prefix or value.startswith(prefix + ".") for prefix in prefixes):
@@ -206,6 +207,7 @@ seed = catalog.seed_for({selected!r})
 catalog.load_cli_command(seed)
 assert {("lionhub.serve.cli." + other)!r} not in sys.modules
 assert 'lionagi.studio.cli' not in sys.modules
+assert 'lionagi_studio.cli' not in sys.modules
 if {selected!r} == 'schedule':
     assert 'fastapi' not in sys.modules
     assert 'uvicorn' not in sys.modules
@@ -220,6 +222,7 @@ schedule.run_schedule_quick_create = lambda kind, argv: (kind, argv)
 assert main.main(['schedule', 'create', 'agent', 'sample']) == ('agent', ['sample'])
 import sys
 assert 'lionagi.studio.cli' not in sys.modules
+assert 'lionagi_studio.cli' not in sys.modules
 """)
 
 
@@ -233,12 +236,16 @@ def test_adapter_import_boundaries_in_fresh_processes():
                 "apps.studio",
                 "lionagi.studio.app",
                 "lionagi.studio.routes",
+                "lionagi_studio",
                 "lionhub.orchestration.scheduler.engine",
                 "fastapi",
                 "uvicorn",
             ),
         ),
-        ("lionhub.serve.cli.studio", ("lionagi.studio.cli", "lionhub.serve.cli.schedule")),
+        (
+            "lionhub.serve.cli.studio",
+            ("lionagi.studio.cli", "lionagi_studio.cli", "lionhub.serve.cli.schedule"),
+        ),
     ):
         source = f"""
 import importlib.abc, sys

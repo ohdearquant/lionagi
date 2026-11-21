@@ -78,7 +78,7 @@ _MAX_CHAIN_DEPTH = 10
 _DEFERRED_RECORD_EVERY = 10
 ```
 
-`lionagi/studio/app.py` calls `scheduler.start()` before serving requests and
+`lionhub/src/lionhub/serve/daemon/app.py` calls `scheduler.start()` before serving requests and
 `scheduler.stop()` during lifespan teardown. `start()` recomputes enabled cron schedule fire times
 under the current configured timezone, then creates the tick task. The loop checks missed fires
 once, then repeats `_tick()` followed by a 30-second sleep.
@@ -96,7 +96,7 @@ Per-tick order is:
 Relevant settings and defaults are:
 
 ```python
-# lionagi/studio/config.py
+# apps/studio/backend/src/lionagi_studio/config.py
 MAX_SCHEDULED_CONCURRENT = int(
     os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT", "4")
 )
@@ -146,8 +146,8 @@ Why this way: one local loop makes Studio deployment simple and gives all hosted
 bounded lifecycle. The tradeoff is availability and coupling inside `SchedulerEngine`: a Studio
 outage suspends triggers and the large engine class coordinates several policies.
 
-Code anchors: `lionagi/studio/app.py` (`lifespan`); `lionhub/src/lionhub/orchestration/scheduler/engine.py`
-(`SchedulerEngine.start`, `_tick_loop`, `_tick`, `stop`); `lionagi/studio/config.py`.
+Code anchors: `lionhub/src/lionhub/serve/daemon/app.py` (`lifespan`); `lionhub/src/lionhub/orchestration/scheduler/engine.py`
+(`SchedulerEngine.start`, `_tick_loop`, `_tick`, `stop`); `apps/studio/backend/src/lionagi_studio/config.py`.
 
 ### D2 — Four trigger types pass explicit fire gates
 

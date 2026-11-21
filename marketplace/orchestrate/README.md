@@ -173,7 +173,7 @@ runs the same playbook in the foreground.
 - Issues: https://github.com/ohdearquant/lionagi/issues
 - Discussions: https://github.com/ohdearquant/lionagi/discussions
 - Source: `lionhub/src/lionhub/serve/mcp/` for the MCP server, `lionhub/src/lionhub/serve/cli/` for the CLI it wraps,
-  `lionagi/studio/` for the Studio backend and `apps/studio/frontend/` for its UI,
+  `apps/studio/backend/src/lionagi_studio/` for the Studio backend and `apps/studio/frontend/` for its UI,
   `lionagi/state/` for the data model
 
 ## Source code reference
@@ -183,5 +183,5 @@ runs the same playbook in the foreground.
 - Agent system: `lionhub/src/lionhub/serve/cli/agent.py`, `lionhub/src/lionhub/agent/`
 - Playbooks: `~/.lionagi/playbooks/*.playbook.yaml`
 - State DB schema: `lionagi/state/schema.sql`
-- Studio: `lionagi/studio/` (backend), `apps/studio/frontend/` (UI)
+- Studio: `apps/studio/backend/src/lionagi_studio/` (backend), `apps/studio/frontend/` (UI)
 - Scheduler: `lionhub/src/lionhub/orchestration/scheduler/`

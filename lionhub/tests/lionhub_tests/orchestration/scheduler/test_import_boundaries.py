@@ -32,7 +32,8 @@ def test_scheduler_leaves_import_without_studio_or_web_frameworks() -> None:
     for module in _MODULES:
         result = _run_isolated(
             f"import importlib, sys; importlib.import_module('{module}'); "
-            "assert not any(name == 'lionagi.studio' or name.startswith('lionagi.studio.') "
+            "assert not any(name.split('.')[0] == 'lionagi_studio' "
+            "or name == 'lionagi.studio' or name.startswith('lionagi.studio.') "
             "or name in {'fastapi', 'starlette', 'uvicorn'} for name in sys.modules)"
         )
         assert result.returncode == 0, f"{module}: {result.stderr}"

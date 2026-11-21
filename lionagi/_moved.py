@@ -108,6 +108,12 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    # The Studio application. Daemon-owned modules that once lived under lionagi.studio keep
+    # their own, longer rows, which win over this one. lionagi.studio and
+    # lionagi.studio.services stay in core as empty packages, and lionagi.studio.operator as
+    # one that only forwards three names, so those modules' old names import without the
+    # application installed; the finder steps aside for all three.
+    Moved("lionagi.studio", "lionagi_studio", "0.39.0", "2.0.0"),
     Moved(
         "lionagi.studio.services._schedule_validation",
         "lionhub.orchestration.schedule.validation",

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.studio import _timezone_rules as rules
+from lionhub.orchestration.schedule import _timezone_rules as rules
 
 
 def _header(version, count, types, chars):
@@ -528,7 +528,7 @@ def test_crafted_table_does_not_kill_the_process(data):
     env = {**os.environ, "PYTHONPATH": root + os.pathsep + os.environ.get("PYTHONPATH", "")}
     child = (
         "import sys\n"
-        "from lionagi.studio import _timezone_rules as rules\n"
+        "from lionhub.orchestration.schedule import _timezone_rules as rules\n"
         "data = bytes.fromhex(sys.argv[1])\n"
         "outcome = rules.tzif_rules(data)\n"
         "print('refused' if outcome is None else 'accepted:' + str(outcome[0]))\n"

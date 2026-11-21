@@ -27,6 +27,7 @@ BLOCKED = (
     "lionagi.studio.operator",
     "lionhub.orchestration.scheduler",
     "lionagi.studio.services.projects",
+    "lionagi_studio",
 )
 refused = []
 

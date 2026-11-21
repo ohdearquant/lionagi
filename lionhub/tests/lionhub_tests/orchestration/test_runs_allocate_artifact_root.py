@@ -8,7 +8,7 @@ str(run.artifact_root) straight into setup_agent_persist), but allocate_run used
 to call only ensure_state_dirs() -- never ensure_artifact_root(). Every fresh
 run's recorded artifacts_path pointed at a directory that didn't exist yet,
 which the Studio lifecycle reaper's phantom classifier reads as evidence of a
-crashed/lost session (see tests/apps_studio_server/test_admin.py's
+crashed/lost session (see apps/studio/backend/tests/lionagi_studio_tests/server/test_admin.py's
 _classify_phantom coverage).
 """
 

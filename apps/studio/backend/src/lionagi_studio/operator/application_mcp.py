@@ -1,0 +1,1363 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Strict stdio MCP bridge for real Studio Operator application tools.
+
+The bridge exposes a deliberately small capability set. Read tools return
+bounded projections, UI tools only append durable ADR-0083 effects, and the
+single launch tool creates a durable proposal then waits for the daemon's
+decision routes, which in open mode admit any process that can reach the
+daemon's listener, including programs run by other local accounts. It never
+accepts a URL, filesystem path, shell command, or raw endpoint.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import sys
+import time
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from lionagi.ln.concurrency import run_sync, sleep
+from lionagi_studio.operator import _common
+from lionagi_studio.operator.cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
+from lionagi_studio.operator.conversation_metadata import UpdateConversationInput
+from lionagi_studio.operator.rename_session import (
+    RENAME_SESSION_DESCRIPTION,
+    RenameSessionInput,
+    rename_session,
+)
+from lionagi_studio.operator.resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
+from lionagi_studio.operator.run_control import (
+    PAUSE_RUN_DESCRIPTION,
+    RELEASE_RUN_PAUSE_DESCRIPTION,
+    STEER_RUN_DESCRIPTION,
+    PauseRunInput,
+    ReleaseRunPauseInput,
+    SteerRunInput,
+    pause_run,
+    release_run_pause,
+    steer_run,
+)
+from lionagi_studio.operator.run_detail import RunDetailInput, run_detail
+from lionagi_studio.operator.run_findings import RunFindingsInput, run_findings
+from lionagi_studio.operator.run_progress import RunProgressInput, run_progress
+from lionagi_studio.operator.store import (
+    OperatorConflictError,
+    OperatorNotFoundError,
+    OperatorStore,
+)
+from lionhub.serve.daemon.services.redact import (
+    MESSAGE_BYTE_CAP,
+    PER_ITEM_TEXT_CAP,
+    fold_field_name,
+    is_secret_field_name,
+    public_project,
+    scrub_text,
+)
+
+OperatorSpace = Literal[
+    "mission",
+    "designer",
+    "library",
+    "history",
+    "schedules",
+    "system",
+]
+
+
+class _StrictInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class RecentRunsInput(_StrictInput):
+    limit: int = Field(default=10, ge=1, le=20)
+    status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = None
+    kind: Literal["agent", "play", "flow", "fanout", "show"] | None = Field(
+        default=None,
+        description=(
+            "Orchestration-kind facet: 'play'/'flow'/'fanout'/'show' select "
+            "orchestration roots, 'agent' plain agent sessions. Combine with "
+            "status to find e.g. running plays."
+        ),
+    )
+
+
+class ListSchedulesInput(_StrictInput):
+    limit: int = Field(default=20, ge=1, le=50)
+    enabled: bool | None = None
+
+
+class ListAgentsInput(_StrictInput):
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class ListPlaybooksInput(_StrictInput):
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class RunStatsInput(_StrictInput):
+    window: Literal["24h", "7d"] = "24h"
+
+
+class CurrentViewInput(_StrictInput):
+    """No arguments: the view is a property of the turn, not of the request."""
+
+
+class ListSessionsInput(_StrictInput):
+    playbook: str | None = None
+    status: str | list[str] | None = None
+    project: str | None = None
+    search: str | None = None
+    limit: int = Field(default=20, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+    sort: Literal["recent", "cost"] = "recent"
+
+
+class SessionDetailInput(_StrictInput):
+    session_id: str = Field(min_length=1, max_length=200)
+    message_limit: int = Field(default=200, ge=1, le=1_000)
+    message_cursor: str | None = None
+
+
+class SessionSignalsInput(_StrictInput):
+    session_id: str = Field(min_length=1, max_length=200)
+    after_seq: int | None = Field(default=None, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class GetInvocationInput(_StrictInput):
+    invocation_id: str = Field(min_length=1, max_length=200)
+
+
+class ListArtifactsInput(_StrictInput):
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
+    invocation_id: str | None = Field(default=None, min_length=1, max_length=200)
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GetArtifactInput(_StrictInput):
+    artifact_id: str = Field(min_length=1, max_length=200)
+
+
+class NavigateInput(_StrictInput):
+    space: OperatorSpace = Field(
+        description=(
+            "Studio space to open. Use 'history' for the first-class Fleet/run-history view."
+        )
+    )
+    status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = None
+    run_id: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+        description=(
+            "Run to select in the Fleet view (mission/history spaces only). "
+            "Pass the full run id from list_recent_runs or run_progress; the "
+            "view opens with that run's details instead of the default row."
+        ),
+    )
+    sel: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+        description=(
+            "Library entry to select (library/designer spaces only), e.g. "
+            "'playbook:builtin:audit' or a workflow name in the designer."
+        ),
+    )
+    run_kind: Literal["agent", "play", "flow", "fanout", "show"] | None = Field(
+        default=None,
+        description=(
+            "Orchestration-kind facet for the Fleet list (mission/history "
+            "spaces only) — puts the human on e.g. 'plays, running' when "
+            "combined with status."
+        ),
+    )
+
+
+class PrefillScheduleInput(_StrictInput):
+    name: str = Field(min_length=1, max_length=160)
+    cron: str = Field(min_length=1, max_length=160)
+    prompt: str = Field(min_length=1, max_length=32_768)
+    description: str = Field(default="", max_length=1_000)
+
+    @field_validator("cron")
+    @classmethod
+    def _valid_cron(cls, value: str) -> str:
+        from lionhub.serve.daemon.services.schedules import _svc_validate_cron_expr
+
+        _svc_validate_cron_expr(value, required=True)
+        return value
+
+
+class LaunchPlaybookInput(_StrictInput):
+    playbook: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    input: str = Field(
+        default="",
+        max_length=4000,
+        description=(
+            "The task text handed to the playbook run. Parameterized "
+            "playbooks interpolate it into their prompt template ('{input}'); "
+            "leaving it empty launches such a template against an "
+            "unspecified target, so fill it whenever the playbook takes one."
+        ),
+    )
+    args: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description=(
+            "Values for the playbook's own declared args (its 'args:' "
+            "schema), interpolated into the prompt template by name. Keys "
+            "must be declared by the playbook; undeclared keys refuse the "
+            "launch. Declared args you omit keep their defaults."
+        ),
+    )
+    note: str = Field(default="", max_length=500)
+
+
+class _NavigateEffect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["navigate"] = "navigate"
+    space: OperatorSpace
+    params: dict[str, str]
+
+
+class _PrefillEffect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["prefill"] = "prefill"
+    form: Literal["schedule"] = "schedule"
+    values: dict[str, str]
+
+
+_TOOL_MODELS: dict[str, type[BaseModel]] = {
+    "list_recent_runs": RecentRunsInput,
+    "run_stats": RunStatsInput,
+    "get_current_view": CurrentViewInput,
+    "list_schedules": ListSchedulesInput,
+    "list_agents": ListAgentsInput,
+    "list_playbooks": ListPlaybooksInput,
+    "navigate": NavigateInput,
+    "prefill_schedule": PrefillScheduleInput,
+    "launch_playbook": LaunchPlaybookInput,
+    "run_progress": RunProgressInput,
+    "run_findings": RunFindingsInput,
+    "run_detail": RunDetailInput,
+    "cancel_run": CancelRunInput,
+    "resume_run": ResumeRunInput,
+    "rename_run": RenameSessionInput,
+    "update_conversation": UpdateConversationInput,
+    "pause_run": PauseRunInput,
+    "release_run_pause": ReleaseRunPauseInput,
+    "steer_run": SteerRunInput,
+    "list_sessions": ListSessionsInput,
+    "session_detail": SessionDetailInput,
+    "session_signals": SessionSignalsInput,
+    "get_invocation": GetInvocationInput,
+    "list_artifacts": ListArtifactsInput,
+    "get_artifact": GetArtifactInput,
+}
+
+_TOOL_DESCRIPTIONS = {
+    "list_recent_runs": (
+        "List at most 20 recent Studio runs as a redacted read-only projection. "
+        "Each entry carries 'kind' (agent, play, flow, fanout, or show-play) and "
+        "'playbookName' when set -- a run may be a play root coordinating other "
+        "runs, and 'agentName' alone never establishes that a run is a single "
+        "agent. Read 'kind' before characterizing a run. A 'completed' status "
+        "means the engine went idle without a recorded failure, not that the "
+        "run achieved its goal. For 'how is this play going', use run_progress "
+        "instead."
+    ),
+    "run_stats": (
+        "Count runs over a whole window (24h or 7d) with per-status totals and "
+        "completion rate. Use this for 'how many runs did I have', which "
+        "list_recent_runs cannot answer because it only returns the newest 20. "
+        "'completed' means the run's engine went idle without a recorded "
+        "failure -- it does not certify the run achieved its goal, so never "
+        "present the completion rate as a success rate without saying so."
+    ),
+    "get_current_view": (
+        "Read the Studio view the human is on: space, route, selection and "
+        "filters. Read-only. The 'source' field says how fresh the answer is: "
+        "'live' means the browser reported this view after the instruction was "
+        "sent, so it is where they are now; 'turn' means nothing newer has been "
+        "reported, so it is where they were when they sent the instruction and "
+        "they may have moved since."
+    ),
+    "list_schedules": (
+        "List Studio schedules as a redacted read-only projection: trigger, "
+        "next fire time, and recent health."
+    ),
+    "list_agents": ("List the agent profiles in the library, names and models only."),
+    "list_playbooks": (
+        "List playbook names available to launch_playbook. Call this before "
+        "proposing a launch: launch_playbook needs an exact existing name."
+    ),
+    "navigate": (
+        "Request a typed Studio navigation effect. The browser applies and "
+        "acknowledges it; this tool does not claim that navigation completed. "
+        "The canonical 'history' space opens Fleet/run history. To put the "
+        "human on a specific run, pass run_id with space='history'; to open a "
+        "specific library entry, pass sel with space='library'."
+    ),
+    "prefill_schedule": (
+        "Request a typed schedule-form prefill for human review. This never creates a schedule."
+    ),
+    "launch_playbook": (
+        "Propose launching one named Studio playbook. Pass the task text as "
+        "'input' and values for the playbook's declared args as 'args'. A "
+        "launch that would leave any prompt placeholder unresolved (or "
+        "passes an undeclared arg) is refused with a reason instead of "
+        "proposed. This blocks until the human explicitly allows or denies "
+        "the exact durable proposal."
+    ),
+    "run_progress": (
+        "Report how one run is going: status, op totals split into "
+        "completed/running/failed/pending (they always sum to the total), "
+        "which ops are running right now, elapsed time when it is live or "
+        "measured (null for an unknown historical duration), and whether it "
+        "has a graph. Accepts a run id, an id prefix, a name or playbook substring "
+        "(minimum 3 characters; needs a project context on the turn), or "
+        "'current' for the run the human is "
+        "looking at. An ambiguous reference returns candidates instead of "
+        "guessing. Every number is a direct database read taken when this "
+        "tool is called, not a live process feed -- the returned "
+        "'freshness' field says so, the same honesty get_current_view uses "
+        "for its own 'source' field."
+    ),
+    "run_findings": (
+        "Report what one run produced: message tails, tool calls with their "
+        "inferred outcomes, errors, and declared artifacts, bounded and "
+        "redacted the same way the other read tools are. Filter by "
+        "agent/branch name substring or a single 'kind' (messages, "
+        "tool_calls, errors, artifacts) to narrow the response. Same "
+        "reference vocabulary and ambiguity handling as run_progress. "
+        "Tool-call outcomes are inferred from response content, not read "
+        "from a structured status field the run itself stores, so treat "
+        "them as a best-effort read; any section too large to return in "
+        "full is capped and says so via its own 'truncated' flag."
+    ),
+    "run_detail": (
+        "Report the full projection of one run: identity, playbook/agent "
+        "and model/provider fields, timing, health, cost and token totals, "
+        "and other detail fields as stored, bounded and redacted the same "
+        "way the other read tools are. Takes a bare run id (no id-prefix or "
+        "name-substring resolution). Returns 'known': false with a "
+        "'source' of 'unavailable' if the store could not be read, or "
+        "'store' if the store was read but no run matched."
+    ),
+    "cancel_run": CANCEL_RUN_DESCRIPTION,
+    "resume_run": RESUME_RUN_DESCRIPTION,
+    "rename_run": RENAME_SESSION_DESCRIPTION,
+    "update_conversation": (
+        "Update the title or short description of this Operator conversation. "
+        "Only this turn's own conversation can be changed. Omitted fields stay unchanged; "
+        "a blank or null description clears it. The result reports the durable applied "
+        "change, without requesting a browser action or renaming a run."
+    ),
+    "pause_run": PAUSE_RUN_DESCRIPTION,
+    "release_run_pause": RELEASE_RUN_PAUSE_DESCRIPTION,
+    "steer_run": STEER_RUN_DESCRIPTION,
+    "list_sessions": (
+        "List a filtered page of Studio sessions. The result is capped at 500 rows, "
+        "reports the matching total and whether more rows exist, and labels the store source."
+    ),
+    "session_detail": (
+        "Read one Studio session and its bounded per-branch message windows. Content is "
+        "redacted, storage paths and internal state are omitted, and continuation cursors "
+        "and truncation flags come from the session store."
+    ),
+    "session_signals": (
+        "Read at most 500 ordered signals after a sequence number. Signal payloads are "
+        "redacted and capped at 100000 bytes, with row and payload truncation reported."
+    ),
+    "get_invocation": (
+        "Read one invocation with at most 50 child sessions and 50 artifacts. Artifact "
+        "content is redacted and capped at 2000000 bytes, and every truncation is reported."
+    ),
+    "list_artifacts": (
+        "List at most 200 artifact metadata records for one session or invocation. "
+        "Bodies and storage paths are omitted and row truncation is reported."
+    ),
+    "get_artifact": (
+        "Read one artifact with redacted content capped at 2000000 bytes. Storage paths "
+        "are omitted and content truncation is reported."
+    ),
+}
+
+_TOOL_SCHEMAS = [
+    {
+        "name": name,
+        "description": _TOOL_DESCRIPTIONS[name],
+        "inputSchema": model.model_json_schema(),
+    }
+    for name, model in _TOOL_MODELS.items()
+]
+
+
+def _identity() -> tuple[OperatorStore, str, str]:
+    return _common._identity(OperatorStore)
+
+
+async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Update the authenticated turn's own conversation through the shared store service."""
+    args = UpdateConversationInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    if args.conversation_id is not None and args.conversation_id != conversation_id:
+        return {"updated": False, "reason": "conversation_mismatch"}
+    fields = args.model_dump(include=args.model_fields_set - {"conversation_id"})
+    try:
+        return await store.update_conversation_from_turn(conversation_id, request_id, **fields)
+    except OperatorConflictError:
+        # With no status or pin to change, the store's only conflict here is a turn that is
+        # no longer the conversation's active one.
+        return {"updated": False, "reason": "turn_not_active"}
+    except OperatorNotFoundError:
+        return {"updated": False, "reason": "not_found"}
+
+
+_SIGNAL_PAYLOAD_BYTE_CAP = 100_000
+_ARTIFACT_CONTENT_BYTE_CAP = 2_000_000
+_SESSION_BRANCH_CAP = 500
+_SESSION_LIST_DROP = frozenset(
+    {
+        "node_metadata",
+        "artifacts_path",
+        "artifact_contract_json",
+        "artifact_verification_json",
+        "project_source",
+        "branch_count",
+        "tags",
+    }
+)
+_SESSION_DETAIL_DROP = frozenset(
+    {
+        "node_metadata",
+        "artifacts_path",
+        "artifact_contract_json",
+        "artifact_verification_json",
+        "graph",
+        "segments",
+        "status_evidence_refs",
+        "project_source",
+        "source_show",
+    }
+)
+_INVOCATION_DROP = frozenset({"node_metadata", "status_evidence_refs"})
+_ARTIFACT_DROP = frozenset({"file_path"})
+_URL_FIELD_NAMES = frozenset(
+    {
+        "url",
+        "uri",
+        "dsn",
+        "store_url",
+        "database_url",
+        "db_url",
+        "connection_url",
+        # Compared after folding, so store-url and store.url are covered by the
+        # underscored spellings above. Concatenated spellings are not: they
+        # carry no separator to fold, and this is an exact-match set, so
+        # storeUrl has to be listed in its own right.
+        "storeurl",
+        "databaseurl",
+        "dburl",
+        "connectionurl",
+    }
+)
+_PATH_FIELD_NAMES = frozenset({"path", "directory", "cwd", "root"})
+_STORE_URL_RE = re.compile(
+    r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|mongodb(?:\+srv)?|file)"
+    r"(?:\+[a-z0-9_]+)?://[^\s\"']+"
+)
+_CREDENTIALED_URL_RE = re.compile(r"(?i)\bhttps?://[^/\s:@]+:[^@\s/]+@[^\s\"']+")
+_ROOT_POSIX_PATH_RE = re.compile(
+    r"(?<![\w/])/(?:Users|home|tmp|var|opt|etc|private|srv|mnt|Volumes)(?:/[^\s\"']+)*"
+)
+_UNC_PATH_RE = re.compile(r"(?<!\\)(\\\\[^\\\s]+\\[^\\\s]+(?:\\[^\\\s]+)*)")
+
+
+def _safe_text(value: str) -> str:
+    value = _STORE_URL_RE.sub("[redacted-url]", value)
+    value = _CREDENTIALED_URL_RE.sub("[redacted-url]", value)
+    value = _ROOT_POSIX_PATH_RE.sub(
+        lambda match: match.group(0).rsplit("/", 1)[-1] or "[redacted-path]",
+        value,
+    )
+    value = _UNC_PATH_RE.sub(
+        lambda match: match.group(0).rsplit("\\", 1)[-1] or "[redacted-path]",
+        value,
+    )
+    return scrub_text(value)
+
+
+def _secret_field(key: str) -> bool:
+    return is_secret_field_name(key)
+
+
+def _safe_content(value: Any, *, key: str = "") -> Any:
+    """Recursively remove credentials, store URLs, and host filesystem layouts."""
+    if fold_field_name(key) in _URL_FIELD_NAMES or _secret_field(key):
+        # Judge by field name only where the value could carry text. A number
+        # is neither a credential nor a URL, and several counters we report
+        # carry a marker in their name — input_tokens, output_tokens — so
+        # redacting on the name alone deletes usage data to protect nothing.
+        # None stays redacted: that costs no information and keeps the
+        # null-handling of secret fields unchanged.
+        if not isinstance(value, (int, float, bool)):
+            return "[redacted]"
+    if fold_field_name(key) in _PATH_FIELD_NAMES and isinstance(value, str):
+        public_value = public_project(value)
+        return _safe_text(public_value) if public_value is not None else None
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            safe_key = _safe_text(str(raw_key))
+            if safe_key in _ARTIFACT_DROP or safe_key in _SESSION_DETAIL_DROP:
+                continue
+            projected[safe_key] = _safe_content(item, key=safe_key)
+        return projected
+    if isinstance(value, list):
+        return [_safe_content(item) for item in value]
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return f"[{type(value).__name__}]"
+
+
+def _safe_mapping(value: dict[str, Any], *, drop: frozenset[str]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in drop:
+            continue
+        if key == "project":
+            public_value = public_project(item)
+            projected[key] = _safe_text(public_value) if public_value is not None else None
+        else:
+            projected[key] = _safe_content(item, key=key)
+    return projected
+
+
+def _cap_payload(value: Any, limit: int) -> tuple[Any, bool]:
+    encoded = json.dumps(value, separators=(",", ":"), default=str).encode()
+    if len(encoded) <= limit:
+        return value, False
+    if isinstance(value, str):
+        low, high = 0, len(value)
+        while low < high:
+            midpoint = (low + high + 1) // 2
+            candidate = json.dumps(value[:midpoint], separators=(",", ":")).encode()
+            if len(candidate) <= limit:
+                low = midpoint
+            else:
+                high = midpoint - 1
+        return value[:low], True
+    return {"truncated": True, "reason": "content exceeds the byte cap"}, True
+
+
+def _cap_strings(value: Any, *, skip_keys: frozenset[str] = frozenset()) -> bool:
+    truncated = False
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in skip_keys:
+                continue
+            if isinstance(item, str):
+                value[key], item_truncated = _cap_payload(item, PER_ITEM_TEXT_CAP)
+                truncated = truncated or item_truncated
+            else:
+                truncated = _cap_strings(item, skip_keys=skip_keys) or truncated
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, str):
+                value[index], item_truncated = _cap_payload(item, PER_ITEM_TEXT_CAP)
+                truncated = truncated or item_truncated
+            else:
+                truncated = _cap_strings(item, skip_keys=skip_keys) or truncated
+    return truncated
+
+
+def _safe_artifact(row: dict[str, Any], *, include_content: bool) -> dict[str, Any]:
+    if not include_content:
+        projected = _safe_mapping(
+            {key: value for key, value in row.items() if key != "content"},
+            drop=_ARTIFACT_DROP,
+        )
+        projected["metadata_truncated"] = _cap_strings(projected)
+        return projected
+    projected = _safe_mapping(row, drop=_ARTIFACT_DROP)
+    metadata_truncated = _cap_strings(projected, skip_keys=frozenset({"content"}))
+    content, truncated = _cap_payload(projected.get("content"), _ARTIFACT_CONTENT_BYTE_CAP)
+    projected["content"] = content
+    projected["content_truncated"] = truncated
+    projected["metadata_truncated"] = metadata_truncated
+    return projected
+
+
+def _bound_session_messages(session: dict[str, Any]) -> bool:
+    remaining = MESSAGE_BYTE_CAP
+    truncated = False
+    branches = session.get("branches")
+    if not isinstance(branches, list):
+        return False
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        messages = branch.get("messages")
+        if not isinstance(messages, list):
+            continue
+        if remaining < 2:
+            if messages:
+                truncated = True
+                branch["messages_truncated"] = True
+            branch["messages"] = []
+            continue
+        remaining -= 2
+        kept_reversed = []
+        for message in reversed(messages):
+            size = (
+                len(
+                    json.dumps(
+                        message,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode()
+                )
+                + 1
+            )
+            if size > remaining:
+                truncated = True
+                continue
+            kept_reversed.append(message)
+            remaining -= size
+        kept_reversed.reverse()
+        if len(kept_reversed) != len(messages):
+            branch["messages_truncated"] = True
+        branch["messages"] = kept_reversed
+    return truncated
+
+
+def _bound_session_structure(session: dict[str, Any]) -> tuple[bool, bool]:
+    branches_truncated = False
+    branches = session.get("branches")
+    if isinstance(branches, list) and len(branches) > _SESSION_BRANCH_CAP:
+        session["branches"] = branches[:_SESSION_BRANCH_CAP]
+        branches_truncated = True
+    stats_truncated = False
+    stats = session.get("message_stats")
+    if isinstance(stats, dict):
+        for field in ("branches", "errors", "files"):
+            value = stats.pop(field, None)
+            stats_truncated = stats_truncated or bool(value)
+    return branches_truncated, stats_truncated
+
+
+async def list_sessions(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListSessionsInput.model_validate(arguments)
+    from lionhub.orchestration.state_store import store_exists
+    from lionhub.serve.daemon.services import runs as runs_service
+    from lionhub.serve.daemon.services import sessions as sessions_service
+
+    # The carrier answers an absent store with an empty list, so without this
+    # check a store that cannot be read is indistinguishable from a store with
+    # nothing in it. Those are different answers and a caller acts differently
+    # on each: "no runs" invites a conclusion, "I could not look" does not.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
+
+    if isinstance(args.status, str):
+        status_filter: str | list[str] | None = args.status
+    elif args.status:
+        status_filter = [str(status) for status in args.status]
+    else:
+        status_filter = None
+    statuses = runs_service._normalize_status_filter(status_filter)
+    where = sessions_service.SessionFilter(
+        playbook=args.playbook,
+        statuses=statuses,
+        project=args.project,
+        search=args.search,
+    )
+    rows = await runs_service.list_runs(
+        playbook=args.playbook,
+        status=status_filter,
+        project=args.project,
+        search=args.search,
+        limit=args.limit,
+        offset=args.offset,
+        sort=args.sort,
+    )
+    total = await sessions_service.count_sessions(where)
+    projected = []
+    content_truncated = False
+    for row in rows[: args.limit]:
+        safe = _safe_mapping(row, drop=_SESSION_LIST_DROP)
+        row_truncated = _cap_strings(safe)
+        safe["content_truncated"] = row_truncated
+        content_truncated = content_truncated or row_truncated
+        projected.append(safe)
+    return {
+        "known": True,
+        "sessions": projected,
+        "total": total,
+        "limit": args.limit,
+        "offset": args.offset,
+        "truncated": args.offset + len(projected) < total,
+        "content_truncated": content_truncated,
+        "source": "store",
+    }
+
+
+async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = SessionDetailInput.model_validate(arguments)
+    from lionhub.serve.daemon.services import sessions as sessions_service
+
+    source = "store"
+    try:
+        row = await sessions_service.get_session(
+            args.session_id,
+            message_limit=args.message_limit,
+            message_offset=0,
+            message_cursor=args.message_cursor,
+        )
+    except sessions_service.MessageCursorError:
+        if args.message_cursor is None:
+            raise
+        row = await sessions_service.get_session(
+            args.session_id,
+            message_limit=args.message_limit,
+            message_offset=0,
+            message_cursor=None,
+        )
+        source = "fallback"
+    if row is None:
+        return {"known": False, "source": "store"}
+    projected = _safe_mapping(row, drop=_SESSION_DETAIL_DROP)
+    branches_truncated, message_stats_truncated = _bound_session_structure(projected)
+    messages_bytes_truncated = _bound_session_messages(projected)
+    content_truncated = _cap_strings(
+        projected,
+        skip_keys=frozenset({"message_cursor", "message_next_cursor"}),
+    )
+    return {
+        "known": True,
+        "source": source,
+        "message_byte_limit": MESSAGE_BYTE_CAP,
+        "messages_bytes_truncated": messages_bytes_truncated,
+        "branches_truncated": branches_truncated,
+        "message_stats_truncated": message_stats_truncated,
+        "content_truncated": content_truncated,
+        **projected,
+    }
+
+
+async def session_signals(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = SessionSignalsInput.model_validate(arguments)
+    from lionhub.orchestration.state_store import store_exists
+    from lionhub.serve.daemon.services import signals as signals_service
+
+    # Same reason as list_sessions: the carrier returns an empty page both for a
+    # session with no signals and for a store it could not open.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
+
+    rows = await signals_service.get_signals_after(
+        args.session_id,
+        args.after_seq or 0,
+        limit=args.limit + 1,
+    )
+    projected = []
+    for row in rows[: args.limit]:
+        safe = _safe_mapping(row, drop=frozenset())
+        metadata_truncated = _cap_strings(safe, skip_keys=frozenset({"payload"}))
+        payload, truncated = _cap_payload(safe.get("payload"), _SIGNAL_PAYLOAD_BYTE_CAP)
+        safe["payload"] = payload
+        safe["payload_truncated"] = truncated
+        safe["metadata_truncated"] = metadata_truncated
+        projected.append(safe)
+    return {
+        "known": True,
+        "signals": projected,
+        "limit": args.limit,
+        "truncated": len(rows) > args.limit,
+        "source": "store",
+    }
+
+
+async def get_invocation(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = GetInvocationInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
+    from lionhub.serve.daemon.services import invocations as invocations_service
+
+    # This tool only reads, and an ordinary open applies schema on the way in —
+    # taking a write lock and possibly issuing one-time migration statements to
+    # serve a read. Ask for read-only where the store can give it. Unlike
+    # _artifact_rows, which refuses the read outright when read-only is
+    # unavailable, this degrades to the ordinary open: the tool's guarantee to
+    # its caller is the redaction layer, not the connection mode, so losing
+    # read-only on a server-backed store costs hygiene rather than safety.
+    row = await invocations_service.get_invocation(
+        args.invocation_id, readonly=read_only_open_supported()
+    )
+    if row is None:
+        return {"known": False}
+    raw_sessions = row.get("sessions")
+    sessions: list[Any] = raw_sessions if isinstance(raw_sessions, list) else []
+    raw_artifacts = row.get("artifacts")
+    artifacts: list[Any] = raw_artifacts if isinstance(raw_artifacts, list) else []
+    projected = _safe_mapping(
+        {key: value for key, value in row.items() if key not in {"sessions", "artifacts"}},
+        drop=_INVOCATION_DROP,
+    )
+    content_truncated = _cap_strings(projected)
+    projected["sessions"] = [
+        _safe_mapping(item, drop=frozenset()) for item in sessions[:50] if isinstance(item, dict)
+    ]
+    for session in projected["sessions"]:
+        content_truncated = _cap_strings(session) or content_truncated
+    projected["artifacts"] = [
+        _safe_artifact(item, include_content=True)
+        for item in artifacts[:50]
+        if isinstance(item, dict)
+    ]
+    projected.update(
+        {
+            "known": True,
+            "source": "store",
+            "sessions_truncated": len(sessions) > 50,
+            "artifacts_truncated": len(artifacts) > 50,
+            "content_truncated": content_truncated,
+        }
+    )
+    return projected
+
+
+async def _artifact_rows(
+    *, session_id: str | None, invocation_id: str | None
+) -> list[dict[str, Any]] | None:
+    """Artifact rows for one owner, or None when the store cannot be read safely.
+
+    ``read_only_open_supported()`` is for callers wanting read-only as an
+    optimisation: on the stores it reports False for, it hands back a *writable*
+    connection. These tools are read-only by contract, so passing it would ask
+    for a guarantee and silently accept its opposite. An unavailable read-only
+    open is therefore reported as an unavailable read, never widened into a
+    writable one.
+    """
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+    from lionhub.serve.daemon.services.invocations import _serialize_artifact
+
+    if state_db_known_absent() or not read_only_open_supported():
+        return None
+    async with StateDB(readonly=True) as db:
+        if session_id is not None:
+            rows = await db.list_artifacts_for_session(session_id)
+        else:
+            rows = await db.list_artifacts_for_invocation(invocation_id or "")
+    return [_serialize_artifact(row) for row in rows]
+
+
+async def list_artifacts(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListArtifactsInput.model_validate(arguments)
+    if (args.session_id is None) == (args.invocation_id is None):
+        raise ValueError("Provide exactly one of session_id or invocation_id")
+    rows = await _artifact_rows(session_id=args.session_id, invocation_id=args.invocation_id)
+    if rows is None:
+        return {"known": False, "source": "unavailable"}
+    return {
+        "known": True,
+        "artifacts": [
+            _safe_artifact(row, include_content=False)
+            for row in rows[: args.limit]
+            if isinstance(row, dict)
+        ],
+        "limit": args.limit,
+        "truncated": len(rows) > args.limit,
+        "source": "store",
+    }
+
+
+async def get_artifact(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = GetArtifactInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
+    from lionhub.serve.daemon.services import invocations as invocations_service
+
+    # Read-only where the store supports it, for the reason given in
+    # get_invocation above.
+    row = await invocations_service.get_artifact(
+        args.artifact_id, readonly=read_only_open_supported()
+    )
+    if row is None:
+        return {"known": False}
+    return {"known": True, "source": "store", **_safe_artifact(row, include_content=True)}
+
+
+async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = RecentRunsInput.model_validate(arguments)
+    from lionhub.serve.daemon.services.runs import list_runs
+
+    rows = await list_runs(status=args.status, kind=args.kind, limit=args.limit, offset=0)
+
+    projected = [
+        {
+            "id": row.get("id"),
+            "agentName": row.get("agent_name"),
+            "status": row.get("status"),
+            "project": public_project(row.get("project")),
+            "startedAt": row.get("started_at"),
+            "endedAt": row.get("ended_at"),
+            "endedAtApproximate": bool(row.get("ended_at_is_approximate")),
+            "href": f"/runs/{row.get('id')}",
+            "kind": row.get("invocation_kind"),
+            "playbookName": row.get("playbook_name"),
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("id"), str)
+    ]
+    return {"runs": projected, "count": len(projected), "bounded": True}
+
+
+async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = RunStatsInput.model_validate(arguments)
+    from lionagi_studio.services.stats import get_activity_stats
+
+    stats = await get_activity_stats(args.window)
+    buckets = stats.get("buckets") or []
+    totals = {key: 0 for key in ("completed", "failed", "cancelled", "running")}
+    for bucket in buckets:
+        for key in totals:
+            value = bucket.get(key)
+            if isinstance(value, int):
+                totals[key] += value
+    return {
+        "window": stats.get("window"),
+        "total": stats.get("total"),
+        "byStatus": totals,
+        "completionRate": stats.get("completion_rate"),
+        # Carried in the payload, not only the tool description: a caller
+        # answering "what's our success rate" reads the result it just got
+        # far more reliably than a description it saw at schema-load time.
+        "completedMeans": (
+            "engine went idle without a recorded failure; not a goal-achievement judgment"
+        ),
+    }
+
+
+async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
+    CurrentViewInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    turn = await store.get_turn(request_id)
+    context = turn.get("context")
+    context = context if isinstance(context, dict) else None
+    source = "turn"
+
+    # The turn's context is frozen at submit, so it is only the freshest
+    # answer until the human moves. Prefer a view the SAME PAGE observed
+    # later, by its own observation count -- never server arrival order or a
+    # wall clock, and never a count from a different page. See
+    # docs/internals/studio.md ("View freshness: observation count, not
+    # wall clock"). When the turn names no observer or no count, the turn's
+    # own snapshot is the honest answer.
+    turn_seq = (context or {}).get("observationSeq")
+    turn_observer = (context or {}).get("observerId")
+    if isinstance(turn_seq, int) and isinstance(turn_observer, str):
+        reported, reported_seq = await store.get_view(conversation_id, turn_observer)
+        if reported is not None and isinstance(reported_seq, int) and reported_seq > turn_seq:
+            context, source = reported, "live"
+
+    if context is None:
+        return {"known": False}
+    return {
+        "known": True,
+        "space": context.get("space"),
+        "route": context.get("route"),
+        "project": public_project(context.get("project")),
+        "selection": context.get("selection"),
+        "filters": context.get("filters"),
+        # "turn": nothing observed later has been reported, so the human may
+        # have moved since. "live": this is where they are. The observation
+        # count itself is deliberately not returned -- it means nothing
+        # outside the page that counted it.
+        "source": source,
+    }
+
+
+async def list_schedules(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListSchedulesInput.model_validate(arguments)
+    from lionhub.serve.daemon.services.schedules import list_schedules as _list_schedules
+
+    rows = await _list_schedules(enabled=args.enabled)
+    projected = [
+        {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "enabled": bool(row.get("enabled")),
+            "triggerType": row.get("trigger_type"),
+            "cron": row.get("cron_expr"),
+            "intervalSec": row.get("interval_sec"),
+            "actionKind": row.get("action_kind"),
+            "nextFireAt": row.get("next_fire_at"),
+            "lastFiredAt": row.get("last_fired_at"),
+            "lastStatus": row.get("last_status"),
+            "consecutiveFailures": row.get("consecutive_failures"),
+            "project": public_project(row.get("project")),
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("id"), str)
+    ]
+    return {"schedules": projected, "count": len(projected), "bounded": True}
+
+
+async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListAgentsInput.model_validate(arguments)
+    from lionagi_studio.services.agents import list_agents as _list_agents
+    from lionagi_studio.services.redaction import demo_mode_enabled, project_agent_fields
+
+    rows = await run_sync(_list_agents)
+    redact = demo_mode_enabled()
+    projected = []
+    for row in rows[: args.limit]:
+        if not isinstance(row.get("name"), str):
+            continue
+        safe = project_agent_fields(row, redact=redact)
+        projected.append(
+            {
+                "name": row.get("name"),
+                "provider": safe.get("provider") or None,
+                "model": safe.get("model") or None,
+                "description": (safe.get("description") or "")[:500] or None,
+            }
+        )
+    return {"agents": projected, "count": len(projected), "bounded": True}
+
+
+async def list_playbooks(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListPlaybooksInput.model_validate(arguments)
+    from lionagi_studio.services.playbooks import list_playbooks as _list_playbooks
+
+    rows = await run_sync(_list_playbooks)
+    projected = [
+        {
+            "name": row.get("name"),
+            "description": (row.get("description") or "")[:500] or None,
+        }
+        for row in rows[: args.limit]
+        if isinstance(row.get("name"), str)
+    ]
+    return {"playbooks": projected, "count": len(projected), "bounded": True}
+
+
+async def navigate(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = NavigateInput.model_validate(arguments)
+    if args.status is not None and args.space not in {"mission", "history"}:
+        raise ValueError("status is only valid for mission/history run navigation")
+    if args.run_id is not None and args.space not in {"mission", "history"}:
+        raise ValueError("run_id is only valid for mission/history run navigation")
+    if args.sel is not None and args.space not in {"library", "designer"}:
+        raise ValueError("sel is only valid for library/designer navigation")
+    if args.run_kind is not None and args.space not in {"mission", "history"}:
+        raise ValueError("run_kind is only valid for mission/history run navigation")
+    params: dict[str, str] = {}
+    if args.status is not None:
+        params["status"] = args.status
+    if args.run_id is not None:
+        params["s"] = args.run_id
+    if args.sel is not None:
+        params["sel"] = args.sel
+    if args.run_kind is not None:
+        params["kind"] = args.run_kind
+    effect = _NavigateEffect(space=args.space, params=params).model_dump()
+    store, conversation_id, request_id = _identity()
+    frame = await store.append_effect(conversation_id, request_id, effect)
+    if frame is None:
+        raise RuntimeError("The Operator turn ended before the UI effect was persisted")
+    stored = frame["payload"]["effect"]
+    return {
+        "status": "pending",
+        "effectId": stored["id"],
+        "kind": stored["kind"],
+    }
+
+
+async def prefill_schedule(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = PrefillScheduleInput.model_validate(arguments)
+    effect = _PrefillEffect(
+        values={
+            "name": args.name,
+            "cron": args.cron,
+            "prompt": args.prompt,
+            "description": args.description,
+        }
+    ).model_dump()
+    store, conversation_id, request_id = _identity()
+    frame = await store.append_effect(conversation_id, request_id, effect)
+    if frame is None:
+        raise RuntimeError("The Operator turn ended before the UI effect was persisted")
+    stored = frame["payload"]["effect"]
+    return {
+        "status": "pending",
+        "effectId": stored["id"],
+        "kind": stored["kind"],
+    }
+
+
+def _redacted_launch_result(proposal: dict[str, Any]) -> dict[str, Any]:
+    raw = proposal.get("result")
+    result = raw if isinstance(raw, dict) else {}
+    allowed = {
+        key: result[key]
+        for key in ("invocation_id", "run_id", "href", "action_kind")
+        if isinstance(result.get(key), (str, int, float, bool))
+    }
+    return {
+        "status": proposal["status"],
+        "proposalId": proposal["id"],
+        "result": allowed,
+        "errorCode": proposal.get("errorCode"),
+    }
+
+
+async def resolve_playbook_version(playbook: str) -> str:
+    """Fingerprint the exact playbook content without exposing its host path."""
+    from lionagi_studio.services.playbooks import fingerprint_playbook
+
+    return await run_sync(fingerprint_playbook, playbook)
+
+
+def _playbook_placeholder_problems(
+    playbook: str, provided_input: str, provided_args: dict[str, Any]
+) -> str | None:
+    """The reason this launch must be refused, or None when it is sound.
+
+    Two refusal classes: (a) a provided arg the playbook never declared —
+    it would be rejected as an unknown flag at spawn time, long after the
+    human approved; (b) a prompt-template placeholder covered by neither the
+    declared args (defaults apply) nor a provided input — the run would
+    execute with a literal '{name}' in its orchestrator prompt.
+    """
+    import re
+
+    from lionagi_studio.services.playbooks import get_playbook
+
+    detail = get_playbook(playbook)
+    if detail is None:
+        return None  # resolve_playbook_version already errors on a missing playbook
+    data = detail.get("data") or {}
+    declared = set((data.get("args") or {}).keys())
+    unknown = sorted(set(provided_args) - declared)
+    if unknown:
+        return (
+            f"args {unknown} are not declared by playbook '{playbook}'; "
+            f"declared args: {sorted(declared) or 'none'}"
+        )
+    template = data.get("prompt") or ""
+    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
+    covered = declared | ({"input"} if provided_input else set())
+    unresolved = sorted(placeholders - covered)
+    if unresolved:
+        hint = (
+            "pass 'input'"
+            if unresolved == ["input"]
+            else f"the playbook declares no args covering {unresolved}"
+        )
+        return (
+            f"playbook '{playbook}' has unresolved prompt placeholders "
+            f"{unresolved}; launching would run with the literal braces in "
+            f"the orchestrator prompt — {hint}."
+        )
+    return None
+
+
+async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = LaunchPlaybookInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    target_version = await resolve_playbook_version(args.playbook)
+    problem = await run_sync(_playbook_placeholder_problems, args.playbook, args.input, args.args)
+    if problem is not None:
+        return {"status": "refused", "reason": problem}
+    command = {
+        "action_kind": "play",
+        "action_playbook": args.playbook,
+    }
+    if args.input:
+        command["action_prompt"] = args.input
+    if args.args:
+        command["action_playbook_args"] = dict(args.args)
+    stable = store.canonical_hash(
+        {
+            "requestId": request_id,
+            "tool": "launch_playbook",
+            "command": command,
+            "targetVersion": target_version,
+        }
+    )
+    summary = f"Launch playbook '{args.playbook}'"
+    if args.args:
+        # The human allows the EXACT command; the arg values are part of it.
+        shown_args = ", ".join(f"{k}={v}" for k, v in sorted(args.args.items()))
+        if len(shown_args) > 160:
+            shown_args = shown_args[:160] + "…"
+        summary += f" [{shown_args}]"
+    if args.input:
+        # The human allows the EXACT command; the task text is part of it.
+        shown = args.input if len(args.input) <= 160 else args.input[:160] + "…"
+        summary += f" with input: {shown}"
+    if args.note:
+        summary += f" — {args.note}"
+    proposal = await store.create_proposal(
+        conversation_id,
+        request_id,
+        command_type="launch",
+        command=command,
+        risk="execute",
+        summary=summary,
+        idempotency_key=f"operator-app:{stable}",
+        target_version=target_version,
+    )
+    proposal = await _common.wait_for_proposal(
+        store,
+        proposal,
+        clock=lambda: time.time(),
+        sleep=lambda interval: sleep(interval),
+    )
+    return _redacted_launch_result(proposal)
+
+
+_TOOL_HANDLERS = {
+    "list_recent_runs": list_recent_runs,
+    "run_stats": run_stats,
+    "get_current_view": get_current_view,
+    "list_schedules": list_schedules,
+    "list_agents": list_agents,
+    "list_playbooks": list_playbooks,
+    "navigate": navigate,
+    "prefill_schedule": prefill_schedule,
+    "launch_playbook": launch_playbook,
+    "run_progress": run_progress,
+    "run_findings": run_findings,
+    "run_detail": run_detail,
+    "cancel_run": cancel_run,
+    "resume_run": resume_run,
+    "rename_run": rename_session,
+    "update_conversation": update_conversation,
+    "pause_run": pause_run,
+    "release_run_pause": release_run_pause,
+    "steer_run": steer_run,
+    "list_sessions": list_sessions,
+    "session_detail": session_detail,
+    "session_signals": session_signals,
+    "get_invocation": get_invocation,
+    "list_artifacts": list_artifacts,
+    "get_artifact": get_artifact,
+}
+
+
+async def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
+    method = message.get("method")
+    message_id = message.get("id")
+    if message_id is None:
+        return None
+    if method == "initialize":
+        requested = (message.get("params") or {}).get("protocolVersion")
+        return {
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "result": {
+                "protocolVersion": requested or "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "studio-operator", "version": "1"},
+            },
+        }
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": message_id, "result": {}}
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "result": {"tools": _TOOL_SCHEMAS},
+        }
+    if method == "tools/call":
+        params = message.get("params") or {}
+        name = params.get("name")
+        handler = _TOOL_HANDLERS.get(name)
+        if handler is None:
+            return _tool_response(message_id, {"error": "Unknown Operator tool"}, error=True)
+        try:
+            result = await handler(params.get("arguments") or {})
+            return _tool_response(message_id, result)
+        except ValidationError as exc:
+            return _tool_response(
+                message_id,
+                {
+                    "error": "Invalid Operator tool arguments",
+                    "details": exc.errors(
+                        include_url=False,
+                        include_context=False,
+                        include_input=False,
+                    ),
+                },
+                error=True,
+            )
+        except ValueError as exc:
+            return _tool_response(message_id, {"error": scrub_text(str(exc))}, error=True)
+        except Exception:  # noqa: BLE001
+            return _tool_response(
+                message_id,
+                {"error": "Studio Operator application service is unavailable"},
+                error=True,
+            )
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "error": {"code": -32601, "message": f"Method not found: {method}"},
+    }
+
+
+def _tool_response(
+    message_id: Any,
+    value: dict[str, Any],
+    *,
+    error: bool = False,
+) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(value, sort_keys=True, separators=(",", ":")),
+                }
+            ],
+            **({"isError": True} if error else {}),
+        },
+    }
+
+
+async def _main() -> None:
+    while True:
+        line = await asyncio.to_thread(sys.stdin.buffer.readline)
+        if not line:
+            return
+        try:
+            message = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        response = await _dispatch(message)
+        if response is not None:
+            sys.stdout.write(json.dumps(response, sort_keys=True, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

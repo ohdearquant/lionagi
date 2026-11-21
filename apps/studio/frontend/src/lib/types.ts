@@ -722,7 +722,7 @@ export interface OperatorConversationSnapshot {
   frames: OperatorFrame[];
 }
 
-/** Provider each catalog model runs through; mirrors lionagi/studio/operator/catalog.py. */
+/** Provider each catalog model runs through; mirrors apps/studio/backend/src/lionagi_studio/operator/catalog.py. */
 export type OperatorProvider = "claude_code" | "codex" | "gemini_code";
 
 /** Reasoning-effort vocabulary; which subset a given provider accepts is

@@ -226,7 +226,7 @@ _SESSION_ENDED_AT_BACKFILL_FILTER = (
 # The ``schema_meta.version`` values a lionagi release writes: a whole number, no sign or padding.
 _RECORDED_VERSION = re.compile(r"[1-9][0-9]*")
 # The Studio Operator store keeps its tables in the StateDB file and creates them itself, so they can
-# be there before any StateDB open has written schema_meta (lionagi/studio/operator/store.py).
+# be there before any StateDB open has written schema_meta (apps/studio/backend/src/lionagi_studio/operator/store.py).
 _OPERATOR_TABLES = frozenset(
     {
         "studio_operator_conversations",

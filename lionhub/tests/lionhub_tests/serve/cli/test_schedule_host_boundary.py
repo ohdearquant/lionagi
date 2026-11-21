@@ -72,14 +72,6 @@ def test_studio_reexports_the_schedule_normalizer_by_identity():
     assert _host.normalize_host("[::ffff:192.168.1.5]") == "192.168.1.5"
 
 
-def test_studio_reexports_the_shared_url_functions_by_identity():
-    from lionagi.studio import cli as compatibility
-    from lionhub.orchestration.schedule import parsing as _schedule_parsing
-
-    assert compatibility._base_url is _schedule_parsing._base_url
-    assert compatibility._url_authority is _schedule_parsing._url_authority
-
-
 def test_machine_url_does_not_import_studio(monkeypatch):
     import builtins
 
@@ -88,7 +80,11 @@ def test_machine_url_does_not_import_studio(monkeypatch):
     real_import = builtins.__import__
 
     def no_studio(name, *args, **kwargs):
-        if name == "lionagi.studio" or name.startswith("lionagi.studio."):
+        if (
+            name.split(".")[0] == "lionagi_studio"
+            or name == "lionagi.studio"
+            or name.startswith("lionagi.studio.")
+        ):
             raise AssertionError(f"unexpected Studio import: {name}")
         return real_import(name, *args, **kwargs)
 

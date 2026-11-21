@@ -301,8 +301,10 @@ def test_target_notes_use_recorded_destinations_only():
         }
         assert not unused, f"{label} do not match current core source: {sorted(unused)}"
 
-    assert builder.match(builder.TARGET_RULES, "lionagi.studio.cli") == "lionhub.serve.cli"
-    assert builder.match(builder.TARGET_RULES, "lionhub.serve.daemon.services.sessions") is None
+    rules = {"lionagi.example": "lionhub.example", "lionagi.example.cli": "lionhub.serve.cli"}
+    assert builder.match(rules, "lionagi.example.cli.main") == "lionhub.serve.cli"
+    assert builder.match(rules, "lionagi.example.other") == "lionhub.example"
+    assert builder.match(rules, "lionagi.examples") is None
 
 
 def test_moved_feature_boundaries_use_tracked_lionhub_destinations():

@@ -40,11 +40,12 @@ import lionagi.state.db as state_db_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIONAGI_ROOT = REPO_ROOT / "lionagi"
-# lionhub ships in the same distribution and is scanned the same way, so code that
-# moves out of lionagi/ stays under these checks.
+# lionhub and the Studio application ship in the same distribution and are scanned the
+# same way, so code that moves out of lionagi/ stays under these checks.
 LIONHUB_ROOT = REPO_ROOT / "lionhub" / "src" / "lionhub"
-SOURCE_ROOTS = (LIONAGI_ROOT, LIONHUB_ROOT)
-IMPORT_ROOTS = (REPO_ROOT, LIONHUB_ROOT.parent)
+STUDIO_ROOT = REPO_ROOT / "apps" / "studio" / "backend" / "src" / "lionagi_studio"
+SOURCE_ROOTS = (LIONAGI_ROOT, LIONHUB_ROOT, STUDIO_ROOT)
+IMPORT_ROOTS = (REPO_ROOT, LIONHUB_ROOT.parent, STUDIO_ROOT.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -263,13 +264,13 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="studio-workflow-route",
-        symbol="lionagi.studio.services.workflow_defs.run_workflow_def_route",
+        symbol="lionagi_studio.services.workflow_defs.run_workflow_def_route",
         location=None,
         role="alias",
         expected_target="run_workflow_def",
         persistence="required",
         reason="HTTP route; delegates to run_workflow_def and translates its errors to HTTP status codes",
-        persistence_evidence="tests/apps_studio_server/test_workflow_run.py::test_workflow_run_persists_node_lifecycle_signals",
+        persistence_evidence="apps/studio/backend/tests/lionagi_studio_tests/server/test_workflow_run.py::test_workflow_run_persists_node_lifecycle_signals",
         delegation_test=(
             "tests/operations/test_graph_entrypoint_conformance.py::"
             "test_studio_workflow_route_delegates_to_run_workflow_def"
@@ -277,14 +278,17 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="run-workflow-def",
-        symbol="lionagi.studio.services.workflow_run.run_workflow_def",
-        location=("lionagi/studio/services/workflow_run.py", "run_workflow_def"),
+        symbol="lionagi_studio.services.workflow_run.run_workflow_def",
+        location=(
+            "apps/studio/backend/src/lionagi_studio/services/workflow_run.py",
+            "run_workflow_def",
+        ),
         role="adapter",
         expected_target="Session.flow",
         persistence="required",
         reason="compiles the authored workflow graph and submits it through Session.flow with a "
         "request-scoped StateDB lifecycle",
-        persistence_evidence="tests/apps_studio_server/test_workflow_run.py::test_workflow_run_persists_node_lifecycle_signals",
+        persistence_evidence="apps/studio/backend/tests/lionagi_studio_tests/server/test_workflow_run.py::test_workflow_run_persists_node_lifecycle_signals",
         delegation_test=(
             "tests/operations/test_graph_entrypoint_conformance.py::"
             "test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper"
@@ -292,19 +296,19 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="studio-engine-node",
-        symbol="lionagi.studio.services.workflow_compile.make_engine_operation",
+        symbol="lionagi_studio.services.workflow_compile.make_engine_operation",
         location=None,
         role="alias",
         expected_target="engine.run",
         persistence="inherited",
         reason="registers the 'engine' operation consumed by run-workflow-def; production "
         "make_engine_operation resolves whichever engine kind the node names and calls "
-        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:539-602) — "
+        "engine.run(...) generically (lionagi_studio/services/workflow_compile.py:539-602) — "
         "the cited test drives a coding-kind engine through exactly that dispatch. Only the "
         "planning kind's engine.run subsequently reaches EngineRun.run_dag, and that further hop "
         "is covered separately by planning-engine-run and engine-run-dag, not by this row",
         delegation_test=(
-            "tests/apps_studio_server/test_workflow_run.py::"
+            "apps/studio/backend/tests/lionagi_studio_tests/server/test_workflow_run.py::"
             "test_workflow_run_node_cwd_reaches_engine_invocation"
         ),
     ),
@@ -350,8 +354,11 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
     ),
     GraphSurface(
         key="compile-workflow-def",
-        symbol="lionagi.studio.services.workflow_compile.compile_workflow_def",
-        location=("lionagi/studio/services/workflow_compile.py", "compile_workflow_def"),
+        symbol="lionagi_studio.services.workflow_compile.compile_workflow_def",
+        location=(
+            "apps/studio/backend/src/lionagi_studio/services/workflow_compile.py",
+            "compile_workflow_def",
+        ),
         role="builder",
         expected_target=None,
         persistence="not_applicable",
@@ -4115,8 +4122,8 @@ def test_scheduler_build_argv_only_dispatches_registered_o_subcommands():
 @pytest.mark.asyncio
 async def test_studio_workflow_route_delegates_to_run_workflow_def():
     pytest.importorskip("fastapi", reason="studio extra not installed")
-    import lionagi.studio.services.workflow_run as workflow_run_mod
-    from lionagi.studio.services.workflow_defs import RunWorkflowDefRequest, run_workflow_def_route
+    import lionagi_studio.services.workflow_run as workflow_run_mod
+    from lionagi_studio.services.workflow_defs import RunWorkflowDefRequest, run_workflow_def_route
 
     spy = AsyncMock(return_value={"run_id": "abc", "status": "completed"})
     with mock.patch.object(workflow_run_mod, "run_workflow_def", spy):
@@ -4135,22 +4142,23 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     pytest.importorskip("fastapi", reason="studio extra not installed")
 
     import lionagi.state.db as db_mod
-    import lionagi.studio.services.engine_defs as engine_defs_svc
-    import lionagi.studio.services.workflow_defs as wf_svc
+    import lionagi_studio.services.engine_defs as engine_defs_svc
+    import lionagi_studio.services.workflow_defs as wf_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
+    from lionagi_studio_tests.server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec
+
     import lionhub.orchestration.engine_definitions as cli_engine
-    from tests.apps_studio_server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec
 
     monkeypatch.setitem(
         cli_engine.KIND_META,
         "research",
         {
             **cli_engine.KIND_META["research"],
-            "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
+            "cls_path": ("lionagi_studio_tests.server.test_workflow_run", "_FakeEngine"),
         },
     )
     _FakeEngine.calls = []
@@ -4161,7 +4169,7 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     created = await wf_svc.create_workflow_def({"name": "conf-flow", "spec_json": spec})
 
     from lionagi.session.session import Session
-    from lionagi.studio.services.workflow_run import run_workflow_def
+    from lionagi_studio.services.workflow_run import run_workflow_def
 
     session = Session(default_branch=_mock_chat_branch())
 
@@ -4188,13 +4196,13 @@ async def test_compile_workflow_def_never_calls_session_flow(tmp_path, monkeypat
     pytest.importorskip("fastapi", reason="studio extra not installed")
 
     import lionagi.state.db as db_mod
-    import lionagi.studio.services.engine_defs as engine_defs_svc
+    import lionagi_studio.services.engine_defs as engine_defs_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    from tests.apps_studio_server.test_workflow_run import _spec
+    from lionagi_studio_tests.server.test_workflow_run import _spec
 
     engine_def = await engine_defs_svc.create_engine_def(
         {"name": "compile-guard", "kind": "research"}
@@ -4203,7 +4211,7 @@ async def test_compile_workflow_def_never_calls_session_flow(tmp_path, monkeypat
     spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
 
     from lionagi.session.session import Session
-    from lionagi.studio.services.workflow_compile import compile_workflow_def
+    from lionagi_studio.services.workflow_compile import compile_workflow_def
 
     assert inspect.iscoroutinefunction(compile_workflow_def)
 

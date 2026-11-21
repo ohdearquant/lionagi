@@ -335,7 +335,7 @@ The additional mirror sources are:
 | Detector misses and `Path(cwd).is_dir()` | `(Path(cwd).name, "cwd_dir")` |
 | Detector raises or source directory no longer exists | `("others", "cwd_missing")`, unless a still-existing directory enables `cwd_dir` |
 
-Schedule create follows a different projection in `lionagi/studio/cli.py`:
+Schedule create follows a different projection in `apps/studio/backend/src/lionagi_studio/cli.py`:
 
 ```text
 explicit --project -> action_project exactly as supplied

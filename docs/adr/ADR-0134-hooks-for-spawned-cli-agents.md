@@ -80,11 +80,11 @@ until D5's refusal lands; either way a guard the operator relies on disappears w
 
 **P2 — the declaration surfaces that exist do not reach spawned agents.**
 
-- The hook library (`lionagi/studio/services/hooks_library.py`, `LIONAGI_HOME/hooks/library.json`)
+- The hook library (`apps/studio/backend/src/lionagi_studio/services/hooks_library.py`, `LIONAGI_HOME/hooks/library.json`)
   defines hooks once by name, and consumers attach them to events. Its only renderer,
   `materialize_claude_hooks`, has one caller: the Operator.
 - Agent profiles: Studio's profile writer accepts and validates a `hooks` assembly
-  (`lionagi/studio/services/agents.py`), and `li agent` reads it only to warn that CLI-spawned runs
+  (`apps/studio/backend/src/lionagi_studio/services/agents.py`), and `li agent` reads it only to warn that CLI-spawned runs
   do not apply it (`lionagi/cli/agent.py`, "A saved guard the leg silently does not run is worse
   than no guard").
 - `hooks_external:` in `.lionagi/settings.yaml` (ADR-0048 D6, with `li hooks import`) serves
@@ -106,8 +106,8 @@ ADR-0030 D4 (Proposed) names and that ADR-0133 (#3657) proposes to use for admis
 
 **P4 — the one working render fails open and shares one file.** The Operator's
 `materialize_settings_file` returns `None` on a broken config or library, and its engine call site
-catches every exception and runs the turn without hooks (`lionagi/studio/services/operator_hooks.py`,
-`lionagi/studio/operator/engine.py`). `materialize_claude_hooks` skips an attachment whose hook was
+catches every exception and runs the turn without hooks (`apps/studio/backend/src/lionagi_studio/services/operator_hooks.py`,
+`apps/studio/backend/src/lionagi_studio/operator/engine.py`). `materialize_claude_hooks` skips an attachment whose hook was
 deleted from the library. The rendered file is one path, `LIONAGI_HOME/operator_hooks.settings.json`,
 rewritten on every turn, so two concurrent turns race on it. For a guard, each of these is a silent
 removal.
@@ -627,10 +627,10 @@ review-pipeline job that is refused records a refusal outcome with its cause, as
 does; its next scheduled run or pass is admitted or refused on its own, so a repair takes effect at
 the next one and nothing retries in between. The Operator's current hook-less turns are each
 replaced by the same refusal: an assembly reference to a hook no longer in the library, skipped
-with a log line in `materialize_claude_hooks` (`lionagi/studio/services/hooks_library.py`); an
+with a log line in `materialize_claude_hooks` (`apps/studio/backend/src/lionagi_studio/services/hooks_library.py`); an
 unusable stored config or library, for which `materialize_settings_file` returns `None`
-(`lionagi/studio/services/operator_hooks.py`); and a materializer error of any type, which the
-engine's call site catches and answers with no settings (`lionagi/studio/operator/engine.py`). An
+(`apps/studio/backend/src/lionagi_studio/services/operator_hooks.py`); and a materializer error of any type, which the
+engine's call site catches and answers with no settings (`apps/studio/backend/src/lionagi_studio/operator/engine.py`). An
 assembly that is switched off or empty still renders no Operator attachments, which is the
 operator's choice, and the registry's baseline still applies. The fourth hook-less turn, an
 execution root that cannot reach the rendered file without traversal (P5), goes away with D4's

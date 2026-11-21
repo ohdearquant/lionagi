@@ -16,27 +16,6 @@ from lionhub.serve.daemon import routes
 _ROOT = Path(__file__).resolve().parents[5]
 
 
-def _application_inventory():
-    from lionagi.studio import registry
-
-    return registry._STUDIO_ROUTE_MODULES
-
-
-def test_the_two_inventories_cover_one_contiguous_order():
-    entries = [*routes.DAEMON_ROUTE_MODULES, *_application_inventory()]
-    assert sorted(e.position for e in entries) == list(range(len(entries)))
-    assert len({e.module for e in entries}) == len(entries)
-    assert len(routes.DAEMON_ROUTE_MODULES) == 10
-
-
-def test_the_application_registry_reuses_the_daemon_decorator_and_route_list():
-    from lionagi.studio import registry
-
-    assert registry.studio_route is routes.studio_route
-    assert registry._ROUTES is routes._ROUTES
-    assert registry.iter_studio_routes is routes.iter_studio_routes
-
-
 @pytest.fixture
 def scratch_registry(monkeypatch, tmp_path):
     """An empty route list and a directory of throwaway route modules on sys.path."""
@@ -106,13 +85,27 @@ def test_a_daemon_only_load_serves_no_application_route():
         """
         import json, sys
         from lionhub.serve.daemon import routes
+
+        def is_application(name):
+            # The application package under its own name, or a module forwarded from its old
+            # one. The core keeps lionagi.studio.services (empty) and lionagi.studio.operator
+            # (which only forwards three names) as parents of daemon modules moved to the hub.
+            if name.split(".")[0] == "lionagi_studio":
+                return True
+            return name.startswith("lionagi.studio.") and name not in {
+                "lionagi.studio.services",
+                "lionagi.studio.operator",
+            }
+
         routes.load_route_modules(routes.DAEMON_ROUTE_MODULES)
         daemon = {e.module for e in routes.DAEMON_ROUTE_MODULES}
         print(json.dumps({
             "foreign_routes": sorted(
                 {r.handler.__module__ for r in routes._ROUTES} - daemon
             ),
-            "loaded": sorted(m for m in sys.modules if m.startswith("lionagi.studio.services.")),
+            "loaded": sorted(m for m in sys.modules if is_application(m)),
+            # The control: the predicate does match an application module name.
+            "control": is_application("lionagi_studio.services.casts"),
         }))
         """
     )
@@ -127,6 +120,6 @@ def test_a_daemon_only_load_serves_no_application_route():
         timeout=120,
     )
     report = json.loads(out.stdout.strip().splitlines()[-1])
+    assert report["control"] is True
     assert report["foreign_routes"] == []
-    application = {e.module for e in _application_inventory()}
-    assert application.isdisjoint(report["loaded"]), sorted(application & set(report["loaded"]))
+    assert report["loaded"] == []

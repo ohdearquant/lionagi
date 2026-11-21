@@ -1,7 +1,7 @@
 # Studio Internals Reference
 
 Non-obvious invariants, protocol contracts, and design rationale for
-`lionagi/studio/` that don't belong inline as long-form comments. Terse
+`apps/studio/backend/src/lionagi_studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
 ## lionhub/src/lionhub/serve/daemon/_host.py
@@ -22,14 +22,14 @@ blank.
 **Daemon factory and the Studio attachment (`create_daemon_app`)** — the daemon builds the root
 application: admission middleware, its own routes, `/health` and the lifespan that owns the
 scheduler, the reconnect channel, the transcript mirror and the other process resources. With no
-attachment it serves the daemon API alone and imports no Studio module. `lionagi/studio/app.py`
+attachment it serves the daemon API alone and imports no Studio module. `apps/studio/backend/src/lionagi_studio/app.py`
 supplies the one fixed attachment, `attach_studio`, which mounts the frontend and returns the
 application's route inventory and its Operator startup and shutdown; `create_app()` and `app` are
 the daemon with Studio attached. Routes from both inventories are added by inventory position,
 then in registration order within a module. A start that fails or is cancelled before serving
 runs the shutdown sequence for the steps it had begun.
 
-**Compatibility manifest (`lionagi/studio/compatibility.json`)** — before the factory calls an
+**Compatibility manifest (`apps/studio/backend/src/lionagi_studio/compatibility.json`)** — before the factory calls an
 attachment, it reads `compatibility.json` from the package that defines the attachment
 (`lionhub.serve.daemon.compatibility`). The manifest names the attachment protocol the application
 implements and the `lionagi` versions it supports, as a version specifier. A missing, malformed or
@@ -215,7 +215,7 @@ never opens the store is unaffected and answers normally in every mode.
 returns 200 against a server-backed store like any other, which is worth
 knowing before reading a 200 there as evidence that the store is reachable.
 
-## lionagi/studio/cli.py
+## apps/studio/backend/src/lionagi_studio/cli.py
 
 **`_validate_chain_action_node`** — Validates one `chain_action` node, recursing
 into nested `on_success`/`on_fail` the way the engine's chain-fire would reach
@@ -238,7 +238,7 @@ thread stops parsing lines and only keeps draining. It's a daemon thread with
 no explicit join, so it exits with the process rather than needing shutdown
 wiring.
 
-## lionagi/studio/config.py
+## apps/studio/backend/src/lionagi_studio/config.py
 
 **System timezone fallback** — When the localtime symlink points outside
 `zoneinfo.TZPATH`, a `zoneinfo` component in its path can still supply a
@@ -690,7 +690,7 @@ fail at open elsewhere rather than degrade.
   available only through the explicit `include_spec=true` request made by the
   Studio reveal control.
 
-## lionagi/studio/services/operator.py
+## apps/studio/backend/src/lionagi_studio/services/operator.py
 
 **`report_operator_view`** — Records where the human is now, so the
 Operator can read it mid-turn. A turn's context is frozen at submit;
@@ -711,7 +711,7 @@ path converts to absolute here instead of consulting
 storage already satisfies that predicate; `Path.resolve()` always returns
 an absolute path even when `manifest_dir` is itself relative.
 
-## lionagi/studio/services/workflow_run.py
+## apps/studio/backend/src/lionagi_studio/services/workflow_run.py
 
 - **Module purpose** — Runs a compiled `WorkflowDef` through lionagi's
   `Session.flow`, persisted like any other run. Deliberately does not reuse
@@ -742,7 +742,7 @@ an absolute path even when `manifest_dir` is itself relative.
   node `config.cwd`, never a spec field. `_session` is a private testability
   seam; real callers never pass it.
 
-## lionagi/studio/services/workflow_compile.py
+## apps/studio/backend/src/lionagi_studio/services/workflow_compile.py
 
 - **Security surface** — The only new surface is `StudioExprCondition`, a
   restricted-grammar expression evaluator for designer-authored edge
@@ -773,7 +773,7 @@ an absolute path even when `manifest_dir` is itself relative.
   `on_branch_created`, when given, threads into `engine.run()` so spawned
   sub-agent branches register for persistence like flow-cloned branches.
 
-## lionagi/studio/services/approvals.py
+## apps/studio/backend/src/lionagi_studio/services/approvals.py
 
 - **Lifecycle** — An action is proposed (pending) → a human grants or denies
   → the consuming endpoint must consume the granted approval exactly once.
@@ -801,7 +801,7 @@ an absolute path even when `manifest_dir` is itself relative.
   action and consumes it atomically. A mutating route must call it before its
   side effect, passing the same action_kind/params it's about to act on.
 
-## lionagi/studio/services/definitions.py
+## apps/studio/backend/src/lionagi_studio/services/definitions.py
 
 - **Per-(kind, name) concurrency lock** — Shared across all requests in this
   process; spans the DB write inside `StateDB.save_definition()` and the
@@ -925,7 +925,7 @@ declaration it adopted (`owner_key`, `managed_by`, `spec_version`,
 the zone the row was recorded firing in, confirmed only when the scheduler runs
 in that zone), and the next plan reports `UNCHANGED`.
 
-## lionagi/studio/services/playbooks.py
+## apps/studio/backend/src/lionagi_studio/services/playbooks.py
 
 - **`_check_spec_fields`** — Mirrors
   `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py::_validate_spec_fields()` exactly,
@@ -1056,7 +1056,7 @@ in that zone), and the next plan reports `UNCHANGED`.
   transaction open, so a writer waiting on the store's busy handler can take
   the write lock before the pass writes again.
 
-## lionagi/studio/services/attention.py
+## apps/studio/backend/src/lionagi_studio/services/attention.py
 
 Durable discharge lifecycle for Studio's needs-attention queue. The queue
 itself stays client-derived (`boardReducer.buildAttentionItems`); this
@@ -1081,7 +1081,7 @@ still there to retry against. Guarding active-row updates too would break
 the idempotent-retry promise — an operator's own retried PUT looks, from the
 server's point of view, exactly like a stale revision against an active row.
 
-## lionagi/studio/services/leo.py
+## apps/studio/backend/src/lionagi_studio/services/leo.py
 
 - **Security boundary** — Mutating tools never execute; they return a
   `proposed_action` dict as an SSE payload — confirmation and the actual
@@ -1103,7 +1103,7 @@ server's point of view, exactly like a stale revision against an active row.
   surfaced on an earlier turn never resurfaces later. Must only be called
   while holding `sess.lock`.
 
-## lionagi/studio/services/agents.py
+## apps/studio/backend/src/lionagi_studio/services/agents.py
 
 **`_is_protected_system`** — True only when frontmatter carries a present,
 *truthy* `lion_system` key (any YAML/Python-truthy value, not just `True`),
@@ -1117,7 +1117,7 @@ write-protection call sites (this module and `definitions.py`'s agent save
 path) resolve the predicate, so they can't drift apart from each other or
 from the runtime.
 
-## lionagi/studio/services/shows.py
+## apps/studio/backend/src/lionagi_studio/services/shows.py
 
 - **`_live_play_meta`** — Reads a DB-known play's live `_meta.json`, giving
   disk precedence over the DB row. `on_disk=False` means the play's
@@ -1157,7 +1157,7 @@ so a failure computing overlap or persisting is logged and swallowed rather
 than propagated or retried; `CancelledError` still propagates since it's a
 `BaseException`, not an `Exception`.
 
-## lionagi/studio/services/stats.py
+## apps/studio/backend/src/lionagi_studio/services/stats.py
 
 `_ACTIVITY_WINDOWS` folds the ADR-0057 D1 seven-value session status
 vocabulary into four Pulse-sparkline buckets: `timed_out` joins `failed`
@@ -1166,7 +1166,7 @@ stops). `get_stats_route` intentionally reads the runs count from SQLite
 sessions (not `runs_svc.list_runs()`, which reads filesystem dirs and returns
 a different count) so the dashboard matches the Runs list page.
 
-## lionagi/studio/services/mcp_servers.py
+## apps/studio/backend/src/lionagi_studio/services/mcp_servers.py
 
 **Registry vs. derived file** — Studio keeps one authoritative store,
 `LIONAGI_HOME/mcp_servers.json` (full configs including secret env values,
@@ -1326,7 +1326,7 @@ before); only a resolution with no path at all (a server URL, or
 `:memory:`) raises, because that is the one condition this layer can never
 satisfy by waiting or by creating the file.
 
-## lionagi/studio/services/redaction.py
+## apps/studio/backend/src/lionagi_studio/services/redaction.py
 
 Server-side redaction for a demo-safe view of Library agent-profile
 content, enabled by `LIONAGI_STUDIO_DEMO_MODE` — a process-wide switch read
@@ -1576,7 +1576,7 @@ records either form. Cancellation of the emitter task remains a plain
 `CancelledError` and propagates, so a broken handler is visible without
 stopping unrelated schedules or swallowing scheduler shutdown.
 
-## lionagi/studio/operator/
+## apps/studio/backend/src/lionagi_studio/operator/
 
 The Operator (ADR-0083) is a durable, human-gated chat surface over Studio:
 one long-lived conversation per project view, backed by SQLite

@@ -11,8 +11,8 @@ from pydantic import BaseModel
 
 def test_string_digest_families_keep_serialization_and_chain_format():
     from lionagi.state._mirror_common import canonical_json, content_sha256
-    from lionagi.studio.operator.store import OperatorStore
-    from lionagi.studio.services.approvals import (
+    from lionagi_studio.operator.store import OperatorStore
+    from lionagi_studio.services.approvals import (
         _compute_chain_hash,
         _compute_content_hash,
         compute_params_hash,

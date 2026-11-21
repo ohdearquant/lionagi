@@ -397,7 +397,10 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
     assert "lionhub/src/lionhub/orchestration/runs.py::teardown_persist" in flat
-    assert "lionagi/studio/services/workflow_run.py::_teardown_run_persist" in flat
+    assert (
+        "apps/studio/backend/src/lionagi_studio/services/workflow_run.py::_teardown_run_persist"
+        in flat
+    )
 
 
 def test_settlement_is_an_implicit_wake_outside_the_cap() -> None:

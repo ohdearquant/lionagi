@@ -109,7 +109,7 @@ def test_known_absent_is_false_for_an_in_memory_url(absent_default, monkeypatch)
 
 
 async def test_engine_defs_are_found_in_a_moved_store(moved_sqlite_url):
-    from lionagi.studio.services import engine_defs as svc
+    from lionagi_studio.services import engine_defs as svc
 
     await _seed_engine_def("moved-def")
 
@@ -162,7 +162,7 @@ async def test_engine_def_absent_from_a_moved_store_still_reads_as_absent(
     moved_sqlite_url,
 ):
     """The other half of the contract: a genuine miss keeps its answer."""
-    from lionagi.studio.services import engine_defs as svc
+    from lionagi_studio.services import engine_defs as svc
 
     await _seed_engine_def("present")
 
@@ -181,7 +181,7 @@ async def test_a_server_url_does_not_answer_from_the_filesystem(absent_default, 
     which is a true answer where ``[]`` was a fabricated one.
     """
     _set_url(monkeypatch, _SERVER_URL)
-    from lionagi.studio.services import engine_defs as svc
+    from lionagi_studio.services import engine_defs as svc
 
     with pytest.raises(Exception):  # noqa: B017 — any failure beats a silent []
         await svc.list_engine_defs()

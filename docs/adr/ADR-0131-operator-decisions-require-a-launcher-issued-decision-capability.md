@@ -28,9 +28,9 @@ the capability is recorded unattributed.
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py::confirm_operator_proposal`, `lionagi/studio/services/operator.py::decide_operator_proposal`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py::OperatorCoordinator.decide`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py::OperatorStore.decide_proposal`). The proposal's hash and version bind what is decided, not
+`decide_operator_proposal` (`apps/studio/backend/src/lionagi_studio/services/operator.py::confirm_operator_proposal`, `apps/studio/backend/src/lionagi_studio/services/operator.py::decide_operator_proposal`) call the coordinator's
+`decide()` (`apps/studio/backend/src/lionagi_studio/operator/coordinator.py::OperatorCoordinator.decide`), which claims the proposal in the store
+(`apps/studio/backend/src/lionagi_studio/operator/store.py::OperatorStore.decide_proposal`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
 no `Sec-Fetch-Site` (`lionhub/src/lionhub/serve/daemon/app.py::_origin_accepted_without_token`, `lionhub/src/lionhub/serve/daemon/app.py::_fetch_site_accepted_without_origin`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
@@ -51,7 +51,7 @@ HTTP can read it. This paragraph describes the page before it kept a launch bear
 `localStorage` (its line number is at `47fe93701`; `docs/internals/studio.md` has the current rule).
 
 **P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
-proposal's status from the store whose path it is given (`lionagi/studio/operator/permission_mcp.py`),
+proposal's status from the store whose path it is given (`apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py`),
 so whatever the decision routes record is what a run waiting on a permission sees.
 
 ## Decision

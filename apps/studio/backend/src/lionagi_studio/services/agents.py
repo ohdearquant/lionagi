@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, replace
+from functools import partial
+from pathlib import Path
+from typing import Annotated, Any
+
+import yaml
+from fastapi import Body, HTTPException
+
+from lionagi._paths import LIONAGI_HOME
+from lionagi.libs.frontmatter import (
+    _FM_SPLIT,
+    _load_frontmatter_yaml,
+    _strip_frontmatter_prefix,
+    parse_frontmatter_strict,
+)
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+from lionagi.ln.concurrency import run_sync
+from lionhub.agent.casts.pattern import list_modes as _list_modes
+from lionhub.agent.casts.pattern import list_roles as _list_roles
+from lionhub.serve.daemon.services._path_safety import (
+    public_path,
+    safe_path_join,
+    validate_name_component,
+)
+
+from ..registry import studio_route
+from .redaction import (
+    RedactedPayloadError,
+    demo_mode_enabled,
+    project_agent_fields,
+    reject_if_redacted_payload,
+)
+
+_AGENTS_ROOT = LIONAGI_HOME / "agents"
+# The name it logged under before the move, kept through 1.x so a handler on
+# lionagi.studio still receives it.
+_log = logging.getLogger("lionagi.studio.services.agents")
+
+# The one agent Studio treats as the always-present fallback profile: not
+# deletable, but (unlike a system agent) editable like any other agent.
+DEFAULT_AGENT_NAME = "default"
+
+
+def _is_protected_system(fm: dict[str, Any]) -> bool:
+    """True when a file's frontmatter carries a present, truthy ``lion_system``.
+
+    ``lion_system`` already exists as a frontmatter flag (get_agent() has always
+    surfaced it, defaulting True, for CLI parity -- see
+    ``AgentProfile``/``AgentSpec.compose`` in ``lionhub/src/lionhub/serve/cli``). Write-protection
+    reuses that same flag rather than inventing a new one. Two things matter here:
+
+    - Present and truthy counts, whatever its YAML type -- ``true``, ``"true"``,
+      or any other value Python considers truthy -- so this agrees with the
+      runtime profile loader's own ``bool(frontmatter.get("lion_system", True))``
+      check for every value that's actually there.
+    - An *absent* key does not count as protected: treating a missing key as
+      protected would silently lock down every agent file that predates this
+      feature (plain markdown with no frontmatter at all is common -- see the
+      generic definitions save path), which is not what "the system agent
+      cannot be edited" means. Agents created through the Studio API stamp
+      ``lion_system: false`` explicitly, so they are unambiguously
+      editable/deletable by their owner.
+    """
+    return "lion_system" in fm and bool(fm["lion_system"])
+
+
+@dataclass(frozen=True)
+class _AgentWriteRead:
+    frontmatter: dict[str, Any]
+    body: str
+    protection: str | None = None
+    unreadable_block: bool = False
+
+
+def _is_empty_yaml_document(block: str) -> bool:
+    try:
+        return _load_frontmatter_yaml(block) is None
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def _read_unreadable_agent_block(
+    block: str, body: str, *, allow_empty: bool = False
+) -> _AgentWriteRead:
+    if "lion_system" in block:
+        return _AgentWriteRead(
+            {},
+            "",
+            "may be a system agent because its frontmatter could not be read",
+            unreadable_block=True,
+        )
+    if allow_empty and _is_empty_yaml_document(block):
+        # A closed block that is empty, only comments, or an explicit null
+        # holds no settings, so a partial update has nothing to discard.
+        return _AgentWriteRead({}, body)
+    return _AgentWriteRead({}, body, unreadable_block=True)
+
+
+def _read_agent_for_write(text: str) -> _AgentWriteRead:
+    """Classify frontmatter for agent writes.
+
+    Protect a profile if its unreadable header mentions ``lion_system``, if an
+    unreadable or unclosed block after a malformed opener mentions it, or if the
+    profile loaders read an explicit, truthy value. Partial updates
+    require a readable mapping or a block with bare opening and closing
+    delimiters and no settings, including an explicit null. A malformed
+    opener always refuses partial updates. Whole-file writes use the
+    system-agent protection.
+    """
+    normalized = _strip_frontmatter_prefix(text)
+    unreadable_header = None
+    if normalized.startswith("---"):
+        text = normalized
+        if _FM_SPLIT.match(text) is None:
+            # Check the malformed opening block itself. The profile loaders
+            # can also read a closed block between the first two bare delimiters.
+            block, *rest = _FM_SPLIT.split(text, maxsplit=1)
+            unreadable_header = _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
+            if unreadable_header.protection is not None or not rest:
+                return unreadable_header
+    try:
+        fm, body = parse_frontmatter_strict(text)
+    except (yaml.YAMLError, RecursionError):
+        # A closed block may be empty. Without a closing delimiter, inspect
+        # everything through the end of the file and refuse partial updates.
+        parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
+        if unreadable_header is not None and len(parts) < 3:
+            # After a malformed opener, the text past the single bare delimiter may be a
+            # block that never closes; where it was meant to end is not known, so inspect
+            # it through the end of the file, as an unclosed block after a bare opener is.
+            if len(parts) == 2 and "lion_system" in parts[1]:
+                return _read_unreadable_agent_block(parts[1], "")
+            return unreadable_header
+        block = parts[1] if len(parts) > 1 else text
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        return _read_unreadable_agent_block(
+            block, rest, allow_empty=unreadable_header is None and len(parts) > 2
+        )
+    reason = "is a system agent" if _is_protected_system(fm) else None
+    if unreadable_header is not None:
+        return replace(unreadable_header, protection=reason)
+    return _AgentWriteRead(fm, body, reason)
+
+
+def _read_agent_file_for_write(path: Path, name: str) -> _AgentWriteRead:
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise AgentProtectedError(f"Agent '{name}' file could not be read") from exc
+    return _read_agent_for_write(text)
+
+
+def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
+    """Return canonical Studio agent frontmatter without mutating caller state."""
+    normalized = dict(fm)
+    if "reasoning_effort" in normalized:
+        if "effort" not in normalized:
+            normalized["effort"] = normalized["reasoning_effort"]
+        normalized.pop("reasoning_effort", None)
+        _log.warning("Agent frontmatter key 'reasoning_effort' is deprecated; use 'effort'")
+    return normalized
+
+
+_SCALAR_FRONTMATTER_TYPES = (str, int, float, bool, type(None))
+
+
+def _display_scalar(value: Any) -> Any:
+    """Return the display form of a scalar-shaped frontmatter value; a
+    mapping or list is returned unchanged, not ``str()``-coerced.
+
+    A ``str()`` call accepts any input, so coercing a nested mapping before
+    it reaches :func:`redaction.project_agent_fields` would turn it into a
+    plain string -- a shape the classification table's scalar check admits
+    verbatim, defeating the very check meant to catch it. Leaving a non-scalar
+    value's real shape intact lets that check see and drop it instead.
+    """
+    if isinstance(value, _SCALAR_FRONTMATTER_TYPES):
+        return str(value) if value not in (None, "") else ""
+    return value
+
+
+def _canonical_model(model: Any, provider: Any) -> str:
+    model_s = str(model or "").strip()
+    if not model_s:
+        return ""
+    if "/" in model_s:
+        return model_s
+    provider_s = str(provider or "").strip()
+    return f"{provider_s}/{model_s}" if provider_s else model_s
+
+
+def list_agents() -> list[dict[str, Any]]:
+    if not _AGENTS_ROOT.exists():
+        return []
+    out = []
+    for path in sorted(_AGENTS_ROOT.glob("*.md")):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        fm, _ = _parse_frontmatter(text)
+        fm = _normalize_frontmatter(fm)
+        entry: dict[str, Any] = {
+            "name": path.stem,
+            "path": public_path(path),
+            "provider": _display_scalar(fm.get("provider")),
+            "model": _display_scalar(fm.get("model")),
+            "description": str(fm.get("description") or ""),
+            **{k: v for k, v in fm.items() if k not in ("model", "description", "provider")},
+        }
+        entry["protected"] = _is_protected_system(fm)
+        entry["is_default"] = path.stem == DEFAULT_AGENT_NAME
+        if path.is_symlink():
+            try:
+                entry["symlink_target"] = public_path(path.resolve())
+            except OSError:
+                pass
+        out.append(entry)
+    return out
+
+
+def get_agent(name: str) -> dict[str, Any] | None:
+    safe_path_join(_AGENTS_ROOT, name)
+
+    stem = name.removesuffix(".md")
+    path = _AGENTS_ROOT / f"{stem}.md"
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    fm, body = _parse_frontmatter(text)
+    fm = _normalize_frontmatter(fm)
+
+    result: dict[str, Any] = {
+        "name": stem,
+        "path": public_path(path),
+        "provider": _display_scalar(fm.get("provider")),
+        "model": _display_scalar(fm.get("model")),
+        "system_prompt": fm.get("system_prompt") or (body if body else None),
+        "guidance": fm.get("guidance") or None,
+    }
+
+    result["yolo"] = bool(fm.get("yolo", False))
+    result["fast_mode"] = bool(fm.get("fast_mode", False))
+    # CLI-parity display default (absent key reads as True) -- distinct from
+    # the stricter, explicit-only check _is_protected_system() uses to gate writes.
+    result["lion_system"] = bool(fm.get("lion_system", True))
+    result["protected"] = _is_protected_system(fm)
+    result["is_default"] = stem == DEFAULT_AGENT_NAME
+
+    for optional_key in ("permission_mode", "effort", "description", "role", "mode", "hooks"):
+        if optional_key in fm:
+            result[optional_key] = fm[optional_key]
+
+    if path.is_symlink():
+        try:
+            result["symlink_target"] = public_path(path.resolve())
+        except OSError:
+            pass
+
+    return result
+
+
+_KNOWN_FRONTMATTER_KEYS = (
+    "provider",
+    "model",
+    "description",
+    "guidance",
+    "permission_mode",
+    "effort",
+    "yolo",
+    "fast_mode",
+    "lion_system",
+    "role",
+    "mode",
+    "hooks",
+)
+
+
+def _validate_hooks_key(fm: dict[str, Any]) -> None:
+    """Validate (and drop-when-empty) the ``hooks`` assembly on a profile write.
+
+    ``hooks`` binds named hooks from the shared hook library to
+    provider-neutral events — see services/hooks_library.py. A dangling hook
+    name fails the save; an empty list clears the key.
+    """
+    if "hooks" not in fm:
+        return
+    if not fm["hooks"]:
+        fm.pop("hooks")
+        return
+    from .hooks_library import read_library, validate_attachments
+
+    fm["hooks"] = validate_attachments(fm["hooks"], library=read_library())
+
+
+class AgentExistsError(Exception):
+    """Raised by create_agent() when the target name already has a file on disk."""
+
+
+class AgentProtectedError(Exception):
+    """Raised when a write targets the system agent or the default agent's delete guard."""
+
+
+def _canonical_role(role: Any) -> str:
+    """Validate a role and return the exact value that should be stored.
+
+    The stored value is what the runtime looks up, and that lookup is exact
+    (``AgentSpec.coding()``). Validating a stripped copy while writing the
+    original back would accept ``" critic "`` here and fail to launch it later,
+    so the canonical form is what both the check and the write use.
+    """
+    role_s = str(role or "").strip()
+    if role_s and role_s not in _list_roles():
+        raise ValueError(f"Unknown cast role: {role_s!r}")
+    return role_s
+
+
+def _canonical_mode(mode: Any) -> str:
+    """Validate a mode and return the exact value that should be stored. Same
+    reasoning as ``_canonical_role``."""
+    mode_s = str(mode or "").strip()
+    if mode_s and mode_s not in _list_modes():
+        raise ValueError(f"Unknown cast mode: {mode_s!r}")
+    return mode_s
+
+
+def _canonicalize_casts(incoming: dict[str, Any]) -> None:
+    """Validate role and mode in place, so every write path stores the same
+    form it validated. Absent keys stay absent -- an omitted role is not the
+    same request as an empty one."""
+    if "role" in incoming:
+        incoming["role"] = _canonical_role(incoming.get("role"))
+    if "mode" in incoming:
+        incoming["mode"] = _canonical_mode(incoming.get("mode"))
+
+
+def create_agent(name: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Create a new agent profile file. Refuses to overwrite an existing name so that
+    creating a second, differently-configured version of a role always requires its own
+    name. Agents created through this route are never system-owned: ``lion_system`` is
+    always stamped false so the new agent is immediately editable and deletable."""
+    validate_name_component(name, label="name")
+    safe_path_join(_AGENTS_ROOT, name)
+    stem = name.removesuffix(".md")
+    path = _AGENTS_ROOT / f"{stem}.md"
+    if path.exists():
+        raise AgentExistsError(f"Agent '{stem}' already exists")
+
+    incoming = _normalize_frontmatter(data)
+    _canonicalize_casts(incoming)
+
+    fm: dict[str, Any] = {}
+    for key in _KNOWN_FRONTMATTER_KEYS:
+        if key not in incoming:
+            continue
+        value = incoming[key]
+        if value not in (None, ""):
+            fm[key] = value
+
+    fm["lion_system"] = False
+    _validate_hooks_key(fm)
+
+    if "model" in fm:
+        model = _canonical_model(fm.get("model"), fm.get("provider"))
+        if model:
+            fm["model"] = model
+        else:
+            fm.pop("model", None)
+
+    body = (data.get("system_prompt") or "").strip()
+
+    _AGENTS_ROOT.mkdir(parents=True, exist_ok=True)
+    # fm always holds lion_system, so a created file always opens with frontmatter.
+    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    new_text = f"---\n{fm_text}\n---\n\n{body}\n" if body else f"---\n{fm_text}\n---\n"
+
+    path.write_text(new_text)
+    return get_agent(stem)
+
+
+def delete_agent(name: str) -> bool:
+    """Delete an agent profile file. Refuses the default agent (name match) and any
+    system agent (``lion_system`` true, the pre-existing default). Returns False if the
+    agent does not exist so the route can 404 instead of raising."""
+    safe_path_join(_AGENTS_ROOT, name)
+    stem = name.removesuffix(".md")
+    path = _AGENTS_ROOT / f"{stem}.md"
+    if not path.exists():
+        return False
+
+    if stem == DEFAULT_AGENT_NAME:
+        raise AgentProtectedError(f"Agent '{stem}' is the default agent and cannot be deleted")
+
+    protection = _read_agent_file_for_write(path, stem).protection
+    if protection:
+        raise AgentProtectedError(f"Agent '{stem}' {protection} and cannot be deleted")
+
+    path.unlink()
+    return True
+
+
+def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Write an agent profile back to disk; preserves unknown frontmatter keys; follows symlinks."""
+    safe_path_join(_AGENTS_ROOT, name)
+    stem = name.removesuffix(".md")
+    path = _AGENTS_ROOT / f"{stem}.md"
+    if not path.exists():
+        return None
+
+    existing = _read_agent_file_for_write(path, stem)
+    if existing.protection:
+        raise AgentProtectedError(f"Agent '{stem}' {existing.protection} and cannot be edited")
+    if existing.unreadable_block:
+        raise AgentProtectedError(f"Agent '{stem}' frontmatter could not be read")
+    existing_fm = _normalize_frontmatter(existing.frontmatter)
+
+    # While demo mode is on, a client that fetched the redacted view and posted
+    # it back unmodified must not be able to overwrite the real file with the
+    # placeholder text -- the other write path onto agent files (the generic
+    # definitions save route) carries the same guard; see redaction.py.
+    reject_if_redacted_payload(
+        data.get("system_prompt"), data.get("guidance"), data.get("description")
+    )
+
+    fm: dict[str, Any] = dict(existing_fm)
+    incoming = _normalize_frontmatter(data)
+    _canonicalize_casts(incoming)
+    for key in _KNOWN_FRONTMATTER_KEYS:
+        if key not in incoming:
+            continue
+        value = incoming[key]
+        if value in (None, ""):
+            fm.pop(key, None)
+        else:
+            fm[key] = value
+
+    _validate_hooks_key(fm)
+
+    if "model" in fm:
+        model = _canonical_model(fm.get("model"), fm.get("provider"))
+        if model:
+            fm["model"] = model
+        else:
+            fm.pop("model", None)
+
+    new_body = data.get("system_prompt")
+    if new_body is None:
+        new_body = existing.body
+    new_body = (new_body or "").strip()
+
+    if fm:
+        fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+        new_text = f"---\n{fm_text}\n---\n\n{new_body}\n" if new_body else f"---\n{fm_text}\n---\n"
+    else:
+        new_text = f"{new_body}\n" if new_body else ""
+
+    path.write_text(new_text)
+
+    return get_agent(name)
+
+
+@studio_route("/agents/", method="GET", area="agents", name="list_agents")
+async def list_agents_route() -> dict[str, Any]:
+    agents = await run_sync(list_agents)
+    redact = demo_mode_enabled()
+    agents = [project_agent_fields(a, redact=redact) for a in agents]
+    return {"agents": agents}
+
+
+@studio_route("/agents/{name}", method="GET", area="agents", name="get_agent")
+async def get_agent_route(name: str) -> dict[str, Any]:
+    agent = await run_sync(partial(get_agent, name))
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return project_agent_fields(agent, redact=demo_mode_enabled())
+
+
+@studio_route("/agents/{name}", method="POST", area="agents", name="create_agent")
+async def create_agent_route(
+    name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
+) -> dict[str, Any]:
+    try:
+        created = await run_sync(partial(create_agent, name, body))
+    except AgentExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return project_agent_fields(created, redact=demo_mode_enabled())
+
+
+@studio_route("/agents/{name}", method="PUT", area="agents", name="update_agent")
+async def update_agent_route(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    try:
+        updated = await run_sync(partial(update_agent, name, body))
+    except (AgentProtectedError, RedactedPayloadError) as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return project_agent_fields(updated, redact=demo_mode_enabled())
+
+
+@studio_route("/agents/{name}", method="DELETE", area="agents", name="delete_agent")
+async def delete_agent_route(name: str) -> dict[str, Any]:
+    try:
+        deleted = await run_sync(partial(delete_agent, name))
+    except AgentProtectedError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return {"deleted": True, "name": name}
+
+
+@studio_route("/agents/{name}/validate", method="POST", area="agents")
+async def validate_agent(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
+    errors: list[str] = []
+    if not (body.get("name") or "").strip():
+        errors.append("name is required")
+    if not (body.get("provider") or "").strip():
+        errors.append("provider is required")
+    if not (body.get("model") or "").strip():
+        errors.append("model is required")
+    return {"ok": not errors, "errors": errors or None}

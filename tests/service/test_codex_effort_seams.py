@@ -42,21 +42,21 @@ def refuse_codex_compatibility_lookup(monkeypatch):
 
 class TestTheStudioOperatorSeam:
     def test_an_effortless_codex_turn_gets_the_clamped_global_default(self, global_ultra):
-        from lionagi.studio.operator.engine import _apply_operator_effort
+        from lionagi_studio.operator.engine import _apply_operator_effort
 
         model_kwargs: dict = {}
         _apply_operator_effort("codex", "gpt-5.3-codex-spark", None, model_kwargs)
         assert model_kwargs["reasoning_effort"] == "xhigh"
 
     def test_an_explicit_effort_still_wins(self, global_ultra):
-        from lionagi.studio.operator.engine import _apply_operator_effort
+        from lionagi_studio.operator.engine import _apply_operator_effort
 
         model_kwargs: dict = {}
         _apply_operator_effort("codex", "gpt-5.3-codex-spark", "low", model_kwargs)
         assert model_kwargs["reasoning_effort"] == "low"
 
     def test_a_non_codex_provider_is_untouched_when_effort_is_unset(self, global_ultra):
-        from lionagi.studio.operator.engine import _apply_operator_effort
+        from lionagi_studio.operator.engine import _apply_operator_effort
 
         model_kwargs: dict = {}
         _apply_operator_effort("claude_code", "sonnet", None, model_kwargs)

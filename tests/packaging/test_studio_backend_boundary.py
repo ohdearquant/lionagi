@@ -63,6 +63,7 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
     sys.path[:0] = [str(root), str(root / "lionhub" / "src")]
     blocked = (
         "apps.studio",
+        "lionagi_studio",
         "lionagi.studio.app",
         "lionagi.studio.routes",
         "lionhub.orchestration.scheduler.routes",
@@ -132,7 +133,13 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
         pass
     else:
         raise AssertionError("the application import control was not refused")
-    assert refused == ["apps.studio"]
+    try:
+        import lionagi_studio
+    except ImportError:
+        pass
+    else:
+        raise AssertionError("the application package control was not refused")
+    assert refused == ["apps.studio", "lionagi_studio"]
     print("PASS: human and machine validate/export succeed; application import control refused")
     '''
         script = textwrap.dedent(script)
