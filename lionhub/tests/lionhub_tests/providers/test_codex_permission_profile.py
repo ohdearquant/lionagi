@@ -79,7 +79,7 @@ def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
     """The table a launch builds for these inputs, rendered and parsed as a command line carries it."""
     policy = resolve_child_sandbox(None)
     table = permission_profile_table(
-        deny=deny_entries(policy.deny_read, codex_home_for_env(env)),
+        deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
         write=write,
         light=light,
         read_only=read_only,
@@ -218,10 +218,13 @@ def test_with_the_child_sandbox_on_there_is_no_sandbox_mode_on_the_command_line(
         assert 'approval_policy="never"' in overrides[:-2]
 
     light = kw.get("workload") == "light"
-    read_only = kw.get("sandbox") == "read-only"
+    # A heavy request that names no sandbox takes the mode codex would have used without one;
+    # the test's user config sets none, so that is read-only.
+    names_no_sandbox = not light and not kw.get("sandbox") and not kw.get("full_auto")
+    read_only = kw.get("sandbox") == "read-only" or names_no_sandbox
     table = _profile_table(args)
     assert table == _expected_profile(
-        env, write=[] if light else _default_roots(), light=light, read_only=read_only
+        env, write=[] if light or read_only else _default_roots(), light=light, read_only=read_only
     )
     assert table["extends"] == (":read-only" if read_only else ":workspace")
     assert table["network"]["enabled"] is (not light)
@@ -422,7 +425,9 @@ def test_argv_is_rendered_against_the_environment_the_child_really_gets(
     for home in (declared, final):
         home.mkdir()
         (home / "config.toml").write_text("")
-    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env={"CODEX_HOME": str(declared)})
+    request = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, env={"CODEX_HOME": str(declared)}, sandbox="workspace-write"
+    )
     plain = codex_module._plain_request(request)
     # The renderer `prepare_argv` calls once the secret fill has built the child's environment.
     args = codex_module._exclusive_cmd_args(request, plain, tmp_path, {"CODEX_HOME": str(final)})

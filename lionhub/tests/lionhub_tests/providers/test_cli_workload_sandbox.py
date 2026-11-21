@@ -120,7 +120,7 @@ def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
 
     policy = resolve_child_sandbox(None)
     table = permission_profile_table(
-        deny=deny_entries(policy.deny_read, codex_home_for_env(env)),
+        deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
         write=write,
         light=light,
         read_only=read_only,
@@ -129,7 +129,13 @@ def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
 
 
 @pytest.mark.parametrize(
-    "kw", [{}, {"full_auto": True}, {"sandbox": "workspace-write"}, {"workload": "heavy"}]
+    "kw",
+    [
+        {"full_auto": True},
+        {"sandbox": "workspace-write"},
+        {"workload": "heavy", "sandbox": "workspace-write"},
+        {"workload": "heavy", "full_auto": True},
+    ],
 )
 def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
     tmp_path, kw, sandbox_on
@@ -180,11 +186,13 @@ def test_the_heavy_profile_beats_the_user_configs_writable_roots(tmp_path, sandb
         {"sandbox_workspace_write": {"writable_roots": ["/opt/build"]}},
     ],
 )
-def test_writable_roots_the_caller_sets_are_kept(tmp_path, overrides, sandbox_on):
-    args = _codex(tmp_path, full_auto=True, config_overrides=overrides)
-    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
-    assert len(sandbox) == 1
-    assert "/opt/build" in sandbox[0]
+def test_writable_roots_the_caller_sets_are_in_the_profile(tmp_path, overrides, sandbox_on):
+    env = _home_with_config(tmp_path, "")
+    args = _codex(tmp_path, env=env, full_auto=True, config_overrides=overrides)
+    # Codex ignores `sandbox_workspace_write.*` under a profile, so the roots are not emitted that
+    # way: the profile's write entries carry them, in place of the child sandbox's own list.
+    assert not [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
+    assert _profile_table(args) == _expected_profile(env, write=["/opt/build"])
 
 
 def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch):

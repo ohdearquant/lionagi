@@ -27,3 +27,19 @@
   `[profiles.<name>]` table or a `CODEX_HOME/<name>.config.toml` file. A request's own `full_auto`
   or `sandbox` setting no longer exempts a user config that turns the sandbox off, because no
   `--sandbox` flag is emitted, and `as_cmd_args()` reaches the same refusals as a launch.
+- The profile's write entries are the set the sandbox mode it replaces granted. A read-only child
+  has none, its working directory included; a light child writes its working directory only; a
+  heavy child writes the child sandbox's roots, the `writable_roots` the run's own overrides set
+  (a string, list or tuple, at the root or in the selected config profile, with a leading `~`
+  expanded), the `--add-dir` directories and a linked worktree's git roots. A heavy profile
+  honours the user config's `exclude_slash_tmp` and `exclude_tmpdir_env_var`. Codex ignores
+  `sandbox_workspace_write.*` under a permission profile, so those pins and the caller's
+  `writable_roots` overrides are no longer emitted beside it; the table carries them.
+- A heavy request that names no sandbox takes the mode Codex would have used without
+  `--sandbox`: the user config's `sandbox_mode`, then the selected profile's, and read-only when
+  neither sets one. A read-only profile has no write entry at all.
+- A denied location is emitted as written, as the sandbox places it (the real path of its
+  directory plus its own name) when that differs, and at each link hop. A leading `~` expands
+  against the child's `HOME`, then the account's home directory, never the launching process's
+  `HOME`. A per-profile `allow_read` list is not applied to a Codex child, which does not know the
+  agent profile the way a Claude Code child does; the sandbox's default read policy applies.

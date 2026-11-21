@@ -49,6 +49,7 @@ __all__ = (
     "probe_record_path",
     "refuse_a_second_sandbox_setting",
     "require_passing_probe_record",
+    "user_layer_tables",
 )
 
 #: The name of the permission profile lionagi defines on the command line and selects with
@@ -85,6 +86,8 @@ def permission_profile_table(
     write: Iterable[str],
     light: bool,
     read_only: bool,
+    exclude_slash_tmp: bool = False,
+    exclude_tmpdir: bool = False,
 ) -> dict[str, Any]:
     """The ``[permissions.PERMISSION_PROFILE]`` table for one launch.
 
@@ -93,7 +96,9 @@ def permission_profile_table(
     A light request also has ``/tmp`` and ``$TMPDIR`` made read-only (codex's ``:workspace``
     leaves both writable) and the network off; a heavy one has the network on. ``read_only``
     starts from codex's ``:read-only`` built-in, which refuses every write, the working
-    directory included.
+    directory included. ``exclude_slash_tmp`` and ``exclude_tmpdir`` make ``/tmp`` and
+    ``$TMPDIR`` read-only for a heavy request, as the legacy workspace-write settings
+    ``exclude_slash_tmp`` and ``exclude_tmpdir_env_var`` did; a light request has both anyway.
     """
     filesystem: dict[str, str] = {}
     if not read_only:
@@ -101,8 +106,9 @@ def permission_profile_table(
             filesystem[path] = "write"
     for path in deny:
         filesystem[path] = "deny"
-    if light:
+    if light or exclude_tmpdir:
         filesystem[":tmpdir"] = "read"
+    if light or exclude_slash_tmp:
         filesystem[":slash_tmp"] = "read"
     return {
         "extends": ":read-only" if read_only else ":workspace",
@@ -111,15 +117,52 @@ def permission_profile_table(
     }
 
 
-def deny_entries(deny_read: Sequence[str], codex_home: Path) -> list[str]:
-    """The absolute paths a profile denies: each ``deny_read`` entry as written, every link it
-    passes through and where it resolves, then the child's own ``CODEX_HOME`` the same way.
+def _child_home(env: Mapping[str, str] | None) -> str | None:
+    """The home a ``~`` names for the child: the absolute ``HOME`` of its environment, else the
+    account's home directory. This process's own ``HOME`` is never read."""
+    home = env.get("HOME") if env is not None else None
+    if isinstance(home, str) and os.path.isabs(home):
+        return home
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_dir or None
+    except (ImportError, KeyError, OSError, AttributeError):
+        return None
+
+
+def _expand_home(entry: str, home: str | None) -> str:
+    """``entry`` with a leading ``~`` or ``~/`` replaced by ``home``; ``~name`` is left to the
+    account database, and an entry that does not start with ``~`` is returned as written."""
+    if entry == "~" or entry.startswith("~/"):
+        if home is None:
+            raise ConfigurationError(
+                f"child_sandbox: deny_read entry {entry!r} names a home directory, and neither "
+                "the child's HOME nor the account database gives one"
+            )
+        return home if entry == "~" else os.path.join(home, entry[2:])
+    return os.path.expanduser(entry) if entry.startswith("~") else entry
+
+
+def deny_entries(
+    deny_read: Sequence[str],
+    codex_home: Path,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """The absolute paths a profile denies: each ``deny_read`` entry as written, the place it
+    occupies once its parent directory is resolved (the path the Seatbelt rule places it at),
+    every link it passes through and where it resolves, then the child's own ``CODEX_HOME``
+    the same way.
+
+    A ``~`` expands against the ``HOME`` of ``env``, the child's environment, and falls back to
+    the account's home directory; the parent's ``HOME`` plays no part.
 
     An entry holding a glob character is refused: codex reads such an entry as a pattern, and
     whether its profile denies a pattern has not been measured.
     """
     from lionhub.agent.child_sandbox import _written_and_resolved
 
+    home = _child_home(env)
     entries: list[str] = []
     for entry in (*deny_read, str(codex_home)):
         if _GLOB_CHARS.search(entry):
@@ -127,7 +170,9 @@ def deny_entries(deny_read: Sequence[str], codex_home: Path) -> list[str]:
                 f"child_sandbox: deny_read entry {entry!r} is a pattern, which a codex child's "
                 "permission profile cannot be shown to deny; name the paths it covers instead"
             )
-        for path in _written_and_resolved(os.path.expanduser(entry)):
+        written, *hops = _written_and_resolved(_expand_home(entry, home))
+        placed = os.path.join(os.path.realpath(os.path.dirname(written)), os.path.basename(written))
+        for path in (written, placed, *hops):
             if os.path.isabs(path):
                 entries.append(path)
     return list(dict.fromkeys(entries))
@@ -200,6 +245,53 @@ def _selected_profile_names(
         if isinstance(value, str) and value and value not in names:
             names.append(value)
     return names
+
+
+def user_layer_tables(
+    *,
+    env: Mapping[str, str] | None,
+    profile: str | None,
+    flags: Mapping[str, Any],
+    decoded_flags: Mapping[str, Any] | None = None,
+    ignore_user_config: bool = False,
+) -> tuple[list[Mapping[str, Any]], str | None]:
+    """The user-config tables codex layers under the run's overrides, lowest precedence first,
+    and the name of the profile the run selects.
+
+    ``CODEX_HOME/config.toml`` itself, then the ``[profiles.NAME]`` table of the profile the run
+    selects, then ``CODEX_HOME/NAME.config.toml``. The selected profile is the first name
+    ``_selected_profile_names`` lists: the request's ``profile``, else a ``profile`` override, else
+    the user config's root ``profile`` key. A file that is missing or cannot be read adds no table
+    (a launch refuses an unreadable one before it gets here). ``ignore_user_config`` drops every
+    user-config table, as the codex flag does, leaving only the request's own selection.
+    """
+    from lionhub.providers.openai._codex_profile import codex_home_for_env, validate_bare_name
+
+    home = codex_home_for_env(env)
+    data: dict[str, Any] | None = None
+    if not ignore_user_config:
+        try:
+            data = _read(home / "config.toml")
+        except ValueError:
+            data = None
+    tables: list[Mapping[str, Any]] = [] if data is None else [data]
+    names = _selected_profile_names(
+        data=data, profile=profile, flags=flags, decoded_flags=decoded_flags
+    )
+    layered = [] if ignore_user_config else names[:1]
+    for name in layered:
+        profiles = None if data is None else data.get("profiles")
+        table = profiles.get(name) if isinstance(profiles, Mapping) else None
+        if isinstance(table, Mapping):
+            tables.append(table)
+        try:
+            validate_bare_name(name, label="codex config profile name")
+            file_data = _read(home / f"{name}.config.toml")
+        except ValueError:
+            continue
+        if file_data is not None:
+            tables.append(file_data)
+    return tables, (names[0] if names else None)
 
 
 def _selected_profile_reasons(

@@ -1320,27 +1320,120 @@ def _permission_profile_policy(plain: _PlainRequest) -> ChildSandboxPolicy | Non
     return policy if policy.enabled else None
 
 
+def _writable_root_list(value: Any) -> list[str]:
+    """The strings of a ``writable_roots`` value in any shape the legacy path accepted: one
+    string, or a list or tuple of them (anything else names no root)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _caller_writable_roots(plain: _PlainRequest) -> list[str] | None:
+    """The writable roots the run's own overrides set, or None when they set none.
+
+    Both readings of every override key are read, at the root and in the table of the config
+    profile the run selects, so a quoted key and a profile-level setting count as the dotted
+    root key does.
+    """
+    layers = _command_line_layers(plain)
+    names = [getattr(plain, "profile", None), *(layer.get("profile") for layer in layers)]
+    selected = [name for name in names if isinstance(name, str) and name]
+    found = False
+    roots: list[str] = []
+    for layer in layers:
+        tables: list[Mapping[str, Any]] = [layer]
+        profiles = layer.get("profiles")
+        if isinstance(profiles, Mapping):
+            tables.extend(
+                profiles[name] for name in selected if isinstance(profiles.get(name), Mapping)
+            )
+        for table in tables:
+            configured = table.get("sandbox_workspace_write")
+            if isinstance(configured, Mapping) and "writable_roots" in configured:
+                found = True
+                roots.extend(_writable_root_list(configured["writable_roots"]))
+    return roots if found else None
+
+
+def _heavy_sandbox_settings(
+    plain: _PlainRequest, env: Mapping[str, str] | None, carried: Any
+) -> tuple[str | None, bool, bool]:
+    """The sandbox mode and the two temp-directory exclusions codex would apply to a heavy run
+    that names no sandbox, as ``(mode, exclude_slash_tmp, exclude_tmpdir_env_var)``.
+
+    They come from the user config layers, a later layer beating an earlier one (the config
+    file, then the profile the run selects). Under ``--ignore-user-config`` the settings the
+    ignored config carried stand in for them. A value no layer sets is ``None`` / ``False``.
+    """
+    from lionhub.providers.openai._codex_permissions import user_layer_tables
+
+    ignoring = bool(getattr(plain, "ignore_user_config", False)) or carried is not None
+    tables, _ = user_layer_tables(
+        env=env,
+        profile=getattr(plain, "profile", None),
+        flags=_command_line_layer(plain),
+        decoded_flags=_command_line_layer_decoded(plain),
+        ignore_user_config=ignoring,
+    )
+    mode: str | None = None
+    exclusions: dict[str, bool] = {}
+    for table in tables:
+        value = table.get("sandbox_mode")
+        if isinstance(value, str):
+            mode = value
+        configured = table.get("sandbox_workspace_write")
+        if isinstance(configured, Mapping):
+            for key in _NARROWING_WORKSPACE_KEYS:
+                if isinstance(configured.get(key), bool):
+                    exclusions[key] = configured[key]
+    if carried is not None:
+        if carried.sandbox_mode:
+            mode = carried.sandbox_mode
+        for name, value in carried.workspace_write:
+            if name in _NARROWING_WORKSPACE_KEYS and isinstance(value, bool):
+                exclusions[name] = value
+    return (
+        mode,
+        exclusions.get("exclude_slash_tmp", False),
+        exclusions.get("exclude_tmpdir_env_var", False),
+    )
+
+
+def _is_workspace_write_override(key: str) -> bool:
+    """Whether a ``-c`` key, read either way, sets ``sandbox_workspace_write`` (at the root or
+    in a config profile)."""
+    readings = [key.strip(_TRIMMED).split(".")]
+    try:
+        readings.append(_override_key_path(key, "a config override key"))
+    except ValueError:
+        pass
+    return any(
+        path[:1] == ["sandbox_workspace_write"]
+        or (path[:1] == ["profiles"] and path[2:3] == ["sandbox_workspace_write"])
+        for path in readings
+    )
+
+
 def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     """The writable roots, beyond the working directory, that the permission profile grants.
 
-    These are the roots the sandbox mode this profile replaces granted, so no request gains or
-    loses write access: none for a light request; for a heavy one the child sandbox's
-    ``allow_write`` list (or, when the run's own overrides set ``writable_roots``, the caller's
-    list), every ``add_dir`` directory and the linked worktree's git roots, the last two being
-    the directories passed with ``--add-dir``. A relative entry is made absolute against the
-    working directory, which codex starts in.
+    These are the roots the workspace-write mode this profile replaces granted, so no request
+    gains or loses write access: none for a light request; for a heavy one the roots the run's
+    own overrides set (a string, list or tuple, at the root or in the selected config profile),
+    else the child sandbox's ``allow_write`` list, then every ``add_dir`` directory and the
+    linked worktree's git roots, the last two being the directories passed with ``--add-dir``.
+    A leading ``~`` is expanded and a relative entry is made absolute against the working
+    directory, which codex starts in.
     """
     if plain.workload == "light":
         return []
-    roots = _heavy_writable_roots(plain)
+    roots = _caller_writable_roots(plain)
     if roots is None:
-        configured = _command_line_layer(plain).get("sandbox_workspace_write")
-        listed = configured.get("writable_roots") if isinstance(configured, Mapping) else None
-        roots = (
-            [root for root in listed if isinstance(root, str)] if isinstance(listed, list) else []
-        )
+        roots = _heavy_writable_roots(plain) or []
     git_roots = (str(path) for path in _linked_worktree_git_writable_roots(cwd))
-    entries = [*roots, *plain.add_dir, *git_roots]
+    entries = (os.path.expanduser(entry) for entry in [*roots, *plain.add_dir, *git_roots])
     absolute = (
         entry if os.path.isabs(entry) else os.path.join(str(cwd), entry) for entry in entries
     )
@@ -1358,21 +1451,31 @@ def _permission_profile_args(
 
     ``env`` is the environment the child runs in: the ``CODEX_HOME`` it names is the one the
     profile denies, beside every ``deny_read`` entry of ``policy``. The profile starts from
-    ``:read-only`` where the sandbox mode it replaces was ``read-only`` (the request's, or the
-    one an ignored user config carried), and from ``:workspace`` otherwise.
+    ``:read-only`` where the sandbox mode it replaces was ``read-only``, and from ``:workspace``
+    otherwise. A heavy request that names no sandbox takes the mode codex would have used
+    without one: the user config's ``sandbox_mode`` (the one an ignored user config carried
+    stands in), then the selected profile's, and ``read-only`` when neither sets it. A read-only
+    profile has no write entry, the working directory included. A heavy workspace-write
+    profile honours the user config's ``exclude_slash_tmp`` and ``exclude_tmpdir_env_var``.
     """
     light = plain.workload == "light"
+    exclude_slash_tmp = exclude_tmpdir = False
     if light:
         mode: str | None = "read-only" if plain.sandbox == "read-only" else "workspace-write"
-    elif plain.full_auto:
-        mode = "workspace-write"
     else:
-        mode = plain.sandbox or (carried.sandbox_mode if carried is not None else None)
+        inherited, exclude_slash_tmp, exclude_tmpdir = _heavy_sandbox_settings(plain, env, carried)
+        if plain.full_auto:
+            mode = "workspace-write"
+        else:
+            mode = plain.sandbox or inherited or "read-only"
+    read_only = mode == "read-only"
     table = permission_profile_table(
-        deny=deny_entries(policy.deny_read, codex_home_for_env(env)),
-        write=_profile_write_roots(plain, cwd),
+        deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
+        write=[] if read_only else _profile_write_roots(plain, cwd),
         light=light,
-        read_only=mode == "read-only",
+        read_only=read_only,
+        exclude_slash_tmp=exclude_slash_tmp and not read_only,
+        exclude_tmpdir=exclude_tmpdir and not read_only,
     )
     name = _rendered_override_value(PERMISSION_PROFILE, "The permission profile name")
     rendered = _rendered_override_value(table, "The permission profile")
@@ -2256,6 +2359,10 @@ class CodexCodeRequest(BaseModel):
         for index, (key, value) in enumerate(plain.overrides):
             if "=" in key:
                 raise _equals_in_key_refusal(index)
+            # Under a permission profile codex ignores `sandbox_workspace_write`; the caller's
+            # writable roots are in the profile table, so the override is not emitted beside it.
+            if policy is not None and _is_workspace_write_override(key):
+                continue
             # Containment removes overrides under `features.apps` and
             # `features.plugins`, plus those keys from an inline `features`
             # table. Config profiles can contribute either form alongside the
@@ -2282,7 +2389,11 @@ class CodexCodeRequest(BaseModel):
         # merged, and a later `-c` of a key replaces what an earlier one set. Each is one
         # inline table, since codex splits a dotted key at every `.`, a directory's
         # included.
-        for name, value in carried.workspace_write if carried is not None else ():
+        # Under a permission profile codex ignores these settings; the profile table carries what
+        # they set (the writable roots and the tmp exclusions), so none is emitted beside it.
+        for name, value in (
+            carried.workspace_write if carried is not None and policy is None else ()
+        ):
             rendered = _rendered_override_value(value, f"The carried {name}")
             args.extend(["-c", f"sandbox_workspace_write.{name}={rendered}"])
         if carried is not None and carried.hook_trust:

@@ -565,6 +565,21 @@ This amendment replaces two statements of D5 for a request that runs with the ch
 - **Refused before the process starts.** `config_overrides` keys under `sandbox_mode`, `permissions` and `default_permissions`; a user config that sets `default_permissions` or defines `[permissions.lionagi_child]`; and a project `.codex/config.toml`. A user config that sets a root `sandbox_mode` is not refused: the command-line profile governs over it, and the leg log says so in one line naming the config and the probe record. An override key is refused when either reading of it names a guarded key (`sandbox_mode`, `default_permissions`, `permissions.*`, `profile`, `sandbox_workspace_write.*`): split at dots, as Codex reads command-line keys, or decoded as a TOML dotted key, so a quoted part, spaces around a dot or a `\u` escape does not hide it. A profile the run could apply (the request's `profile`, a `profile` override, or the root `profile` key of `config.toml`) is refused when its `[profiles.<name>]` table or its `CODEX_HOME/<name>.config.toml` file sets `sandbox_mode`, `default_permissions` or `permissions`. A request's `full_auto` or `sandbox` does not exempt a user config that turns the sandbox off, because no `--sandbox` flag is emitted, and `as_cmd_args()` reaches the same refusals as a launch.
 - **A probe record is required.** A profiled launch refuses unless a record exists for the codex binary it runs, keyed by the binary's resolved path and version, with every required arm passed. The refusal names `python -m lionhub.providers.openai.codex_sandbox_probe`, which runs the binary against a loopback stub provider in a scratch directory and accepts on canary reads, not on codex's startup header. The record's directory is on the child sandbox's edit-deny list, so a child cannot forge one.
 
+#### Write roots, deny placement and the sandbox-off check
+
+Under a Codex permission profile the table, not a sandbox mode, grants write access, and it grants what the mode it replaces granted:
+
+- A read-only child has no write entry, its working directory included. A light child writes its working directory only. A heavy child writes the child sandbox's roots, the `writable_roots` the run's own overrides set (a string, list or tuple, at the root or in the selected config profile, with a leading `~` expanded), the `--add-dir` directories and a linked worktree's git roots. A heavy profile honours the user config's `exclude_slash_tmp` and `exclude_tmpdir_env_var`.
+- Codex ignores `sandbox_workspace_write.*` under a permission profile, so the carried pins and the caller's `writable_roots` overrides are not emitted beside it. The table carries them.
+- A heavy request that names no sandbox takes the mode Codex would have used without `--sandbox`: the user config's `sandbox_mode`, then the selected profile's.
+- A denied location is emitted as written, as the sandbox places it (the real path of its directory plus its own name) when that differs, and at each link hop. A leading `~` expands against the child's `HOME`, then the account's home directory, never the launching process's `HOME`.
+- The user config is checked for a setting that turns the sandbox off for every confined launch, including one that names `--full-auto` or a sandbox on the command line.
+
+Limits added by this amendment:
+
+- A heavy request with no explicit sandbox, whose user config and selected profile set no `sandbox_mode`, is taken as read-only. The Codex default for the unset case is not measured here.
+- A per-profile `allow_read` list is applied to a Claude Code child but not to a Codex child: the Codex request does not carry the agent profile name, so the sandbox's default read policy applies.
+
 ## Notes
 
 The engine pool name is the engine string lower-cased (`codex`, `claude`, `gemini`, `pi`); the
