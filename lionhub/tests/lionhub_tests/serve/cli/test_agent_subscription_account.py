@@ -304,7 +304,9 @@ def test_a_global_profile_malformed_in_another_key_refuses_by_path(profile_dirs,
     with pytest.raises(SubscriptionAccountError, match="Codex home") as caught:
         accounts.credential_paths()
     assert str(bad) in str(caught.value) and "mcp" in str(caught.value)
-    with pytest.raises(ConfigurationError, match="^child_sandbox: ") as refused:
+    with pytest.raises(
+        ConfigurationError, match="^the subscription accounts cannot be read"
+    ) as refused:
         _subscription_account_credentials()
     assert str(bad) in str(refused.value)
 
