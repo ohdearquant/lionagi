@@ -665,10 +665,17 @@ def _make_api_agent_spec(
     )
     spec.coding_tools = _API_TOOL_SETS[tools]
     if tools in _API_CONFINED_TOOL_SETS:
+        from lionhub.agent.child_sandbox import DEFAULT_DENY_READ, _lionagi_home_credentials
         from lionhub.tools._seatbelt import SeatbeltPolicy
 
+        # The credential locations and local stores a CLI child may not read are unreadable to
+        # this loop's bash and editor too, and its commands get a uv cache of their own.
         spec.seatbelt = SeatbeltPolicy.for_workspace(
-            cwd or Path.cwd(), network=network, _command_env_names=_command_env_names
+            cwd or Path.cwd(),
+            network=network,
+            deny_read=(*DEFAULT_DENY_READ, *_lionagi_home_credentials()),
+            per_leg_uv_cache=True,
+            _command_env_names=_command_env_names,
         )
     _wire_secure_guards(spec, cwd)
     return spec
@@ -2447,6 +2454,11 @@ async def _run_agent(
                             f"{', '.join(spec.seatbelt.writable_roots)}, network "
                             f"{'on' if spec.seatbelt.network else 'off'}"
                         )
+                        if spec.seatbelt.deny_read:
+                            confined += (
+                                f", {len(spec.seatbelt.deny_read)} credential and store "
+                                "locations unreadable"
+                            )
                     hint(
                         f"[api] {provider} runs lionagi's {api_launch['loop']} tool loop with the "
                         f"{api_launch['tools']} set ({', '.join(_API_TOOL_SETS[api_launch['tools']])}), "

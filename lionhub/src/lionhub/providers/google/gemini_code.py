@@ -68,17 +68,25 @@ HAS_AGY = AGY_CLI is not None
 #: login. The rest of ``~/.gemini`` (the login and account files, settings) stays read-only.
 _AGY_STATE_DIRS: tuple[str, ...] = ("~/.gemini/antigravity-cli",)
 
+#: Entries of the child sandbox's unreadable list that the Antigravity CLI must read to sign in.
+#: Every other entry stays unreadable to it.
+_AGY_SIGN_IN_READS: frozenset[str] = frozenset()
+
 
 def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
     """The agy argv for ``request``, run under the macOS sandbox where the host has one.
 
     agy's own ``--sandbox`` restricts its terminal but not where a command writes, so lionagi
     confines the whole process the way it confines the API-route tools: writes only under the
-    working directory, the uv cache, the temporary directory and ``_AGY_STATE_DIRS``; network on,
-    since the CLI talks to its service; pseudo-terminals allowed for its shell tool. On a host
-    without the sandbox a ``yolo`` request is refused, since it would run commands unconfined,
-    and any other request runs as before with agy's own flags.
+    working directory, the temporary directory and ``_AGY_STATE_DIRS``; network on, since the CLI
+    talks to its service; pseudo-terminals allowed for its shell tool. The shared uv cache is not
+    writable; the CLI and its commands get a new, empty one through ``UV_CACHE_DIR``, so a
+    workspace's environment is synced before the CLI starts. The credential locations a CLI
+    child may not read are unreadable to it too, except ``_AGY_SIGN_IN_READS``.
+    On a host without the sandbox a ``yolo`` request is refused, since it would run commands
+    unconfined, and any other request runs as before with agy's own flags.
     """
+    from lionhub.agent.child_sandbox import DEFAULT_DENY_READ, _lionagi_home_credentials
     from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 
     if not seatbelt_available():
@@ -93,8 +101,22 @@ def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
         path = Path(os.path.expanduser(directory))
         path.mkdir(parents=True, exist_ok=True)
         state.append(path)
-    policy = SeatbeltPolicy.for_workspace(request.cwd(), network=True, extra_roots=state, pty=True)
-    return policy.wrap([binary, *request._cmd_args(native_sandbox=False)])
+    deny_read = [
+        p for p in (*DEFAULT_DENY_READ, *_lionagi_home_credentials()) if p not in _AGY_SIGN_IN_READS
+    ]
+    if "=" in binary:
+        # /usr/bin/env would read the path as one more variable to set.
+        raise ConfigurationError(f"the agy path {binary!r} contains '='; install it elsewhere")
+    policy = SeatbeltPolicy.for_workspace(
+        request.cwd(),
+        network=True,
+        extra_roots=state,
+        pty=True,
+        deny_read=deny_read,
+        per_leg_uv_cache=True,
+    )
+    env = [f"{name}={value}" for name, value in policy.child_env]
+    return policy.wrap(["/usr/bin/env", *env, binary, *request._cmd_args(native_sandbox=False)])
 
 
 log = logging.getLogger("antigravity-cli")

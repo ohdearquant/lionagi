@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -56,12 +57,15 @@ def test_the_command_is_wrapped_in_the_sandbox(monkeypatch, tmp_path, _home):
     assert str((_home / ".gemini").resolve()) not in roots
     profile = _profile(argv)
     assert "(allow network-outbound)" in profile
+    assert "com.apple.SecurityServer" not in profile
     assert "/dev/ttys" in profile
 
 
 def test_the_state_directory_is_created_before_it_is_resolved(monkeypatch, tmp_path, _home):
     monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
-    _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=tmp_path))
+    work = tmp_path / "work"
+    work.mkdir()
+    _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work))
     assert (_home / ".gemini" / "antigravity-cli").is_dir()
 
 
@@ -81,7 +85,9 @@ def test_a_request_without_yolo_runs_as_before_where_there_is_no_sandbox(monkeyp
 def test_a_light_request_under_the_sandbox_leaves_out_agys_own(monkeypatch, tmp_path):
     # macOS refuses a sandbox inside a sandbox, so agy's --sandbox would fail every command.
     monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
-    request = GeminiCodeRequest(prompt="hi", repo=tmp_path, workload="light", yolo=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    request = GeminiCodeRequest(prompt="hi", repo=work, workload="light", yolo=True)
     argv = _confined_agy_command(AGY, request)
     assert argv[0] == SANDBOX_EXEC
     tail = argv[argv.index(AGY) + 1 :]
@@ -100,7 +106,9 @@ def test_the_spawn_path_hands_the_wrapped_command_to_the_subprocess(monkeypatch,
         yield  # pragma: no cover - an empty async generator
 
     monkeypatch.setattr(gemini_code, "ndjson_from_cli", fake_ndjson)
-    request = GeminiCodeRequest(prompt="hi", repo=tmp_path, yolo=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    request = GeminiCodeRequest(prompt="hi", repo=work, yolo=True)
 
     async def drain():
         async with contextlib.aclosing(gemini_code._ndjson_from_cli(request)) as stream:
@@ -113,6 +121,86 @@ def test_the_spawn_path_hands_the_wrapped_command_to_the_subprocess(monkeypatch,
     assert seen["cmd"][0] == SANDBOX_EXEC
     assert seen["cmd"][seen["cmd"].index(AGY) :] == [AGY, *request.as_cmd_args()]
     assert seen["cwd"] == request.cwd()
+
+
+def test_the_cli_cannot_read_the_credential_locations(monkeypatch, tmp_path, _home):
+    from lionhub.agent.child_sandbox import DEFAULT_DENY_READ
+
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    work = tmp_path / "work"
+    work.mkdir()
+    argv = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    denied = {v for k, v in _params(argv).items() if k.startswith("DENY_READ_")}
+
+    assert gemini_code._AGY_SIGN_IN_READS == frozenset()
+    for entry in DEFAULT_DENY_READ:
+        assert str(Path(entry).expanduser().resolve()) in denied
+    assert str((_home / ".ssh").resolve()) in denied
+    assert str((_home / ".gemini" / "oauth_creds.json").resolve()) in denied
+    assert '(deny file-read* file-write* (subpath (param "DENY_READ_0")))' in _profile(argv)
+
+
+@pytest.fixture
+def leg_roots(monkeypatch, tmp_path):
+    """A workspace, the policy's temporary directory and a shared uv cache, all resolved."""
+    base = tmp_path.resolve()
+    for name in ("work", "tmp", "uv-cache"):
+        (base / name).mkdir()
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    monkeypatch.setattr(tempfile, "tempdir", str(base / "tmp"))
+    monkeypatch.setattr(
+        seatbelt, "_uv_cache_dir", lambda **kwargs: pytest.fail("asked uv for the shared cache")
+    )
+    return base
+
+
+def test_the_cli_gets_a_uv_cache_of_its_own_and_not_the_shared_one(leg_roots, _home):
+    work = leg_roots / "work"
+    request = GeminiCodeRequest(prompt="hi", repo=work, yolo=True)
+    argv = _confined_agy_command(AGY, request)
+
+    assert argv[argv.index("--") + 1 : argv.index(AGY)][0] == "/usr/bin/env"
+    name, leg_cache = argv[argv.index(AGY) - 1].split("=", 1)
+    assert name == "UV_CACHE_DIR"
+    assert Path(leg_cache).parent == leg_roots / "tmp"
+    assert Path(leg_cache).is_dir() and list(Path(leg_cache).iterdir()) == []
+    roots = {v for k, v in _params(argv).items() if k.startswith("WRITABLE_ROOT_")}
+    state = str((_home / ".gemini" / "antigravity-cli").resolve())
+    assert roots == {str(work), str(leg_roots / "tmp"), state}
+    again = _confined_agy_command(AGY, request)
+    assert again[again.index(AGY) - 1] != argv[argv.index(AGY) - 1]
+
+
+def test_an_agy_path_holding_an_equals_sign_is_refused(leg_roots):
+    request = GeminiCodeRequest(prompt="hi", repo=leg_roots / "work", yolo=True)
+    with pytest.raises(ConfigurationError, match="contains '='"):
+        _confined_agy_command("/opt/a=b/agy", request)
+
+
+@pytest.mark.skipif(not seatbelt_available(), reason="needs macOS sandbox-exec")
+def test_the_cli_writes_its_own_uv_cache_and_cannot_write_the_shared_one(leg_roots):
+    argv = _confined_agy_command(
+        AGY, GeminiCodeRequest(prompt="hi", repo=leg_roots / "work", yolo=True)
+    )
+    prefix = argv[: argv.index(AGY)]
+    shared = leg_roots / "uv-cache" / "planted"
+
+    def sh(script: str) -> subprocess.CompletedProcess:
+        # The command _confined_agy_command builds, with a shell in the CLI's place.
+        return subprocess.run(
+            [*prefix, "/bin/sh", "-c", script], capture_output=True, text=True, timeout=60
+        )
+
+    shown = sh("printenv UV_CACHE_DIR")
+    own = sh('touch "$UV_CACHE_DIR/entry"')
+    planted = sh(f"touch {shared}")
+
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.strip() == argv[argv.index(AGY) - 1].split("=", 1)[1]
+    assert own.returncode == 0, own.stderr
+    assert planted.returncode != 0
+    assert "Operation not permitted" in planted.stderr
+    assert not shared.exists()
 
 
 def test_a_policy_without_pty_renders_no_pty_rule(tmp_path):

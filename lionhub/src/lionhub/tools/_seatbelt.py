@@ -1,16 +1,19 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""macOS Seatbelt confinement for the editor and bash an API model is handed (ADR-0041 Amendment 2).
+"""macOS Seatbelt confinement for the editor and bash an API model is handed (ADR-0041 Amendments 2
+and 4).
 
-The policy takes the shape of the Codex CLI's macOS sandbox: deny by default, reads unrestricted,
-writes only under the writable roots, network only when asked for. Seatbelt judges the resolved
-path, so the roots are resolved before they are passed and a write through a symlink is judged
-where the link points.
+The policy takes the shape of the Codex CLI's macOS sandbox: deny by default, reads unrestricted
+except for the paths a caller names as unreadable, writes only under the writable roots, network
+only when asked for and never the keychain service. Seatbelt judges the resolved path, so the roots
+and the unreadable paths are resolved before they are passed, and a read or write through a
+symlink is judged where the link points.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -21,10 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lionagi._command_env_metadata import command_environment
+from lionagi._errors import ConfigurationError
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
-# Reads are unrestricted, so sysctl reads are too; what the policy confines is writes and network.
+# Reads are unrestricted here, sysctl reads included; a caller's unreadable paths are denied after
+# this, and what the base confines is writes and network.
 _BASE_POLICY = """(version 1)
 (deny default)
 (allow process-exec)
@@ -49,13 +54,15 @@ _BASE_POLICY = """(version 1)
   (local-name "com.apple.cfprefsd.agent"))
 """
 
+# The network rules leave out the keychain service (com.apple.SecurityServer): with it, a confined
+# command can ask the security tool for any item whose access list admits that tool, and making
+# the keychain files unreadable does not stop it, since the service reads them, not the command.
 _NETWORK_POLICY = """(allow network-outbound)
 (allow network-inbound)
 (allow system-socket (socket-domain AF_UNIX))
 (allow mach-lookup
   (global-name "com.apple.bsd.dirhelper")
   (global-name "com.apple.system.opendirectoryd.membership")
-  (global-name "com.apple.SecurityServer")
   (global-name "com.apple.networkd")
   (global-name "com.apple.ocspd")
   (global-name "com.apple.trustd.agent")
@@ -139,14 +146,35 @@ def _uv_cache_dir(*, _command_env_names: frozenset[str] | None = None) -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "uv"
 
 
+def _within(path: Path, root: Path) -> bool:
+    """Whether ``path`` is ``root`` or lies under it. Where both exist this is judged by file
+    identity, so a spelling in another case on a case-insensitive volume counts too."""
+    if path == root or root in path.parents:
+        return True
+    try:
+        root_stat = root.stat()
+    except OSError:
+        return False
+    for candidate in (path, *path.parents):
+        try:
+            if os.path.samestat(candidate.stat(), root_stat):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 @dataclass(frozen=True)
 class SeatbeltPolicy:
-    """The resolved writable roots, the read-only paths inside them, and the network switch."""
+    """The resolved writable roots, the read-only paths inside them, the network switch, the
+    paths the confined process may not read, and the environment entries its commands run with."""
 
     writable_roots: tuple[str, ...]
     read_only: tuple[str, ...] = ()
     network: bool = False
     pty: bool = False
+    deny_read: tuple[str, ...] = ()
+    child_env: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def for_workspace(
@@ -156,29 +184,87 @@ class SeatbeltPolicy:
         network: bool = False,
         extra_roots: Sequence[str | Path] = (),
         pty: bool = False,
+        deny_read: Sequence[str | Path] = (),
+        per_leg_uv_cache: bool = False,
         _command_env_names: frozenset[str] | None = None,
     ) -> SeatbeltPolicy:
-        """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``;
-        the workspace's ``.git`` stays read-only, since a hook written there would run outside
-        the sandbox. ``pty`` lets the confined process allocate pseudo-terminals of its own,
-        which a CLI's shell tool needs to run a command; terminals it did not allocate stay
-        closed to it. While the child sandbox is enabled, a workspace that is the home
-        directory or an ancestor of it is refused."""
-        from lionhub.agent.child_sandbox import _refuse_a_home_workspace
+        """Writes to the workspace, the uv cache, the temporary directory and ``extra_roots``; the
+        workspace's ``.git`` stays read-only, since a hook written there would run outside the
+        sandbox. ``pty`` lets the confined process allocate pseudo-terminals of its own, which a
+        CLI's shell tool needs to run a command; terminals it did not allocate stay closed to
+        it. While the child sandbox is enabled, a workspace that is the home directory or an
+        ancestor of it is refused. ``deny_read`` names files and directories (``~/`` or
+        absolute) the confined process may neither read nor write, each denied as written, where
+        it sits once its parent directory is resolved, at every link it passes through and at
+        the path it resolves to; an entry that resolves under ``/dev`` is left out, since a link
+        to ``/dev/null`` holds nothing and denying it would break every command that reads
+        ``/dev/null``. An entry that is a writable root or holds one is refused, since the
+        process could not use its own tree; so is an entry inside a writable root, the temporary
+        directory excepted unless it is the workspace, since a command could move a directory
+        above it and read it there, and the editor and the other in-process tools, which this
+        policy does not confine, could read it. ``per_leg_uv_cache`` leaves the shared uv cache
+        out of the writable roots, where a confined process could plant an entry a later install
+        outside the sandbox would use; the policy instead makes a new, empty uv cache under the
+        temporary directory, removed when the process exits, and hands it to its commands as
+        ``UV_CACHE_DIR``. A confined ``uv run`` then works in a workspace whose environment
+        already exists, and installs nothing it would have had to download or take from the
+        shared cache."""
+        from lionhub.agent.child_sandbox import _refuse_a_home_workspace, _written_and_resolved
 
         _refuse_a_home_workspace(workspace_root)
         workspace = Path(workspace_root).expanduser().resolve()
+        child_env: tuple[tuple[str, str], ...] = ()
+        if per_leg_uv_cache:
+            leg_cache = tempfile.mkdtemp(prefix="lionagi-leg-uv-")
+            atexit.register(shutil.rmtree, leg_cache, True)
+            child_env = (("UV_CACHE_DIR", str(Path(leg_cache).resolve())),)
+            uv_roots: tuple[Path, ...] = ()
+        else:
+            uv_roots = (_uv_cache_dir(_command_env_names=_command_env_names),)
         roots: list[str] = []
         for root in (
             workspace,
-            _uv_cache_dir(_command_env_names=_command_env_names),
+            *uv_roots,
             Path(tempfile.gettempdir()),
             *extra_roots,
         ):
             resolved = str(Path(root).expanduser().resolve())
             if resolved not in roots:
                 roots.append(resolved)
-        return cls(tuple(roots), (str(workspace / ".git"),), network, pty)
+        # The temporary directory, unless it is the workspace, is exempt from the inside-a-root
+        # refusal below: it is shared scratch, and test harnesses keep a home there. A
+        # credential location the user keeps under it stays unreadable to commands but could
+        # be moved and then read.
+        temp = str(Path(tempfile.gettempdir()).expanduser().resolve())
+        unreadable: list[str] = []
+        for path in deny_read:
+            written = str(Path(path).expanduser())
+            # Where the entry itself sits once its parent directory is resolved: a link under a
+            # linked directory is judged by Seatbelt at that path, not at the one written.
+            placed = os.path.join(
+                os.path.realpath(os.path.dirname(written)), os.path.basename(written)
+            )
+            for entry in dict.fromkeys([placed, *_written_and_resolved(written)]):
+                if entry == "/dev" or entry.startswith("/dev/") or entry in unreadable:
+                    continue
+                for root in roots:
+                    if _within(Path(root), Path(entry)):
+                        raise ConfigurationError(
+                            f"the writable root {root!r} is inside {entry!r}, which the "
+                            "sandbox denies reading; start the agent from a project directory"
+                        )
+                    if (root == str(workspace) or root != temp) and _within(
+                        Path(entry), Path(root)
+                    ):
+                        raise ConfigurationError(
+                            f"{entry!r}, which the sandbox denies reading, is inside the "
+                            f"writable root {root!r}; start the agent from a directory "
+                            "that holds no credentials"
+                        )
+                unreadable.append(entry)
+        return cls(
+            tuple(roots), (str(workspace / ".git"),), network, pty, tuple(unreadable), child_env
+        )
 
     def profile(self) -> str:
         writes = "\n".join(
@@ -188,6 +274,11 @@ class SeatbeltPolicy:
         parts += [
             f'(deny file-write* (subpath (param "READ_ONLY_{i}")))\n'
             for i in range(len(self.read_only))
+        ]
+        # After the base's `(allow file-read*)` and the writable roots, so these win.
+        parts += [
+            f'(deny file-read* file-write* (subpath (param "DENY_READ_{i}")))\n'
+            for i in range(len(self.deny_read))
         ]
         if self.network:
             parts.append(_NETWORK_POLICY)
@@ -202,6 +293,8 @@ class SeatbeltPolicy:
             params += ["-D", f"WRITABLE_ROOT_{i}={root}"]
         for i, path in enumerate(self.read_only):
             params += ["-D", f"READ_ONLY_{i}={path}"]
+        for i, path in enumerate(self.deny_read):
+            params += ["-D", f"DENY_READ_{i}={path}"]
         return [SANDBOX_EXEC, *params, "-p", self.profile(), "--", *argv]
 
     def write_text(
