@@ -14,9 +14,9 @@ import faulthandler
 import signal
 import sys
 
-from lionagi.studio.operator import coordinator as coordinator_module
-from lionagi.studio.operator.coordinator import OperatorCoordinator
-from lionagi.studio.operator.types import OperatorEngineEvent, OperatorEngineTurn
+from lionagi_studio.operator import coordinator as coordinator_module
+from lionagi_studio.operator.coordinator import OperatorCoordinator
+from lionagi_studio.operator.types import OperatorEngineEvent, OperatorEngineTurn
 
 _EXECUTED_MARKERS: set[str] = set()
 
@@ -91,11 +91,11 @@ class DeterministicOperatorEngine:
         )
 
 
-# Install the test coordinator before importing lionagi.studio.app: that
+# Install the test coordinator before importing lionagi_studio.app: that
 # module creates its FastAPI application at import time.
 coordinator_module._COORDINATOR = OperatorCoordinator(  # noqa: SLF001
     engine_factory=DeterministicOperatorEngine,
     command_executor=_execute_harmless_command,
 )
 
-from lionagi.studio.app import app  # noqa: E402  (intentional import ordering)
+from lionagi_studio.app import app  # noqa: E402  (intentional import ordering)

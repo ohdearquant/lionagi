@@ -1,4 +1,4 @@
-"""The daemon's settings live in lionhub.serve.daemon.settings and stay importable from Studio's config."""
+"""The daemon's settings live in lionhub.serve.daemon.settings and its readers import them from there."""
 
 from __future__ import annotations
 
@@ -12,17 +12,10 @@ import lionhub.serve.daemon.settings as settings
 _ROOT = Path(__file__).resolve().parents[5]
 
 
-@pytest.mark.parametrize("name", settings.__all__)
-def test_the_old_studio_config_name_is_the_same_object(name):
-    import lionagi.studio.config as studio_config
-
-    assert getattr(studio_config, name) is getattr(settings, name)
-
-
 @pytest.mark.parametrize(
     "path",
     [
-        "lionagi/studio/app.py",
+        "apps/studio/backend/src/lionagi_studio/app.py",
         "lionhub/src/lionhub/serve/daemon/launch_access.py",
         "lionhub/src/lionhub/serve/daemon/services/pairing.py",
     ],

@@ -454,6 +454,198 @@ def test_ensure_apps_importable_adds_repo_root_to_sys_path(monkeypatch):
 # _is_build_stale staleness predicate
 
 
+def test_ensure_apps_importable_adds_the_application_source_root_in_a_checkout(
+    monkeypatch, tmp_path
+):
+    """In a checkout the Studio application is importable from its source root under apps/."""
+    import sys
+
+    import lionhub.serve.cli.studio as studio_mod
+
+    app_source = tmp_path / "apps" / "studio" / "backend" / "src"
+    app_source.mkdir(parents=True)
+    monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        sys, "path", [p for p in sys.path if p not in (str(tmp_path), str(app_source))]
+    )
+
+    assert studio_mod._ensure_apps_importable() is True
+    assert str(app_source) in sys.path
+    assert str(tmp_path) in sys.path
+
+
+def test_ensure_apps_importable_adds_no_application_root_a_checkout_lacks(monkeypatch, tmp_path):
+    import sys
+
+    import lionhub.serve.cli.studio as studio_mod
+
+    monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(tmp_path)])
+
+    assert studio_mod._ensure_apps_importable() is True
+    assert str(tmp_path / "apps" / "studio" / "backend" / "src") not in sys.path
+
+
+# The Studio application probe: absent is reported before the server starts, and a present
+# application is left for the server to import.
+
+
+def test_an_absent_application_is_reported_before_the_server_starts(monkeypatch, capsys):
+    import importlib.util
+
+    import lionhub.serve.cli.studio as studio_mod
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args: None if name == "lionagi_studio.app" else real_find_spec(name, *args),
+    )
+
+    assert studio_mod._studio_application_missing() is True
+    err = capsys.readouterr().err
+    assert "the Studio application (lionagi_studio.app) is not installed." in err
+    assert "pip install 'lionagi[studio]'" in err
+
+
+def test_an_application_whose_package_cannot_be_located_is_reported_with_the_reason(
+    monkeypatch, capsys
+):
+    import importlib.util
+
+    import lionhub.serve.cli.studio as studio_mod
+
+    def find_spec(name, *args):
+        raise ModuleNotFoundError("No module named 'lionagi_studio'")
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+
+    assert studio_mod._studio_application_missing() is True
+    err = capsys.readouterr().err
+    assert "is not installed (ModuleNotFoundError: No module named 'lionagi_studio')." in err
+
+
+def test_the_probe_finds_the_installed_application_without_importing_it():
+    script = (
+        "import sys\n"
+        "from lionhub.serve.cli.studio import _studio_application_missing\n"
+        "print(_studio_application_missing(), 'lionagi_studio.app' in sys.modules)\n"
+    )
+    result = subprocess.run(  # noqa: S603 -- this interpreter and the package under test
+        [sys.executable, "-B", "-c", script],
+        cwd=tempfile.gettempdir(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["False", "False"], result.stdout
+
+
+def test_the_backend_launch_stops_before_the_server_when_the_application_is_absent(monkeypatch):
+    import uvicorn
+
+    import lionhub.serve.cli.studio as studio_mod
+
+    monkeypatch.setattr(studio_mod, "_studio_application_missing", lambda: True)
+
+    def run(*args, **kwargs):
+        raise AssertionError("the server started without an application")
+
+    monkeypatch.setattr(uvicorn, "run", run)
+    assert studio_mod._start_backend_only("127.0.0.1", _free_port()) == 1
+
+
+def test_the_hosted_launch_stops_before_a_link_when_the_application_is_absent(monkeypatch, capsys):
+    """Bare `li studio` reports the absent application before it mints a pairing code or prints
+    and opens a link that no server would answer."""
+    import uvicorn
+
+    import lionhub.serve.cli.studio as studio_mod
+    import lionhub.serve.daemon.launch_access as launch_access
+
+    monkeypatch.setattr(studio_mod, "_studio_application_missing", lambda: True)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a pairing code was minted or the server started")
+
+    monkeypatch.setattr(launch_access, "mint_pairing_code", refuse)
+    monkeypatch.setattr(uvicorn, "run", refuse)
+    assert studio_mod._start_hosted("127.0.0.1", _free_port(), no_open=True) == 1
+    assert "Lion Studio" not in capsys.readouterr().out
+
+
+# ``li studio --no-frontend`` with ``lionagi_studio.app`` present but failing when imported. The
+# launcher's probe finds the module, and the server's own import of the app string fails.
+_LI_STUDIO_WITH_A_BROKEN_APPLICATION = """
+import importlib.abc, importlib.machinery, socket, sys
+
+kind = sys.argv[1]
+
+
+class Loader(importlib.abc.Loader):
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        if kind == "import-error":
+            raise ImportError("broken on purpose")
+        if kind == "missing-dependency":
+            raise ModuleNotFoundError("No module named 'absent_dep'", name="absent_dep")
+        raise RuntimeError("broken on purpose")
+
+
+class Finder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "lionagi_studio.app":
+            return importlib.machinery.ModuleSpec(fullname, Loader())
+        return None
+
+
+sys.meta_path.insert(0, Finder())
+# The test may itself run under an agent; the launch it checks is not refused for that.
+import lionagi.service._subagent_admission as admission
+
+admission._INHERITED_AGENT_DEPTH = 0
+admission._ancestor_agent_depth = lambda: (0, None)
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+from lionhub.serve.cli.main import main
+
+sys.exit(main(["studio", "--no-frontend", "--port", str(port)]))
+"""
+
+
+@pytest.mark.parametrize(
+    ("kind", "exit_code", "reported"),
+    [
+        ("import-error", 1, "ImportError: broken on purpose"),
+        ("runtime-error", 1, "RuntimeError: broken on purpose"),
+        ("missing-dependency", 78, "absent_dep is not installed in this environment"),
+    ],
+)
+def test_li_studio_exits_non_zero_when_the_application_fails_to_import(
+    tmp_path, kind, exit_code, reported
+):
+    env = {key: value for key, value in os.environ.items() if key != "LIONAGI_AGENT_DEPTH"}
+    env.update(HOME=str(tmp_path), LIONAGI_HOME=str(tmp_path / ".lionagi"))
+    result = subprocess.run(  # noqa: S603 -- this interpreter and the CLI under test
+        [sys.executable, "-B", "-c", _LI_STUDIO_WITH_A_BROKEN_APPLICATION, kind],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == exit_code, output
+    assert reported in output, output
+    assert "Uvicorn running" not in output, output
+
+
 def _write_marker(frontend_dir):
     """Create dist/index.html — the Vite build marker."""
     dist = frontend_dir / "dist"

@@ -638,7 +638,6 @@ jobs:
             - 'lionagi/service/**'
             - 'lionagi/session/**'
             - 'lionagi/state/**'
-            - 'lionagi/studio/**'
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
             # The filter test follows module-load imports from the LionHub modules

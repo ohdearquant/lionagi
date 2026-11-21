@@ -683,7 +683,7 @@ The following six fixture families are required with the implementation, not a c
 was run for this draft. Use actual routing and composition roots and real temporary stores;
 substitute only the notifier and explicit fault seams. Real-process and backend tests require
 their own authorized environment. Update the comment beside
-`lionagi/studio/config.py`'s `LIONAGI_STUDIO_TERMINAL_RECONCILE` switch and the user-facing
+`apps/studio/backend/src/lionagi_studio/config.py`'s `LIONAGI_STUDIO_TERMINAL_RECONCILE` switch and the user-facing
 command/help surfaces when the implementation lands; the current comment describes the old
 push/replay duplication and is not evidence that this amendment is already implemented.
 

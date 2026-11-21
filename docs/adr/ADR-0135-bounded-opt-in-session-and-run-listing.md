@@ -583,7 +583,7 @@ they exist or pass at the source baseline. Existing v1 tests remain in force.
 
 | Contract | Test that fails if broken |
 | --- | --- |
-| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `tests/apps_studio_server/test_runs_list.py::test_runs_list_search_composes_with_pagination`. |
+| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `apps/studio/backend/tests/lionagi_studio_tests/server/test_runs_list.py::test_runs_list_search_composes_with_pagination`. |
 | Selector, endpoint-specific controls and response discriminator | `test_v2_selector_validation_and_schema`; `test_v1_rejects_v2_controls`; `test_v2_sessions_does_not_add_filters`; `test_v2_run_page_diagnostics`. |
 | Complete raw ordering, NULLs, zero, equal timestamp/cost, deleted frontier | `test_v2_recent_keyset_equal_and_null_timestamps`; `test_v2_cost_keyset_zero_null_equal_cost_and_timestamp`; `test_v2_deleted_frontier_uses_saved_tuple`; `test_v2_raw_key_not_dto_fallback`. |
 | Codec/types/signature/context/errors without information echo | `test_v2_cursor_codec_roundtrip_and_tamper`; `test_v2_cursor_context_binding`; `test_v2_cursor_errors_do_not_echo_input`; `test_v2_cursor_allows_limit_and_count_change`. |

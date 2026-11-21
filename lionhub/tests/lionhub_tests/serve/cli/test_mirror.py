@@ -1578,41 +1578,6 @@ def test_resolve_mirrored_content_no_message_match_falls_back(tmp_path):
     assert resolved.reason == "no_message_match"
 
 
-def test_config_negative_preview_chars_rejected(monkeypatch):
-    import importlib
-
-    from lionagi.studio import config as config_mod
-    from lionhub.serve import mirror_settings
-
-    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "-1")
-    with pytest.raises(ValueError):
-        importlib.reload(mirror_settings)
-        importlib.reload(config_mod)
-    monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
-    importlib.reload(mirror_settings)
-    importlib.reload(config_mod)
-
-
-def test_config_omitted_preview_chars_defaults_to_500(monkeypatch):
-    import importlib
-
-    monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
-    from lionagi.studio import config as config_mod
-    from lionhub.serve import mirror_settings
-
-    importlib.reload(mirror_settings)
-    importlib.reload(config_mod)
-    assert config_mod.MIRROR_PREVIEW_CHARS == 500
-
-
-# Live-path mirror bounding: oversized ingestion through the three real
-# writers (claude_mirror.py, codex_mirror.py, lionhub/src/lionhub/serve/mirror.py). A unit test on
-# the codec alone (above) does not prove these are wired; each test here
-# writes an oversized transcript to disk and reads the row back out of a real
-# StateDB after it went through the module's own tailer, never constructing
-# the pointer by hand.
-
-
 @pytest.mark.asyncio
 async def test_live_cli_mirror_run_once_bounds_oversized_message_end_to_end(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1759,15 +1724,21 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
 
 
 def _reload_config():
-    """Re-read the mirror settings from the environment, then Studio's config, which re-exports them."""
-    import importlib
+    """Re-read the mirror settings from the environment.
 
-    from lionagi.studio import config as config_mod
+    Studio's config re-exports them, so when this session has loaded it, it is re-read too and
+    its names stay the same objects as the settings'.
+    """
+    import importlib
+    import sys
+
     from lionhub.serve.daemon import settings
 
     reloaded = importlib.reload(settings)
-    importlib.reload(config_mod)
-    return reloaded, config_mod
+    studio_config = sys.modules.get("lionagi_studio.config")
+    if studio_config is not None:
+        importlib.reload(studio_config)
+    return reloaded, studio_config
 
 
 def _restore_config(monkeypatch):
@@ -1965,30 +1936,3 @@ def test_mirror_service_is_defined_in_its_own_module() -> None:
     assert mirror._one_pass is service._one_pass
     assert mirror.CLAUDE_PROJECTS_DIR == service.CLAUDE_PROJECTS_DIR
     assert mirror.CODEX_SESSIONS_DIR == service.CODEX_SESSIONS_DIR
-
-
-def test_studio_preview_limit_comes_from_the_settings_module() -> None:
-    """The studio config and the mirror service read one preview limit, defined in one place."""
-    import lionhub.serve.mirror as service
-    from lionagi.studio import config
-    from lionhub.serve import mirror_settings
-
-    assert config.MIRROR_PREVIEW_CHARS == mirror_settings.MIRROR_PREVIEW_CHARS
-    assert service.MIRROR_PREVIEW_CHARS == mirror_settings.MIRROR_PREVIEW_CHARS
-
-
-def test_importing_the_studio_config_does_not_load_the_mirror_service() -> None:
-    """A fresh interpreter that imports the studio config loads the settings module only."""
-    import subprocess
-    import sys
-
-    probe = (
-        "import sys, lionagi.studio.config; "
-        "print(' '.join(sorted(m for m in sys.modules if m.startswith('lionhub.serve'))))"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=120
-    )
-    loaded = set(out.stdout.split())
-    assert "lionhub.serve.mirror_settings" in loaded
-    assert {"lionhub.serve.mirror", "lionhub.serve.cli.mirror"}.isdisjoint(loaded)

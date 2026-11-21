@@ -108,10 +108,13 @@ def _surface(root):
     public_definitions = {}
     environment_lookups = {}
     moved_modules = None
-    # The hub package carries modules moved out of lionagi; its exports, definitions and
-    # environment reads are part of the same compatibility surface.
-    hub = root / "lionhub/src/lionhub"
-    paths = [*(root / "lionagi").rglob("*.py"), *(hub.rglob("*.py") if hub.is_dir() else ())]
+    # The hub and Studio application packages carry modules moved out of lionagi; their
+    # exports, definitions and environment reads are part of the same compatibility surface.
+    moved_roots = (root / "lionhub/src/lionhub", root / "apps/studio/backend/src/lionagi_studio")
+    paths = [
+        *(root / "lionagi").rglob("*.py"),
+        *(path for base in moved_roots if base.is_dir() for path in base.rglob("*.py")),
+    ]
     for path in sorted(paths):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))

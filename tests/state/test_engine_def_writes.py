@@ -87,7 +87,7 @@ async def stores(request, tmp_path):
 @pytest.fixture
 def service(monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
-    from lionagi.studio.services import engine_defs
+    from lionagi_studio.services import engine_defs
 
     @asynccontextmanager
     async def borrowed():

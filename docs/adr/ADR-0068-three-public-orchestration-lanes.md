@@ -16,7 +16,7 @@ would make planner calls, recovery guarantees, and control support implicit.
 The current implementation exposes two reactive entry shapes. `li play` rewrites to
 `li o flow -p <name>` in `lionagi/cli/main.py`, and `li o flow` plans and executes through
 `lionagi/cli/orchestrate/flow.py`. Studio also executes authored WorkflowDefs without a planner
-through `lionagi/studio/services/workflow_run.py`, but the equivalent headless
+through `apps/studio/backend/src/lionagi_studio/services/workflow_run.py`, but the equivalent headless
 `li flow run <name-or-file>` command does not exist. ADR-0073 records that current fixed runner
 and its migration gaps.
 
@@ -104,7 +104,7 @@ on a planner-produced graph.
 
 Code anchors for current seams: `lionagi/cli/main.py` (`_handle_play_shortcut`),
 `lionagi/cli/orchestrate/flow.py` (`_run_flow`, `_run_flow_inner`, `_resume_flow`),
-`lionagi/studio/services/workflow_run.py` (`run_workflow_def`).
+`apps/studio/backend/src/lionagi_studio/services/workflow_run.py` (`run_workflow_def`).
 
 ### D2 — Lane adapters converge at `Session.flow()`
 

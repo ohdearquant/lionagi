@@ -49,7 +49,7 @@ def daemon_log_handler() -> Iterator[logging.Handler]:
     """Print the scheduler's INFO and above to stderr while the app serves.
 
     The app's lifespan enters this, so every way of serving gets it: ``li studio``,
-    ``python -m lionagi.studio`` and ``uvicorn lionagi.studio.app:app``. Without it the scheduler's
+    ``python -m lionagi_studio`` and ``uvicorn lionagi_studio.app:app``. Without it the scheduler's
     INFO records (``Firing schedule ...``) reach only Python's last-resort handler, which prints
     WARNING and above, and ``li`` also sets the ``lionagi`` logger to WARNING outside verbose mode.
 

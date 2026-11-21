@@ -17,7 +17,7 @@ apps/studio/
     └── vite.config.mts     Dev server proxies /api → localhost:8765
 ```
 
-The backend lives at `lionagi/studio/` (installed as part of the `lionagi[studio]`
+The backend lives at `apps/studio/backend/src/lionagi_studio/` (installed as part of the `lionagi[studio]`
 package). Studio routers are mounted under `/api`, and the built `dist/` is
 mounted as a static SPA fallback on all other paths.
 
@@ -161,7 +161,7 @@ CI stub boundary, see the [Operator guide](../../docs/guides/studio-operator.md)
 **Backend** (auto-reloads):
 
 ```bash
-uv run uvicorn lionagi.studio.app:app --reload --host 127.0.0.1 --port 8765
+uv run uvicorn lionagi_studio.app:app --reload --host 127.0.0.1 --port 8765
 ```
 
 **Frontend** (separate terminal):

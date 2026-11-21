@@ -110,7 +110,7 @@ These paths are defined by
 `apps/studio/frontend/src/components/history/ResumeRun.tsx` and
 `lionhub/src/lionhub/serve/daemon/services/run_resume.py`. Run-link visibility and conversation
 identity follow `components/operator/OperatorPanel.tsx` under that frontend
-source directory and `lionagi/studio/operator/engine.py`.
+source directory and `apps/studio/backend/src/lionagi_studio/operator/engine.py`.
 
 ## Verify the real local Operator path
 

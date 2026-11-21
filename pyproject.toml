@@ -164,7 +164,7 @@ all = [
 target-version = "py310"
 line-length = 100
 # Both import roots, so `lionhub` sorts as first-party like `lionagi`.
-src = [".", "lionhub/src"]
+src = [".", "lionhub/src", "apps/studio/backend/src"]
 
 [tool.ruff.lint]
 extend-select = ["TID251"]
@@ -192,7 +192,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.
-"!lionagi/{_auto,agent/settings,_class_registry,cli/engine,cli/machine,cli/main,cli/monitor,cli/orchestrate/_notify,service/_subagent_admission,service/connections/provider_config,service/connections/registry,state/lifecycle/callbacks,state/lifecycle/notify_settings,studio/registry,studio/scheduler/engine,studio/services/admin}.py" = ["TID251"]
+"!{lionagi/_auto,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionagi/service/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionagi/state/lifecycle/callbacks,lionagi/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)
@@ -207,6 +207,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
     "N",      # naming relaxed in tests
 ]
 "lionhub/tests/**" = ["S", "A", "B", "E402", "E721", "E731", "F401", "F601", "F841", "UP045", "N"]
+"apps/studio/backend/tests/**" = ["S", "A", "B", "E402", "E721", "E731", "F401", "F601", "F841", "UP045", "N"]
 "cookbooks/**" = ["S101", "B904", "N"]
 "scripts/**" = ["S", "E731"]
 # LOG_CONFIG property mirrors the legacy Settings.Config.LOG attribute name.
@@ -247,7 +248,7 @@ addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n aut
 # pytest_asyncio.fixture.
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
-testpaths = ["tests", "lionhub/tests"]
+testpaths = ["tests", "lionhub/tests", "apps/studio/backend/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -281,13 +282,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["lionagi", "lionhub/src/lionhub"]
+packages = ["lionagi", "lionhub/src/lionhub", "apps/studio/backend/src/lionagi_studio"]
 artifacts = [
     "lionagi/py.typed",
     "lionhub/src/lionhub/py.typed",
     "lionhub/src/lionhub/agent/casts/packs/*.yaml",
-    "lionagi/studio/builtin_playbooks/*.playbook.yaml",
-    "lionagi/studio/compatibility.json",
+    "apps/studio/backend/src/lionagi_studio/py.typed",
+    "apps/studio/backend/src/lionagi_studio/builtin_playbooks/*.playbook.yaml",
+    "apps/studio/backend/src/lionagi_studio/compatibility.json",
 ]
 
 [tool.hatch.build]
@@ -304,8 +306,13 @@ exclude = [
 ]
 
 [tool.pyright]
-include = ["lionagi", "lionhub/src/lionhub", "tests/typing/branch_chat.py"]
-extraPaths = ["lionhub/src"]
+include = [
+    "lionagi",
+    "lionhub/src/lionhub",
+    "apps/studio/backend/src/lionagi_studio",
+    "tests/typing/branch_chat.py",
+]
+extraPaths = ["lionhub/src", "apps/studio/backend/src"]
 exclude = [
     "apps/studio/frontend",
     "**/__pycache__",

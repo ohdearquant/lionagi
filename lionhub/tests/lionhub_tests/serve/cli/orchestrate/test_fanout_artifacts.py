@@ -19,36 +19,7 @@ from lionhub.orchestration.engines import PlanningEngine
 from lionhub.orchestration.runs import RunDir
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
 from lionhub.serve.cli.orchestrate._orchestration import OrchestrationEnv
-
-
-def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:
-    orchestrator = Branch(name="orchestrator")
-    session = Session(default_branch=orchestrator)
-    run = RunDir(
-        run_id="fanout-run",
-        state_root=tmp_path / "state",
-        artifact_root=tmp_path / "artifacts",
-    )
-    run.ensure_state_dirs()
-    run.ensure_artifact_root()
-    env = OrchestrationEnv(
-        run=run,
-        session=session,
-        orc_branch=orchestrator,
-        builder=OperationGraphBuilder(),
-        orc_profile=None,
-        orc_profile_name=None,
-        default_model_spec="codex/model",
-        bare=False,
-        effort=None,
-        theme=None,
-        yolo=False,
-        bypass=False,
-        verbose=False,
-        fast=False,
-        cwd=None,
-    )
-    return env, run, session
+from tests._fanout_test_support import _fanout_env as _fanout_env
 
 
 async def test_timeout_keeps_each_worker_artifact_completed_before_cancellation(

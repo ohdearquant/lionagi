@@ -11,7 +11,7 @@ files are named without a directory: `admin.py`, `engine_runs.py`, `invocations.
 `run_resume.py`, `runs.py`, `schedules.py` and `sessions.py` are in
 `lionhub/src/lionhub/serve/daemon/services/`, `db_maintenance.py` is in
 `lionhub/src/lionhub/orchestration/scheduler/`, and the others are in
-`lionagi/studio/services/`. Navigation labels follow
+`apps/studio/backend/src/lionagi_studio/services/`. Navigation labels follow
 `messages/en.json` and `components/shell/IconRail.tsx`. Backend area names
 refer to service registrations; the running daemon's generated schema is the
 reference for exact requests and responses.
@@ -73,9 +73,9 @@ See [Use Operator](../guides/studio-operator.md).
 
 Sources: UI `components/operator/OperatorPanel.tsx`; services `operator.py`,
 `runs.py`, and `invocations.py`; conversation identity and permissions are
-implemented in `lionagi/studio/operator/engine.py`,
-`lionagi/studio/operator/store.py`, and
-`lionagi/studio/operator/permission_mcp.py`.
+implemented in `apps/studio/backend/src/lionagi_studio/operator/engine.py`,
+`apps/studio/backend/src/lionagi_studio/operator/store.py`, and
+`apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py`.
 
 ## Schedules
 
@@ -241,12 +241,12 @@ host and port if they differ from the default. Token-protected deployments
 require the same bearer authentication for the schema as for API calls.
 
 The schema is generated from the routes mounted by `lionhub/src/lionhub/serve/daemon/app.py`, with the
-Studio application attached by `lionagi/studio/app.py` and its routes listed in
-`lionagi/studio/registry.py`. It describes the API of
+Studio application attached by `apps/studio/backend/src/lionagi_studio/app.py` and its routes listed in
+`apps/studio/backend/src/lionagi_studio/registry.py`. It describes the API of
 that running version, including request schemas and response shapes. Consult
 it for exact endpoints instead of inferring an API path from a page name.
 
-Sources: `lionhub/src/lionhub/serve/daemon/app.py`, `lionagi/studio/app.py`, `lionagi/studio/registry.py`, and the
+Sources: `lionhub/src/lionhub/serve/daemon/app.py`, `apps/studio/backend/src/lionagi_studio/app.py`, `apps/studio/backend/src/lionagi_studio/registry.py`, and the
 registered service modules.
 
 For scheduling behavior, see

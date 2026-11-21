@@ -128,7 +128,7 @@ async def _worker(db: StateDB, item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _archive_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from lionagi.studio import config
+    from lionagi_studio import config
 
     archive = tmp_path / "archive"
     archive.mkdir()

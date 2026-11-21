@@ -73,20 +73,23 @@ including patch targets and pickled class references. `python -m lionagi.studio`
 `lionagi_studio` names, so running it under its old name imports no other old path.
 
 The two old parent packages that daemon paths pass through, `lionagi.studio` and
-`lionagi.studio.services`, have empty initializers today and keep them, empty, through 1.x. The finder
-steps aside for a file still at an old path, so these two stay ordinary packages: importing an old
+`lionagi.studio.services`, have empty initializers today and keep them, empty, through 1.x; a third,
+`lionagi.studio.operator`, which `lionagi.studio.operator.redact` passes through, keeps an initializer
+that imports nothing and only forwards the three names the application's Operator package exports, with
+one deprecation warning for the move. The finder
+steps aside for a file still at an old path, so these three stay ordinary packages: importing an old
 daemon path loads neither the application root nor its initializers, gives one deprecation warning per
-old module as D3 states, and attaches nothing to an application module. These two names are the only old
-Studio paths that do not resolve to a moved module: they import as the empty packages, and a resource
-read through either name reads the empty old package. The moved-module tests and the frozen inventory
-(G4) name them as their only two exceptions and check every module and subpackage below them. `python -m
+old module as D3 states, and attaches nothing to an application module. These three names are the only old
+Studio paths that do not resolve to a moved module: they import as the kept packages, and a resource
+read through any of them reads the old package. The moved-module tests and the frozen inventory
+(G4) name them as their only three exceptions and check every module and subpackage below them. `python -m
 lionagi.studio` gives one deprecation warning, as running any other moved module entry does, and a test
 runs it. Every other module and package under `lionagi/studio/` leaves in the move change, and the broad
 row is permitted only in that change. A file left at any other old path would be loaded in place of the
 moved module, or would break its resolution. B1's rule against a broad row over retained modules
-protected retained implementation; the two empty initializers are the only files it now covers, and they
+protected retained implementation; the three kept initializers are the only files it now covers, and they
 hold none. The change carries a longest-prefix test for every split destination and a test that only the
-two empty initializers remain under `lionagi/studio/`.
+three kept initializers remain under `lionagi/studio/`.
 
 A definition extracted from a mixed Studio module into `lionhub` stays importable from that module's old
 path: a mixed module, such as the configuration module that holds both daemon and Operator settings,
@@ -138,8 +141,8 @@ B1's checked inventory of retained application paths is replaced by a frozen inv
 paths: every `lionagi.studio` module path at this amendment's base, every one added before the move, and
 every existing Studio row. A test requires each old path to resolve to its declared destination, in
 `lionhub` or in `lionagi_studio`, as the same object; ADR-0138 F3 and F5 declare which of the two
-holds each module; the two parent packages G2 names are its only
-exceptions and must import as the empty packages. Freezing it before the daemon and application moves
+holds each module; the three parent packages G2 names are its only
+exceptions and must import as the kept packages. Freezing it before the daemon and application moves
 means a module lost, or a longer row forgotten, in any of those changes cannot disappear from both sides
 of the comparison. Fresh-install tests, run from the built wheel outside the checkout, cover the daemon
 and local schedule commands with the bundled application installed but blocked from import, the old
@@ -165,7 +168,7 @@ change because files move.
 
 At 2.0 no application file moves. The core wheel contains neither hub nor application code, the hub is
 its own distribution under D1, and the application leaves both library wheels at the same import root.
-The Studio rows and the two empty initializers go with the finder (D4), and the compatibility check
+The Studio rows and the three kept initializers go with the finder (D4), and the compatibility check
 compares independently installed versions. Console-script and package ownership stay with the CLI and
 distribution records. How the application and its frontend are distributed after the split remains
 outside these records.

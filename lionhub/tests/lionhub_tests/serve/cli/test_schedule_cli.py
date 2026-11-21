@@ -2518,43 +2518,18 @@ def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel
     ],
 )
 def test_schedule_parsing_names_live_in_the_shared_module(name):
-    """The shared schedule command parsing is defined in its own CLI module, and the
-    Studio command module still exposes the very same objects under the same names."""
+    """The shared schedule command parsing is defined in its own CLI module. That the Studio
+    command module still exposes the same objects is checked with the application's tests."""
     import importlib
-
-    import lionagi.studio.cli as studio_cli
 
     shared = importlib.import_module("lionhub.orchestration.schedule.parsing")
     obj = getattr(shared, name)
     assert obj.__module__ == "lionhub.orchestration.schedule.parsing"
-    assert getattr(studio_cli, name) is obj
-
-
-@pytest.mark.parametrize(
-    ("owner", "name"),
-    [
-        ("lionhub.orchestration.schedule.parsing", "QUICK_CREATE_KINDS"),
-        ("lionhub.orchestration.schedule.parsing", "_quick_create_add_trigger_flags"),
-        ("lionhub.orchestration.schedule.parsing", "_quick_create_add_policy_flags"),
-        ("lionhub.orchestration.schedule.parsing", "build_quick_create_parser"),
-        ("lionhub.orchestration.console", "_refused_inside_an_agent"),
-    ],
-)
-def test_studio_cli_still_exposes_the_definitions_moved_into_lionhub_orchestration(owner, name):
-    """The quick-create parser pieces and the nested-agent refusal printer left the Studio
-    command module for their shared owners; the old module still exposes each one as the
-    very same object."""
-    import importlib
-
-    import lionagi.studio.cli as studio_cli
-
-    obj = getattr(importlib.import_module(owner), name)
-    assert getattr(studio_cli, name) is obj
 
 
 def test_schedule_parsing_module_stays_below_the_command_layer():
-    """The shared parsing module imports no CLI command module and nothing from Studio, at
-    module level or inside a function. The chain-depth cap, the action-kind vocabulary and the
+    """The shared parsing module imports no CLI command module and nothing from Studio (under its
+    old name or its own), at module level or inside a function. The chain-depth cap, the action-kind vocabulary and the
     identifier check are defined here and the scheduler imports them back as the very same
     objects."""
     import ast
@@ -2570,14 +2545,16 @@ def test_schedule_parsing_module_stays_below_the_command_layer():
 
     imported = resolved_imports(path, "lionhub.orchestration.schedule")
     assert command_module_imports(imported) == set()
-    assert [name for name in imported if name.startswith("lionagi.studio")] == []
+    assert [
+        name for name in imported if name.startswith(("lionagi.studio", "lionagi_studio"))
+    ] == []
 
     studio_imports = set()
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level == 0 and (
-                module.startswith("lionagi.studio")
+                module.startswith(("lionagi.studio", "lionagi_studio"))
                 or (module == "lionagi" and any(a.name == "studio" for a in node.names))
             ):
                 studio_imports.add((module, tuple(a.name for a in node.names)))
@@ -2585,7 +2562,9 @@ def test_schedule_parsing_module_stays_below_the_command_layer():
                 studio_imports.add(("." * node.level + module, tuple(a.name for a in node.names)))
         elif isinstance(node, ast.Import):
             studio_imports.update(
-                (alias.name, ()) for alias in node.names if alias.name.startswith("lionagi.studio")
+                (alias.name, ())
+                for alias in node.names
+                if alias.name.startswith(("lionagi.studio", "lionagi_studio"))
             )
     assert studio_imports == set()
 

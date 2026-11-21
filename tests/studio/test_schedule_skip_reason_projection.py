@@ -13,14 +13,13 @@ import pytest
 from sqlalchemy import event
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services import run_view
 from lionhub.orchestration.scheduler.scheduler_state import (
     _DBSchedulerStateService,
     create_skipped_run,
 )
 from lionhub.serve.cli import machine_schedule
 from lionhub.serve.cli import schedule as schedule_cli
-from lionhub.serve.daemon.services import schedules
+from lionhub.serve.daemon.services import run_view, schedules
 
 _CAPACITY_REASON = "schedule.deferred.capacity"
 _CAPACITY_SUMMARY = (

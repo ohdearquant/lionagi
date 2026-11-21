@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lionhub" / "tests"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[1] / "apps" / "studio" / "backend" / "tests")
+)
 
 from tests import _shared_conftest as _shared
 from tests._shared_conftest import (  # noqa: F401

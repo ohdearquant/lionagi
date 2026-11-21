@@ -42,7 +42,9 @@ def test_the_daemon_alone_imports_no_application_module() -> None:
 
         class RefuseApplication(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == "lionagi.studio" or fullname.startswith("lionagi.studio."):
+                if fullname.split(".")[0] == "lionagi_studio" or fullname == "lionagi.studio" or (
+                    fullname.startswith("lionagi.studio.")
+                ):
                     refused.append(fullname)
                     raise ImportError("blocked application import: " + fullname)
 

@@ -87,7 +87,7 @@ CREATE INDEX idx_workflow_defs_updated ON workflow_defs(updated_at);
 The HTTP models are:
 
 ```python
-# lionagi/studio/services/workflow_defs.py
+# apps/studio/backend/src/lionagi_studio/services/workflow_defs.py
 class CreateWorkflowDefRequest(BaseModel):
     name: str
     description: str | None = None
@@ -160,7 +160,7 @@ Why this way: a compact JSON canvas lets Studio persist and redraw authored topo
 second file format. In-place mutation is simple, but it cannot identify the exact historical
 definition used by a run.
 
-Code anchors: `lionagi/studio/services/workflow_defs.py` (`_validate_spec`, request models, routes);
+Code anchors: `apps/studio/backend/src/lionagi_studio/services/workflow_defs.py` (`_validate_spec`, request models, routes);
 `lionagi/state/db.py` (workflow-def methods); `lionagi/state/schema.sql`.
 
 ### D2 — Three executable kinds compile to the shared graph kernel
@@ -168,7 +168,7 @@ Code anchors: `lionagi/studio/services/workflow_defs.py` (`_validate_spec`, requ
 Compiler contract:
 
 ```python
-# lionagi/studio/services/workflow_compile.py
+# apps/studio/backend/src/lionagi_studio/services/workflow_compile.py
 EXECUTABLE_NODE_KINDS = frozenset({"input", "chat", "engine"})
 DROPPED_NODE_KINDS = frozenset({"parse", "fanout", "gate"})
 
@@ -279,7 +279,7 @@ Why this way: the grammar gives designers simple conditional routing without a P
 surface. Rejecting misleading input-node conditions is more honest than compiling a different
 graph from the one authored.
 
-Code anchors: `lionagi/studio/services/workflow_compile.py` (`_parse_expr`, `_validate_node`,
+Code anchors: `apps/studio/backend/src/lionagi_studio/services/workflow_compile.py` (`_parse_expr`, `_validate_node`,
 `_eval_node`, `StudioExprCondition`, `compile_workflow_def`); `lionagi/operations/flow.py`
 (`_check_edge_conditions`).
 
@@ -362,7 +362,7 @@ chosen filesystem boundary, including through symlinks.
 The run contract is:
 
 ```python
-# lionagi/studio/services/workflow_run.py
+# apps/studio/backend/src/lionagi_studio/services/workflow_run.py
 async def run_workflow_def(
     def_id: str,
     inputs: dict[str, Any] | None = None,

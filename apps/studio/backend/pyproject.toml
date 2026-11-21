@@ -1,0 +1,21 @@
+# The Studio application's own root. In 1.x it ships inside the lionagi wheel, which lists
+# this package and its data in the repository's pyproject.toml; nothing is built or
+# published from this file.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lionagi-studio"
+version = "0.0.0"
+description = "Studio application root. In 1.x it ships inside the lionagi wheel and is not published on its own."
+requires-python = ">=3.10"
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lionagi_studio"]
+artifacts = [
+    "src/lionagi_studio/py.typed",
+    "src/lionagi_studio/builtin_playbooks/*.playbook.yaml",
+    "src/lionagi_studio/compatibility.json",
+]

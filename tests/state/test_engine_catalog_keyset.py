@@ -124,8 +124,8 @@ async def test_sqlite_http_catalog_depth_and_number_boundaries(tmp_path, monkeyp
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     db_path = tmp_path / "catalog-http.db"
     monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
@@ -229,8 +229,8 @@ async def test_sqlite_http_catalog_pages_past_nul_ids(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     db_path = tmp_path / "nul-pages.db"
     monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
@@ -269,8 +269,8 @@ async def test_sqlite_http_catalog_invalid_utf8_blob_keeps_neighbor_readable(
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     db_path = tmp_path / "blob-field.db"
     monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
@@ -322,8 +322,8 @@ async def test_sqlite_http_catalog_nonfinite_number_serializes_as_null(
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     db_path = tmp_path / "infinite-timestamp.db"
     monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(db_path))
@@ -451,8 +451,8 @@ async def test_postgres_http_catalog_isolates_stored_options_and_default_create(
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     prefix = f"catalog{uuid.uuid4().hex}"
     ids = [f"{prefix}-{suffix}" for suffix in ("valid", "array", "deep", "unknown")]
@@ -555,8 +555,8 @@ async def test_postgres_http_catalog_json_depth_and_number_boundaries(
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as engine_defs
-    from lionagi.studio.app import create_app
+    import lionagi_studio.services.engine_defs as engine_defs
+    from lionagi_studio.app import create_app
 
     row_id = f"catalog-{uuid.uuid4().hex}-{case}"
     monkeypatch.setattr(engine_defs, "StateDB", lambda: StateDB(url=pg_url))

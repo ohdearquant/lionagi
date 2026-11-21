@@ -3,6 +3,43 @@
     "li": "lionhub.serve.cli.main:main"
   },
   "environment_lookups": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/config.py": [
+      "os.environ.get:OPERATOR_CWD_ENV_VAR"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/engine.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_PROVIDER\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/leo.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/redaction.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
+    ],
     "lionagi/_paths.py": [
       "os.environ.get:\"LIONAGI_HOME\""
     ],
@@ -39,43 +76,6 @@
     "lionagi/state/engine.py": [
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\"",
       "os.environ.get:\"LIONAGI_SQLITE_BUSY_TIMEOUT_MS\""
-    ],
-    "lionagi/studio/app.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\""
-    ],
-    "lionagi/studio/config.py": [
-      "os.environ.get:OPERATOR_CWD_ENV_VAR"
-    ],
-    "lionagi/studio/operator/_common.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/operator/engine.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_MODEL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_PROVIDER\""
-    ],
-    "lionagi/studio/operator/permission_mcp.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/operator/run_progress.py": [
-      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
-      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
-    ],
-    "lionagi/studio/services/approvals.py": [
-      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
-      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
-      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
-    ],
-    "lionagi/studio/services/leo.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
-      "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
-    ],
-    "lionagi/studio/services/redaction.py": [
-      "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
     ],
     "lionagi/testing/_endpoint.py": [
       "os.environ.get:ENV_SCRIPT_PATH"
@@ -298,8 +298,36 @@
       "xmltodict>=0.12.0"
     ]
   },
-  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.tools\", \"lionhub.tools\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.agent\", \"lionhub.agent\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.casts\", \"lionhub.agent.casts\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.hooks.external\", \"lionhub.hooks.external\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli\", \"lionhub.serve.cli\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.integrations\", \"lionhub.integrations\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio._host\",\n        \"lionhub.serve.daemon._host\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._traceback_dump\",\n        \"lionhub.serve.daemon._traceback_dump\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.daemon_log\",\n        \"lionhub.serve.daemon.daemon_log\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.reconnect\",\n        \"lionhub.serve.daemon.reconnect\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._io\",\n        \"lionhub.serve.daemon.services._io\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._path_safety\",\n        \"lionhub.serve.daemon.services._path_safety\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._sse\",\n        \"lionhub.serve.daemon.services._sse\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.artifact_verification\",\n        \"lionhub.serve.daemon.services.artifact_verification\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.signals\",\n        \"lionhub.serve.daemon.services.signals\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_view\",\n        \"lionhub.serve.daemon.services.run_view\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.task_applications\",\n        \"lionhub.serve.daemon.services.task_applications\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.operator.redact\", \"lionhub.serve.daemon.services.redact\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.studio.launch_access\", \"lionhub.serve.daemon.launch_access\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.studio.services.runs\", \"lionhub.serve.daemon.services.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.run_resume\",\n        \"lionhub.serve.daemon.services.run_resume\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_resume_worker\",\n        \"lionhub.serve.daemon.services.run_resume_worker\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.engine_runs\",\n        \"lionhub.serve.daemon.services.engine_runs\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.invocations\",\n        \"lionhub.serve.daemon.services.invocations\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.launches\",\n        \"lionhub.serve.daemon.services.launches\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.identity\",\n        \"lionhub.serve.daemon.services.identity\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.pairing\",\n        \"lionhub.serve.daemon.services.pairing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.sessions\",\n        \"lionhub.serve.daemon.services.sessions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.admin\", \"lionhub.serve.daemon.services.admin\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.studio.services.schedules\",\n        \"lionhub.serve.daemon.services.schedules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._session_tail\",\n        \"lionhub.serve.daemon.services._session_tail\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n)",
+  "moved_modules": "MOVED: tuple[Moved, ...] = (\n    Moved(\"lionagi.orchestration\", \"lionhub.orchestration\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.engines\", \"lionhub.orchestration.engines\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.dispatch\", \"lionhub.orchestration.dispatch\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.work\", \"lionhub.orchestration.work\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.mcp\", \"lionhub.serve.mcp\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers\", \"lionhub.providers\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.lndl\", \"lionhub.lndl\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.tools\", \"lionhub.tools\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.agent\", \"lionhub.agent\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.casts\", \"lionhub.agent.casts\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.hooks.external\", \"lionhub.hooks.external\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.operations.lndl_middle\", \"lionhub.lndl.middle\", \"0.37.0\", \"2.0.0\"),\n    Moved(\"lionagi.providers._provider_errors\", \"lionagi._provider_errors\", \"0.37.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.providers._secret_resolution\",\n        \"lionagi.service.accounts._secret_resolution\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers._subagent_admission\",\n        \"lionagi.service._subagent_admission\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.providers.openai._chat_schemas\",\n        \"lionagi.service.connections._chat_schemas\",\n        \"0.37.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli\", \"lionhub.serve.cli\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._argtypes\", \"lionhub.orchestration.arguments\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._code_identity\", \"lionhub.serve.diagnostics\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._logging\", \"lionhub.orchestration.console\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mirror_settings\", \"lionhub.serve.mirror_settings\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._project\", \"lionhub.orchestration.project\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._mcp_resolve\", \"lionhub.orchestration.mcp_config\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._team_service\", \"lionhub.orchestration.team\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._engine_definitions\",\n        \"lionhub.orchestration.engine_definitions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.cli._util\", \"lionhub.orchestration.job\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._inspection\", \"lionhub.orchestration.inspection\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._providers\", \"lionhub.orchestration.spawn\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli._orchestrate_parsing\", \"lionhub.orchestration.flow.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.cli._schedule_parsing\", \"lionhub.orchestration.schedule.parsing\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.cli._mirror_service\", \"lionhub.serve.mirror\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._runs\", \"lionhub.orchestration.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.cli._kill_service\", \"lionhub.orchestration.kill\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.cli.orchestrate._checkpoint\",\n        \"lionhub.orchestration.flow.checkpoint\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    # The Studio application. Daemon-owned modules that once lived under lionagi.studio keep\n    # their own, longer rows, which win over this one. lionagi.studio and\n    # lionagi.studio.services stay in core as empty packages, and lionagi.studio.operator as\n    # one that only forwards three names, so those modules' old names import without the\n    # application installed; the finder steps aside for all three.\n    Moved(\"lionagi.studio\", \"lionagi_studio\", \"0.39.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services._schedule_validation\",\n        \"lionhub.orchestration.schedule.validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_action_validation\",\n        \"lionhub.orchestration.schedule.action_validation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_timing\",\n        \"lionhub.orchestration.schedule.timing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._timezone_rules\",\n        \"lionhub.orchestration.schedule._timezone_rules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_execution_root\",\n        \"lionhub.orchestration.schedule.execution_root\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_declaration\",\n        \"lionhub.orchestration.schedule.declaration\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.schedule_export\",\n        \"lionhub.orchestration.schedule.export\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.project_lookup\",\n        \"lionhub.orchestration.project_store\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.scheduler\", \"lionhub.orchestration.scheduler\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.scheduler_state\",\n        \"lionhub.orchestration.scheduler.scheduler_state\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.db_maintenance\",\n        \"lionhub.orchestration.scheduler.db_maintenance\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.retention_archive\",\n        \"lionhub.orchestration.scheduler.retention_archive\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.lifecycle\",\n        \"lionhub.orchestration.scheduler.lifecycle\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.terminal_reconciliation\",\n        \"lionhub.orchestration.scheduler.terminal_reconciliation\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\"lionagi.studio.services._db\", \"lionhub.orchestration.state_store\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.integrations\", \"lionhub.integrations\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio._host\",\n        \"lionhub.serve.daemon._host\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio._traceback_dump\",\n        \"lionhub.serve.daemon._traceback_dump\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.daemon_log\",\n        \"lionhub.serve.daemon.daemon_log\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.reconnect\",\n        \"lionhub.serve.daemon.reconnect\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._io\",\n        \"lionhub.serve.daemon.services._io\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._path_safety\",\n        \"lionhub.serve.daemon.services._path_safety\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._sse\",\n        \"lionhub.serve.daemon.services._sse\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.artifact_verification\",\n        \"lionhub.serve.daemon.services.artifact_verification\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.signals\",\n        \"lionhub.serve.daemon.services.signals\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_view\",\n        \"lionhub.serve.daemon.services.run_view\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.task_applications\",\n        \"lionhub.serve.daemon.services.task_applications\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.operator.redact\", \"lionhub.serve.daemon.services.redact\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\"lionagi.studio.launch_access\", \"lionhub.serve.daemon.launch_access\", \"0.38.0\", \"2.0.0\"),\n    Moved(\"lionagi.studio.services.runs\", \"lionhub.serve.daemon.services.runs\", \"0.38.0\", \"2.0.0\"),\n    Moved(\n        \"lionagi.studio.services.run_resume\",\n        \"lionhub.serve.daemon.services.run_resume\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.run_resume_worker\",\n        \"lionhub.serve.daemon.services.run_resume_worker\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.engine_runs\",\n        \"lionhub.serve.daemon.services.engine_runs\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.invocations\",\n        \"lionhub.serve.daemon.services.invocations\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.launches\",\n        \"lionhub.serve.daemon.services.launches\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.identity\",\n        \"lionhub.serve.daemon.services.identity\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.pairing\",\n        \"lionhub.serve.daemon.services.pairing\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.sessions\",\n        \"lionhub.serve.daemon.services.sessions\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services.admin\", \"lionhub.serve.daemon.services.admin\", \"0.38.0\", \"2.0.0\"\n    ),\n    Moved(\n        \"lionagi.studio.services.schedules\",\n        \"lionhub.serve.daemon.services.schedules\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n    Moved(\n        \"lionagi.studio.services._session_tail\",\n        \"lionhub.serve.daemon.services._session_tail\",\n        \"0.38.0\",\n        \"2.0.0\",\n    ),\n)",
   "package_exports": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "__all__ = (\"app\", \"attach_studio\", \"create_app\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/__init__.py": [
+      "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
+      "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "__all__ = (\"wait_for_proposal\",)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/conversation_metadata.py": [
+      "__all__ = (\"UpdateConversationInput\", \"normalize_description\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_detail.py": [
+      "__all__ = (\"RunDetailInput\", \"run_detail\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_findings.py": [
+      "__all__ = (\"RunFindingsInput\", \"run_findings\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "__all__ = (\"MissingOwnerContextError\", \"RunProgressInput\", \"resolve_run\", \"run_progress\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_compile.py": [
+      "__all__ = (\n    \"StudioExprCondition\",\n    \"UnsafeExpressionError\",\n    \"WorkflowCompileError\",\n    \"EXECUTABLE_NODE_KINDS\",\n    \"DROPPED_NODE_KINDS\",\n    \"compile_workflow_def\",\n    \"build_early_graph\",\n    \"make_engine_operation\",\n)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_run.py": [
+      "__all__ = (\"run_workflow_def\", \"WorkflowNotFoundError\")"
+    ],
     "lionagi/__init__.py": [
       "import logging",
       "from typing import TYPE_CHECKING",
@@ -970,33 +998,8 @@
     "lionagi/state/transitions.py": [
       "__all__ = (\n    \"Actor\",\n    \"StateReason\",\n    \"TransitionRequest\",\n    \"TransitionResult\",\n    \"transition\",\n)"
     ],
-    "lionagi/studio/app.py": [
-      "__all__ = (\"app\", \"attach_studio\", \"create_app\")"
-    ],
     "lionagi/studio/operator/__init__.py": [
-      "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
-      "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
-    ],
-    "lionagi/studio/operator/_common.py": [
-      "__all__ = (\"wait_for_proposal\",)"
-    ],
-    "lionagi/studio/operator/conversation_metadata.py": [
-      "__all__ = (\"UpdateConversationInput\", \"normalize_description\")"
-    ],
-    "lionagi/studio/operator/run_detail.py": [
-      "__all__ = (\"RunDetailInput\", \"run_detail\")"
-    ],
-    "lionagi/studio/operator/run_findings.py": [
-      "__all__ = (\"RunFindingsInput\", \"run_findings\")"
-    ],
-    "lionagi/studio/operator/run_progress.py": [
-      "__all__ = (\"MissingOwnerContextError\", \"RunProgressInput\", \"resolve_run\", \"run_progress\")"
-    ],
-    "lionagi/studio/services/workflow_compile.py": [
-      "__all__ = (\n    \"StudioExprCondition\",\n    \"UnsafeExpressionError\",\n    \"WorkflowCompileError\",\n    \"EXECUTABLE_NODE_KINDS\",\n    \"DROPPED_NODE_KINDS\",\n    \"compile_workflow_def\",\n    \"build_early_graph\",\n    \"make_engine_operation\",\n)"
-    ],
-    "lionagi/studio/services/workflow_run.py": [
-      "__all__ = (\"run_workflow_def\", \"WorkflowNotFoundError\")"
+      "def __getattr__(name: str):\n    if name not in _FORWARDED:\n        raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")\n    import importlib\n    import warnings\n\n    from lionagi._moved import _row, _warning_origin\n\n    row = _row(__name__)\n    new_name = row.new + __name__[len(row.old) :]\n    # Imported first, so an application that is not installed raises without a warning.\n    value = getattr(importlib.import_module(new_name), name)\n    # One moved package, so one warning: only the first name read warns. Each name is kept\n    # here once read, because ``from ... import`` reads a name twice.\n    if _FORWARDED.isdisjoint(globals()):\n        stacklevel, _ = _warning_origin()\n        warnings.warn(\n            f\"{__name__} moved to {new_name}; the old import path is removed in lionagi \"\n            f\"{row.removed_in}. Import from {new_name} instead.\",\n            DeprecationWarning,\n            stacklevel=stacklevel,\n        )\n    globals()[name] = value\n    return value"
     ],
     "lionagi/testing/__init__.py": [
       "from __future__ import annotations",
@@ -1748,6 +1751,446 @@
     ]
   },
   "public_definitions": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "attach_studio",
+      "create_app"
+    ],
+    "apps/studio/backend/src/lionagi_studio/config.py": [
+      "OperatorExecutionRootResolution",
+      "resolve_operator_execution_root_config"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "wait_for_proposal"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/application_mcp.py": [
+      "CurrentViewInput",
+      "GetArtifactInput",
+      "GetInvocationInput",
+      "LaunchPlaybookInput",
+      "ListAgentsInput",
+      "ListArtifactsInput",
+      "ListPlaybooksInput",
+      "ListSchedulesInput",
+      "ListSessionsInput",
+      "NavigateInput",
+      "PrefillScheduleInput",
+      "RecentRunsInput",
+      "RunStatsInput",
+      "SessionDetailInput",
+      "SessionSignalsInput",
+      "get_artifact",
+      "get_current_view",
+      "get_invocation",
+      "launch_playbook",
+      "list_agents",
+      "list_artifacts",
+      "list_playbooks",
+      "list_recent_runs",
+      "list_schedules",
+      "list_sessions",
+      "navigate",
+      "prefill_schedule",
+      "resolve_playbook_version",
+      "run_stats",
+      "session_detail",
+      "session_signals",
+      "update_conversation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/cancel_run.py": [
+      "AmbiguousRunReferenceError",
+      "CancelFailureReason",
+      "CancelRunInput",
+      "MissingOwnerContextError",
+      "apply_cancel_command",
+      "await_cancel_completion",
+      "cancel_run",
+      "execute_cancel_command"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/catalog.py": [
+      "OperatorModelSpec",
+      "OperatorSelectionError",
+      "catalog_entries",
+      "effort_choices",
+      "model_effort_choices",
+      "resolve_selection"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/conversation_metadata.py": [
+      "UpdateConversationInput",
+      "normalize_description"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/coordinator.py": [
+      "ApplicationCommandError",
+      "ApplicationTargetConflictError",
+      "OperatorCoordinator",
+      "get_operator_coordinator",
+      "reset_operator_coordinator_for_testing"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/engine.py": [
+      "BranchOperatorEngine",
+      "CompiledOperatorHistory",
+      "OperatorExecutionRootError",
+      "OperatorProviderUnavailableError",
+      "build_operator_branch",
+      "compile_operator_history",
+      "resolve_operator_execution_root",
+      "resolve_operator_provider_model",
+      "write_resumable_operator_snapshot"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py": [
+      "request_permission"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/rename_session.py": [
+      "RenameSessionInput",
+      "execute_rename_session_command",
+      "rename_session"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/resume_run.py": [
+      "ResumeRunInput",
+      "execute_resume_command",
+      "resume_run"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_control.py": [
+      "MissingOwnerContextError",
+      "PauseRunInput",
+      "ReleaseRunPauseInput",
+      "SteerRunInput",
+      "execute_pause_run_command",
+      "execute_release_run_pause_command",
+      "execute_run_control_command",
+      "execute_steer_run_command",
+      "pause_run",
+      "release_run_pause",
+      "steer_run"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_detail.py": [
+      "RunDetailInput",
+      "run_detail"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_findings.py": [
+      "RunFindingsInput",
+      "run_findings"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "MissingOwnerContextError",
+      "RunProgressInput",
+      "resolve_run",
+      "run_progress"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/store.py": [
+      "OperatorAuditUnavailableError",
+      "OperatorConflictError",
+      "OperatorNotFoundError",
+      "OperatorStore",
+      "OperatorStoreError",
+      "OperatorValidationError"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/types.py": [
+      "AcknowledgeEffectRequest",
+      "ConfirmProposalRequest",
+      "CreateConversationRequest",
+      "DecideProposalRequest",
+      "ForkConversationRequest",
+      "OperatorContextSnapshot",
+      "OperatorEngine",
+      "OperatorEngineEvent",
+      "OperatorEngineTurn",
+      "OperatorTurnRequest",
+      "OperatorViewReport",
+      "PermissionDecision",
+      "UpdateConversationRequest",
+      "WireModel"
+    ],
+    "apps/studio/backend/src/lionagi_studio/registry.py": [
+      "load_studio_route_modules"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/agents.py": [
+      "AgentExistsError",
+      "AgentProtectedError",
+      "create_agent",
+      "create_agent_route",
+      "delete_agent",
+      "delete_agent_route",
+      "get_agent",
+      "get_agent_route",
+      "list_agents",
+      "list_agents_route",
+      "update_agent",
+      "update_agent_route",
+      "validate_agent"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
+      "compute_params_hash",
+      "create_approval",
+      "create_approval_route",
+      "deny_approval",
+      "deny_approval_route",
+      "get_approval",
+      "get_approval_route",
+      "grant_approval",
+      "grant_approval_route",
+      "require_approval",
+      "verify_approval_evidence_route",
+      "verify_evidence_chain"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/attention.py": [
+      "delete_attention_disposition_route",
+      "delete_disposition",
+      "disposition_history",
+      "get_attention_disposition_history_route",
+      "list_attention_dispositions_route",
+      "list_dispositions",
+      "put_attention_disposition_route",
+      "upsert_disposition"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/casts.py": [
+      "get_casts"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/definitions.py": [
+      "HistoryUnavailableError",
+      "SaveBody",
+      "get_definition",
+      "get_definition_route",
+      "get_version",
+      "get_version_route",
+      "list_definitions",
+      "list_definitions_route",
+      "rollback_definition",
+      "rollback_definition_route",
+      "save_definition",
+      "save_definition_route",
+      "snapshot_current",
+      "snapshot_current_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/engine_defs.py": [
+      "CreateEngineDefRequest",
+      "NameConflictError",
+      "UpdateEngineDefRequest",
+      "create_engine_def",
+      "create_engine_def_route",
+      "delete_engine_def",
+      "delete_engine_def_route",
+      "engine_catalog_blueprints",
+      "engine_catalog_blueprints_route",
+      "get_engine_catalog_preset",
+      "get_engine_catalog_preset_route",
+      "get_engine_def_route",
+      "list_engine_catalog_presets",
+      "list_engine_catalog_presets_route",
+      "list_engine_defs",
+      "list_engine_defs_route",
+      "update_engine_def",
+      "update_engine_def_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/hooks_library.py": [
+      "HookLibraryError",
+      "delete_hook",
+      "delete_hook_def_route",
+      "list_hook_library_route",
+      "materialize_claude_hooks",
+      "put_hook_def_route",
+      "read_library",
+      "upsert_hook",
+      "validate_attachments",
+      "validate_hook_def"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/leo.py": [
+      "LeoSession",
+      "build_branch",
+      "create_leo_session_route",
+      "create_session",
+      "get_session",
+      "send_leo_message_route",
+      "tool_create_playbook",
+      "tool_get_playbook",
+      "tool_launch_playbook",
+      "tool_list_invocations",
+      "tool_list_playbooks",
+      "tool_list_runs",
+      "tool_list_schedules",
+      "tool_list_sessions",
+      "tool_prefill_schedule",
+      "tool_run_maintenance",
+      "tool_show_in_ui",
+      "tool_studio_doctor"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/mcp_servers.py": [
+      "DuplicateServerError",
+      "McpRegistryUnreadableError",
+      "McpServerError",
+      "check_mcp_server_route",
+      "check_server_connection",
+      "delete_mcp_server_route",
+      "disable_mcp_server_route",
+      "enable_mcp_server_route",
+      "get_mcp_server_route",
+      "get_server",
+      "list_mcp_servers_route",
+      "list_servers",
+      "register_mcp_server_route",
+      "register_server",
+      "remove_server",
+      "set_enabled",
+      "update_mcp_server_route",
+      "update_server",
+      "validate_config",
+      "validate_mcp_server_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/operator.py": [
+      "acknowledge_operator_effect",
+      "cancel_operator_turn",
+      "confirm_operator_proposal",
+      "create_operator_conversation",
+      "decide_operator_proposal",
+      "delete_operator_conversation",
+      "fork_operator_conversation",
+      "get_operator_conversation",
+      "list_operator_conversations",
+      "list_operator_models",
+      "operator_shutdown",
+      "operator_startup",
+      "report_operator_view",
+      "stream_operator_conversation",
+      "submit_operator_turn",
+      "update_operator_conversation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/operator_hooks.py": [
+      "OperatorHooksError",
+      "get_operator_hooks_route",
+      "materialize_settings_file",
+      "put_operator_hooks_route",
+      "read_config",
+      "validate_config",
+      "write_config"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/playbooks.py": [
+      "create_playbook",
+      "create_playbook_route",
+      "delete_playbook",
+      "fingerprint_playbook",
+      "get_builtin_playbook",
+      "get_builtin_playbook_route",
+      "get_playbook",
+      "get_playbook_route",
+      "install_builtin_playbook",
+      "install_builtin_playbook_route",
+      "list_builtin_playbooks",
+      "list_builtin_playbooks_route",
+      "list_playbooks",
+      "list_playbooks_route",
+      "run_playbook",
+      "update_playbook",
+      "update_playbook_route",
+      "validate_playbook",
+      "validate_playbook_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/plugins.py": [
+      "get_plugin",
+      "get_plugin_agent",
+      "get_plugin_agent_endpoint",
+      "get_plugin_endpoint",
+      "get_plugin_skill",
+      "get_plugin_skill_endpoint",
+      "list_plugins",
+      "list_plugins_endpoint"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/projects.py": [
+      "AssignProjectRequest",
+      "CreateProjectRequest",
+      "NameConflictError",
+      "UpdateProjectRequest",
+      "assign_project",
+      "assign_sessions_to_project",
+      "create_project",
+      "create_project_route",
+      "delete_project",
+      "delete_project_route",
+      "get_project_route",
+      "list_projects",
+      "list_projects_route",
+      "update_project",
+      "update_project_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/redaction.py": [
+      "RedactedPayloadError",
+      "abbreviate_path",
+      "demo_mode_enabled",
+      "is_placeholder_text",
+      "project_agent_fields",
+      "redact_agent_markdown",
+      "reject_if_redacted_payload"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/run_tags.py": [
+      "TagBody",
+      "add_run_tag",
+      "remove_run_tag"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/shows.py": [
+      "get_show",
+      "get_show_route",
+      "import_shows",
+      "import_shows_route",
+      "list_gated_plays",
+      "list_gated_plays_route",
+      "list_shows",
+      "list_shows_route",
+      "stream_show",
+      "watch_show"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/skills.py": [
+      "SkillValidateBody",
+      "get_skill",
+      "get_skill_route",
+      "list_skills",
+      "list_skills_route",
+      "validate_skill_content",
+      "validate_skill_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/stats.py": [
+      "get_activity_stats",
+      "get_activity_stats_route",
+      "get_db_stats",
+      "get_spend_rollup",
+      "get_spend_rollup_route",
+      "get_spend_stats",
+      "get_spend_stats_route",
+      "get_stats",
+      "get_stats_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/teams.py": [
+      "get_team",
+      "get_team_route",
+      "list_teams",
+      "list_teams_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_compile.py": [
+      "StudioExprCondition",
+      "UnsafeExpressionError",
+      "WorkflowCompileError",
+      "build_early_graph",
+      "compile_workflow_def",
+      "make_engine_operation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_defs.py": [
+      "CreateWorkflowDefRequest",
+      "NameConflictError",
+      "RunWorkflowDefRequest",
+      "UpdateWorkflowDefRequest",
+      "create_workflow_def",
+      "create_workflow_def_route",
+      "delete_workflow_def",
+      "delete_workflow_def_route",
+      "get_workflow_def",
+      "get_workflow_def_route",
+      "list_workflow_defs",
+      "list_workflow_defs_route",
+      "run_workflow_def_route",
+      "update_workflow_def",
+      "update_workflow_def_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_run.py": [
+      "WorkflowNotFoundError",
+      "run_workflow_def"
+    ],
     "lionagi/_auto.py": [
       "CliBuild",
       "CliDeclaration",
@@ -3184,446 +3627,6 @@
       "TransitionRequest",
       "TransitionResult",
       "transition"
-    ],
-    "lionagi/studio/app.py": [
-      "attach_studio",
-      "create_app"
-    ],
-    "lionagi/studio/config.py": [
-      "OperatorExecutionRootResolution",
-      "resolve_operator_execution_root_config"
-    ],
-    "lionagi/studio/operator/_common.py": [
-      "wait_for_proposal"
-    ],
-    "lionagi/studio/operator/application_mcp.py": [
-      "CurrentViewInput",
-      "GetArtifactInput",
-      "GetInvocationInput",
-      "LaunchPlaybookInput",
-      "ListAgentsInput",
-      "ListArtifactsInput",
-      "ListPlaybooksInput",
-      "ListSchedulesInput",
-      "ListSessionsInput",
-      "NavigateInput",
-      "PrefillScheduleInput",
-      "RecentRunsInput",
-      "RunStatsInput",
-      "SessionDetailInput",
-      "SessionSignalsInput",
-      "get_artifact",
-      "get_current_view",
-      "get_invocation",
-      "launch_playbook",
-      "list_agents",
-      "list_artifacts",
-      "list_playbooks",
-      "list_recent_runs",
-      "list_schedules",
-      "list_sessions",
-      "navigate",
-      "prefill_schedule",
-      "resolve_playbook_version",
-      "run_stats",
-      "session_detail",
-      "session_signals",
-      "update_conversation"
-    ],
-    "lionagi/studio/operator/cancel_run.py": [
-      "AmbiguousRunReferenceError",
-      "CancelFailureReason",
-      "CancelRunInput",
-      "MissingOwnerContextError",
-      "apply_cancel_command",
-      "await_cancel_completion",
-      "cancel_run",
-      "execute_cancel_command"
-    ],
-    "lionagi/studio/operator/catalog.py": [
-      "OperatorModelSpec",
-      "OperatorSelectionError",
-      "catalog_entries",
-      "effort_choices",
-      "model_effort_choices",
-      "resolve_selection"
-    ],
-    "lionagi/studio/operator/conversation_metadata.py": [
-      "UpdateConversationInput",
-      "normalize_description"
-    ],
-    "lionagi/studio/operator/coordinator.py": [
-      "ApplicationCommandError",
-      "ApplicationTargetConflictError",
-      "OperatorCoordinator",
-      "get_operator_coordinator",
-      "reset_operator_coordinator_for_testing"
-    ],
-    "lionagi/studio/operator/engine.py": [
-      "BranchOperatorEngine",
-      "CompiledOperatorHistory",
-      "OperatorExecutionRootError",
-      "OperatorProviderUnavailableError",
-      "build_operator_branch",
-      "compile_operator_history",
-      "resolve_operator_execution_root",
-      "resolve_operator_provider_model",
-      "write_resumable_operator_snapshot"
-    ],
-    "lionagi/studio/operator/permission_mcp.py": [
-      "request_permission"
-    ],
-    "lionagi/studio/operator/rename_session.py": [
-      "RenameSessionInput",
-      "execute_rename_session_command",
-      "rename_session"
-    ],
-    "lionagi/studio/operator/resume_run.py": [
-      "ResumeRunInput",
-      "execute_resume_command",
-      "resume_run"
-    ],
-    "lionagi/studio/operator/run_control.py": [
-      "MissingOwnerContextError",
-      "PauseRunInput",
-      "ReleaseRunPauseInput",
-      "SteerRunInput",
-      "execute_pause_run_command",
-      "execute_release_run_pause_command",
-      "execute_run_control_command",
-      "execute_steer_run_command",
-      "pause_run",
-      "release_run_pause",
-      "steer_run"
-    ],
-    "lionagi/studio/operator/run_detail.py": [
-      "RunDetailInput",
-      "run_detail"
-    ],
-    "lionagi/studio/operator/run_findings.py": [
-      "RunFindingsInput",
-      "run_findings"
-    ],
-    "lionagi/studio/operator/run_progress.py": [
-      "MissingOwnerContextError",
-      "RunProgressInput",
-      "resolve_run",
-      "run_progress"
-    ],
-    "lionagi/studio/operator/store.py": [
-      "OperatorAuditUnavailableError",
-      "OperatorConflictError",
-      "OperatorNotFoundError",
-      "OperatorStore",
-      "OperatorStoreError",
-      "OperatorValidationError"
-    ],
-    "lionagi/studio/operator/types.py": [
-      "AcknowledgeEffectRequest",
-      "ConfirmProposalRequest",
-      "CreateConversationRequest",
-      "DecideProposalRequest",
-      "ForkConversationRequest",
-      "OperatorContextSnapshot",
-      "OperatorEngine",
-      "OperatorEngineEvent",
-      "OperatorEngineTurn",
-      "OperatorTurnRequest",
-      "OperatorViewReport",
-      "PermissionDecision",
-      "UpdateConversationRequest",
-      "WireModel"
-    ],
-    "lionagi/studio/registry.py": [
-      "load_studio_route_modules"
-    ],
-    "lionagi/studio/services/agents.py": [
-      "AgentExistsError",
-      "AgentProtectedError",
-      "create_agent",
-      "create_agent_route",
-      "delete_agent",
-      "delete_agent_route",
-      "get_agent",
-      "get_agent_route",
-      "list_agents",
-      "list_agents_route",
-      "update_agent",
-      "update_agent_route",
-      "validate_agent"
-    ],
-    "lionagi/studio/services/approvals.py": [
-      "compute_params_hash",
-      "create_approval",
-      "create_approval_route",
-      "deny_approval",
-      "deny_approval_route",
-      "get_approval",
-      "get_approval_route",
-      "grant_approval",
-      "grant_approval_route",
-      "require_approval",
-      "verify_approval_evidence_route",
-      "verify_evidence_chain"
-    ],
-    "lionagi/studio/services/attention.py": [
-      "delete_attention_disposition_route",
-      "delete_disposition",
-      "disposition_history",
-      "get_attention_disposition_history_route",
-      "list_attention_dispositions_route",
-      "list_dispositions",
-      "put_attention_disposition_route",
-      "upsert_disposition"
-    ],
-    "lionagi/studio/services/casts.py": [
-      "get_casts"
-    ],
-    "lionagi/studio/services/definitions.py": [
-      "HistoryUnavailableError",
-      "SaveBody",
-      "get_definition",
-      "get_definition_route",
-      "get_version",
-      "get_version_route",
-      "list_definitions",
-      "list_definitions_route",
-      "rollback_definition",
-      "rollback_definition_route",
-      "save_definition",
-      "save_definition_route",
-      "snapshot_current",
-      "snapshot_current_route"
-    ],
-    "lionagi/studio/services/engine_defs.py": [
-      "CreateEngineDefRequest",
-      "NameConflictError",
-      "UpdateEngineDefRequest",
-      "create_engine_def",
-      "create_engine_def_route",
-      "delete_engine_def",
-      "delete_engine_def_route",
-      "engine_catalog_blueprints",
-      "engine_catalog_blueprints_route",
-      "get_engine_catalog_preset",
-      "get_engine_catalog_preset_route",
-      "get_engine_def_route",
-      "list_engine_catalog_presets",
-      "list_engine_catalog_presets_route",
-      "list_engine_defs",
-      "list_engine_defs_route",
-      "update_engine_def",
-      "update_engine_def_route"
-    ],
-    "lionagi/studio/services/hooks_library.py": [
-      "HookLibraryError",
-      "delete_hook",
-      "delete_hook_def_route",
-      "list_hook_library_route",
-      "materialize_claude_hooks",
-      "put_hook_def_route",
-      "read_library",
-      "upsert_hook",
-      "validate_attachments",
-      "validate_hook_def"
-    ],
-    "lionagi/studio/services/leo.py": [
-      "LeoSession",
-      "build_branch",
-      "create_leo_session_route",
-      "create_session",
-      "get_session",
-      "send_leo_message_route",
-      "tool_create_playbook",
-      "tool_get_playbook",
-      "tool_launch_playbook",
-      "tool_list_invocations",
-      "tool_list_playbooks",
-      "tool_list_runs",
-      "tool_list_schedules",
-      "tool_list_sessions",
-      "tool_prefill_schedule",
-      "tool_run_maintenance",
-      "tool_show_in_ui",
-      "tool_studio_doctor"
-    ],
-    "lionagi/studio/services/mcp_servers.py": [
-      "DuplicateServerError",
-      "McpRegistryUnreadableError",
-      "McpServerError",
-      "check_mcp_server_route",
-      "check_server_connection",
-      "delete_mcp_server_route",
-      "disable_mcp_server_route",
-      "enable_mcp_server_route",
-      "get_mcp_server_route",
-      "get_server",
-      "list_mcp_servers_route",
-      "list_servers",
-      "register_mcp_server_route",
-      "register_server",
-      "remove_server",
-      "set_enabled",
-      "update_mcp_server_route",
-      "update_server",
-      "validate_config",
-      "validate_mcp_server_route"
-    ],
-    "lionagi/studio/services/operator.py": [
-      "acknowledge_operator_effect",
-      "cancel_operator_turn",
-      "confirm_operator_proposal",
-      "create_operator_conversation",
-      "decide_operator_proposal",
-      "delete_operator_conversation",
-      "fork_operator_conversation",
-      "get_operator_conversation",
-      "list_operator_conversations",
-      "list_operator_models",
-      "operator_shutdown",
-      "operator_startup",
-      "report_operator_view",
-      "stream_operator_conversation",
-      "submit_operator_turn",
-      "update_operator_conversation"
-    ],
-    "lionagi/studio/services/operator_hooks.py": [
-      "OperatorHooksError",
-      "get_operator_hooks_route",
-      "materialize_settings_file",
-      "put_operator_hooks_route",
-      "read_config",
-      "validate_config",
-      "write_config"
-    ],
-    "lionagi/studio/services/playbooks.py": [
-      "create_playbook",
-      "create_playbook_route",
-      "delete_playbook",
-      "fingerprint_playbook",
-      "get_builtin_playbook",
-      "get_builtin_playbook_route",
-      "get_playbook",
-      "get_playbook_route",
-      "install_builtin_playbook",
-      "install_builtin_playbook_route",
-      "list_builtin_playbooks",
-      "list_builtin_playbooks_route",
-      "list_playbooks",
-      "list_playbooks_route",
-      "run_playbook",
-      "update_playbook",
-      "update_playbook_route",
-      "validate_playbook",
-      "validate_playbook_route"
-    ],
-    "lionagi/studio/services/plugins.py": [
-      "get_plugin",
-      "get_plugin_agent",
-      "get_plugin_agent_endpoint",
-      "get_plugin_endpoint",
-      "get_plugin_skill",
-      "get_plugin_skill_endpoint",
-      "list_plugins",
-      "list_plugins_endpoint"
-    ],
-    "lionagi/studio/services/projects.py": [
-      "AssignProjectRequest",
-      "CreateProjectRequest",
-      "NameConflictError",
-      "UpdateProjectRequest",
-      "assign_project",
-      "assign_sessions_to_project",
-      "create_project",
-      "create_project_route",
-      "delete_project",
-      "delete_project_route",
-      "get_project_route",
-      "list_projects",
-      "list_projects_route",
-      "update_project",
-      "update_project_route"
-    ],
-    "lionagi/studio/services/redaction.py": [
-      "RedactedPayloadError",
-      "abbreviate_path",
-      "demo_mode_enabled",
-      "is_placeholder_text",
-      "project_agent_fields",
-      "redact_agent_markdown",
-      "reject_if_redacted_payload"
-    ],
-    "lionagi/studio/services/run_tags.py": [
-      "TagBody",
-      "add_run_tag",
-      "remove_run_tag"
-    ],
-    "lionagi/studio/services/shows.py": [
-      "get_show",
-      "get_show_route",
-      "import_shows",
-      "import_shows_route",
-      "list_gated_plays",
-      "list_gated_plays_route",
-      "list_shows",
-      "list_shows_route",
-      "stream_show",
-      "watch_show"
-    ],
-    "lionagi/studio/services/skills.py": [
-      "SkillValidateBody",
-      "get_skill",
-      "get_skill_route",
-      "list_skills",
-      "list_skills_route",
-      "validate_skill_content",
-      "validate_skill_route"
-    ],
-    "lionagi/studio/services/stats.py": [
-      "get_activity_stats",
-      "get_activity_stats_route",
-      "get_db_stats",
-      "get_spend_rollup",
-      "get_spend_rollup_route",
-      "get_spend_stats",
-      "get_spend_stats_route",
-      "get_stats",
-      "get_stats_route"
-    ],
-    "lionagi/studio/services/teams.py": [
-      "get_team",
-      "get_team_route",
-      "list_teams",
-      "list_teams_route"
-    ],
-    "lionagi/studio/services/workflow_compile.py": [
-      "StudioExprCondition",
-      "UnsafeExpressionError",
-      "WorkflowCompileError",
-      "build_early_graph",
-      "compile_workflow_def",
-      "make_engine_operation"
-    ],
-    "lionagi/studio/services/workflow_defs.py": [
-      "CreateWorkflowDefRequest",
-      "NameConflictError",
-      "RunWorkflowDefRequest",
-      "UpdateWorkflowDefRequest",
-      "create_workflow_def",
-      "create_workflow_def_route",
-      "delete_workflow_def",
-      "delete_workflow_def_route",
-      "get_workflow_def",
-      "get_workflow_def_route",
-      "list_workflow_defs",
-      "list_workflow_defs_route",
-      "run_workflow_def_route",
-      "update_workflow_def",
-      "update_workflow_def_route"
-    ],
-    "lionagi/studio/services/workflow_run.py": [
-      "WorkflowNotFoundError",
-      "run_workflow_def"
     ],
     "lionagi/testing/_branch.py": [
       "TestBranch",

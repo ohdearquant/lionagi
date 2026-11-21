@@ -148,7 +148,7 @@ def _normalize_openapi(openapi: dict[str, Any]) -> dict[str, Any]:
 
 
 def capture_http() -> dict[str, Any]:
-    from lionagi.studio.app import create_app
+    from lionagi_studio.app import create_app
 
     app = create_app()
     openapi = app.openapi()
@@ -692,7 +692,7 @@ _IMPORT_TRACE_SCRIPT = (
     "other_modules = {s.module for s in iter_cli_seeds() if s.module != seed.module}\n"
     "before = set(sys.modules)\n"
     "load_cli_command(seed)\n"
-    "registry = sys.modules.get('lionagi.studio.registry')\n"
+    "registry = sys.modules.get('lionagi_studio.registry')\n"
     "routes = len(registry._ROUTES) if registry is not None else 0\n"
     "after = set(sys.modules)\n"
     "new_lionagi = sorted(m for m in (after - before) if m.startswith('lionagi.'))\n"

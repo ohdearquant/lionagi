@@ -897,6 +897,7 @@ CONTRACTS: tuple[MoveContract, ...] = (
         ),
         state_consumers=(StateConsumer("checkpoint-version", _CHECKPOINT_VERSION),),
     ),
+    MoveContract(old="lionagi.studio", new="lionagi_studio", kind="package", cold_orders=()),
     MoveContract(
         old="lionagi.studio.services._schedule_validation",
         new="lionhub.orchestration.schedule.validation",
