@@ -51,14 +51,17 @@ _REPORTS = (
     "}\n"
     "print(json.dumps({'type': 'result', 'is_error': False, 'result': json.dumps(seen)}))\n"
 )
-# A stand-in that prints the header it read from the file and then fails.
+# A stand-in that prints the token and the key it read from the file, in no recognisable shape,
+# and then fails.
 _LEAKS_THEN_FAILS = (
     "import json, pathlib, sys\n"
     "argv = sys.argv[1:]\n"
     "path = argv[argv.index('--mcp-config') + 1]\n"
     "pathlib.Path(sys.argv[0] + '.path').write_text(path)\n"
-    "header = json.load(open(path))['mcpServers']['remote']['headers']['Authorization']\n"
-    "sys.stderr.write('upstream refused ' + header)\n"
+    "servers = json.load(open(path))['mcpServers']\n"
+    "token = servers['remote']['headers']['Authorization'].split()[-1]\n"
+    "key = servers['local']['env']['SERVICE_API_KEY']\n"
+    "sys.stderr.write('upstream refused ' + token + ' and ' + key)\n"
     "sys.exit(3)\n"
 )
 
@@ -113,7 +116,7 @@ async def test_the_child_is_handed_a_private_file_and_no_secret_on_its_command_l
 
 
 @pytest.mark.asyncio
-async def test_a_failing_child_leaves_no_file_and_its_message_does_not_carry_the_token(
+async def test_a_failing_child_leaves_no_file_and_its_message_carries_no_secret(
     tmp_path, monkeypatch
 ):
     stub = _stub_cli(tmp_path, monkeypatch, _LEAKS_THEN_FAILS)
@@ -124,6 +127,7 @@ async def test_a_failing_child_leaves_no_file_and_its_message_does_not_carry_the
 
     assert "upstream refused" in str(raised.value)
     assert TOKEN not in str(raised.value)
+    assert ENV_KEY not in str(raised.value)
     handed = Path(Path(f"{stub}.path").read_text())
     assert not handed.exists()
     assert not handed.parent.exists()
