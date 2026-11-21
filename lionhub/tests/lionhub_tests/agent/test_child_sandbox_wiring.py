@@ -40,6 +40,7 @@ def _exemption_for_one_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     settings = {"child_sandbox": {"profiles": {"builder": {"allow_read": [EXEMPT]}}}}
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: settings)
 
@@ -63,7 +64,7 @@ def test_a_bare_worker_and_another_profile_keep_the_full_list():
         model = _model(CLAUDE)
         _confine_claude_worker(model, profile)
         deny = model.endpoint.config.kwargs["child_sandbox"]["deny_read"]
-        assert deny == [*child_sandbox.DEFAULT_DENY_READ, "~/.lionagi/.env"]
+        assert deny == [*child_sandbox.DEFAULT_DENY_READ, "~/.lionagi/.env", "~/.lionagi/logins"]
 
 
 def test_the_policy_is_a_plain_dict_that_survives_json():
@@ -133,7 +134,11 @@ async def test_create_agent_never_matches_the_role_name(monkeypatch):
     # profile name given as sandbox_profile selects an exemption.
     for kwargs in ({"sandbox_profile": None}, {}):
         policy = await _policy_of_built_agent(monkeypatch, **kwargs)
-        assert policy["deny_read"] == [*child_sandbox.DEFAULT_DENY_READ, "~/.lionagi/.env"]
+        assert policy["deny_read"] == [
+            *child_sandbox.DEFAULT_DENY_READ,
+            "~/.lionagi/.env",
+            "~/.lionagi/logins",
+        ]
 
 
 @pytest.mark.asyncio

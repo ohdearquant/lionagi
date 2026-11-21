@@ -982,7 +982,12 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     provider, _, name = parse_model_spec(env.default_model_spec).model.partition("/")
     if _canonical_provider(provider) != "codex" or not name:
         return
-    resolved = resolve_codex_config_profile(name)
+    # The orchestrator's child environment names the home its codex reads, as for a leg on
+    # an account.
+    from lionhub.providers._cli_subprocess import reveal_redacted
+
+    child_env = reveal_redacted(getattr(imodel.endpoint, "_runtime_state", {}).get("env"))
+    resolved = resolve_codex_config_profile(name, child_env)
     if resolved is None:
         return
     try:
@@ -1157,6 +1162,19 @@ async def setup_orchestration(
         raise ConfigurationError("The packaged default casts pack could not be loaded.")
 
     orc_account_connectors, orc_containment = resolve_account_integrations(orc_profile)
+    # The orchestrator runs on its role's subscription account, as a worker does; a clone of
+    # it copies the model, and the account's environment with it.
+    orc_account = None
+    orc_account_name = getattr(orc_profile, "account", None)
+    orc_codex_home = getattr(orc_profile, "codex_home", None)
+    if orc_account_name is not None or orc_codex_home is not None:
+        from lionhub.agent.subscription_accounts import resolve_leg_account
+
+        orc_account = resolve_leg_account(
+            parse_model_spec(model_spec).model.partition("/")[0],
+            account=orc_account_name,
+            codex_home=orc_codex_home,
+        )
     orc_imodel = build_imodel_from_spec(
         model_spec,
         yolo=yolo,
@@ -1168,7 +1186,19 @@ async def setup_orchestration(
         contain_account_integrations=orc_containment,
         workload=getattr(orc_profile, "workload", None) or DEFAULT_WORKLOAD,
         tool_settings=_profile_tool_settings(orc_profile),
+        env=orc_account.env if orc_account is not None else None,
+        secret_fill_skip=orc_account.secret_fill_skip if orc_account is not None else None,
     )
+    if orc_account is not None:
+        from lionhub.agent.subscription_accounts import leg_account_reached
+
+        if not leg_account_reached(
+            orc_account, getattr(orc_imodel.endpoint, "_runtime_state", None)
+        ):
+            raise ConfigurationError(
+                "the orchestrator's model was built without its account's environment or its "
+                "secret-lookup skip set, so it would not run on the account alone."
+            )
     _orc_provider = orc_imodel.endpoint.config.provider
     orc_kwargs = orc_imodel.endpoint.config.kwargs
     if cwd:
@@ -1255,6 +1285,10 @@ async def setup_orchestration(
             sandbox_profile=None,
         )
         orc_branch.name = "orchestrator"
+    if orc_account is not None:
+        # The saved branch names the account it ran on, as an `li agent` branch does; names
+        # and paths only, never a token.
+        orc_branch.metadata["subscription_account"] = dict(orc_account.record)
     if profile_origin_mcp_disabled:
         orc_branch.metadata["mcp_launch"] = {
             "mcp_config": None,
@@ -1414,9 +1448,27 @@ def worker_is_cli(
     """Whether a worker with this role/model_override resolves to a
     CLI-provider iModel (no tool-calling surface, never messenger-bound).
     Cheap (no network I/O) — safe to call once per team member ahead of
-    the per-worker build loop."""
-    w_model, _, _ = _resolve_worker_model_spec(env, role, model_override)
-    return bool(getattr(build_imodel_from_spec(w_model), "is_cli", False))
+    the per-worker build loop.
+
+    The model is built as `build_worker_branch` builds it: with no user config and, for a
+    codex worker whose role names an account or a home, in that home, so the check reads no
+    codex configuration the worker would not. A Claude Code account's token is not read here,
+    because the kind of model does not depend on it."""
+    w_model, w_profile, _ = _resolve_worker_model_spec(env, role, model_override)
+    child_env = None
+    if not env.bare and w_profile is not None:
+        account_name = getattr(w_profile, "account", None)
+        codex_home = getattr(w_profile, "codex_home", None)
+        provider = parse_model_spec(w_model).model.partition("/")[0]
+        if account_name is not None or codex_home is not None:
+            from lionhub.agent.subscription_accounts import account_provider, resolve_leg_account
+
+            if account_provider(provider) == "codex":
+                child_env = resolve_leg_account(
+                    provider, account=account_name, codex_home=codex_home
+                ).env
+    model = build_imodel_from_spec(w_model, ignore_user_config=True, env=child_env)
+    return bool(getattr(model, "is_cli", False))
 
 
 class WorkerBuildError(RuntimeError):
@@ -1515,6 +1567,19 @@ async def build_worker_branch(
     account_connectors, contain_account_integrations = resolve_account_integrations(
         None if env.bare else w_profile
     )
+    # The role's subscription account, as for its other fields; a bare worker has no role.
+    worker_account = None
+    if not env.bare and w_profile is not None:
+        worker_account_name = getattr(w_profile, "account", None)
+        worker_codex_home = getattr(w_profile, "codex_home", None)
+        if worker_account_name is not None or worker_codex_home is not None:
+            from lionhub.agent.subscription_accounts import resolve_leg_account
+
+            worker_account = resolve_leg_account(
+                parse_model_spec(w_model).model.partition("/")[0],
+                account=worker_account_name,
+                codex_home=worker_codex_home,
+            )
     w_imodel = build_imodel_from_spec(
         w_model,
         yolo=w_yolo,
@@ -1534,7 +1599,19 @@ async def build_worker_branch(
         # Isolated below, so no effort is derived from the user config either.
         ignore_user_config=True,
         tool_settings=None if env.bare else _profile_tool_settings(w_profile),
+        env=worker_account.env if worker_account is not None else None,
+        secret_fill_skip=worker_account.secret_fill_skip if worker_account is not None else None,
     )
+    if worker_account is not None:
+        from lionhub.agent.subscription_accounts import leg_account_reached
+
+        if not leg_account_reached(
+            worker_account, getattr(w_imodel.endpoint, "_runtime_state", None)
+        ):
+            raise ConfigurationError(
+                f"{agent_id}: the worker's model was built without its account's environment "
+                "or its secret-lookup skip set, so it would not run on the account alone."
+            )
     # Each worker's khive servers act as that worker's own profile; a bare worker
     # applies no profile, so it has none to act as.
     worker_khive_actor = run_khive_actor(None if env.bare else getattr(w_profile, "name", None))
@@ -1680,6 +1757,8 @@ async def build_worker_branch(
             "no_mcp_config_source": "profile",
             "launch_dir": str(Path(getattr(env, "mcp_launch_dir", None) or os.getcwd()).resolve()),
         }
+    if worker_account is not None:
+        wb.metadata["subscription_account"] = dict(worker_account.record)
     env.session.include_branches(wb)
     khive_actors = getattr(env, "khive_actors", None)
     if isinstance(khive_actors, dict):
@@ -2423,6 +2502,9 @@ async def start_live_persist(
         "started_at": time.time(),
         "ended_at": None,
     }
+    # The orchestrator's account, recorded as an `li agent` run records its own.
+    orc_metadata = getattr(env.orc_branch, "metadata", None) or {}
+    env._run_manifest.update(orc_metadata.get("subscription_account") or {})
     env.run.write_manifest(env._run_manifest)
     ctx = await setup_orchestration_persist(
         env.session,

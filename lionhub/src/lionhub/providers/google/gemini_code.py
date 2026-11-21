@@ -142,6 +142,17 @@ _AGY_MODELS: frozenset[str] = frozenset(
         "Gemini 4 Argon (Medium)",
         "Gemini 4 Argon (High)",
         "Gemini 4 Argon (Low)",
+        "Gemini 4 Neon (XHigh)",
+        "Gemini 4 Neon (High)",
+        "Gemini 4 Neon (Medium)",
+        "Gemini 4 Neon (Low)",
+        "Gemini 4 Carbon (High)",
+        "Gemini 4 Carbon (Medium)",
+        "Gemini 4 Carbon (Low)",
+        "Gemini 4 Hydrogen (XHigh)",
+        "Gemini 4 Hydrogen (High)",
+        "Gemini 4 Hydrogen (Medium)",
+        "Gemini 4 Hydrogen (Low)",
         "Gemini 3.8 Flash (Medium)",
         "Gemini 3.8 Flash (High)",
         "Gemini 3.8 Flash (Low)",
@@ -159,7 +170,46 @@ _AGY_MODELS: frozenset[str] = frozenset(
     }
 )
 
+# The Gemini 4 families `agy models` lists, by the word that names each, and whether the
+# family has an XHigh tier above High. A name for any other Gemini 4 family is passed
+# through to agy rather than resolved to one of these.
+_GEMINI_4_FAMILIES: dict[str, bool] = {
+    "argon": False,
+    "neon": True,
+    "carbon": False,
+    "hydrogen": True,
+}
+# Display-name prefixes that take an effort tier: (prefix, is_pro, has_xhigh).
+_TIERED_FAMILIES: tuple[tuple[str, bool, bool], ...] = (
+    *((f"Gemini 4 {word.title()}", False, xhigh) for word, xhigh in _GEMINI_4_FAMILIES.items()),
+    ("Gemini 3.8 Flash", False, False),
+    ("Gemini 3.6 Flash", False, False),
+    ("Gemini 3.5 Flash", False, False),
+    ("Gemini 3.1 Pro", True, False),
+)
+_XHIGH_FAMILIES: frozenset[str] = frozenset(
+    prefix for prefix, _, xhigh in _TIERED_FAMILIES if xhigh
+)
+
+
+def _gemini_4_aliases(word: str, has_xhigh: bool) -> dict[str, str]:
+    """``gemini-4-<word>`` and ``<word>``, bare (High) and with each tier the family has."""
+    family = f"Gemini 4 {word.title()}"
+    tiers = ("low", "medium", "high", "xhigh") if has_xhigh else ("low", "medium", "high")
+    aliases: dict[str, str] = {}
+    for stem in (f"gemini-4-{word}", word):
+        aliases[stem] = f"{family} (High)"
+        for tier in tiers:
+            aliases[f"{stem}-{tier}"] = f"{family} ({'XHigh' if tier == 'xhigh' else tier.title()})"
+    return aliases
+
+
 _MODEL_ALIASES: dict[str, str] = {
+    # Neon, Carbon and Hydrogen: a bare id resolves to the High tier, like Argon below;
+    # suffixed forms map to their exact tier.
+    **_gemini_4_aliases("neon", _GEMINI_4_FAMILIES["neon"]),
+    **_gemini_4_aliases("carbon", _GEMINI_4_FAMILIES["carbon"]),
+    **_gemini_4_aliases("hydrogen", _GEMINI_4_FAMILIES["hydrogen"]),
     # 4 Argon: a bare id resolves to the strong tier; suffixed forms map to their
     # exact tier.
     "gemini-4-argon": "Gemini 4 Argon (High)",
@@ -241,20 +291,58 @@ _DOTTED_VERSION = re.compile(_NUMBER_START + r"\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
 # ("argon-highlights", "argon-allow", "argon-lowé"), which carries no tier.
 _TIER_LOW = re.compile(f"(?<!{_LETTER})low(?!{_LETTER})")
 _TIER_HIGH = re.compile(f"(?<!{_LETTER})(?:x?high|max)(?!{_LETTER})")
+_TIER_XHIGH = re.compile(f"(?<!{_LETTER})(?:xhigh|max)(?!{_LETTER})")
+_WORD = re.compile(f"{_LETTER}+")
+# Words a Gemini 4 name may carry besides its family: none of them names a family.
+_GEMINI_4_QUALIFIERS: frozenset[str] = frozenset(
+    {"gemini", "google", "v", "preview", "latest", "exp", "experimental"}
+    | {"low", "medium", "high", "xhigh", "max"}
+)
 
 
-def _gemini_flash_family(key: str) -> str:
-    """The Gemini family display prefix for a free-form, lowercased model key.
+def _gemini_4_families_named(key: str) -> list[str]:
+    """The Gemini 4 family words in a lowercased key. ``argon`` counts wherever it appears,
+    as it did before the other families existed; ``neon``, ``carbon`` and ``hydrogen`` count
+    only as whole words, so a longer word that contains one (``neonate``, ``carbonite``)
+    names no family."""
+    words = set(_WORD.findall(key))
+    return [
+        family
+        for family in _GEMINI_4_FAMILIES
+        if (family in key if family == "argon" else family in words)
+    ]
+
+
+def _names_gemini_4_family(key: str) -> bool:
+    return bool(_gemini_4_families_named(key))
+
+
+def _with_tier(name: str, effort: str) -> str | None:
+    """``name``'s family with the tier ``effort`` selects, or None when it has no tiers."""
+    for prefix, is_pro, has_xhigh in _TIERED_FAMILIES:
+        if name.startswith(prefix):
+            return f"{prefix} ({_clamp_gemini_effort(effort, is_pro, has_xhigh=has_xhigh)})"
+    return None
+
+
+def _gemini_flash_family(key: str) -> str | None:
+    """The Gemini family display prefix for a free-form, lowercased model key, or None
+    for a Gemini 4 name this table cannot place.
 
     A name that spells out a dotted version keeps it, whatever else it says: 3.8 and
     3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 3.5.1, 4.5) falls back to
-    3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
-    ``argon`` or a major version 4 that is not part of a longer number and is followed
-    by neither a letter nor a numeral of any script, nor by a dot and one of those, and
-    3.5 Flash otherwise. A version inside a longer number or dotted string (13.6, 3.60,
-    2.3.6) is never a family match; a dot after anything but a digit separates, so
-    ``gemini-4-flash.3.5`` names 3.5. ``resolve_agy_model`` checks for Pro before this,
-    so a Pro name is 3.1 Pro whatever else it says.
+    3.5 Flash. A name with no dotted version that contains exactly one Gemini 4 family
+    word (``argon`` anywhere in it; ``neon``, ``carbon``, ``hydrogen`` as whole words,
+    see ``_gemini_4_families_named``) is that family. A name that
+    contains two of them is None. Otherwise a major version 4 that is not part of a
+    longer number and is followed by neither a letter nor a numeral of any script, nor
+    by a dot and one of those, makes it a Gemini 4 name: 4 Argon when every other word
+    in it is a qualifier (``gemini``, ``preview``, a tier), and None when another word
+    could name a family this table does not list (``gemini-4-flash``,
+    ``gemini-4-xenon``). Any other name is 3.5 Flash. A version inside a longer number
+    or dotted string (13.6, 3.60, 2.3.6) is never a family match; a dot after anything
+    but a digit separates, so ``gemini-4-flash.3.5`` names 3.5. ``resolve_agy_model``
+    checks for Pro before this, so a Pro name is 3.1 Pro whatever else it says.
     """
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
@@ -262,7 +350,14 @@ def _gemini_flash_family(key: str) -> str:
         return "Gemini 3.6 Flash"
     if _DOTTED_VERSION.search(key):
         return "Gemini 3.5 Flash"
-    if "argon" in key or _GEMINI_4_TOKEN.search(key):
+    named = _gemini_4_families_named(key)
+    if len(named) == 1:
+        return f"Gemini 4 {named[0].title()}"
+    if named:
+        return None
+    if _GEMINI_4_TOKEN.search(key):
+        if set(_WORD.findall(key)) - _GEMINI_4_QUALIFIERS:
+            return None
         return "Gemini 4 Argon"
     return "Gemini 3.5 Flash"
 
@@ -282,44 +377,31 @@ def resolve_agy_model(
         model = "gemini-4-argon"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
-            if model.startswith("Gemini 4 Argon"):
-                return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
-            if model.startswith("Gemini 3.8 Flash"):
-                return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
-            if model.startswith("Gemini 3.6 Flash"):
-                return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
-            if model.startswith("Gemini 3.5 Flash"):
-                return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
-            if model.startswith("Gemini 3.1 Pro"):
-                return f"Gemini 3.1 Pro ({_clamp_gemini_effort(effort, True)})"
+            return _with_tier(model, effort) or model
         return model
     key = model.strip().lower()
     if key in _MODEL_ALIASES:
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
-        if target.startswith("Gemini 4 Argon"):
-            return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
-        if target.startswith("Gemini 3.8 Flash"):
-            return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
-        if target.startswith("Gemini 3.6 Flash"):
-            return f"Gemini 3.6 Flash ({_clamp_gemini_effort(effort, False)})"
-        if target.startswith("Gemini 3.5 Flash"):
-            return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
-        if target.startswith("Gemini 3.1 Pro"):
-            return f"Gemini 3.1 Pro ({_clamp_gemini_effort(effort, True)})"
-        return target  # cross-family alias (Claude/GPT-OSS via agy) — no effort tiers
+        # A cross-family alias (Claude/GPT-OSS via agy) has no effort tiers.
+        return _with_tier(target, effort) or target
 
     # Effort given but string isn't a known alias: still resolve a gemini family
-    # from it so --effort works on forward-compatible model names.
+    # from it so --effort works on forward-compatible model names. A Gemini 4 name
+    # whose family is not listed goes to agy as given.
     is_pro = "pro" in key
-    if effort is not None and (is_pro or "flash" in key or "gemini" in key or "argon" in key):
+    gemini_like = "flash" in key or "gemini" in key or _names_gemini_4_family(key)
+    if effort is not None and (is_pro or gemini_like):
         family = "Gemini 3.1 Pro" if is_pro else _gemini_flash_family(key)
-        return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
+        if family is None:
+            return model
+        return _with_tier(family, effort) or model
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
     # e.g. "gemini-3-pro-low" or "flash high" still resolve. The tier is a word in
-    # the name: `low`, else `high`, `xhigh` or `max`, else Medium (Low for Pro).
+    # the name: `low`, else `high`, `xhigh` or `max`, else Medium (Low for Pro);
+    # `xhigh` and `max` are XHigh on a family that has it.
     if _TIER_LOW.search(key):
         heuristic = "Low"
     elif _TIER_HIGH.search(key):
@@ -328,8 +410,13 @@ def resolve_agy_model(
         heuristic = "Low" if is_pro else "Medium"
     if is_pro:
         return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
-    if "flash" in key or "gemini" in key or "argon" in key:
-        return f"{_gemini_flash_family(key)} ({heuristic})"
+    if gemini_like:
+        family = _gemini_flash_family(key)
+        if family is None:
+            return model
+        if heuristic == "High" and family in _XHIGH_FAMILIES and _TIER_XHIGH.search(key):
+            heuristic = "XHigh"
+        return f"{family} ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.
     return model
@@ -451,7 +538,9 @@ class GeminiCodeRequest(BaseModel):
         default="gemini-4-argon",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-4-argon (defaults to the High tier; -low/-medium/-high suffixes), "
+            "Accepts gemini-4-argon, gemini-4-neon, gemini-4-carbon and gemini-4-hydrogen "
+            "(default to the High tier; -low/-medium/-high suffixes, and -xhigh for neon and "
+            "hydrogen), "
             "gemini-3.8-flash (defaults to the Medium tier), "
             "gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
             "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
