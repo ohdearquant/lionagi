@@ -74,6 +74,15 @@ from lionhub.providers._cli_subprocess import (
     validate_message_prompt,
 )
 
+from ._codex_permissions import (
+    PERMISSION_PROFILE,
+    deny_entries,
+    permission_profile_table,
+    refuse_a_second_sandbox_setting,
+    refuse_write_roots_on_denied_paths,
+    refuse_write_roots_on_probe_record_dir,
+    require_passing_probe_record,
+)
 from ._codex_profile import (
     _codex_config_turning_sandbox_off,
     _read_codex_config,
@@ -101,6 +110,8 @@ from ._config import CodexConfigs
 if TYPE_CHECKING:
     from markdown_it import MarkdownIt
     from markdown_it.token import Token
+
+    from lionhub.agent.child_sandbox import ChildSandboxPolicy
 
 try:
     import tomllib as _tomllib
@@ -1081,14 +1092,16 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
 
     if not resolve_child_sandbox(None).enabled:
         return
-    flags = _command_line_layer(plain)
     reasons = []
     if plain.bypass_approvals:
         reasons.append("bypass_approvals turns codex's sandbox off")
     if plain.sandbox == "danger-full-access":
         reasons.append("sandbox='danger-full-access' turns codex's sandbox off")
-    profiles = flags.get("profiles") if isinstance(flags.get("profiles"), Mapping) else {}
-    tables = [flags, *(t for t in profiles.values() if isinstance(t, Mapping))]
+    layers = _command_line_layers(plain)
+    tables: list[Mapping[str, Any]] = []
+    for layer in layers:
+        profiles = layer.get("profiles") if isinstance(layer.get("profiles"), Mapping) else {}
+        tables.extend([layer, *(t for t in profiles.values() if isinstance(t, Mapping))])
     if any(t.get("sandbox_mode") == "danger-full-access" for t in tables):
         reasons.append("config_overrides set sandbox_mode to 'danger-full-access'")
     if any(_sets(t, ("default_permissions",)) for t in tables):
@@ -1104,7 +1117,10 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
                     f"{str(found)!r} sets default_permissions, a permissions profile codex "
                     "applies in place of its sandbox"
                 )
-            elif not (plain.full_auto or plain.sandbox or _sets(flags, ("sandbox_mode",))):
+            else:
+                # The permission profile governs and no ``--sandbox`` flag is emitted, so a
+                # request's own mode (``full_auto``, ``sandbox``) does not displace what the
+                # config sets: the config is inspected in every case.
                 found_mode = _codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
                 if found_mode is not None:
                     reasons.append(found_mode)
@@ -1288,6 +1304,252 @@ def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
 
     common_roots = (common_dir / "objects", common_dir / "refs", common_dir / "logs")
     return (git_dir, *(path for path in common_roots if path.is_dir()))
+
+
+def _permission_profile_policy(plain: _PlainRequest) -> ChildSandboxPolicy | None:
+    """The child sandbox policy a codex launch runs under as a permission profile, else None.
+
+    While the child sandbox is enabled a codex child runs under a permission profile in place
+    of a sandbox mode. A request that bypasses approvals and the sandbox is refused in that
+    state, so it is left to those refusals here; with the child sandbox switched off the
+    command line is the one a codex child always had.
+    """
+    if plain.bypass_approvals:
+        return None
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    policy = resolve_child_sandbox(None)
+    return policy if policy.enabled else None
+
+
+def _writable_root_list(value: Any) -> list[str]:
+    """The strings of a ``writable_roots`` value in any shape the legacy path accepted: one
+    string, or a list or tuple of them (anything else names no root)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _caller_writable_roots(plain: _PlainRequest) -> list[str] | None:
+    """The writable roots the run's own overrides set, or None when they set none.
+
+    Both readings of every override key are read, at the root and in the table of the config
+    profile the run selects, so a quoted key and a profile-level setting count as the dotted
+    root key does.
+    """
+    layers = _command_line_layers(plain)
+    names = [getattr(plain, "profile", None), *(layer.get("profile") for layer in layers)]
+    selected = [name for name in names if isinstance(name, str) and name]
+    found = False
+    roots: list[str] = []
+    for layer in layers:
+        tables: list[Mapping[str, Any]] = [layer]
+        profiles = layer.get("profiles")
+        if isinstance(profiles, Mapping):
+            tables.extend(
+                profiles[name] for name in selected if isinstance(profiles.get(name), Mapping)
+            )
+        for table in tables:
+            configured = table.get("sandbox_workspace_write")
+            if isinstance(configured, Mapping) and "writable_roots" in configured:
+                found = True
+                roots.extend(_writable_root_list(configured["writable_roots"]))
+    return roots if found else None
+
+
+def _heavy_sandbox_settings(
+    plain: _PlainRequest, env: Mapping[str, str] | None, carried: Any
+) -> tuple[str | None, bool, bool, bool]:
+    """The sandbox mode, the two temp-directory exclusions and the network setting codex would
+    apply to a heavy run, as ``(mode, exclude_slash_tmp, exclude_tmpdir_env_var,
+    network_access)``.
+
+    They come from the user config layers, a later layer beating an earlier one (the config
+    file, then the profile the run selects). Under ``--ignore-user-config`` the settings the
+    ignored config carried stand in for them. A value no layer sets is ``None`` / ``False``;
+    ``False`` for ``network_access`` is codex's own default for a workspace-write sandbox.
+    """
+    from lionhub.providers.openai._codex_permissions import user_layer_tables
+
+    ignoring = bool(getattr(plain, "ignore_user_config", False)) or carried is not None
+    tables, _ = user_layer_tables(
+        env=env,
+        profile=getattr(plain, "profile", None),
+        flags=_command_line_layer(plain),
+        decoded_flags=_command_line_layer_decoded(plain),
+        ignore_user_config=ignoring,
+    )
+    mode: str | None = None
+    exclusions: dict[str, bool] = {}
+    for table in tables:
+        value = table.get("sandbox_mode")
+        if isinstance(value, str):
+            mode = value
+        configured = table.get("sandbox_workspace_write")
+        if isinstance(configured, Mapping):
+            for key in (*_NARROWING_WORKSPACE_KEYS, "network_access"):
+                if isinstance(configured.get(key), bool):
+                    exclusions[key] = configured[key]
+    if carried is not None:
+        if carried.sandbox_mode:
+            mode = carried.sandbox_mode
+        for name, value in carried.workspace_write:
+            if name in (*_NARROWING_WORKSPACE_KEYS, "network_access") and isinstance(value, bool):
+                exclusions[name] = value
+    return (
+        mode,
+        exclusions.get("exclude_slash_tmp", False),
+        exclusions.get("exclude_tmpdir_env_var", False),
+        exclusions.get("network_access", False),
+    )
+
+
+def _is_workspace_write_override(key: str) -> bool:
+    """Whether a ``-c`` key, read either way, sets ``sandbox_workspace_write`` (at the root or
+    in a config profile)."""
+    readings = [key.strip(_TRIMMED).split(".")]
+    try:
+        readings.append(_override_key_path(key, "a config override key"))
+    except ValueError:
+        pass
+    return any(
+        path[:1] == ["sandbox_workspace_write"]
+        or (path[:1] == ["profiles"] and path[2:3] == ["sandbox_workspace_write"])
+        for path in readings
+    )
+
+
+def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
+    """The writable roots, beyond the working directory, that the permission profile grants.
+
+    These are the roots the workspace-write mode this profile replaces granted, so no request
+    gains or loses write access: none for a light request; for a heavy one the roots the run's
+    own overrides set (a string, list or tuple, at the root or in the selected config profile),
+    else the child sandbox's ``allow_write`` list, then every ``add_dir`` directory and the
+    linked worktree's git roots, the last two being the directories passed with ``--add-dir``.
+    A leading ``~`` is expanded and a relative entry is made absolute against the working
+    directory, which codex starts in. A root that contains the probe record directory or lies
+    inside it is refused: a child that could write there could forge the record the launch
+    rests on.
+    """
+    if plain.workload == "light":
+        return []
+    roots = _caller_writable_roots(plain)
+    if roots is None:
+        roots = _heavy_writable_roots(plain) or []
+    git_roots = (str(path) for path in _linked_worktree_git_writable_roots(cwd))
+    entries = (os.path.expanduser(entry) for entry in [*roots, *plain.add_dir, *git_roots])
+    absolute = (
+        entry if os.path.isabs(entry) else os.path.join(str(cwd), entry) for entry in entries
+    )
+    write_roots = list(dict.fromkeys(absolute))
+    refuse_write_roots_on_probe_record_dir(write_roots)
+    return write_roots
+
+
+def _permission_profile_args(
+    plain: _PlainRequest,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    policy: ChildSandboxPolicy,
+    carried: Any,
+) -> list[str]:
+    """The two ``-c`` overrides that put a codex child under the permission profile.
+
+    ``env`` is the environment the child runs in: the ``CODEX_HOME`` it names is the one the
+    profile denies, beside every ``deny_read`` entry of ``policy``. The profile starts from
+    ``:read-only`` where the sandbox mode it replaces was ``read-only``, and from ``:workspace``
+    otherwise. A heavy request that names no sandbox takes the mode codex would have used
+    without one: the user config's ``sandbox_mode`` (the one an ignored user config carried
+    stands in), then the selected profile's, and ``read-only`` when neither sets it. A read-only
+    profile has no write entry, the working directory included. A heavy workspace-write
+    profile honours the user config's ``exclude_slash_tmp``, ``exclude_tmpdir_env_var`` and
+    ``network_access``; the network is off for a light request and for a read-only profile, as
+    the read-only sandbox mode left it.
+    """
+    light = plain.workload == "light"
+    exclude_slash_tmp = exclude_tmpdir = network = False
+    if light:
+        mode: str | None = "read-only" if plain.sandbox == "read-only" else "workspace-write"
+    else:
+        inherited, exclude_slash_tmp, exclude_tmpdir, network = _heavy_sandbox_settings(
+            plain, env, carried
+        )
+        if plain.full_auto:
+            mode = "workspace-write"
+        else:
+            mode = plain.sandbox or inherited or "read-only"
+    read_only = mode == "read-only"
+    if not read_only:
+        # Both `:workspace` modes, light and heavy, grant write over the working directory.
+        # Whether the deny entry on the probe record directory beats that grant is not
+        # measured, so a working directory over the record directory is refused outright.
+        refuse_write_roots_on_probe_record_dir([str(cwd)], what="the working directory")
+    # Computed in every mode, read-only included, so a root on the probe record directory is
+    # refused even where the table grants no write entry: the command line still carries each
+    # `add_dir` directory as `--add-dir`.
+    write_roots = _profile_write_roots(plain, cwd)
+    deny = deny_entries(policy.deny_read, codex_home_for_env(env), env)
+    # The same holds for every denied location: no write root, the working directory included
+    # when the profile writes it, may be one, hold one or lie inside one, so nothing rests on a
+    # denial winning over a grant.
+    if not read_only:
+        refuse_write_roots_on_denied_paths([str(cwd)], deny, what="the working directory")
+    refuse_write_roots_on_denied_paths(write_roots, deny)
+    table = permission_profile_table(
+        deny=deny,
+        write=[] if read_only else write_roots,
+        light=light,
+        read_only=read_only,
+        network=network and not read_only,
+        exclude_slash_tmp=exclude_slash_tmp and not read_only,
+        exclude_tmpdir=exclude_tmpdir and not read_only,
+    )
+    return _permission_profile_overrides(table)
+
+
+def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
+    """The ``-c`` pair that defines the permission profile ``table`` and selects it.
+
+    The one rendering of the profile onto a command line: a launch and the sandbox probe both
+    emit it through here, so a probe record vouches for the overrides a launch really carries.
+    """
+    name = _rendered_override_value(PERMISSION_PROFILE, "The permission profile name")
+    rendered = _rendered_override_value(table, "The permission profile")
+    return [
+        "-c",
+        f"default_permissions={name}",
+        "-c",
+        f"permissions.{PERMISSION_PROFILE}={rendered}",
+    ]
+
+
+def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, str] | None) -> None:
+    """Refuse, before spawn, a profiled launch that another layer could weaken or that runs on
+    a codex binary not shown to enforce the profile.
+
+    ``env`` is the child's final environment. When the user config sets a root
+    ``sandbox_mode`` the profile governs over it; one line in the log says so, naming the config
+    and the probe record the binary's check rests on.
+    """
+    governed = refuse_a_second_sandbox_setting(
+        flags=_command_line_layer(plain),
+        decoded_flags=_command_line_layer_decoded(plain),
+        env=env,
+        cwd=cwd,
+        profile=plain.profile,
+        ignore_user_config=plain.ignore_user_config,
+    )
+    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd)
+    if governed is not None:
+        log.warning(
+            "the command-line permission profile governs over the sandbox_mode set in %s, as the "
+            "probe record %s shows for this codex binary",
+            governed,
+            record,
+        )
 
 
 # --------------------------------------------------------------------------- request model
@@ -2021,8 +2283,18 @@ class CodexCodeRequest(BaseModel):
             )
         return self._cmd_args(plain, self.cwd())
 
-    def _cmd_args(self, plain: _PlainRequest, cwd: Path) -> list[str]:
-        """Render a previously checked request and workspace snapshot."""
+    def _cmd_args(
+        self,
+        plain: _PlainRequest,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        """Render a previously checked request and workspace snapshot.
+
+        ``env`` is the environment the child runs in. While the child sandbox is on it decides
+        which ``CODEX_HOME`` the permission profile denies, so a launch passes the environment
+        the child really gets; left None, the request's own ``env`` is read.
+        """
         from lionhub.agent.child_sandbox import _refuse_a_home_workspace
 
         _refuse_a_home_workspace(cwd, plain.env)
@@ -2033,6 +2305,12 @@ class CodexCodeRequest(BaseModel):
             self._refuse_a_config_profile_for_light(plain, cwd)
         else:
             _refuse_sandbox_off_while_confined(plain, cwd)
+        # With the child sandbox on (and no bypass, which is refused in that state) the child
+        # runs under a permission profile instead of a sandbox mode.
+        policy = _permission_profile_policy(plain)
+        if policy is not None:
+            # ``as_cmd_args`` reaches the same refusals as a spawn does.
+            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
@@ -2043,34 +2321,43 @@ class CodexCodeRequest(BaseModel):
             if str(git_root) not in plain.add_dir:
                 args.extend(["--add-dir", str(git_root)])
 
-        # Approval & sandbox: mutually exclusive hierarchy
+        # Approval & sandbox: mutually exclusive hierarchy. While `policy` is set no sandbox
+        # mode is passed at all: a mode on the command line beats a permission profile
+        # without a word, so the profile emitted after the overrides below is the child's
+        # only sandbox setting. The approval policy is rendered as it always was.
         if light:
             # The refusal above has ruled out every setting that turns the sandbox off.
             if plain.ask_for_approval:
                 rendered = _rendered_override_value(plain.ask_for_approval, "ask_for_approval")
                 args.extend(["-c", f"approval_policy={rendered}"])
-            args.extend(
-                ["--sandbox", "read-only" if plain.sandbox == "read-only" else "workspace-write"]
-            )
+            if policy is None:
+                args.extend(
+                    [
+                        "--sandbox",
+                        "read-only" if plain.sandbox == "read-only" else "workspace-write",
+                    ]
+                )
         elif plain.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         elif plain.full_auto:
             # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
             # warning into a hard argv error. Its deprecation notice prescribes
             # `--sandbox workspace-write`, which keeps the same sandbox posture.
-            args.extend(["--sandbox", "workspace-write"])
+            if policy is None:
+                args.extend(["--sandbox", "workspace-write"])
         else:
             if plain.ask_for_approval:
                 # The config key has the same mode vocabulary as the former CLI
                 # flag and remains available in builds that no longer expose it.
                 rendered = _rendered_override_value(plain.ask_for_approval, "ask_for_approval")
                 args.extend(["-c", f"approval_policy={rendered}"])
-            if plain.sandbox:
-                args.extend(["-s", plain.sandbox])
-            elif carried is not None and carried.sandbox_mode:
-                # Without the user config codex falls back to its built-in read-only
-                # sandbox, so the mode the user config sets is handed over here.
-                args.extend(["-s", carried.sandbox_mode])
+            if policy is None:
+                if plain.sandbox:
+                    args.extend(["-s", plain.sandbox])
+                elif carried is not None and carried.sandbox_mode:
+                    # Without the user config codex falls back to its built-in read-only
+                    # sandbox, so the mode the user config sets is handed over here.
+                    args.extend(["-s", carried.sandbox_mode])
 
         # Web search: old `--search` flag was removed upstream (2026-04);
         # express intent via the `tool_search` feature flag instead.
@@ -2111,6 +2398,10 @@ class CodexCodeRequest(BaseModel):
         for index, (key, value) in enumerate(plain.overrides):
             if "=" in key:
                 raise _equals_in_key_refusal(index)
+            # Under a permission profile codex ignores `sandbox_workspace_write`; the caller's
+            # writable roots are in the profile table, so the override is not emitted beside it.
+            if policy is not None and _is_workspace_write_override(key):
+                continue
             # Containment removes overrides under `features.apps` and
             # `features.plugins`, plus those keys from an inline `features`
             # table. Config profiles can contribute either form alongside the
@@ -2137,7 +2428,11 @@ class CodexCodeRequest(BaseModel):
         # merged, and a later `-c` of a key replaces what an earlier one set. Each is one
         # inline table, since codex splits a dotted key at every `.`, a directory's
         # included.
-        for name, value in carried.workspace_write if carried is not None else ():
+        # Under a permission profile codex ignores these settings; the profile table carries what
+        # they set (the writable roots and the tmp exclusions), so none is emitted beside it.
+        for name, value in (
+            carried.workspace_write if carried is not None and policy is None else ()
+        ):
             rendered = _rendered_override_value(value, f"The carried {name}")
             args.extend(["-c", f"sandbox_workspace_write.{name}={rendered}"])
         if carried is not None and carried.hook_trust:
@@ -2148,7 +2443,17 @@ class CodexCodeRequest(BaseModel):
                 carried.project_trust, "The project trust decisions"
             )
             args.extend(["-c", f"projects={rendered}"])
-        if light:
+        if policy is not None:
+            # The permission profile replaces the legacy `sandbox_workspace_write` pins below:
+            # codex ignores those keys under a profile, so the writable roots, the network and
+            # the denied paths are all in the profile table. Last among the overrides, so
+            # codex, which keeps the last `-c` of a key, reads it whatever came before.
+            args.extend(
+                _permission_profile_args(
+                    plain, cwd, plain.env if env is None else env, policy, carried
+                )
+            )
+        elif light:
             # Pinned against the user's config, read by codex or carried above, which may
             # grant extra writable roots or the network to every workspace-write session, or
             # leave /tmp and $TMPDIR writable. Together the pins leave the working directory
@@ -2423,10 +2728,12 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "apply. Set those settings in the run's config overrides and drop the profile, or "
             "run without ignore_user_config."
         )
-    flags = _command_line_layer(plain)
-    if _sets(flags, ("profile",)):
+    layers = _command_line_layers(plain)
+    flags = layers[0]
+    profile_layer = next((layer for layer in layers if _sets(layer, ("profile",))), None)
+    if profile_layer is not None:
         # A value that is not a string is named by its type: its content is not echoed.
-        selected = flags["profile"]
+        selected = profile_layer["profile"]
         named = (
             f"profile = {selected!r}, which selects a profile"
             if isinstance(selected, str)
@@ -2492,7 +2799,9 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "so the run would start without what codex does with it. Remove the key, and set "
             "the sandbox in the run's config overrides."
         )
-    if config.get("default_permissions") is not None and not _sets(flags, ("default_permissions",)):
+    if config.get("default_permissions") is not None and not any(
+        _sets(layer, ("default_permissions",)) for layer in layers
+    ):
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {config_path} sets "
             "`default_permissions`, a permissions profile codex applies in place of "
@@ -2510,7 +2819,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         )
         mode = None
     if (
-        any(_sets(flags, key) for key in _SANDBOX_MODE_KEYS)
+        any(_sets(layer, key) for layer in layers for key in _SANDBOX_MODE_KEYS)
         or plain.sandbox
         or plain.full_auto
         or plain.bypass_approvals
@@ -2523,7 +2832,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             name: value
             for name in names
             if (value := _workspace_write_value(name, table.get(name), config_path)) is not None
-            and not _sets(flags, ("sandbox_workspace_write", name))
+            and not any(_sets(layer, ("sandbox_workspace_write", name)) for layer in layers)
         }
         for names in (_WIDENING_WORKSPACE_KEYS, _NARROWING_WORKSPACE_KEYS)
     )
@@ -2700,6 +3009,43 @@ def _command_line_layer(plain: _PlainRequest) -> dict[str, Any]:
             table = table[part]
         table[last] = copy(value)  # a later dotted key writes into it
     return root
+
+
+def _command_line_layer_decoded(plain: _PlainRequest) -> dict[str, Any]:
+    """The run's `-c` overrides read the other way: as TOML dotted keys.
+
+    ``_command_line_layer`` splits a key at every `.`, the way codex's loader is documented to
+    read it; ``_override_key_path`` reads it as TOML does, where a part may be quoted, spaced
+    around its dots or written with escapes. A guarded key can hide in either reading, so a
+    refusal checks both. Only an override whose TOML path differs from its split path is
+    placed here (the other is in the split table already). A key TOML cannot read is left out:
+    ``_override_key_path`` refuses it where the argv is built."""
+    root: dict[str, Any] = {}
+    for key, value in plain.overrides:
+        try:
+            path = _override_key_path(key, "a config override key")
+        except ValueError:
+            continue
+        if path == key.strip(_TRIMMED).split("."):
+            continue
+        *parents, last = path
+        table = root
+        for part in parents:
+            if not isinstance(table.get(part), dict):
+                table[part] = {}
+            table = table[part]
+        table[last] = copy(value)
+    return root
+
+
+def _command_line_layers(plain: _PlainRequest) -> list[dict[str, Any]]:
+    """Both readings of the run's `-c` overrides: the split-at-dot table, then (when any key
+    reads differently as a TOML dotted key) the table of those keys."""
+    layers = [_command_line_layer(plain)]
+    decoded = _command_line_layer_decoded(plain)
+    if decoded:
+        layers.append(decoded)
+    return layers
 
 
 def _sets(table: Mapping[str, Any], key_path: Sequence[str]) -> bool:
@@ -2927,6 +3273,10 @@ def _exclusive_cmd_args(
                 *plain.overrides,
             ],
         )
+    elif not plain.ignore_user_config:
+        # A launch that reaches here under neither is one under the permission profile, which
+        # renders its argv against the final environment; the collisions are checked against it.
+        _refuse_forwarded_project_collisions(plain, cwd, child_env)
     _refuse_ambiguous_approval(plain)
     _refuse_light_escape(plain)
     _refuse_oversized_cli_inputs(
@@ -2941,7 +3291,8 @@ def _exclusive_cmd_args(
             _exclusive_check(refuse_declaring_project_layer, plain, cwd)
         else:
             refuse_declaring_project_layer(plain, cwd)
-    cmd = [CODEX_CLI, *request._cmd_args(plain, cwd)]
+    # Under the permission profile ``_cmd_args`` runs the launch gate against ``child_env``.
+    cmd = [CODEX_CLI, *request._cmd_args(plain, cwd, child_env)]
     _refuse_oversized_command(cmd)
     return cmd
 
@@ -2999,7 +3350,13 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         contained=plain.contains_account_integrations(),
     )
     prepare_argv = None
-    if plain.ignore_user_config or plain.exclusive_mcp_names is not None:
+    if (
+        plain.ignore_user_config
+        or plain.exclusive_mcp_names is not None
+        # Under the permission profile the child's own CODEX_HOME is denied, which is known only
+        # once the secret fill has built its environment, so argv is rendered then.
+        or _permission_profile_policy(plain) is not None
+    ):
         cmd = [CODEX_CLI]
 
         def prepare_argv(child_env):

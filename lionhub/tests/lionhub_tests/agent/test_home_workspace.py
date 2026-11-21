@@ -153,9 +153,15 @@ def test_a_codex_child_at_home_is_refused(fake_home, sandbox_on, workload):
         request.as_cmd_args()
 
 
-def test_a_codex_child_in_a_project_runs(fake_home, sandbox_on):
+def test_a_codex_child_in_a_project_runs(fake_home, sandbox_on, monkeypatch):
+    import lionhub.providers.openai.codex as codex_module
     from lionhub.providers.openai.codex import CodexCodeRequest
 
+    # The probe record gate reads the host's codex binary; this test is about the working
+    # directory only.
+    monkeypatch.setattr(
+        codex_module, "require_passing_probe_record", lambda binary, env=None, cwd=None: "record"
+    )
     args = CodexCodeRequest(prompt="hi", repo=fake_home / "project").as_cmd_args()
     assert args[:2] == ["exec", "--json"]
 
