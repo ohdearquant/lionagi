@@ -64,7 +64,7 @@ def test_lionagi_homes_env_file_names_it_when_the_environment_does_not(tmp_path,
 
 
 def test_a_working_directory_env_file_does_not_name_it(tmp_path, monkeypatch):
-    """A checkout under review cannot point a leg at accounts of its choosing."""
+    """A checkout under review cannot point a leg at another accounts directory."""
     home = tmp_path / "lionagi-home"
     home.mkdir()
     checkout = tmp_path / "checkout"

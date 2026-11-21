@@ -20,7 +20,7 @@ Every decision below that goes beyond those four points is marked **(design choi
 All accounts live in one directory, `LIONAGI_LOGINS_DIR`, which defaults to `<LIONAGI_HOME>/logins`.
 
 - The setting is read from the process environment first, then from `<LIONAGI_HOME>/.env`.
-- **(design choice)** A working directory's own `.env` is not read for this setting. A checkout under review therefore cannot point a leg at accounts it chose.
+- **(design choice)** A working directory's own `.env` is not read for this setting, so a checkout under review cannot point a leg at another accounts directory. It can still pick an account: a project-local agent profile (`.lionagi/agents` in the checkout) is searched before `~/.lionagi/agents`, and a profile's `account:` and `codex_home:` choose a listed account or name a Codex home (see [Choosing an account](#choosing-an-account)).
 
 The directory holds two kinds of entry:
 
@@ -38,9 +38,11 @@ A `claude-<name>` file holds a token, so the directory is as private as any logi
 - A `.env` row names the file and the variable, not the value.
 - A token is read only when a child is spawned.
 
-A sandboxed Claude Code child is denied reading every sign-in the directory keeps or names: the directory itself, each `.env` file a row reads, and each Codex home as a whole. Each is denied as written and at the path it resolves to, every link on the way included, because the sandbox matches the path a read resolves to. A Codex home's `config.toml` can hold provider keys and MCP server `env` values besides the sign-in in its `auth.json`, and a Claude Code child has no use for any of it. An `accounts.toml` that cannot be read refuses the child's sandbox policy, because its sign-ins could not be named.
+A sandboxed Claude Code child is denied reading every sign-in the directory keeps or names: the directory itself, each `.env` file a row reads, and each Codex home as a whole. Each is denied as written and at the path it resolves to, every link on the way included, because the sandbox matches the path a read resolves to. A Codex home's `config.toml` can hold provider keys and MCP server `env` values besides the sign-in in its `auth.json`, and a Claude Code child has no use for any of it. An `accounts.toml` that cannot be read refuses the child's sandbox policy, because its sign-ins could not be named. A Codex home named only by a profile's `codex_home:` or by `agent_env`, with no `[codex.<name>]` row, is not on this list, so a sandboxed Claude Code child can read it.
 
-**Limit: a keychain row is readable by a sandboxed child.** A keychain item is not a file, so the deny list cannot cover it. This process reads the item with `/usr/bin/security` and no prompt, which means the item's access list admits that binary. Claude Code's sandbox lets a child run the same binary and reach the keychain service, so the child can read any keychain row's token the same way. Measured on macOS with Claude Code 2.1.328 and the sandbox settings this package generates: a throwaway item was readable from the child. In the same child, a read of a listed Codex home was refused by the operating system. Until the child's sandbox cuts its reach to the keychain service, a token that must stay out of a child's reach belongs in a token file or a `.env` row, not a keychain row. Cutting that reach may also stop Claude Code reading its own sign-in from the keychain, so it is left for its own change.
+**Limit: a keychain row is readable by a sandboxed child.** A keychain item is not a file, so the deny list cannot cover it. This process reads the item with `/usr/bin/security` and no prompt, which means the item's access list admits that binary. Claude Code's sandbox lets a child run the same binary and reach the keychain service, so the child can read any keychain row's token the same way. Measured on macOS with Claude Code 2.1.328 and the sandbox settings this package generates: a throwaway item was readable from the child. In the same child, a read of a listed Codex home was refused by the operating system. Until the child's sandbox cuts its reach to the keychain service, a token that must stay out of a Claude Code child's reach belongs in a token file or a `.env` row, not a keychain row. Cutting that reach may also stop Claude Code reading its own sign-in from the keychain, so it is left for its own change.
+
+**Limit: a Codex child is not denied any read.** The child sandbox gives a Codex child only the paths it may write. A Codex leg can read the accounts directory, every token file, each `.env` file a row reads and every Codex home. The denials above, and the advice to keep a token in a file rather than a keychain row, hold for Claude Code children only.
 
 ## Choosing an account
 
@@ -50,7 +52,7 @@ A sandboxed Claude Code child is denied reading every sign-in the directory keep
 | Agent profile frontmatter | `account: <name>` | Used when no flag is given. |
 | Agent profile frontmatter | `codex_home: /abs/path` | Used when no flag is given. A Codex home named directly, with no entry in the directory. |
 
-The profile keys also apply to a flow or fan-out orchestrator started with that profile, to the workers it clones from itself, and to each worker spawned with a profile that sets them. A bare worker has no profile, so it gets no account.
+The profile keys also apply to a flow or fan-out orchestrator started with that profile, to the workers it clones from itself, and to each worker spawned with a profile that sets them. A bare worker has no profile, so it gets no account. A profile in the checkout's own `.lionagi/agents` is found before the global one, so a checkout can set these keys for a role.
 
 A profile that sets both `account` and `codex_home` is refused. So is a malformed name, or a `codex_home` that is relative or starts with `~`. **(design choice)** Each of these is refused when the profile is read, rather than read as unset: an unset account runs the leg on the machine's own login, which is the wrong account rather than a smaller setting.
 
