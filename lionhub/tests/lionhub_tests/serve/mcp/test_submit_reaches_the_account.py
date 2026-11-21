@@ -43,7 +43,10 @@ def submission(tmp_path, monkeypatch):
     cwd = tmp_path / "work"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
-    agents = cwd / ".lionagi" / "agents"
+    # The profile keys are honoured only in the global profile directory.
+    user_home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(user_home))
+    agents = user_home / ".lionagi" / "agents"
     agents.mkdir(parents=True)
     (agents / "homed.md").write_text(
         f"---\nmodel: codex/gpt-5.5\nmcp: none\ncodex_home: {home.resolve()}\n---\nA role.\n"

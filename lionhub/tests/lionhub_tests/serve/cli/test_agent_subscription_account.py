@@ -106,6 +106,58 @@ def test_the_flag_reaches_the_run(argv, expected):
     assert _CAPTURED["account"] == expected
 
 
+@pytest.fixture
+def profile_dirs(tmp_path, monkeypatch):
+    """A global profile directory under a stand-in home, and a checkout with its own."""
+    home = tmp_path / "home"
+    (home / ".lionagi" / "agents").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / ".lionagi" / "agents").mkdir(parents=True)
+    return SimpleNamespace(
+        global_agents=home / ".lionagi" / "agents",
+        checkout=checkout,
+        checkout_agents=checkout / ".lionagi" / "agents",
+    )
+
+
+@pytest.mark.parametrize(
+    "keys", [{"account": "alpha"}, {"codex_home": "/opt/codex-two"}], ids=["account", "codex_home"]
+)
+def test_a_checkout_profile_cannot_choose_the_account(profile_dirs, keys):
+    """A profile the checkout carries is refused, naming the file and the key, rather than read
+    without the key: read without it, the leg would run on this machine's own login."""
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (key,) = keys
+    path = profile_dirs.checkout_agents / "r.md"
+    path.write_text(_role(model="codex/gpt-5.5", **keys))
+    with pytest.raises(SubscriptionAccountError, match=f"{key}") as caught:
+        load_agent_profile("r", cwd=profile_dirs.checkout)
+    assert str(path) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "keys", [{"account": "alpha"}, {"codex_home": "/opt/codex-two"}], ids=["account", "codex_home"]
+)
+def test_the_global_profile_chooses_the_account(profile_dirs, keys):
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (key,) = keys
+    (profile_dirs.global_agents / "r.md").write_text(_role(model="codex/gpt-5.5", **keys))
+    profile = load_agent_profile("r", cwd=profile_dirs.checkout)
+    assert getattr(profile, key) == keys[key]
+
+
+def test_a_checkout_profile_without_the_keys_still_loads(profile_dirs):
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (profile_dirs.checkout_agents / "r.md").write_text(_role(model="codex/gpt-5.5"))
+    profile = load_agent_profile("r", cwd=profile_dirs.checkout)
+    assert profile.account is None and profile.codex_home is None
+
+
 # ---- a new run and a resume -------------------------------------------------------------
 
 
@@ -144,6 +196,22 @@ def _capture(monkeypatch, tmp_path) -> dict[str, list]:
         ),
     )
     return seen
+
+
+@pytest.mark.asyncio
+async def test_a_leg_whose_checkout_profile_names_an_account_does_not_start(
+    monkeypatch, tmp_path, logins, profile_dirs
+):
+    from lionhub.serve.cli.agent import _run_agent
+
+    seen = _capture(monkeypatch, tmp_path)
+    (profile_dirs.checkout_agents / "role.md").write_text(
+        _role(model="claude_code/sonnet", account="alpha")
+    )
+    monkeypatch.chdir(profile_dirs.checkout)
+    with pytest.raises(SubscriptionAccountError, match="account"):
+        await _run_agent(None, "do it", agent_name="role")
+    assert seen["env"] == [] and seen["manifest"] == []
 
 
 @pytest.mark.asyncio

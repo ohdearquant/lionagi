@@ -177,8 +177,9 @@ def logins_dir(environ: Mapping[str, str] | None = None) -> Path:
     ``<LIONAGI_HOME>/.env``, else ``<LIONAGI_HOME>/logins``.
 
     A working directory's own ``.env`` is not read for this setting, so a checkout under review
-    cannot point a leg at another accounts directory. A project-local agent profile can still
-    choose a listed account or a Codex home for its role.
+    cannot point a leg at another accounts directory. A profile it carries cannot pick an account
+    either: ``load_agent_profile`` honours ``account`` and ``codex_home`` only under
+    ``~/.lionagi/agents``.
     """
     from lionagi._paths import LIONAGI_HOME
 

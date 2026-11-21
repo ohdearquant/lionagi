@@ -900,11 +900,16 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
             if path is not None:
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
-                return _parse_profile(name, text)
+                profile = _parse_profile(name, text)
+                if d != Path.home() / ".lionagi":
+                    _refuse_profile_account(name, path, profile)
+                return profile
 
     plugin_path = _resolve_plugin_profile_path(name)
     if plugin_path is not None:
-        return _parse_profile(name, plugin_path.read_text())
+        profile = _parse_profile(name, plugin_path.read_text())
+        _refuse_profile_account(name, plugin_path, profile)
+        return profile
 
     if not dirs and not plugin_token:
         raise AgentProfileNotFoundError(
@@ -1024,6 +1029,26 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
         f"reading it as {DEFAULT_WORKLOAD}"
     )
     return DEFAULT_WORKLOAD
+
+
+def _refuse_profile_account(name: str, path: Path, profile: AgentProfile) -> None:
+    """Refuse ``account`` and ``codex_home`` from a profile outside ``~/.lionagi/agents``.
+
+    A profile found in a project's ``.lionagi/agents`` comes with the checkout, and a plugin's
+    comes with the plugin; either choosing the sign-in a leg is handed would let that checkout
+    or plugin pick which of this machine's accounts, or which Codex home, the leg runs on. The
+    profile is refused rather than read without the keys: read without them, the leg would run
+    on this machine's own login, which hides the attempt and is the wrong account anyway.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    for key in ("account", "codex_home"):
+        if getattr(profile, key) is not None:
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} sets {key}; {key} is honoured only in a "
+                f"profile under {Path.home() / '.lionagi' / 'agents'}. Set it there, or pass "
+                "--account."
+            )
 
 
 def _parse_profile_account(name: str, frontmatter: dict) -> tuple[str | None, str | None]:

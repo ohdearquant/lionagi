@@ -20,7 +20,7 @@ Every decision below that goes beyond those four points is marked **(design choi
 All accounts live in one directory, `LIONAGI_LOGINS_DIR`, which defaults to `<LIONAGI_HOME>/logins`.
 
 - The setting is read from the process environment first, then from `<LIONAGI_HOME>/.env`.
-- **(design choice)** A working directory's own `.env` is not read for this setting, so a checkout under review cannot point a leg at another accounts directory. It can still pick an account: a project-local agent profile (`.lionagi/agents` in the checkout) is searched before `~/.lionagi/agents`, and a profile's `account:` and `codex_home:` choose a listed account or name a Codex home (see [Choosing an account](#choosing-an-account)).
+- **(design choice)** A working directory's own `.env` is not read for this setting, so a checkout under review cannot point a leg at another accounts directory. Nor can it pick an account through a profile it carries: `account:` and `codex_home:` are honoured only in `~/.lionagi/agents` (see [Choosing an account](#choosing-an-account)).
 
 The directory holds two kinds of entry:
 
@@ -52,7 +52,9 @@ A sandboxed Claude Code child is denied reading every sign-in the directory keep
 | Agent profile frontmatter | `account: <name>` | Used when no flag is given. |
 | Agent profile frontmatter | `codex_home: /abs/path` | Used when no flag is given. A Codex home named directly, with no entry in the directory. |
 
-The profile keys also apply to a flow or fan-out orchestrator started with that profile, to the workers it clones from itself, and to each worker spawned with a profile that sets them. A bare worker has no profile, so it gets no account. A profile in the checkout's own `.lionagi/agents` is found before the global one, so a checkout can set these keys for a role.
+The profile keys also apply to a flow or fan-out orchestrator started with that profile, to the workers it clones from itself, and to each worker spawned with a profile that sets them. A bare worker has no profile, so it gets no account.
+
+**(design choice)** The profile keys are honoured only in a profile under `~/.lionagi/agents`. A profile found in a project's own `.lionagi/agents`, which is searched first, or in a plugin, comes with that checkout or plugin, so one that sets `account` or `codex_home` is refused, naming the file and the key, and the leg does not start. It is refused rather than read without the key: read without it, the leg would run on the machine's own login, which hides the attempt and is the wrong account anyway.
 
 A profile that sets both `account` and `codex_home` is refused. So is a malformed name, or a `codex_home` that is relative or starts with `~`. **(design choice)** Each of these is refused when the profile is read, rather than read as unset: an unset account runs the leg on the machine's own login, which is the wrong account rather than a smaller setting.
 
