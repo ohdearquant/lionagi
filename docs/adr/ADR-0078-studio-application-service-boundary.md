@@ -21,7 +21,7 @@ already shipped.
 definition, mutating a schedule, and resolving an artifact are currently functions near
 route handlers, but their error mapping and persistence choices remain transport-aware.
 The CLI either duplicates validation or calls the daemon even when an in-process service
-would suffice (`lionagi/studio/services/*.py`; `lionagi/studio/cli.py`).
+would suffice (`lionagi/studio/services/*.py`; `apps/studio/backend/src/lionagi_studio/cli.py`).
 
 **P2 — Validation has more than one owner.** Schedule payload rules are parsed in the
 daemon and again in `li schedule`; the CLI validates recursive chain actions against

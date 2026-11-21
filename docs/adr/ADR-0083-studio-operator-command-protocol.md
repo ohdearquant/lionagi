@@ -18,7 +18,7 @@ This aspirational ADR answers eight concrete problems.
 
 **P1 — In-memory conversations disappear and evict silently.** The prototype retains at
 most 50 `LeoSession` objects, expires them after two idle hours, lazily evicts on access,
-and loses every Branch/history on daemon restart (`lionagi/studio/services/leo.py`).
+and loses every Branch/history on daemon restart (`apps/studio/backend/src/lionagi_studio/services/leo.py`).
 
 **P2 — Current frames are endpoint-local dictionaries, not a versioned protocol.** A turn
 emits `ui_command`, `proposed_action`, `text`, `error`, and `done` frames but has no

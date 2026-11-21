@@ -5,13 +5,16 @@
 The production wheel may reach the Studio application only through its explicit
 launcher. Through 1.x, a longer compatibility row can take an old Studio path to
 the wheel, while the remaining old paths reach the application after the move.
-The two empty old parents are the only exceptions to that fallback.
+The three kept old parents are the only exceptions to that fallback. Two are empty; the Operator
+parent forwards three names into the application, so reading one of those names through it, by
+``from ... import`` or as an attribute, counts as an application reference.
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 from collections import Counter
 from collections.abc import Iterable
@@ -26,58 +29,38 @@ _HUB_TESTS = Path("lionhub/tests")
 _APP_SOURCE = Path("apps/studio/backend/src")
 _OLD_APP = "lionagi.studio"
 _APP = "lionagi_studio"
-_KEPT_PARENTS = {_OLD_APP, f"{_OLD_APP}.services"}
+_OLD_OPERATOR = f"{_OLD_APP}.operator"
+_KEPT_PARENTS = {_OLD_APP, f"{_OLD_APP}.services", _OLD_OPERATOR}
+_OPERATOR_SOURCE = Path("lionagi/studio/operator/__init__.py")
+
+
+def _forwarded_names() -> frozenset[str]:
+    """The names the kept Operator parent forwards, read from its source."""
+    tree = ast.parse((_ROOT / _OPERATOR_SOURCE).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_FORWARDED" for target in node.targets
+        ):
+            names = {
+                element.value
+                for element in ast.walk(node.value)
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            }
+            assert names, "the Operator parent's _FORWARDED holds no names"
+            return frozenset(names)
+    raise AssertionError(f"{_OPERATOR_SOURCE} has no _FORWARDED assignment")
+
+
+_FORWARDED = _forwarded_names()
 
 _LAUNCHER = _HUB_SOURCE / "lionhub/serve/cli/studio.py"
-_LAUNCH_TARGET = "lionagi.studio.app:app"
+_LAUNCH_TARGET = "lionagi_studio.app:app"
 _LAUNCH_COUNT = 2
 
-# Exact old-path imports currently used by Hub tests during Studio separation.
-# The scheduler config bindings and same-owner mocks should switch to wheel
-# code. App-only checks belong with the application. The cross-boundary and
-# compatibility witnesses need an explicit home when the application moves.
-# The counts force the inventory to shrink as that work lands.
-_PRE_MOVE_HUB_TESTS = {
-    "lionagi.studio.config": {
-        "orchestration/scheduler/conftest.py": 1,
-        "orchestration/scheduler/test_github_poll_stagnation.py": 6,
-        "orchestration/scheduler/test_github_poll_target_race.py": 1,
-        "orchestration/scheduler/test_scheduler_deferral_visibility.py": 1,
-        "orchestration/scheduler/test_scheduler_engine.py": 3,
-        "orchestration/scheduler/test_scheduler_global_slot.py": 21,
-        "serve/cli/test_mirror.py": 4,
-        "serve/daemon/test_settings.py": 1,
-    },
-    "lionagi.studio.app": {
-        "serve/cli/test_schedule_cli.py": 1,
-        "serve/cli/test_schedule_cli_route_drift.py": 1,
-        "serve/cli/test_scheduler_flow_yaml.py": 2,
-        "serve/cli/test_studio_cli.py": 1,
-        "serve/cli/test_studio_docker_publish.py": 1,
-    },
-    "lionagi.studio.cli": {
-        "serve/cli/test_schedule_cli.py": 2,
-        "serve/cli/test_schedule_host_boundary.py": 1,
-    },
-    "lionagi.studio.operator.run_progress": {
-        "serve/cli/orchestrate/test_fanout_graph_metadata.py": 1,
-    },
-    "lionagi.studio.registry": {
-        "serve/daemon/test_routes.py": 2,
-    },
-    "lionagi.studio.services.definitions": {
-        "serve/cli/test_logging_redaction.py": 1,
-    },
-    "lionagi.studio.services.mcp_servers": {
-        "orchestration/scheduler/test_scheduler_child_store_env.py": 2,
-    },
-    "lionagi.studio.services.playbooks": {
-        "serve/cli/orchestrate/test_spec_prompt_cap.py": 1,
-    },
-    "lionagi.studio.services.run_tags": {
-        "orchestration/scheduler/test_process_liveness.py": 2,
-    },
-}
+# Hub tests import no Studio application module, under its old name or its own: an application
+# check lives with the application's tests, and a hub guard names the application only as text.
+# An entry here would be an exact, counted exception, so a new one is a deliberate edit.
+_PRE_MOVE_HUB_TESTS: dict[str, dict[str, int]] = {}
 
 
 class _Reference(NamedTuple):
@@ -117,6 +100,23 @@ class _StudioScanner(Scanner):
     def __init__(self, source: str, path: Path, modules: set[str], aliases: dict[str, str]):
         super().__init__(source, path, modules, aliases)
         self.launches: list[tuple[int, str]] = []
+        # Names the kept Operator parent forwards into the application, read through it.
+        self.forwarded: list[tuple[int, str]] = []
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if self.resolve("." * node.level + (node.module or "")) == _OLD_OPERATOR:
+            for alias in node.names:
+                if alias.name in _FORWARDED:
+                    self.forwarded.append((node.lineno, f"{_OLD_OPERATOR}.{alias.name}"))
+        super().visit_ImportFrom(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        head, separator, tail = (dotted(node) or "").partition(".")
+        if separator and head in self.aliases:
+            parent, _, name = f"{self.aliases[head]}.{tail}".rpartition(".")
+            if parent == _OLD_OPERATOR and name in _FORWARDED:
+                self.forwarded.append((node.lineno, f"{parent}.{name}"))
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         head, separator, tail = (dotted(node.func) or "").partition(".")
@@ -158,12 +158,12 @@ def _references(
     scanner.visit(ast.parse(text, filename=str(path)))
     targets = [(line, target) for _, target, line, _ in scanner.edges]
     targets.extend(scanner.launches)
-    found = []
+    found = [
+        _Reference(line, target, _APP + _OLD_OPERATOR[len(_OLD_APP) :])
+        for line, target in scanner.forwarded
+    ]
     for line, target in targets:
         module = target.partition(":")[0]
-        # Until relocation the application may still use its own old paths.
-        if _within(source, _OLD_APP) and _within(module, _OLD_APP):
-            continue
         if application_module := _application_module(module, aliases):
             found.append(_Reference(line, target, application_module))
     return sorted(found)
@@ -231,6 +231,104 @@ def test_wheel_and_hub_tests_respect_the_studio_application_boundary() -> None:
     assert not problems, "\n".join(problems)
 
 
+# Text outside an import can reach the application too: a module run by name
+# (`python -m lionagi_studio`) or an import string handed to another process. In the wheel and
+# hub sources only the launcher and the move table may hold one, under the application's own
+# name or an old one the move table sends to it. A docstring is prose and is not counted, nor is
+# a logger name: the application's loggers keep their old names until the removal release.
+_NAME_HOLDERS = frozenset({_LAUNCHER, Path("lionagi/_moved.py")})
+# A whole string that is an old dotted module path, optionally with an ``:attribute``.
+_OLD_NAME = re.compile(r"lionagi\.studio(\.[A-Za-z_]\w*)*(:[A-Za-z_]\w*)?")
+
+
+def _docstrings(tree: ast.AST) -> set[int]:
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    return {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, holders)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+
+
+def _logger_names(tree: ast.AST) -> set[int]:
+    return {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (dotted(node.func) or "").rpartition(".")[2] == "getLogger"
+        and node.args
+    }
+
+
+def _application_named(source: str, aliases: dict[str, str]) -> list[int]:
+    """Lines of string literals, docstrings and logger names aside, that name the application:
+    its own root, or an old path the move table sends to it."""
+    tree = ast.parse(source)
+    prose = _docstrings(tree) | _logger_names(tree)
+    return sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in prose
+        and (
+            _APP in node.value
+            or (
+                _OLD_NAME.fullmatch(node.value) is not None
+                and _application_module(node.value.partition(":")[0], aliases) is not None
+            )
+        )
+    )
+
+
+def test_only_the_launcher_and_move_table_name_the_application_as_text() -> None:
+    aliases = read_moved_aliases(_ROOT / "lionagi/_moved.py")
+    assert aliases, "could not read the wheel's move table"
+    paths = [
+        path
+        for path in _tracked_python_paths()
+        if (path.parts[0] == "lionagi" or path.is_relative_to(_HUB_SOURCE))
+        and path not in _NAME_HOLDERS
+    ]
+    assert any(path.is_relative_to(_HUB_SOURCE) for path in paths)
+    assert any(path.parts[0] == "lionagi" for path in paths)
+    problems = [
+        f"{path}:{line}"
+        for path in paths
+        for line in _application_named((_ROOT / path).read_text(encoding="utf-8"), aliases)
+    ]
+    assert not problems, "\n".join(problems)
+    assert _application_named((_ROOT / _LAUNCHER).read_text(encoding="utf-8"), aliases)
+
+
+def test_application_named_as_text_is_found_and_prose_is_not() -> None:
+    aliases = {
+        "lionagi.studio": "lionagi_studio",
+        "lionagi.studio.services.runs": "lionhub.serve.daemon.services.runs",
+    }
+    source = """\
+\"\"\"Serves lionagi_studio when it is installed.\"\"\"
+import subprocess, sys
+
+
+def run():
+    \"\"\"Starts lionagi_studio.\"\"\"
+    subprocess.run([sys.executable, "-m", "lionagi_studio"])
+    target = f"lionagi_studio.app:{'app'}"
+    subprocess.run([sys.executable, "-m", "lionagi.studio.operator.permission_mcp"])
+    target = "lionagi.studio.app:app"
+    daemon = "lionagi.studio.services.runs"
+    kept = ("lionagi.studio", "lionagi.studio.services", "lionagi.studio.operator")
+    note = "see lionagi.studio.app for the old path"
+    log = logging.getLogger("lionagi.studio.config")
+"""
+    assert _application_named(source, aliases) == [7, 8, 9, 10]
+
+
 def test_studio_boundary_detects_old_and_canonical_imports_in_each_form() -> None:
     path = _HUB_TESTS / "lionhub_tests/example.py"
     source = """\
@@ -295,6 +393,39 @@ __import__("lionagi.studio.services", fromlist=("workflow_compile",))
             "lionagi_studio.services.workflow_compile",
         ),
     ]
+
+
+def test_a_forwarded_operator_name_is_an_application_reference_and_its_parent_is_not() -> None:
+    # The Operator parent is kept at its old path and imports nothing, so importing it, or the
+    # daemon module below it (which takes its own longer row to the hub), reaches no
+    # application code. Reading one of the names it forwards does, by import or as an attribute.
+    path = _HUB_SOURCE / "lionhub/example.py"
+    aliases = {
+        "lionagi.studio": "lionagi_studio",
+        "lionagi.studio.operator.redact": "lionhub.serve.daemon.services.redact",
+    }
+    source = """\
+import lionagi.studio.operator
+from lionagi.studio.operator import OperatorCoordinator
+import lionagi.studio.operator.redact
+from lionagi.studio.operator import redact
+lionagi.studio.operator.get_operator_coordinator()
+import lionagi.studio.operator as old_operator
+old_operator.reset_operator_coordinator_for_testing
+old_operator.not_forwarded
+"""
+    operator = "lionagi_studio.operator"
+    assert _references(path, source, set(), aliases) == [
+        _Reference(2, "lionagi.studio.operator.OperatorCoordinator", operator),
+        _Reference(5, "lionagi.studio.operator.get_operator_coordinator", operator),
+        _Reference(7, "lionagi.studio.operator.reset_operator_coordinator_for_testing", operator),
+    ]
+
+
+def test_the_forwarded_names_are_read_from_the_operator_parent() -> None:
+    import lionagi.studio.operator as kept
+
+    assert _FORWARDED == kept._FORWARDED
 
 
 def test_move_table_declaration_is_compatibility_data() -> None:

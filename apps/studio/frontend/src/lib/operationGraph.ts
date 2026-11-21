@@ -58,7 +58,7 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   // `if (!newState) continue` below and leaves the node at its initial
   // "queued", so a backend signal added without a row here reads as a node
   // that never finished -- which is why this mirrors _NODE_KIND_TO_STATE in
-  // lionagi/studio/operator/run_progress.py entry for entry.
+  // apps/studio/backend/src/lionagi_studio/operator/run_progress.py entry for entry.
   NodeSkipped: "skipped",
   NodeCancelled: "cancelled",
   NodeEscalated: "escalated",

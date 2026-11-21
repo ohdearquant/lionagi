@@ -16,6 +16,7 @@ import math
 import os
 import signal
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -2289,6 +2290,113 @@ def test_output_does_not_follow_a_final_response_link(final_response_run, sandbo
     assert result["terminal"] is True
     assert result["final"] is None
     assert result["final_path"] is None
+
+
+def _save_branch(run_dir: Path, rid: str, branch_id: str, *, manifest_run_id: str | None = None):
+    (run_dir / "run.json").write_text(
+        json.dumps({"run_id": manifest_run_id or rid, "branch_id": branch_id}), encoding="utf-8"
+    )
+    path = run_dir / "branches" / f"{branch_id}.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({"id": branch_id, "messages": []}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("live", [False, True], ids=["ended", "live"])
+def test_output_names_the_branch_transcript_the_run_manifest_names(final_response_run, live):
+    rid, path = final_response_run
+    if live:
+        jobs._write_job({"run_id": rid, "kind": "agent", "status": "running"})
+    # Another branch saved beside it first: the answer is the one run.json names, not
+    # whichever file the directory holds.
+    decoy = _save_branch(path.parent, rid, str(uuid.uuid4()))
+    branch_id = str(uuid.uuid4())
+    transcript = _save_branch(path.parent, rid, branch_id)
+    assert decoy.exists()
+
+    result = jobs.output(rid)
+
+    assert result["terminal"] is (not live)
+    assert result["transcript_path"] == str(transcript.resolve())
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no-manifest",
+        "manifest-for-another-run",
+        "no-branch-id",
+        "non-canonical-branch-id",
+        "branch-file-absent",
+        "branch-is-a-directory",
+        "flow-job",
+        "mismatched-record",
+    ],
+)
+def test_output_names_no_transcript_it_cannot_tie_to_this_run(final_response_run, case):
+    rid, path = final_response_run
+    run_dir = path.parent
+    branch_id = str(uuid.uuid4())
+    transcript = _save_branch(run_dir, rid, branch_id)
+    assert jobs.output(rid)["transcript_path"] == str(transcript.resolve()), "control"
+
+    if case == "no-manifest":
+        (run_dir / "run.json").unlink()
+    elif case == "manifest-for-another-run":
+        _save_branch(run_dir, rid, branch_id, manifest_run_id=jobs.new_run_id())
+    elif case == "no-branch-id":
+        (run_dir / "run.json").write_text(json.dumps({"run_id": rid}), encoding="utf-8")
+    elif case == "non-canonical-branch-id":
+        upper = branch_id.upper()
+        (run_dir / "run.json").write_text(
+            json.dumps({"run_id": rid, "branch_id": upper}), encoding="utf-8"
+        )
+        (run_dir / "branches" / f"{upper}.json").write_text("{}", encoding="utf-8")
+    elif case == "branch-file-absent":
+        transcript.unlink()
+    elif case == "branch-is-a-directory":
+        transcript.unlink()
+        transcript.mkdir()
+    elif case == "flow-job":
+        jobs._write_job({"run_id": rid, "kind": "flow", "status": "completed", "finished_at": 12})
+    elif case == "mismatched-record":
+        _write_raw_record(
+            rid,
+            json.dumps(
+                {
+                    "run_id": jobs.new_run_id(),
+                    "kind": "agent",
+                    "status": "completed",
+                    "finished_at": 12.0,
+                }
+            ),
+        )
+
+    result = jobs.output(rid)
+
+    assert result["known"] is True
+    assert result["transcript_path"] is None
+
+
+@pytest.mark.parametrize("link_branches_dir", [False, True], ids=["file-link", "directory-link"])
+def test_output_does_not_name_a_linked_transcript(final_response_run, sandbox, link_branches_dir):
+    rid, path = final_response_run
+    branch_id = str(uuid.uuid4())
+    transcript = _save_branch(path.parent, rid, branch_id)
+    assert jobs.output(rid)["transcript_path"] == str(transcript.resolve()), "control"
+
+    elsewhere = sandbox / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / transcript.name).write_text("{}", encoding="utf-8")
+    if link_branches_dir:
+        transcript.unlink()
+        transcript.parent.rmdir()
+        transcript.parent.symlink_to(elsewhere, target_is_directory=True)
+    else:
+        transcript.unlink()
+        transcript.symlink_to(elsewhere / transcript.name)
+
+    assert jobs.output(rid)["transcript_path"] is None
 
 
 def test_an_artifacts_directory_that_denies_its_own_read_is_not_a_run_that_wrote_nothing(

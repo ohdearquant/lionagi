@@ -56,12 +56,17 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY lionagi/ ./lionagi/
 COPY lionhub/src/lionhub/ ./lionhub/src/lionhub/
+COPY apps/studio/backend/src/lionagi_studio/ ./apps/studio/backend/src/lionagi_studio/
 RUN pip install --no-cache-dir ".[studio]"
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
-# views resolve resources. plugins.py tries _THIS.parents[3] first then
-# falls back to LIONAGI_HOME paths; in the container, /app/lionagi/ on
-# sys.path makes parents[3] = /app.
+# views resolve resources. plugins.py walks up from its own location to the
+# nearest directory holding .claude-plugin/marketplace.json and the lionagi
+# pyproject.toml (copied above), then falls back to LIONAGI_HOME paths.
+# uvicorn puts its working directory (/app) first on sys.path, so lionagi
+# imports from /app/lionagi/, and PYTHONPATH below makes lionagi_studio import
+# from /app/apps/studio/backend/src/, so the walk ends at /app. A copy imported
+# from site-packages stops its walk there and falls back.
 COPY marketplace/ ./marketplace/
 COPY .claude-plugin/ ./.claude-plugin/
 
@@ -75,9 +80,10 @@ VOLUME ["/root/.lionagi", "/workspace"]
 EXPOSE 8765
 
 ENV LIONAGI_STUDIO_FRONTEND_DIST=/app/apps/studio/frontend/dist \
-    LIONAGI_STUDIO_OPERATOR_CWD=/workspace
+    LIONAGI_STUDIO_OPERATOR_CWD=/workspace \
+    PYTHONPATH=/app/apps/studio/backend/src
 
 # Bound graceful shutdown as the Python entry points do (3 s), so one SIGTERM from
 # `docker stop` ends the server before its own SIGKILL even with a stream open.
-CMD ["uvicorn", "lionagi.studio.app:app", "--host", "0.0.0.0", "--port", "8765", \
+CMD ["uvicorn", "lionagi_studio.app:app", "--host", "0.0.0.0", "--port", "8765", \
      "--timeout-graceful-shutdown", "3"]

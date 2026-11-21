@@ -5,7 +5,7 @@
 The base payload is asserted unchanged so existing callers see no difference;
 the richer view is asserted only for a caller that opts in, reusing the same
 StateDB session a run's own studio surface renders from rather than a
-fixture invented for this file alone (see tests/apps_studio_server/test_runs_detail.py
+fixture invented for this file alone (see apps/studio/backend/tests/lionagi_studio_tests/server/test_runs_detail.py
 for the seeding idioms mirrored here).
 """
 

@@ -1718,6 +1718,186 @@ class CredentialLedger:
         )
         return "settled"
 
+    @staticmethod
+    def _check_settle_scope(
+        probe: bool, scope_kind: str, provider: str, scope_id: str, attempt_id: UUID
+    ) -> None:
+        """Refuse a settlement whose kind does not match its reservation.
+
+        A probe attempt settles only as a probe and a request attempt only as a request. A probe
+        attempt also belongs to the Anthropic provider and carries its own id as its scope.
+        """
+        if probe != (scope_kind == "probe"):
+            raise ValueError("settlement must match reservation kind")
+        if probe and (provider != "anthropic" or scope_id != str(attempt_id)):
+            raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
+
+    @staticmethod
+    def _is_first_probe_result(probe: bool, state: str, old_outcome: str | None) -> bool:
+        """Report whether this write is the first result recorded on an open probe attempt.
+
+        Only the first result clears or keeps the account's block.
+        """
+        return probe and state == "open" and old_outcome is None
+
+    @staticmethod
+    def _probe_repeat_result(
+        probe: bool,
+        state: str,
+        first_probe_result: bool,
+        evidence: Evidence,
+        http_status: int | None,
+        old_status: int | None,
+        account: str,
+        attempt_id: UUID,
+    ) -> SettleResult | None:
+        """Decide a later write to a probe attempt that is still open.
+
+        An unknown outcome leaves the attempt open, and an HTTP status that differs from the one
+        already recorded is a settlement conflict. Returns None for any other write, which goes on
+        to settle.
+        """
+        if not probe or state != "open" or first_probe_result:
+            return None
+        if isinstance(evidence, UnknownOutcome):
+            return "still_open"
+        if old_status is not None and http_status != old_status:
+            raise _routing_error(
+                RouterErrorCode.SETTLEMENT_CONFLICT,
+                account=account,
+                attempt_id=attempt_id,
+            )
+        return None
+
+    @staticmethod
+    def _read_probe_reservation(
+        probe: bool, old_outcome: str | None, old_evidence_json: str | None
+    ) -> tuple[tuple[str, str | None, int | None, int | None] | None, str | None]:
+        """Read the block snapshot a probe attempt stored with its reservation.
+
+        Returns the snapshot and the remaining stored evidence. An attempt that is not a probe, or
+        whose outcome is rejection_zero, keeps its stored evidence as it is and has no snapshot.
+        """
+        if probe and old_outcome != "rejection_zero":
+            return _probe_reservation(old_evidence_json)
+        return None, old_evidence_json
+
+    @staticmethod
+    def _probe_replay_result(
+        probe: bool,
+        state: str,
+        stored: tuple[str | None, int | None, str | None, int | None, str | None],
+        current: tuple[str, int, str | None, int | None, str | None],
+        account: str,
+        attempt_id: UUID,
+    ) -> SettleResult | None:
+        """Decide a probe's write to an attempt that already holds a final record.
+
+        ``stored`` and ``current`` are (outcome, cost, usage, HTTP status, provider error type).
+        The same record written again changes nothing; any other record is a settlement conflict.
+        Returns None when the write is not a probe's, the attempt has not settled, or its stored
+        outcome is reconciled; the rest of the settlement then decides the write.
+        """
+        if not probe or state != "settled" or stored[0] == "reconciled":
+            return None
+        if stored == current:
+            return "already_settled"
+        raise _routing_error(
+            RouterErrorCode.SETTLEMENT_CONFLICT,
+            account=account,
+            attempt_id=attempt_id,
+        )
+
+    @staticmethod
+    def _rejection_compatible(
+        evidence: RejectionZero,
+        expected_reason: str,
+        state: str,
+        old_outcome: str | None,
+        old_type: str | None,
+        old_class: str | None,
+        probe: bool,
+    ) -> bool:
+        """Decide whether a zero-cost rejection agrees with what an open attempt recorded.
+
+        An attempt that is not open always agrees. An open one disagrees when it already holds a
+        different outcome, when a 400 rejection meets an earlier provider error type other than
+        invalid_request_error, or when a request's 529 rejection meets an earlier provider error
+        type or rejection class. A probe's 529 rejection is not held to that last rule.
+        """
+        compatible = state != "open" or old_outcome is None or old_outcome == expected_reason
+        if (
+            state == "open"
+            and evidence.http_status == 400
+            and old_type not in (None, "invalid_request_error")
+        ):
+            compatible = False
+        if (
+            state == "open"
+            and not probe
+            and evidence.http_status == 529
+            and (old_type is not None or old_class is not None)
+        ):
+            compatible = False
+        return compatible
+
+    @staticmethod
+    def _check_probe_rejection(
+        probe: bool,
+        compatible: bool,
+        evidence: RejectionZero,
+        old_type: str | None,
+        account: str,
+        attempt_id: UUID,
+    ) -> None:
+        """Refuse a probe's zero-cost rejection that contradicts what the attempt recorded.
+
+        A probe raises the settlement conflict at once; a request handles an incompatible
+        rejection itself, so this check does nothing for one.
+        """
+        if probe and (not compatible or old_type not in (None, evidence.provider_error_type)):
+            raise _routing_error(
+                RouterErrorCode.SETTLEMENT_CONFLICT,
+                account=account,
+                attempt_id=attempt_id,
+            )
+
+    @staticmethod
+    def _stored_rejection_fields(
+        evidence: RejectionZero,
+        old_outcome: str | None,
+        old_type: str | None,
+        old_class: str | None,
+        probe: bool,
+    ) -> tuple[str | None, str | None]:
+        """Pick the rejection class and provider error type a zero-cost rejection leaves on the row.
+
+        A probe keeps no rejection class and takes the error type the evidence carries. A request
+        also keeps no class for a 529 rejection, and takes the evidence's error type only for a
+        400 rejection.
+        """
+        stored_class = old_class if old_outcome == "request_rejected" else evidence.rejection_class
+        if probe or evidence.http_status == 529:
+            stored_class = None
+        stored_type = (
+            evidence.provider_error_type if probe or evidence.http_status == 400 else old_type
+        )
+        return stored_class, stored_type
+
+    @staticmethod
+    def _probe_disposition_due(
+        first_probe_result: bool,
+        conflict: tuple[str, str] | None,
+        cost_nusd: int,
+        ceiling: int,
+    ) -> bool:
+        """Decide whether the settlement clears or marks the account's block as a probe result.
+
+        Only a probe's first result does, and only when the settlement raised no conflict and
+        its cost stays within the ceiling.
+        """
+        return first_probe_result and conflict is None and cost_nusd <= ceiling
+
     def _settle_sync(
         self,
         attempt_id: UUID,
@@ -1806,24 +1986,23 @@ class CredentialLedger:
                     scope_id,
                     old_status,
                 ) = row
-                if probe != (scope_kind == "probe"):
-                    raise ValueError("settlement must match reservation kind")
-                probe_block = None
-                first_probe_result = probe and state == "open" and old_outcome is None
-                if probe:
-                    if provider != "anthropic" or scope_id != str(attempt_id):
-                        raise _routing_error(RouterErrorCode.LEDGER_UNAVAILABLE)
-                    if state == "open" and not first_probe_result:
-                        if isinstance(evidence, UnknownOutcome):
-                            return "still_open", None, False
-                        if old_status is not None and http_status != old_status:
-                            raise _routing_error(
-                                RouterErrorCode.SETTLEMENT_CONFLICT,
-                                account=account,
-                                attempt_id=attempt_id,
-                            )
-                    if old_outcome != "rejection_zero":
-                        probe_block, old_evidence_json = _probe_reservation(old_evidence_json)
+                self._check_settle_scope(probe, scope_kind, provider, scope_id, attempt_id)
+                first_probe_result = self._is_first_probe_result(probe, state, old_outcome)
+                repeated = self._probe_repeat_result(
+                    probe,
+                    state,
+                    first_probe_result,
+                    evidence,
+                    http_status,
+                    old_status,
+                    account,
+                    attempt_id,
+                )
+                if repeated is not None:
+                    return repeated, None, False
+                probe_block, old_evidence_json = self._read_probe_reservation(
+                    probe, old_outcome, old_evidence_json
+                )
                 stored_envelope = _stored_evidence(
                     old_evidence_json,
                     revision=stored_revision,
@@ -1835,20 +2014,16 @@ class CredentialLedger:
                     request_id=old_request,
                     probe=probe,
                 )
-                if probe and state == "settled" and old_outcome != "reconciled":
-                    if (
-                        old_outcome,
-                        old_cost,
-                        old_usage,
-                        old_status,
-                        old_type,
-                    ) == (outcome, cost_nusd, usage_json, http_status, provider_error_type):
-                        return "already_settled", None, False
-                    raise _routing_error(
-                        RouterErrorCode.SETTLEMENT_CONFLICT,
-                        account=account,
-                        attempt_id=attempt_id,
-                    )
+                replayed = self._probe_replay_result(
+                    probe,
+                    state,
+                    (old_outcome, old_cost, old_usage, old_status, old_type),
+                    (outcome, cost_nusd, usage_json, http_status, provider_error_type),
+                    account,
+                    attempt_id,
+                )
+                if replayed is not None:
+                    return replayed, None, False
                 if http_status is not None and state == "open":
                     connection.execute(
                         "UPDATE attempt SET http_status = COALESCE(http_status, ?) WHERE id = ?",
@@ -2037,34 +2212,12 @@ class CredentialLedger:
                     expected_reason = (
                         "request_rejected" if evidence.http_status == 400 else "provider_error"
                     )
-                    compatible = (
-                        state != "open" or old_outcome is None or old_outcome == expected_reason
+                    compatible = self._rejection_compatible(
+                        evidence, expected_reason, state, old_outcome, old_type, old_class, probe
                     )
-                    if (
-                        state == "open"
-                        and evidence.http_status == 400
-                        and old_type
-                        not in (
-                            None,
-                            "invalid_request_error",
-                        )
-                    ):
-                        compatible = False
-                    if (
-                        state == "open"
-                        and not probe
-                        and evidence.http_status == 529
-                        and (old_type is not None or old_class is not None)
-                    ):
-                        compatible = False
-                    if probe and (
-                        not compatible or old_type not in (None, evidence.provider_error_type)
-                    ):
-                        raise _routing_error(
-                            RouterErrorCode.SETTLEMENT_CONFLICT,
-                            account=account,
-                            attempt_id=attempt_id,
-                        )
+                    self._check_probe_rejection(
+                        probe, compatible, evidence, old_type, account, attempt_id
+                    )
                     if not compatible:
                         connection.execute(
                             "UPDATE account SET block_reason = 'settlement_conflict' WHERE provider = ? AND name = ?",
@@ -2107,17 +2260,8 @@ class CredentialLedger:
                             _clear_warm_prefix(connection, provider, account)
                             conflict = (account, str(attempt_id))
                     else:
-                        stored_class = (
-                            old_class
-                            if old_outcome == "request_rejected"
-                            else evidence.rejection_class
-                        )
-                        if probe or evidence.http_status == 529:
-                            stored_class = None
-                        stored_type = (
-                            evidence.provider_error_type
-                            if probe or evidence.http_status == 400
-                            else old_type
+                        stored_class, stored_type = self._stored_rejection_fields(
+                            evidence, old_outcome, old_type, old_class, probe
                         )
                         evidence_json = _canonical_json(
                             {
@@ -2248,7 +2392,7 @@ class CredentialLedger:
                     elif isinstance(evidence, ProvenNotSent) and not evidence.caller_cancelled:
                         _clear_warm_prefix(connection, provider, account)
                     result = "settled"
-                if first_probe_result and conflict is None and cost_nusd <= ceiling:
+                if self._probe_disposition_due(first_probe_result, conflict, cost_nusd, ceiling):
                     assert probe_block is not None
                     cleared = self._apply_probe_block_disposition(
                         connection,

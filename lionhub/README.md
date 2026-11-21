@@ -108,6 +108,16 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
 | `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
 
+The Studio application itself moved out of `lionagi` in 0.39.0, to its own import root, and its
+old path is scheduled for removal in 2.0.0. Every old name under `lionagi.studio` that the rows
+above do not take to `lionhub` resolves under the new root, apart from `lionagi.studio`,
+`lionagi.studio.services` and `lionagi.studio.operator`: those parent packages stay in `lionagi`,
+so the old paths above import without the application.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.studio` | `lionagi_studio` |
+
 ## Logger names
 
 Moved modules keep their original logger names so existing log handlers and filters

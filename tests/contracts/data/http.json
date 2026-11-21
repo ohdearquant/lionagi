@@ -123,7 +123,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.casts",
+        "module": "lionagi_studio.services.casts",
         "qualname": "get_casts"
       }
     },
@@ -1205,7 +1205,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "list_engine_defs_route"
       }
     },
@@ -1253,7 +1253,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "create_engine_def_route"
       }
     },
@@ -1301,7 +1301,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "get_engine_def_route"
       }
     },
@@ -1349,7 +1349,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "update_engine_def_route"
       }
     },
@@ -1397,7 +1397,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "delete_engine_def_route"
       }
     },
@@ -1435,7 +1435,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "engine_catalog_blueprints_route"
       }
     },
@@ -1483,7 +1483,7 @@
       "description": "List text-ID presets; paging is not a snapshot. Rows with NULL, non-text or NUL-containing IDs are not listed. If a page contains an encodable ID, trailing oversized IDs are deferred; when more rows exist, the cursor names the last encodable ID. If every ID on a page is oversized, the page is returned with next_cursor null; stop_reason is id_exceeds_cursor_bound only if additional rows exist.\n\nStored options over 65536 UTF-8 bytes or 32 JSON nesting levels are unavailable. Preset inputs are flat key/value pairs, so the nesting limit does not exclude normal preset options. Preset budget overrides accept integers from 1 to 100, or null; invalid stored budgets have reason budget_invalid. Each row includes stored_option_keys, unused_option_keys, missing_option_keys and invalid_option_keys: null when not computed, otherwise a sorted list ([] when none).",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "list_engine_catalog_presets_route"
       }
     },
@@ -1531,7 +1531,7 @@
       "description": "Look up a text-ID preset by query parameter, including an empty ID.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.engine_defs",
+        "module": "lionagi_studio.services.engine_defs",
         "qualname": "get_engine_catalog_preset_route"
       }
     },
@@ -1857,7 +1857,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "list_agents_route"
       }
     },
@@ -1905,7 +1905,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "get_agent_route"
       }
     },
@@ -1953,7 +1953,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "create_agent_route"
       }
     },
@@ -2001,7 +2001,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "update_agent_route"
       }
     },
@@ -2049,7 +2049,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "delete_agent_route"
       }
     },
@@ -2097,7 +2097,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.agents",
+        "module": "lionagi_studio.services.agents",
         "qualname": "validate_agent"
       }
     },
@@ -2145,7 +2145,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "list_definitions_route"
       }
     },
@@ -2193,7 +2193,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "get_definition_route"
       }
     },
@@ -2241,7 +2241,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "get_version_route"
       }
     },
@@ -2289,7 +2289,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "save_definition_route"
       }
     },
@@ -2337,7 +2337,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "rollback_definition_route"
       }
     },
@@ -2385,7 +2385,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.definitions",
+        "module": "lionagi_studio.services.definitions",
         "qualname": "snapshot_current_route"
       }
     },
@@ -2423,7 +2423,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "list_playbooks_route"
       }
     },
@@ -2471,7 +2471,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "get_playbook_route"
       }
     },
@@ -2519,7 +2519,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "create_playbook_route"
       }
     },
@@ -2567,7 +2567,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "update_playbook_route"
       }
     },
@@ -2615,7 +2615,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "delete_playbook"
       }
     },
@@ -2663,7 +2663,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "validate_playbook_route"
       }
     },
@@ -2711,7 +2711,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "run_playbook"
       }
     },
@@ -2749,7 +2749,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "list_builtin_playbooks_route"
       }
     },
@@ -2797,7 +2797,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "get_builtin_playbook_route"
       }
     },
@@ -2845,7 +2845,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.playbooks",
+        "module": "lionagi_studio.services.playbooks",
         "qualname": "install_builtin_playbook_route"
       }
     },
@@ -2886,7 +2886,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.shows",
+        "module": "lionagi_studio.services.shows",
         "qualname": "list_shows_route"
       }
     },
@@ -2927,7 +2927,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.shows",
+        "module": "lionagi_studio.services.shows",
         "qualname": "list_gated_plays_route"
       }
     },
@@ -2968,7 +2968,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.shows",
+        "module": "lionagi_studio.services.shows",
         "qualname": "import_shows_route"
       }
     },
@@ -3016,7 +3016,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.shows",
+        "module": "lionagi_studio.services.shows",
         "qualname": "get_show_route"
       }
     },
@@ -3060,7 +3060,7 @@
       "description": "SSE stream of file changes under one show directory.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.shows",
+        "module": "lionagi_studio.services.shows",
         "qualname": "stream_show"
       }
     },
@@ -3098,7 +3098,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.skills",
+        "module": "lionagi_studio.services.skills",
         "qualname": "list_skills_route"
       }
     },
@@ -3146,7 +3146,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.skills",
+        "module": "lionagi_studio.services.skills",
         "qualname": "get_skill_route"
       }
     },
@@ -3194,7 +3194,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.skills",
+        "module": "lionagi_studio.services.skills",
         "qualname": "validate_skill_route"
       }
     },
@@ -3232,7 +3232,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
+        "module": "lionagi_studio.services.plugins",
         "qualname": "list_plugins_endpoint"
       }
     },
@@ -3280,7 +3280,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
+        "module": "lionagi_studio.services.plugins",
         "qualname": "get_plugin_endpoint"
       }
     },
@@ -3328,7 +3328,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
+        "module": "lionagi_studio.services.plugins",
         "qualname": "get_plugin_skill_endpoint"
       }
     },
@@ -3376,7 +3376,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.plugins",
+        "module": "lionagi_studio.services.plugins",
         "qualname": "get_plugin_agent_endpoint"
       }
     },
@@ -3414,7 +3414,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "list_mcp_servers_route"
       }
     },
@@ -3462,7 +3462,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "get_mcp_server_route"
       }
     },
@@ -3510,7 +3510,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "register_mcp_server_route"
       }
     },
@@ -3558,7 +3558,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "update_mcp_server_route"
       }
     },
@@ -3606,7 +3606,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "enable_mcp_server_route"
       }
     },
@@ -3654,7 +3654,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "disable_mcp_server_route"
       }
     },
@@ -3702,7 +3702,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "delete_mcp_server_route"
       }
     },
@@ -3750,7 +3750,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "check_mcp_server_route"
       }
     },
@@ -3798,7 +3798,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.mcp_servers",
+        "module": "lionagi_studio.services.mcp_servers",
         "qualname": "validate_mcp_server_route"
       }
     },
@@ -3846,7 +3846,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.teams",
+        "module": "lionagi_studio.services.teams",
         "qualname": "list_teams_route"
       }
     },
@@ -3894,7 +3894,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.teams",
+        "module": "lionagi_studio.services.teams",
         "qualname": "get_team_route"
       }
     },
@@ -4124,7 +4124,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "list_projects_route"
       }
     },
@@ -4172,7 +4172,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "get_project_route"
       }
     },
@@ -4220,7 +4220,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "create_project_route"
       }
     },
@@ -4268,7 +4268,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "update_project_route"
       }
     },
@@ -4316,7 +4316,7 @@
       "description": "Assign sessions to a project. Use session_ids for specific ones, or all_unassigned=true.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "assign_project"
       }
     },
@@ -4364,7 +4364,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.projects",
+        "module": "lionagi_studio.services.projects",
         "qualname": "delete_project_route"
       }
     },
@@ -4575,7 +4575,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "list_workflow_defs_route"
       }
     },
@@ -4623,7 +4623,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "create_workflow_def_route"
       }
     },
@@ -4671,7 +4671,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "get_workflow_def_route"
       }
     },
@@ -4719,7 +4719,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "update_workflow_def_route"
       }
     },
@@ -4767,7 +4767,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "delete_workflow_def_route"
       }
     },
@@ -4815,7 +4815,7 @@
       "description": "Compile *def_id* and execute it via Session.flow; returns {run_id, status}.\n\nrun_id is the same id GET /api/sessions/{id} already reads \u2014 no new telemetry surface.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.workflow_defs",
+        "module": "lionagi_studio.services.workflow_defs",
         "qualname": "run_workflow_def_route"
       }
     },
@@ -4863,7 +4863,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.run_tags",
+        "module": "lionagi_studio.services.run_tags",
         "qualname": "add_run_tag"
       }
     },
@@ -4911,7 +4911,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.run_tags",
+        "module": "lionagi_studio.services.run_tags",
         "qualname": "remove_run_tag"
       }
     },
@@ -4959,7 +4959,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "list_operator_conversations"
       }
     },
@@ -5007,7 +5007,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "create_operator_conversation"
       }
     },
@@ -5055,7 +5055,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "update_operator_conversation"
       }
     },
@@ -5103,7 +5103,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "fork_operator_conversation"
       }
     },
@@ -5151,7 +5151,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "get_operator_conversation"
       }
     },
@@ -5199,7 +5199,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "delete_operator_conversation"
       }
     },
@@ -5247,7 +5247,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "submit_operator_turn"
       }
     },
@@ -5285,7 +5285,7 @@
       "description": "The Operator's model catalog: every model the daemon can actually drive,\ngrouped by provider, with the reasoning-effort levels each accepts.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "list_operator_models"
       }
     },
@@ -5333,7 +5333,7 @@
       "description": "Record where the human is now, so the Operator can read it mid-turn.\n\nA turn's context is frozen at submit. Without this the Operator answers\n\"where am I\" with wherever the human was when they hit send, which is\nwrong precisely when they have moved since.\n\nA report that does not count higher than the one already stored by the same\npage is discarded, since reports race and the loser of that race is the\nstale view.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "report_operator_view"
       }
     },
@@ -5381,7 +5381,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "cancel_operator_turn"
       }
     },
@@ -5425,7 +5425,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "stream_operator_conversation"
       }
     },
@@ -5473,7 +5473,7 @@
       "description": "Allow a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.\n\nA request may carry the decision capability ``li studio`` paired its page\nwith in ``X-Studio-Decision-Token``; the decision then records the principal\nit resolves to. A request without it is recorded unattributed.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "confirm_operator_proposal"
       }
     },
@@ -5521,7 +5521,7 @@
       "description": "Allow or deny a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.\n\nA request may carry the decision capability ``li studio`` paired its page\nwith in ``X-Studio-Decision-Token``; the decision then records the principal\nit resolves to. A request without it is recorded unattributed.",
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "decide_operator_proposal"
       }
     },
@@ -5569,7 +5569,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator",
+        "module": "lionagi_studio.services.operator",
         "qualname": "acknowledge_operator_effect"
       }
     },
@@ -5607,7 +5607,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.hooks_library",
+        "module": "lionagi_studio.services.hooks_library",
         "qualname": "list_hook_library_route"
       }
     },
@@ -5655,7 +5655,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.hooks_library",
+        "module": "lionagi_studio.services.hooks_library",
         "qualname": "put_hook_def_route"
       }
     },
@@ -5703,7 +5703,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.hooks_library",
+        "module": "lionagi_studio.services.hooks_library",
         "qualname": "delete_hook_def_route"
       }
     },
@@ -5741,7 +5741,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator_hooks",
+        "module": "lionagi_studio.services.operator_hooks",
         "qualname": "get_operator_hooks_route"
       }
     },
@@ -5789,7 +5789,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.operator_hooks",
+        "module": "lionagi_studio.services.operator_hooks",
         "qualname": "put_operator_hooks_route"
       }
     },
@@ -5837,7 +5837,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.approvals",
+        "module": "lionagi_studio.services.approvals",
         "qualname": "create_approval_route"
       }
     },
@@ -5875,7 +5875,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.approvals",
+        "module": "lionagi_studio.services.approvals",
         "qualname": "verify_approval_evidence_route"
       }
     },
@@ -5923,7 +5923,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.approvals",
+        "module": "lionagi_studio.services.approvals",
         "qualname": "get_approval_route"
       }
     },
@@ -5971,7 +5971,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.approvals",
+        "module": "lionagi_studio.services.approvals",
         "qualname": "grant_approval_route"
       }
     },
@@ -6019,7 +6019,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.approvals",
+        "module": "lionagi_studio.services.approvals",
         "qualname": "deny_approval_route"
       }
     },
@@ -6443,7 +6443,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.stats",
+        "module": "lionagi_studio.services.stats",
         "qualname": "get_activity_stats_route"
       }
     },
@@ -6489,7 +6489,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.stats",
+        "module": "lionagi_studio.services.stats",
         "qualname": "get_spend_stats_route"
       }
     },
@@ -6535,7 +6535,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.stats",
+        "module": "lionagi_studio.services.stats",
         "qualname": "get_spend_rollup_route"
       }
     },
@@ -6571,7 +6571,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.stats",
+        "module": "lionagi_studio.services.stats",
         "qualname": "get_stats_route"
       }
     },
@@ -6609,7 +6609,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.attention",
+        "module": "lionagi_studio.services.attention",
         "qualname": "list_attention_dispositions_route"
       }
     },
@@ -6657,7 +6657,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.attention",
+        "module": "lionagi_studio.services.attention",
         "qualname": "put_attention_disposition_route"
       }
     },
@@ -6705,7 +6705,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.attention",
+        "module": "lionagi_studio.services.attention",
         "qualname": "delete_attention_disposition_route"
       }
     },
@@ -6753,7 +6753,7 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.services.attention",
+        "module": "lionagi_studio.services.attention",
         "qualname": "get_attention_disposition_history_route"
       }
     },
@@ -6799,8 +6799,8 @@
       "description": null,
       "include_in_schema": true,
       "handler_identity": {
-        "module": "lionagi.studio.app",
-        "qualname": "create_app.<locals>.health"
+        "module": "lionhub.serve.daemon.app",
+        "qualname": "create_daemon_app.<locals>.health"
       }
     },
     {
@@ -14813,6 +14813,17 @@
               }
             ],
             "title": "Action Head"
+          },
+          "action_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Account"
           }
         },
         "type": "object",

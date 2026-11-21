@@ -170,7 +170,9 @@ def test_create_schedule_route_duplicate_name_returns_409(tmp_path, monkeypatch)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
     from fastapi.testclient import TestClient
 
-    from lionagi.studio.app import app
+    from lionhub.serve.daemon.app import create_daemon_app
+
+    app = create_daemon_app()
 
     client = TestClient(app, base_url="http://127.0.0.1:8765")
     body = _minimal_command_schedule("dup-schedule")
@@ -196,7 +198,9 @@ def test_create_schedule_route_storage_failure_is_not_409(tmp_path, monkeypatch)
 
     from fastapi.testclient import TestClient
 
-    from lionagi.studio.app import app
+    from lionhub.serve.daemon.app import create_daemon_app
+
+    app = create_daemon_app()
 
     client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
     r = client.post("/api/schedules/", json=_minimal_command_schedule("will-fail-schedule"))

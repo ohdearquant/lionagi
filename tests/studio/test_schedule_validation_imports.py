@@ -98,7 +98,7 @@ def test_service_validators_import_without_scheduler_runtime_modules():
             "lionhub.orchestration.scheduler.admit",
             "lionhub.orchestration.scheduler.engine",
             "fastapi",
-            "lionagi.studio.app",
+            "lionagi_studio.app",
         }
         for name in (
             "lionhub.orchestration.schedule.action_validation",

@@ -1,10 +1,147 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17, 2026-10-25 and 2026-10-27 (see Amendments 1, 2 and 3)
+- **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27 and 2026-11-20 (see Amendments
+  1 to 4)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 4 (2026-11-20) — credential locations unreadable, a uv cache per leg, no keychain service
+
+**Status: Accepted.**
+
+For the write set, this amendment replaces these sentences of Amendment 2:
+
+- in its Decision, "The policy denies by default, leaves reads unrestricted, and allows writes only
+  under three roots: the leg's working directory, the uv cache (the directory `uv cache dir`
+  reports, or uv's default location when `uv` is not on the path) and the temporary directory";
+- in its Limits, the bullet that begins "Reads are not confined": reads now stop at the unreadable
+  list, and the rest of that bullet holds for every other read;
+- in its Limits, "A command that writes outside the three roots fails";
+- in its Limits, "The uv cache is a writable root, and `uv` runs outside the sandbox install from
+  it, so a command can change what a later unconfined `uv` run installs."
+
+The write set's policy now denies by default and leaves reads open except for the unreadable list
+below. It allows writes under two roots, the leg's working directory and the temporary directory,
+which holds the leg's own uv cache. The working directory's `.git` stays read-only. A command that
+writes outside the two roots fails. The rest of Amendment 2 stands.
+
+This amendment also records the policy lionagi builds around the gemini-cli (Antigravity)
+process, which no earlier decision describes. It uses the same policy type.
+
+Decision:
+
+- **Unreadable paths.** `SeatbeltPolicy` takes an opt-in `deny_read` list. Each entry is rendered
+  as `(deny file-read* file-write* (subpath ...))` after the base read allow and the writable
+  roots, so a denied path can be neither read nor overwritten, moved or added to. Each entry is
+  denied in four forms: as written, where it sits once its parent directories resolve, at every
+  link it passes through, and at the path it resolves to. A form that lies under `/dev` is left
+  out, since denying `/dev/null` breaks every command that reads it. The other forms stay denied,
+  so an entry that is a link to `/dev/null` is itself still denied. As with the roots, the paths
+  reach the policy as parameters, never inside its text. Under a network-on policy each entry also
+  gets `(deny network-outbound (subpath ...))` after the network rules, so a unix socket inside an
+  entry cannot be connected to. The file rules do not cover it: a `connect()` is judged by the
+  network rules, and without this rule a daemon listening inside a denied directory (a store's
+  server socket, an agent socket) answers a confined command and reads or writes for it.
+- **Where the list comes from.** One function in the child sandbox module,
+  `credential_deny_read`, builds the list. The Claude Code policy starts from it, and the write
+  set and the gemini-cli policy each pass it whole, so no policy can drop an entry another one
+  denies. It holds `DEFAULT_DENY_READ` (generic credential locations, local stores and shell
+  histories), lionagi's own `.env` under `LIONAGI_HOME`, and every sign-in the subscription
+  accounts directory keeps or names: the directory itself, the token files in it, the `.env` files
+  its rows read and the homes of its Codex rows, each named as written and at the path it resolves
+  to. It also holds the private directory of the Studio daemon's same-user reconnect socket,
+  beside the daemon's store, because a connection there is answered with a pairing code and the
+  daemon's key for that start. When the directory setting, the accounts file or one of its rows cannot be read, those
+  sign-ins cannot be named, so the launch is refused with a configuration error rather than run
+  with them readable. On the write set and the gemini-cli policy the refusal names no opt-out:
+  turning the Claude Code child sandbox off does not lift it there. The
+  gemini-cli policy keeps no entry of the list readable for its own sign-in, which it reads from
+  its own state directory.
+- **Overlap is refused.** A policy is refused when an unreadable entry is a writable root or holds
+  one, since the leg could not use its own tree. It is also refused when an entry lies inside a
+  writable root. The one exception is the temporary directory when it is not the workspace.
+  Containment is judged by file identity where the paths exist, so an entry spelled in another
+  case on a case-insensitive volume is judged the same way.
+- **A uv cache per leg.** With `per_leg_uv_cache`, the shared uv cache is not a writable root.
+  The policy makes a new, empty cache under the temporary directory, hands it to the confined
+  commands as `UV_CACHE_DIR`, and removes it when the process exits. The write set and the
+  gemini-cli policy both turn it on. The write set no longer runs the `uv cache dir` probe.
+- **No keychain service.** The network rules no longer allow the lookup of
+  `com.apple.SecurityServer`, so no confined command reaches it, network or not. With the lookup
+  allowed, a confined command can ask `/usr/bin/security` for any item whose access list admits
+  that tool, and the item is returned even when the keychain file's own directory is unreadable,
+  because the service reads the file and the command does not. The gemini-cli completes a turn
+  without the lookup: measured with Antigravity CLI 1.5.13 under the policy this amendment builds,
+  with `~/.gemini/oauth_creds.json` denied and the keychain service out of reach, one turn
+  returned `SUCCESS` (conversation `c017023a-3268-4c91-be14-3098a01e9160`), so the CLI signs in
+  from its own state directory. ADR-0142, which is Proposed, excludes four credential services in its D2.
+  This is one of them; this policy, which denies by default, has never allowed the other three
+  (`com.apple.securityd`, `com.apple.securityd.xpc` and `com.apple.security.agent`).
+- **The gemini-cli policy.** On a host with the sandbox, lionagi runs the whole CLI process under
+  a policy built by `SeatbeltPolicy.for_workspace`, and leaves the CLI's own `--sandbox` flag out,
+  since macOS refuses a second sandbox inside the first. Writes go under the working directory,
+  the temporary directory and the CLI's state directory, and the working directory's `.git` stays
+  read-only. The network is always on, since the CLI talks to its service. The process may
+  allocate pseudo-terminals of its own for its shell tool. The CLI starts through `/usr/bin/env`
+  with the per-leg `UV_CACHE_DIR`, so every command it runs inherits that cache. A CLI path that
+  contains `=` is refused, since `env` would read it as a variable. On a host without the sandbox,
+  a `yolo` request is refused and any other request runs with the CLI's own flags.
+
+Required checks:
+
+- The policy text and argv carry the read denials only when asked for, and never the paths.
+- A denied file cannot be read under `sandbox-exec` directly, through a symlink, by listing its
+  directory, by a hard link, by a copy, or under a path spelled in another case. A file in the
+  workspace still reads.
+- Each overlap refusal above is exercised. A denied path linked to `/dev/null` leaves `/dev/null`
+  readable.
+- A confined command sees the per-leg `UV_CACHE_DIR`, can write it, and cannot write the shared
+  cache.
+- Under a network-on policy, an item in a keychain the test creates under the temporary directory
+  is not returned to a confined command and is returned outside it. The user's login keychain is
+  never used.
+- Under a network-on policy, a confined command cannot connect to a unix socket listening inside
+  a denied directory, directly or through a symlink it plants in the workspace. Three controls run beside it: a file in that directory cannot be read, the
+  same connect is refused with the network off, and a listener outside the list answers with the
+  network on.
+- On the write set and on the gemini-cli policy, a confined command cannot connect to a listener
+  at the Studio daemon's reconnect socket path under a temporary LionAGI home, while a listener
+  outside the list answers.
+- The gemini-cli argv denies every entry of the list and sets a new, empty `UV_CACHE_DIR` on each
+  launch. The shared uv cache is not one of its roots. A `yolo` request on a host without the
+  sandbox, and a CLI path containing `=`, are refused.
+
+Limits:
+
+- Every read outside the list stays open, and with `api_network: true` it can still leave the
+  machine. The list names known locations. A credential kept elsewhere is readable.
+- On the gemini-cli policy the network is never off, so every read outside the list can leave the
+  machine on every leg. That includes the CLI's own state directory, `~/.gemini/antigravity-cli`,
+  where it keeps its refreshed login: the CLI must read and write it, and the commands its shell
+  tool runs share its sandbox, so they can read that login too.
+- The editor, reader and search tools run in this process, outside the policy. They keep their own
+  path checks, not the unreadable list: a final symlink is refused, the resolved path must lie in
+  the workspace, and protected names (`.env`, `.netrc` and private-key file names) are refused.
+  That is why an unreadable path inside the workspace is refused rather than denied.
+- Under the temporary directory, an unreadable path stays unreadable to commands. A command could
+  still move a directory above it and read it under the new name. The exception exists because the
+  temporary directory is shared scratch, and test harnesses keep a home there.
+- A confined `uv run` works only where the environment already exists, since it installs nothing
+  it would have to download or take from the shared cache. lionagi does not sync a leg's
+  environment; whoever launches the leg syncs it before the leg starts.
+- Other services in the network rules (trust evaluation, name resolution, configuration) stay
+  allowed.
+- With the network on, a unix socket outside the list stays reachable: an ssh agent, a container
+  daemon, or any other local service listening outside the denied entries answers a confined
+  command. The Studio daemon's reconnect socket is not one of them, since its directory is on the
+  list. That holds for the write set and the gemini-cli policy. A Claude Code child gets the same
+  directory on its deny list, but its sandbox has its own unix-socket rule, which this amendment
+  does not change or measure. A Codex child is not denied it. The list names the socket's
+  directory as the launching process resolves it: beside that process's own store file, or in its
+  LionAGI home when its store is not a file. A daemon started with another store path or home
+  keeps its socket outside the list of a leg launched by a process configured differently.
 
 ## Amendment 3 (2026-10-27) — child environments for coding tools
 

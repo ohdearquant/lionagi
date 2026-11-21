@@ -2677,11 +2677,38 @@ def _read_final_response(run_id: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _read_transcript_path(run_id: str) -> str | None:
+    """The saved branch of an agent run: its messages, with every tool call and its arguments.
+
+    The branch is the one the run's own manifest names, and the file is opened without
+    following links before its path is returned. A manifest for another run, a branch ID that
+    is not a canonical UUID, and a file that is absent, unreadable or not a regular file all
+    answer None.
+    """
+    try:
+        run_dir = _resolved_run_state_dir(run_id)
+        if run_dir is None:
+            return None
+        manifest = _read_resume_record(run_dir, "run.json")
+        if manifest is None or manifest.get("run_id") != run_id:
+            return None
+        branch_id = manifest.get("branch_id")
+        if not isinstance(branch_id, str) or str(UUID(branch_id)) != branch_id:
+            return None
+        name = f"{branch_id}.json"
+        with _open_exact_run_file(run_dir, "branches", name):
+            pass
+        return str(run_dir / "branches" / name)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
-    """Read the console tail, artifact list and captured final agent reply.
+    """Read the console tail, artifact list, captured final agent reply and transcript path.
 
     ``final`` contains the entire reply when it fits. ``final_path`` also names
-    a larger reply's on-disk file, for which ``final`` is null.
+    a larger reply's on-disk file, for which ``final`` is null. ``transcript_path``
+    names an agent run's saved branch, where its tool calls are.
     """
     job, record_state = _read_job_state(run_id)
     if job is None:
@@ -2698,6 +2725,11 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         if st["terminal"] and job.get("kind") == "agent" and job.get("run_id") == run_id
         else (None, None)
     )
+    transcript_path = (
+        _read_transcript_path(run_id)
+        if job.get("kind") == "agent" and job.get("run_id") == run_id
+        else None
+    )
     return {
         "run_id": run_id,
         "known": True,
@@ -2711,6 +2743,7 @@ def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
         "artifacts_state": artifacts_state,
         "final": final,
         "final_path": final_path,
+        "transcript_path": transcript_path,
         "run_dir": str(config.run_dir(run_id)),
     }
 

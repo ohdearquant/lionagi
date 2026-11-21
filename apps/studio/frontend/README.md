@@ -3,14 +3,14 @@
 Vite 8 + React 19 single-page client for Lion Studio. It monitors active
 orchestrations, explores run history, manages schedules and definitions, and
 provides the Operator dock. The API is the FastAPI service in
-`lionagi/studio/`; the browser does not persist LionAGI state itself.
+`apps/studio/backend/src/lionagi_studio/`; the browser does not persist LionAGI state itself.
 
 ## Develop locally
 
 From the repository root, start the API in one terminal:
 
 ```bash
-uv run uvicorn lionagi.studio.app:app --reload --host 127.0.0.1 --port 8765
+uv run uvicorn lionagi_studio.app:app --reload --host 127.0.0.1 --port 8765
 ```
 
 Then start the client in another:

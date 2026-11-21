@@ -525,3 +525,125 @@ async def test_probe_does_not_clear_newer_or_stronger_block(tmp_path, update):
     status = (await ledger.status("anthropic"))[0]
     assert (status.block_reason, status.settled_nusd) == (block, cost)
     assert _unblocks(ledger) == audit
+
+
+def _probe_snapshot(ledger, attempt):
+    """Capture a probe's row, its account's block, and the failure and unblock records."""
+    return (
+        _attempt(ledger, attempt),
+        _block_state(ledger),
+        _failures(ledger),
+        _unblocks(ledger),
+    )
+
+
+@pytest.mark.parametrize(
+    "first_status, first_error_type, repeat_status",
+    [(503, "api_error", 200), (200, None, 201)],
+    ids=["after_a_failure", "after_a_clear"],
+)
+async def test_probe_repeat_write_with_a_different_http_status_is_a_settlement_conflict(
+    tmp_path, first_status, first_error_type, repeat_status
+):
+    ledger = await _prepare(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    reason = "provider_error" if first_error_type else "usage_incomplete"
+    await ledger.settle_probe(
+        attempt,
+        UnknownOutcome(reason),
+        http_status=first_status,
+        provider_error_type=first_error_type,
+    )
+    before = _probe_snapshot(ledger, attempt)
+    assert before[0][:5] == ("open", None, reason, first_status, first_error_type)
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle_probe(attempt, _usage(3), http_status=repeat_status)
+
+    assert caught.value.code is RouterErrorCode.SETTLEMENT_CONFLICT
+    assert (caught.value.account, caught.value.attempt_id) == (ACCOUNT.name, attempt)
+    # The refused write leaves the attempt open and the block, failures and unblocks as they were.
+    assert _probe_snapshot(ledger, attempt) == before
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.settled_nusd, status.open_ceiling_nusd) == (0, 10)
+
+
+@pytest.mark.parametrize(
+    "first, repeat",
+    [
+        pytest.param(
+            (UnknownOutcome("cancelled"), None, None),
+            (UnknownOutcome("provider_error"), 503, "api_error"),
+            id="status_stays_unrecorded",
+        ),
+        pytest.param(
+            (UnknownOutcome("provider_error"), 503, "api_error"),
+            (UnknownOutcome("usage_incomplete"), 200, None),
+            id="success_status_does_not_clear_the_block",
+        ),
+    ],
+)
+async def test_probe_repeat_write_with_an_unknown_outcome_leaves_the_probe_open(
+    tmp_path, first, repeat
+):
+    ledger = await _prepare(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    evidence, http_status, error_type = first
+    assert not await ledger.settle_probe(
+        attempt, evidence, http_status=http_status, provider_error_type=error_type
+    )
+    before = _probe_snapshot(ledger, attempt)
+    assert before[0][:5] == ("open", None, evidence.reason_code, http_status, error_type)
+    assert before[1][0] == "credit_balance_low"
+
+    evidence, http_status, error_type = repeat
+    assert not await ledger.settle_probe(
+        attempt, evidence, http_status=http_status, provider_error_type=error_type
+    )
+
+    # The repeat is neither recorded on the attempt nor treated as a result that clears or marks.
+    assert _probe_snapshot(ledger, attempt) == before
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd, status.open_ceiling_nusd) == (
+        "credit_balance_low",
+        0,
+        10,
+    )
+
+
+@pytest.mark.parametrize(
+    "first_reason, first_error_type",
+    [("provider_error", "api_error"), ("rate_limited", None)],
+    ids=["different_provider_error_type", "different_outcome"],
+)
+async def test_probe_rejection_that_disagrees_with_the_open_attempt_is_a_settlement_conflict(
+    tmp_path, first_reason, first_error_type
+):
+    ledger = await _prepare(tmp_path)
+    attempt = uuid4()
+    await ledger.reserve_probe(ACCOUNT, attempt, QUOTE)
+    assert not await ledger.settle_probe(
+        attempt,
+        UnknownOutcome(first_reason),
+        http_status=529,
+        provider_error_type=first_error_type,
+    )
+    before = _probe_snapshot(ledger, attempt)
+    assert before[0][:5] == ("open", None, first_reason, 529, first_error_type)
+
+    rejection = RejectionZero(529, "overloaded_error", None, "provider_error")
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle_probe(attempt, rejection, http_status=529)
+
+    assert caught.value.code is RouterErrorCode.SETTLEMENT_CONFLICT
+    assert (caught.value.account, caught.value.attempt_id) == (ACCOUNT.name, attempt)
+    # The conflict is raised at once: the attempt stays open and the block is not rewritten.
+    assert _probe_snapshot(ledger, attempt) == before
+    status = (await ledger.status("anthropic"))[0]
+    assert (status.block_reason, status.settled_nusd, status.open_ceiling_nusd) == (
+        "credit_balance_low",
+        0,
+        10,
+    )

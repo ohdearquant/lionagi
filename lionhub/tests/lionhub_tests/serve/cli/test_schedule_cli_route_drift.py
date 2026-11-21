@@ -4,16 +4,16 @@
 """Regression test: `li schedule` CLI requests must hit routes Studio serves.
 
 Guards against client/server path-prefix drift. Schedule routes are
-registered via @studio_route("/schedules/...") and every registered route is
-mounted at f"/api{route.path}" (see lionagi/studio/app.py), so the served
-prefix is /api/schedules. The CLI's _api() helper previously built URLs as
+registered via @studio_route("/schedules/...") in the daemon's own route inventory, and every
+registered route is mounted at f"/api{route.path}" (see lionhub/src/lionhub/serve/daemon/app.py),
+so the served prefix is /api/schedules. The CLI's _api() helper previously built URLs as
 f"{_base_url()}/schedules{path}" (missing the /api prefix), so every
 `li schedule` subcommand 404'd against a running `li studio` daemon.
 
 This exercises the real argparse + dispatch + _api() URL construction for
 every CLI subcommand, stubbing only the request boundary
 (lionagi.ln._ssrf.open_url), then checks the resulting (method, path) against
-the live FastAPI app's actual route table — so a future prefix or path
+the daemon application's actual route table — so a future prefix or path
 change on either side fails this test instead of silently 404ing at runtime.
 """
 
@@ -26,12 +26,14 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-# Import the live app at module level — before any fixture elsewhere in the
-# test session might clear the studio route registry — mirroring the
-# safe-import pattern in tests/apps_studio_server/test_route_registry.py.
+# Build the daemon application at module level — before any fixture elsewhere in the
+# test session might clear the route registry — mirroring the safe-import pattern in
+# apps/studio/backend/tests/lionagi_studio_tests/server/test_route_registry.py.
 from starlette.routing import Match  # noqa: E402
 
-from lionagi.studio.app import app as _live_app  # noqa: E402
+from lionhub.serve.daemon.app import create_daemon_app  # noqa: E402
+
+_live_app = create_daemon_app()
 
 
 def _is_served(method: str, path: str) -> bool:

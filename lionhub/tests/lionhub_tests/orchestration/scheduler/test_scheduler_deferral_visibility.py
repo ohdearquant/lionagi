@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import lionagi.studio.config as config
 import lionhub.orchestration.scheduler.settings as scheduler_settings
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionhub.orchestration.scheduler.engine import (

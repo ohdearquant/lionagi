@@ -131,9 +131,9 @@ set inside the container its API calls get 401; the desktop shell injects a
 token for its own daemon into its frontend.
 
 Authentication, Host validation, and browser origins are defined in
-`lionagi/studio/app.py` and `lionagi/studio/config.py`, and pairing in
+`lionhub/src/lionhub/serve/daemon/app.py` and `apps/studio/backend/src/lionagi_studio/config.py`, and pairing in
 `lionhub/src/lionhub/serve/daemon/services/pairing.py`. Operator decisions use
-`lionagi/studio/services/operator.py`; frontend credential handling is defined
+`apps/studio/backend/src/lionagi_studio/services/operator.py`; frontend credential handling is defined
 in `apps/studio/frontend/src/lib/api.ts`.
 
 ### Choose a launch mode
@@ -221,11 +221,11 @@ no page is opened at, so `Host: [::]:8765` answers 400.
 If Docker is missing, the command exits with an installation message. Install
 and start Docker, or use the default hosted-client mode. If the image pull
 fails, Studio attempts to use a cached image. These launch and mount behaviors
-are defined in `lionagi/studio/cli.py` and `apps/studio/Dockerfile`.
+are defined in `apps/studio/backend/src/lionagi_studio/cli.py` and `apps/studio/Dockerfile`.
 
 Development mode requires the repository's `apps/studio/frontend` directory
 and Node.js. It is not a frontend mode for a package-only installation.
-Launch-mode behavior is defined in `lionagi/studio/cli.py`.
+Launch-mode behavior is defined in `apps/studio/backend/src/lionagi_studio/cli.py`.
 
 ## Confirm the daemon is reachable
 

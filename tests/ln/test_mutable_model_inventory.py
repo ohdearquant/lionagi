@@ -531,7 +531,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Assign(targets=[Name(id='model_config', ctx=Store())], value=Call(func=Name(id='SettingsConfigDict', ctx=Load()), args=[], keywords=[keyword(arg='env_file', value=Tuple(elts=[BinOp(left=Name(id='LIONAGI_HOME', ctx=Load()), op=Div(), right=Constant(value='.env')), Constant(value='.env'), Constant(value='.env.local'), Constant(value='.secrets.env')], ctx=Load())), keyword(arg='env_file_encoding', value=Constant(value='utf-8')), keyword(arg='case_sensitive', value=Constant(value=False)), keyword(arg='extra', value=Constant(value='ignore'))]))",
     ): "a pydantic settings config, which sets no frozen option",
     (
-        "lionagi.studio.operator.types",
+        "lionagi_studio.operator.types",
         "WireModel",
         "model-config-value",
         "Assign(targets=[Name(id='model_config', ctx=Store())], value=Call(func=Name(id='ConfigDict', ctx=Load()), args=[], keywords=[keyword(arg='alias_generator', value=Name(id='_to_camel', ctx=Load())), keyword(arg='populate_by_name', value=Constant(value=True)), keyword(arg='extra', value=Constant(value='forbid'))]))",
@@ -3004,12 +3004,14 @@ def _violations(
 
 
 def _production_sources() -> dict[str, tuple[str, str]]:
-    # Both import roots of the wheel: ``lionhub`` holds packages that moved out of
-    # ``lionagi`` and still subclass its models.
+    # Every import root of the wheel: ``lionhub`` and ``lionagi_studio`` hold packages that
+    # moved out of ``lionagi`` and still subclass its models.
     sources = {}
     paths = [(_ROOT, p) for p in sorted((_ROOT / "lionagi").rglob("*.py"))]
     lionhub_src = _ROOT / "lionhub" / "src"
     paths += [(lionhub_src, p) for p in sorted((lionhub_src / "lionhub").rglob("*.py"))]
+    studio_src = _ROOT / "apps" / "studio" / "backend" / "src"
+    paths += [(studio_src, p) for p in sorted((studio_src / "lionagi_studio").rglob("*.py"))]
     for base, path in paths:
         parts = list(path.relative_to(base).with_suffix("").parts)
         package = parts[-1] == "__init__"

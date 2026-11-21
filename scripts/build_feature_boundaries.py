@@ -76,9 +76,7 @@ ROOT_MODULES = {
 
 # Migration notes identify a destination, not a current owner. Mixed modules
 # keep their current owner; the destination names the extracted portion.
-TARGET_RULES = {
-    "lionagi.studio.cli": "lionhub.serve.cli",
-}
+TARGET_RULES: dict[str, str] = {}
 
 REQUIREMENT_GROUPS = {
     ("foundation", "concurrency"): "anyio sniffio",

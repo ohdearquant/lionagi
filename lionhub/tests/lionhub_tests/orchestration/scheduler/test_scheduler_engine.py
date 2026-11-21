@@ -3875,7 +3875,6 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
     state_db, monkeypatch
 ):
     """A launcher deadline is a timed-out outcome, not a generic failed exception."""
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler import subprocess as subprocess_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
@@ -4920,7 +4919,6 @@ async def test_a_github_pass_hung_in_its_poll_or_a_store_write_reads_stalled(mon
 async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_runs(
     monkeypatch, tmp_path, hang
 ):
-    import lionagi.studio.config as config
     from lionhub.orchestration.scheduler import engine as engine_mod
     from lionhub.orchestration.scheduler import subprocess as sched_subprocess
     from lionhub.orchestration.scheduler.github import GithubPollResult
@@ -5022,7 +5020,6 @@ async def test_a_github_pass_is_timed_through_its_fire_except_while_the_process_
 async def test_a_github_pass_is_timed_through_the_dispatched_stamp_of_the_real_launch(
     monkeypatch, tmp_path, wait_for_runs_in_its_own_task
 ):
-    import lionagi.studio.config as config
     from lionhub.orchestration.scheduler import engine as engine_mod
     from lionhub.orchestration.scheduler import subprocess as sched_subprocess
     from lionhub.orchestration.scheduler.github import GithubPollResult

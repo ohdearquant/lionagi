@@ -161,16 +161,13 @@ async def _pool_connect_fails(config: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_a_configured_stdio_mcp_server_does_not_see_the_store(probe, tmp_path):
+    """Studio's connection check starts the same server; it is checked with the application's tests."""
     pytest.importorskip("fastmcp")
-    from lionagi.studio.services.mcp_servers import _attempt_connection
 
-    checked, pooled = tmp_path / "mcp-check.txt", tmp_path / "mcp-pool.txt"
-    # The probe is no MCP server: each connection fails once the probe has written what it saw.
-    result = await _attempt_connection({"command": str(probe), "args": [str(checked)]})
-    assert result["ok"] is False
+    pooled = tmp_path / "mcp-pool.txt"
+    # The probe is no MCP server: the connection fails once the probe has written what it saw.
     await _pool_connect_fails({"command": str(probe), "args": [str(pooled)]})
-    for out in (checked, pooled):
-        assert out.read_text().splitlines()[:4] == SCRUBBED_STORE_SETTINGS
+    assert pooled.read_text().splitlines()[:4] == SCRUBBED_STORE_SETTINGS
 
 
 @pytest.mark.asyncio
@@ -179,19 +176,13 @@ async def test_a_store_url_a_configured_mcp_server_names_is_passed_as_given(prob
     """A server's own ``env`` entry is configuration, not inheritance: the URL it names arrives,
     and the other spelling, inherited, is still gone."""
     pytest.importorskip("fastmcp")
-    from lionagi.studio.services.mcp_servers import _attempt_connection
 
     chosen = "sqlite:////chosen/store.db"
     expected = SCRUBBED_STORE_SETTINGS.copy()
     expected[0 if name == STATE_DB_URL_ENV else 1] = chosen
-    checked, pooled = tmp_path / "mcp-check-env.txt", tmp_path / "mcp-pool-env.txt"
-    result = await _attempt_connection(
-        {"command": str(probe), "args": [str(checked)], "env": {name: chosen}}
-    )
-    assert result["ok"] is False
+    pooled = tmp_path / "mcp-pool-env.txt"
     await _pool_connect_fails({"command": str(probe), "args": [str(pooled)], "env": {name: chosen}})
-    for out in (checked, pooled):
-        assert out.read_text().splitlines()[:4] == expected
+    assert pooled.read_text().splitlines()[:4] == expected
 
 
 @pytest.mark.asyncio

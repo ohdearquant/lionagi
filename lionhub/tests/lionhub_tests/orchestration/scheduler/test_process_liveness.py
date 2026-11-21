@@ -116,8 +116,8 @@ def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(m
 
 
 async def test_identity_complete_runs_page_does_not_capture_process_table(monkeypatch):
-    import lionagi.studio.services.run_tags as run_tags_mod
     import lionhub.orchestration.scheduler.liveness as admin_mod
+    import lionhub.serve.daemon.services.run_tags_store as run_tags_mod
     import lionhub.serve.daemon.services.runs as runs_mod
 
     created = psutil.Process(os.getpid()).create_time()
@@ -132,19 +132,21 @@ async def test_identity_complete_runs_page_does_not_capture_process_table(monkey
         for i in range(20)
     ]
     monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
-    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    tags = AsyncMock(return_value={})
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", tags)
     snapshot = AsyncMock(return_value="")
     monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
 
     result = await runs_mod.list_runs(limit=20)
 
     assert len(result) == 20
+    tags.assert_awaited_once()
     snapshot.assert_not_awaited()
 
 
 async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
-    import lionagi.studio.services.run_tags as run_tags_mod
     import lionhub.orchestration.scheduler.liveness as admin_mod
+    import lionhub.serve.daemon.services.run_tags_store as run_tags_mod
     import lionhub.serve.daemon.services.runs as runs_mod
 
     sessions = [
@@ -157,13 +159,15 @@ async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(mon
         }
     ]
     monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
-    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    tags = AsyncMock(return_value={})
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", tags)
     snapshot = AsyncMock(return_value="")
     monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
 
     result = await runs_mod.list_runs(limit=1)
 
     assert len(result) == 1
+    tags.assert_awaited_once()
     snapshot.assert_not_awaited()
 
 

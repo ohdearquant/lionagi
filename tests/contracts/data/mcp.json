@@ -361,6 +361,11 @@
             "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from `cwd`. The file is read once at spawn.",
             "x-flag": "--mcp-config"
           },
+          "account": {
+            "type": "string",
+            "description": "Run the leg on this named subscription account: a Claude Code token or a Codex home listed in LIONAGI_LOGINS_DIR (default ~/.lionagi/logins). Wins over the profile's 'account' and 'codex_home'. A name that does not resolve, or a token that cannot be read, refuses the launch.",
+            "x-flag": "--account"
+          },
           "workload": {
             "type": "string",
             "enum": [

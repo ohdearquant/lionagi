@@ -63,7 +63,6 @@ def _make_svc() -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_reserve_global_slot_allows_under_cap(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 2)
@@ -78,7 +77,6 @@ async def test_reserve_global_slot_allows_under_cap(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reserve_global_slot_refuses_at_cap(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -96,7 +94,6 @@ async def test_reserve_global_slot_refuses_at_cap(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reserve_global_slot_unlimited_when_cap_zero(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 0)
@@ -112,7 +109,6 @@ async def test_reserve_global_slot_unlimited_when_cap_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 3)
@@ -137,7 +133,6 @@ async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_maybe_fire_defers_when_no_slot_available(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -172,7 +167,6 @@ async def test_maybe_fire_defer_releases_max_runs_claim(monkeypatch):
     """A schedule with a max_runs budget must get its pre-flight reservation
     back when the fire is deferred for lack of a global slot -- otherwise the
     deferral permanently leaks a max_runs reservation."""
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -193,7 +187,6 @@ async def test_maybe_fire_defer_releases_max_runs_claim(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_maybe_fire_fires_when_slot_available(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
@@ -213,7 +206,6 @@ async def test_maybe_fire_fires_when_slot_available(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tick_github_polls_on_a_full_cap_and_holds_the_events_it_finds(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.orchestration.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
 
@@ -255,7 +247,6 @@ async def test_tick_github_polls_on_a_full_cap_and_holds_the_events_it_finds(mon
 
 @pytest.mark.asyncio
 async def test_tick_github_releases_slot_on_no_events(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -282,7 +273,6 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
     # happens after the global slot is already reserved. The slot must still be
     # released as the exception propagates — otherwise it leaks permanently and
     # eventually saturates the cap.
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -331,7 +321,6 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
     # other call site. The per-event finally block that releases the slot
     # on a dropped/refused event must guard for that None claim rather than
     # unconditionally calling .release() on it.
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 0)
@@ -384,7 +373,6 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
 
 @pytest.mark.asyncio
 async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
@@ -432,7 +420,6 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tick_github_polls_without_holding_a_slot(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.orchestration.scheduler.github import GithubPollResult
 
@@ -455,7 +442,6 @@ async def test_tick_github_polls_without_holding_a_slot(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_slow_github_poll_leaves_the_slot_to_a_due_cron_fire(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.orchestration.scheduler.github import GithubPollResult
 
@@ -494,7 +480,6 @@ async def test_a_slow_github_poll_leaves_the_slot_to_a_due_cron_fire(monkeypatch
 async def test_a_github_event_that_finds_the_cap_taken_during_the_poll_stays_ahead_of_the_cursor(
     monkeypatch,
 ):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.orchestration.scheduler.github import (
         GithubPollItem,
@@ -552,7 +537,6 @@ async def test_a_github_event_that_finds_the_cap_taken_during_the_poll_stays_ahe
 
 @pytest.mark.asyncio
 async def test_fire_now_raises_at_capacity_and_releases_max_runs_claim(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -573,7 +557,6 @@ async def test_fire_now_raises_at_capacity_and_releases_max_runs_claim(monkeypat
 
 @pytest.mark.asyncio
 async def test_fire_now_succeeds_when_slot_available(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
@@ -594,7 +577,6 @@ async def test_fire_now_succeeds_when_slot_available(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fire_releases_global_slot_on_completion(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
@@ -628,7 +610,6 @@ async def test_fire_releases_global_slot_on_completion(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fire_releases_global_slot_on_exception(monkeypatch):
-    import lionagi.studio.config as studio_config
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(scheduler_settings, "MAX_SCHEDULED_CONCURRENT", 4)
@@ -693,7 +674,6 @@ async def test_worker_pass_reserves_adhoc_slot_and_counts_against_adhoc_cap(monk
     ad-hoc capacity lets it execute and the slot is released once the row
     reaches a terminal status."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.config as studio_config
     from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
@@ -763,7 +743,6 @@ async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monk
     independent pool, saturation on the scheduled side has no bearing on
     ad-hoc admission at all: the row is admitted on the very first tick."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.config as studio_config
     from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task

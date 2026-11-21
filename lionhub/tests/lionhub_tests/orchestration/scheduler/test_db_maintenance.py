@@ -1460,8 +1460,20 @@ async def test_shared_prune_defers_non_array_victim_message_reclamation(
             "null-survivor",
         }
 
-    assert "deferred_victim_progressions=1" in caplog.text
-    assert "non_array_survivor_progressions=3" in caplog.text
+    if chunk_rows == 8:
+        assert (
+            "Session prune: deferred_victim_progressions=1 non_array_survivor_progressions=3"
+            in caplog.messages
+        )
+    else:
+        # The deferred victim's chunk runs first and has no messages to delete, so it
+        # reads no other collection and counts no survivors; the ordinary victim's
+        # chunk counts them, and by then the deferred progression is one of them.
+        assert "Session prune: deferred_victim_progressions=1" in caplog.messages
+        assert (
+            "Session prune: deferred_victim_progressions=0 non_array_survivor_progressions=4"
+            in caplog.messages
+        )
 
 
 @pytest.mark.asyncio
@@ -1506,6 +1518,69 @@ async def test_shared_prune_rolls_back_malformed_progressions(entry, malformed):
     with pytest.raises(DBAPIError, match="malformed JSON"):
         await _shared_progression_prune(entry, ["victim"])
     assert await stored_rows() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("shared_progression_prune_store")
+@pytest.mark.parametrize("entry", ["explicit", "age"])
+@pytest.mark.parametrize(
+    "victim_messages", [[], ["old-message"]], ids=["no-messages", "with-messages"]
+)
+async def test_shared_prune_reads_every_collection_only_for_chunks_with_messages(
+    entry, victim_messages, tmp_path, monkeypatch
+):
+    """A chunk with messages to delete parses every surviving collection, so a
+    malformed collection outside its lineage fails it before its archive is
+    written. A chunk with no messages parses nothing outside its lineage, so the
+    same damage leaves it free to finish."""
+    from sqlalchemy.exc import DBAPIError
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=8)
+    old = time.time() - 60 * 86400
+    async with StateDB() as db:
+        for message_id in victim_messages:
+            await db.insert_message(
+                {"id": message_id, "created_at": old, "role": "user", "content": {}}
+            )
+        await db.create_progression("victim-history", victim_messages)
+        await db.create_progression("damaged-history")
+        await db.execute(
+            "UPDATE progressions SET collection = '[malformed' WHERE id = 'damaged-history'"
+        )
+        await db.create_session(
+            {"id": "victim", "status": "running", "progression_id": "victim-history"}
+        )
+        assert await db.update_status(
+            "session", "victim", new_status="completed", reason_code="run.completed.ok"
+        )
+        await db.execute("UPDATE sessions SET updated_at = ? WHERE id = 'victim'", (old,))
+
+    async def stored_rows():
+        async with StateDB() as db:
+            return (
+                await db.fetch_all("SELECT * FROM sessions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM progressions ORDER BY id"),
+                await db.fetch_all("SELECT * FROM messages ORDER BY id"),
+            )
+
+    if victim_messages:
+        before = await stored_rows()
+        with pytest.raises(DBAPIError, match="malformed JSON"):
+            await _shared_progression_prune(entry, ["victim"])
+        assert await stored_rows() == before
+        assert list(archive_dir.iterdir()) == []
+        return
+
+    assert await _shared_progression_prune(entry, ["victim"]) == 1
+    async with StateDB() as db:
+        assert await db.fetch_all("SELECT id FROM sessions") == []
+        assert [
+            (row["id"], row["collection"])
+            for row in await db.fetch_all("SELECT id, collection FROM progressions")
+        ] == [("damaged-history", "[malformed")]
+    assert len(list(archive_dir.glob("*.zip"))) == 1
 
 
 # ── pause between prune chunks ────────────────────────────────────────────────
@@ -1662,6 +1737,105 @@ def test_prune_pauses_after_each_committed_chunk_in_every_loop(tmp_path, monkeyp
         ("dispatch", 1),
         pause,
     ]
+
+
+def test_prune_pauses_after_a_chunk_that_deleted_nothing(tmp_path, monkeypatch):
+    """The pause follows a chunk that reports nothing deleted, like any other chunk.
+
+    The real chunk runs in its own write transaction, so such a chunk still held the
+    write lock. The stand-in here writes the same first statement inside that
+    transaction and then keeps every session; it covers where the loop pauses, not
+    the chunk's own statements."""
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+    monkeypatch.setattr(
+        scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", _PAUSE_PROBE_SECONDS, raising=False
+    )
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old_ts)
+
+    run_async(seed())
+
+    async def keep_every_session(conn, session_ids, **_kwargs):
+        # The real chunk's first statement: lock the candidates, then keep them all.
+        await maint._exec_chunked(
+            conn, "UPDATE sessions SET updated_at = updated_at WHERE id", session_ids
+        )
+        return 0, len(session_ids)
+
+    monkeypatch.setattr(maint, "_prune_session_chunk", keep_every_session)
+    events: list = []
+    _record_chunks_and_pauses(monkeypatch, events, db_path)
+    result = run_async(
+        maint.prune_old_data(keep_days=30, dispatch_success_keep_days=7, actor="test")
+    )
+
+    assert result["sessions_pruned"] == 0
+    pause = ("pause", _PAUSE_PROBE_SECONDS)
+    assert events == [("sessions", 2), pause, ("sessions", 1), pause]
+
+
+def test_session_chunk_checks_terminal_status_by_session_id(tmp_path, monkeypatch):
+    """Each statement a session chunk guards with the terminal-status condition looks
+    the referenced session up by its id and reaches the rows it changes through an
+    index. Listing every terminal session, or scanning the changed table, would make
+    each statement's cost grow with the whole store."""
+    from lionhub.orchestration.scheduler import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+    monkeypatch.setattr(scheduler_settings, "PRUNE_CHUNK_PAUSE_SECONDS", 0.0, raising=False)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old_ts)
+
+    run_async(seed())
+
+    guarded: list[tuple[str, int]] = []
+    original = maint._exec_chunked
+
+    async def recording(conn, sql_prefix, ids, extra_params=(), suffix="", suffix_params=()):
+        if suffix_params == maint._TERMINAL_SESSION_STATUSES:
+            guarded.append((f"{sql_prefix} IN ({', '.join('?' * len(ids))}){suffix}", len(ids)))
+        return await original(conn, sql_prefix, ids, extra_params, suffix, suffix_params)
+
+    monkeypatch.setattr(maint, "_exec_chunked", recording)
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 3
+
+    # Four soft-FK nullifications and two status-history deletes, per chunk of two.
+    assert len(guarded) == 6 * 2
+    statuses = maint._TERMINAL_SESSION_STATUSES
+    with sqlite3.connect(db_path) as conn:
+        for sql, id_count in guarded:
+            params = ("none",) * id_count + statuses
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+            assert any(
+                "terminal_session" in detail and "sqlite_autoindex_sessions_1 (id=?)" in detail
+                for detail in plan
+            ), (sql, plan)
+            assert not any(
+                "sessions USING" in detail and "(status=?)" in detail for detail in plan
+            ), (sql, plan)
+            # The table each statement changes is reached through an index as well.
+            assert not any(detail.startswith("SCAN") for detail in plan), (sql, plan)
 
 
 def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):

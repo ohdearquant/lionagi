@@ -1,0 +1,476 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Security tests: public path safety, marketplace bounds, bearer token auth."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from lionagi_studio_tests.server._helpers import run_async as _run  # noqa: E402
+
+
+def _make_fake_home(tmp_path: Path) -> Path:
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    (fake_home / "agents").mkdir()
+    (fake_home / "playbooks").mkdir()
+    (fake_home / "skills").mkdir()
+    return fake_home
+
+
+# public_path() must never return absolute paths
+
+
+class TestPublicPath:
+    def test_repo_relative_path(self, tmp_path):
+        """public_path() with a path under the repo root returns relative posix."""
+        # Simulate a path under the repo root (parents[4] from _path_safety.py)
+        import lionhub.serve.daemon.services._path_safety as mod
+        from lionhub.serve.daemon.services._path_safety import public_path
+
+        repo_root = Path(mod.__file__).resolve().parents[3]
+        target = repo_root / "lionagi" / "studio" / "dummy.md"
+        result = public_path(target)
+        assert not result.startswith("/"), f"Expected relative, got: {result!r}"
+        assert "lionagi/studio/dummy.md" in result
+
+    def test_home_relative_path(self, tmp_path):
+        """public_path() with a path under home returns home-relative posix."""
+        from lionhub.serve.daemon.services._path_safety import public_path
+
+        target = Path.home() / ".lionagi" / "agents" / "test.md"
+        result = public_path(target)
+        assert not result.startswith("/"), f"Expected relative, got: {result!r}"
+        assert ".lionagi/agents/test.md" in result
+
+    def test_unknown_path_returns_filename(self, tmp_path):
+        """public_path() with an unrelated path returns just the filename."""
+        from lionhub.serve.daemon.services._path_safety import public_path
+
+        # Use a path that is definitely outside repo and home
+        target = Path("/var/log/system.log")
+        result = public_path(target)
+        assert "/" not in result or result == "system.log"
+        assert result == "system.log"
+
+
+# definitions disk_path must not be absolute
+
+
+@pytest.mark.integration
+class TestDefinitionsDiskPath:
+    def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
+        """list_definitions() must not expose absolute disk_path in response."""
+        import lionagi.state.db as state_db_mod
+        import lionagi_studio.services.definitions as defs_mod
+        import lionhub.orchestration.runs as cli_runs_mod
+
+        fake_home = _make_fake_home(tmp_path)
+        agents_dir = fake_home / "agents"
+        (agents_dir / "myagent.md").write_text("# Agent\ncontent")
+
+        fake_db = tmp_path / "state.db"
+
+        monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+        monkeypatch.setattr(defs_mod, "LIONAGI_HOME", fake_home)
+        monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+        monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
+        monkeypatch.setattr(
+            defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": fake_home / "playbooks"}
+        )
+
+        result = _run(defs_mod.list_definitions("agent"))
+        assert len(result) == 1
+        disk_path = result[0]["disk_path"]
+        # disk_path must be relative to LIONAGI_HOME (not an absolute path)
+        assert not disk_path.startswith("/"), f"disk_path must not be absolute: {disk_path!r}"
+        assert "myagent" in disk_path
+
+
+# plugins path field must not be absolute
+
+
+class TestPluginsPathSanitization:
+    def test_plugin_summary_path_not_absolute(self, tmp_path, monkeypatch):
+        """_plugin_summary() must return a relative path for the 'path' field."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        # Build a minimal marketplace plugin under tmp_path
+        repo_root = tmp_path / "repo"
+        marketplace = repo_root / "marketplace" / "test_plugin"
+        marketplace.mkdir(parents=True)
+        plugin_json = marketplace / ".claude-plugin"
+        plugin_json.mkdir()
+        (plugin_json / "plugin.json").write_text(
+            json.dumps({"name": "test_plugin", "description": "A test plugin", "version": "1.0.0"})
+        )
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
+        monkeypatch.setattr(plugins_mod, "MARKETPLACE_DIR", repo_root / "marketplace")
+
+        result = plugins_mod._plugin_summary(marketplace, "test_plugin", "desc", "marketplace")
+        path_val = result["path"]
+        assert not path_val.startswith("/"), f"path must not be absolute: {path_val!r}"
+
+    def test_get_plugin_skill_uses_real_dir(self, tmp_path, monkeypatch):
+        """get_plugin_skill() must not reconstruct path from sanitized response."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        repo_root = tmp_path / "repo"
+        plugin_dir = repo_root / "marketplace" / "myplugin"
+        skills_dir = plugin_dir / "skills" / "myskill"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: myskill\ndescription: test\n---\ncontent here"
+        )
+
+        plugin_json_dir = plugin_dir / ".claude-plugin"
+        plugin_json_dir.mkdir()
+        (plugin_json_dir / "plugin.json").write_text(
+            json.dumps({"name": "myplugin", "description": "desc", "version": "1.0"})
+        )
+
+        manifest_dir = repo_root / ".claude-plugin"
+        manifest_dir.mkdir(parents=True)
+        manifest = manifest_dir / "marketplace.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {"name": "myplugin", "source": "marketplace/myplugin", "description": ""}
+                    ]
+                }
+            )
+        )
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
+        monkeypatch.setattr(plugins_mod, "MARKETPLACE_DIR", repo_root / "marketplace")
+        monkeypatch.setattr(plugins_mod, "MARKETPLACE_MANIFEST", manifest)
+
+        result = plugins_mod.get_plugin_skill("myplugin", "myskill")
+        assert result is not None
+        assert result["content"] == "content here"
+        assert not result["path"].startswith("/"), (
+            f"skill path must not be absolute: {result['path']!r}"
+        )
+
+
+# marketplace plugin source paths must be bounded to repo root
+
+
+class TestMarketplaceSourcePaths:
+    def test_valid_relative_source_accepted(self, tmp_path, monkeypatch):
+        """A source path like './marketplace/X' that stays under repo root is accepted."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        repo_root = tmp_path / "repo"
+        valid_dir = repo_root / "marketplace" / "valid"
+        valid_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
+
+        result = plugins_mod._resolve_marketplace_source("marketplace/valid")
+        assert result is not None
+        assert result.resolve() == valid_dir.resolve()
+
+    def test_absolute_source_rejected(self, tmp_path, monkeypatch):
+        """An absolute path in marketplace source must be rejected."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
+
+        result = plugins_mod._resolve_marketplace_source("/etc/passwd")
+        assert result is None
+
+    def test_parent_traversal_rejected(self, tmp_path, monkeypatch):
+        """A '../escape' source must be rejected."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
+
+        result = plugins_mod._resolve_marketplace_source("../outside")
+        assert result is None
+
+    def test_symlink_escape_rejected(self, tmp_path, monkeypatch):
+        """A source that resolves via symlink outside repo root must be rejected."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = repo_root / "symlink_escape"
+        link.symlink_to(outside)
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
+
+        result = plugins_mod._resolve_marketplace_source("symlink_escape")
+        assert result is None
+
+    def test_marketplace_manifest_with_escape_ignored(self, tmp_path, monkeypatch):
+        """_iter_marketplace_plugins() drops entries with escape paths."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        valid_dir = repo_root / "marketplace" / "good"
+        valid_dir.mkdir(parents=True)
+        (valid_dir / ".claude-plugin").mkdir()
+        (valid_dir / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"name": "good", "description": "", "version": "1.0"})
+        )
+
+        manifest_dir = repo_root / ".claude-plugin"
+        manifest_dir.mkdir()
+        manifest = manifest_dir / "marketplace.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {"name": "good", "source": "marketplace/good", "description": ""},
+                        {"name": "bad", "source": "../outside", "description": ""},
+                        {"name": "abs", "source": "/etc/passwd", "description": ""},
+                    ]
+                }
+            )
+        )
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
+        monkeypatch.setattr(plugins_mod, "MARKETPLACE_MANIFEST", manifest)
+
+        results = plugins_mod._iter_marketplace_plugins()
+        names = [name for _, name, _ in results]
+        assert "good" in names
+        assert "bad" not in names
+        assert "abs" not in names
+
+
+# the marketplace root is found by walking up from the module, not by a fixed depth
+
+
+class TestMarketplaceRootLookup:
+    @staticmethod
+    def _project(root: Path, name: str) -> Path:
+        """Make ``root`` hold the marketplace manifest and a pyproject naming ``name``."""
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"plugins": []}))
+        (root / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "0"\n')
+        return root
+
+    @classmethod
+    def _checkout(cls, tmp_path: Path) -> Path:
+        """A lionagi checkout under tmp_path."""
+        return cls._project(tmp_path / "checkout", "lionagi")
+
+    @staticmethod
+    def _source_checkout(plugins_mod) -> Path:
+        """The checkout this test file sits in, when the module under test is its source."""
+        checkout = Path(__file__).resolve().parents[6]
+        module_file = Path(plugins_mod.__file__).resolve()
+        if not plugins_mod._is_project_root(checkout) or not module_file.is_relative_to(checkout):
+            pytest.skip("the module under test is not the source of a lionagi checkout")
+        return checkout
+
+    def test_module_root_is_the_checkout_at_the_current_location(self):
+        """In a source checkout the resolved root is the checkout itself."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        assert plugins_mod._REPO_ROOT == self._source_checkout(plugins_mod)
+
+    def test_walk_from_the_current_location_reaches_the_checkout(self):
+        """Walking up from the module at its real location reaches the checkout."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        checkout = self._source_checkout(plugins_mod)
+        module_file = Path(plugins_mod.__file__).resolve()
+        assert plugins_mod._find_repo_root(module_file) == checkout
+
+    @pytest.mark.parametrize("depth", [1, 2, 4, 6])
+    def test_walk_finds_the_manifest_directory_at_any_depth(self, tmp_path, depth):
+        """The root is the manifest's directory whatever its distance from the module."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        root = self._checkout(tmp_path)
+        module_file = root.joinpath(*[f"level{i}" for i in range(depth)]) / "plugins.py"
+        assert module_file.parents[depth] == root
+        assert plugins_mod._find_repo_root(module_file) == root
+
+    def test_nearest_ancestor_with_a_manifest_wins(self, tmp_path):
+        """When two ancestors hold a manifest, the one closest to the module is the root."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        outer = self._checkout(tmp_path)
+        inner = self._project(outer / "apps" / "inner", "lionagi")
+        module_file = inner / "pkg" / "sub" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == inner
+
+    def test_another_projects_marketplace_is_passed_over(self, tmp_path):
+        """A vendored copy inside another project with a marketplace keeps looking upward."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        checkout = self._checkout(tmp_path)
+        other = self._project(checkout / "work" / "other", "other-project")
+        module_file = other / "vendor" / "lionagi" / "studio" / "services" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == checkout
+
+    @pytest.mark.parametrize(
+        "pyproject",
+        [None, '[project]\nname = "lionagi-extra"\n', '[project]\n# name = "lionagi"\n'],
+        ids=["no-pyproject", "other-name", "commented-name"],
+    )
+    def test_a_manifest_without_the_lionagi_project_is_not_a_root(self, tmp_path, pyproject):
+        """The manifest alone does not make a root; the pyproject must name lionagi."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        for ancestor in (tmp_path, *tmp_path.parents):
+            if plugins_mod._is_project_root(ancestor):
+                pytest.skip("an ancestor of the temporary directory is a lionagi checkout")
+        root = tmp_path / "proj"
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"plugins": []}))
+        if pyproject is not None:
+            (root / "pyproject.toml").write_text(pyproject)
+        module_file = root / "a" / "b" / "c" / "d" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == module_file.parents[3]
+
+    def test_ancestor_with_only_a_plugin_manifest_is_skipped(self, tmp_path):
+        """A .claude-plugin directory without marketplace.json does not make a root."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        root = self._checkout(tmp_path)
+        near = root / "pkg"
+        (near / ".claude-plugin").mkdir(parents=True)
+        (near / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "p"}))
+        module_file = near / "sub" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == root
+
+    @pytest.mark.parametrize("install_dir", ["site-packages", "dist-packages"])
+    def test_installed_copy_inside_a_manifest_directory_keeps_its_install_directory(
+        self, tmp_path, install_dir
+    ):
+        """An installed copy never takes the manifest of a directory enclosing its environment."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        project = self._checkout(tmp_path)
+        install = project / ".venv" / "lib" / "python3.12" / install_dir
+        module_file = install / "lionagi_studio" / "services" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == install
+
+    def test_without_a_manifest_the_fixed_depth_ancestor_is_returned(self, tmp_path):
+        """With no manifest on the way up, the root is the fixed three-level ancestor."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        for ancestor in (tmp_path, *tmp_path.parents):
+            if (ancestor / ".claude-plugin" / "marketplace.json").exists():
+                pytest.skip("an ancestor of the temporary directory holds a manifest")
+        module_file = tmp_path / "a" / "b" / "c" / "d" / "plugins.py"
+
+        assert plugins_mod._find_repo_root(module_file) == module_file.parents[3]
+
+    def test_source_escaping_a_walked_root_is_still_refused(self, tmp_path, monkeypatch):
+        """Containment holds against a root found by the walk."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        root = self._checkout(tmp_path)
+        good = root / "marketplace" / "good"
+        good.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (root / "link").symlink_to(outside)
+        module_file = root / "a" / "b" / "c" / "d" / "e" / "plugins.py"
+
+        monkeypatch.setattr(plugins_mod, "_REPO_ROOT", plugins_mod._find_repo_root(module_file))
+
+        assert plugins_mod._resolve_marketplace_source("marketplace/good") == good.resolve()
+        assert plugins_mod._resolve_marketplace_source("../outside") is None
+        assert plugins_mod._resolve_marketplace_source("link") is None
+        assert plugins_mod._resolve_marketplace_source(str(outside)) is None
+
+
+# optional bearer token auth
+
+
+@pytest.mark.integration
+class TestBearerTokenAuth:
+    def _get_client(self, monkeypatch, fake_db: Path | None = None) -> TestClient:
+        """Build a fresh app to pick up monkeypatched env vars.
+
+        create_app() (not importlib.reload) means a fresh app instance every
+        call, so the monkeypatched values are baked in without mutating the
+        shared lionagi_studio.app.app singleton other code still imports.
+        """
+        import lionagi_studio.app as app_mod
+
+        if fake_db is not None:
+            import lionagi.state.db as state_db_mod
+
+            monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+
+        app = app_mod.create_app()
+        return TestClient(
+            app,
+            raise_server_exceptions=False,
+            base_url="http://127.0.0.1:8765",
+            headers={"Content-Type": "application/json"},
+        )
+
+    def test_mutating_route_requires_bearer_when_token_set(self, monkeypatch):
+        """POST to /api/* must return 401 when token is set and auth is missing/wrong."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = self._get_client(monkeypatch)
+
+        # No auth header
+        resp = client.post("/api/shows/import")
+        assert resp.status_code == 401
+
+        # Wrong token
+        resp = client.post("/api/shows/import", headers={"Authorization": "Bearer wrongtoken"})
+        assert resp.status_code == 401
+
+    def test_mutating_route_allowed_with_correct_bearer(self, monkeypatch):
+        """POST with correct Bearer token must not return 401."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = self._get_client(monkeypatch)
+
+        resp = client.post("/api/shows/import", headers={"Authorization": "Bearer testsecret"})
+        # Not 401 (may be 200, 422, 500 depending on service state, but not auth-rejected)
+        assert resp.status_code != 401
+
+    def test_health_endpoint_open_when_token_set(self, monkeypatch):
+        """GET /health must remain accessible when auth token is set."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = self._get_client(monkeypatch)
+
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_readonly_api_open_when_token_set(self, monkeypatch, tmp_path):
+        """GET /api/stats requires auth when a token is configured."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        fake_db = tmp_path / "state.db"
+        client = self._get_client(monkeypatch, fake_db=fake_db)
+
+        resp = client.get("/api/stats")
+        assert resp.status_code == 401
+
+    def test_no_auth_when_token_unset(self, monkeypatch):
+        """When LIONAGI_STUDIO_AUTH_TOKEN is not set, all routes are open."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        client = self._get_client(monkeypatch)
+
+        resp = client.post("/api/shows/import")
+        assert resp.status_code != 401

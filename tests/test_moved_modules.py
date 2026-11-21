@@ -48,7 +48,21 @@ from tests._moved_contracts_test_support import (
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = (ROOT / "lionagi", ROOT / "lionhub" / "src" / "lionhub")
+SOURCE_ROOTS = (
+    ROOT / "lionagi",
+    ROOT / "lionhub" / "src" / "lionhub",
+    ROOT / "apps" / "studio" / "backend" / "src" / "lionagi_studio",
+)
+APP_ROOT = SOURCE_ROOTS[2]
+
+# The move of lionagi.studio leaves these three packages in core. Modules that moved out of
+# lionagi.studio to the hub keep their own rows (lionagi.studio.services.runs and the rest),
+# and an old name is imported through its parents, so the parents must import without the
+# Studio application installed. Two are empty; lionagi.studio.operator only forwards the
+# three names the application's Operator package exports. Every other old name under
+# lionagi.studio is served from lionagi_studio.
+KEPT_PARENTS = frozenset({"lionagi.studio", "lionagi.studio.operator", "lionagi.studio.services"})
+EMPTY_KEPT_PARENTS = ("__init__.py", "services/__init__.py")
 
 
 def _release(text: str) -> tuple[int, ...]:
@@ -77,6 +91,8 @@ def _module_pairs() -> list[tuple[str, str]]:
 
 
 PAIRS = _module_pairs()
+# The pairs whose old name is served as the new module (every pair but a kept parent).
+ALIASED_PAIRS = [(old, new) for old, new in PAIRS if old not in KEPT_PARENTS]
 
 
 def test_the_table_has_moves_and_every_package_has_modules():
@@ -205,7 +221,7 @@ def test_the_readme_check_fails_when_one_cell_is_stale(column):
     assert len(gaps) == 1 and old in gaps[0], gaps
 
 
-@pytest.mark.parametrize(("old", "new"), PAIRS, ids=[old for old, _ in PAIRS])
+@pytest.mark.parametrize(("old", "new"), ALIASED_PAIRS, ids=[old for old, _ in ALIASED_PAIRS])
 def test_old_name_is_the_new_module_and_warns_once(old, new):
     parent = old.rpartition(".")[0]
     if _moved.resolve(parent) is not None:
@@ -246,7 +262,7 @@ def test_import_statement_warning_points_at_the_importing_line():
 
 def test_objects_are_shared_and_pickles_naming_the_old_path_load():
     checked = {row.old: 0 for row in CONTRACTS}
-    for old, new in PAIRS:
+    for old, new in ALIASED_PAIRS:
         importlib.import_module(old)
         assert sys.modules[old] is sys.modules[new]
         module = sys.modules[new]
@@ -1055,10 +1071,181 @@ def test_a_package_moved_inside_another_has_one_module_under_every_name():
             assert importlib.import_module(name) is importlib.import_module(inner.new)
 
 
-@pytest.mark.parametrize(("old", "new"), PAIRS, ids=[old for old, _ in PAIRS])
+@pytest.mark.parametrize(("old", "new"), ALIASED_PAIRS, ids=[old for old, _ in ALIASED_PAIRS])
 def test_no_old_module_is_still_on_disk(old, new):
     assert old.startswith("lionagi.")
     assert not _moved.still_on_disk(old), f"{old} exists in lionagi/ and in {new}"
+
+
+def test_the_kept_parents_hold_nothing_but_the_operator_forwarder():
+    assert KEPT_PARENTS <= {old for old, _ in PAIRS}
+    for name in KEPT_PARENTS:
+        assert _moved.still_on_disk(name), name
+    # The kept parents are the only module files left under lionagi/studio.
+    studio = SOURCE_ROOTS[0] / "studio"
+    files = sorted(p.relative_to(studio).as_posix() for p in studio.rglob("*.py"))
+    assert files == ["__init__.py", "operator/__init__.py", "services/__init__.py"]
+    for name in EMPTY_KEPT_PARENTS:
+        assert (studio / name).read_text(encoding="utf-8") == "", name
+    # The Operator parent holds a docstring, the forwarded names and the forwarder, so
+    # importing it runs no import; it forwards exactly the names the moved package exports.
+    tree = ast.parse((studio / "operator/__init__.py").read_text(encoding="utf-8"))
+    assert [type(node).__name__ for node in tree.body] == ["Expr", "Assign", "FunctionDef"]
+    assert tree.body[2].name == "__getattr__"
+    forwarded = ast.literal_eval(tree.body[1].value.args[0])
+    assert forwarded == set(importlib.import_module("lionagi_studio.operator").__all__)
+
+
+def test_every_parent_the_application_row_would_serve_is_a_kept_file():
+    """A hub module's old name imports through its parents. A parent the broad application row
+    would serve must stay a file, or importing the hub module would need the application.
+    Computed from the rows, so a row added later is held to it too."""
+
+    def application(row):
+        return row is not None and (row.new + ".").startswith("lionagi_studio.")
+
+    needed = set()
+    for row in _moved.MOVED:
+        if application(row):
+            continue
+        parts = row.old.split(".")
+        for end in range(2, len(parts)):
+            parent = ".".join(parts[:end])
+            if application(_moved._row(parent)):
+                needed.add(parent)
+    assert needed, "no hub row sits under the application row"
+    assert needed == KEPT_PARENTS
+    for parent in needed:
+        assert _moved.still_on_disk(parent), parent
+
+
+_BLOCK_THE_APPLICATION = (
+    "import importlib.abc, sys\n"
+    "class _Block(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, fullname, path=None, target=None):\n"
+    "        if fullname == 'lionagi_studio' or fullname.startswith('lionagi_studio.'):\n"
+    "            raise ModuleNotFoundError(fullname, name=fullname)\n"
+    "        return None\n"
+    "sys.meta_path.insert(0, _Block())\n"
+)
+
+
+@pytest.mark.parametrize("operator_parent_kept", [True, False], ids=["kept", "removed"])
+def test_the_old_redact_path_imports_without_the_application(operator_parent_kept):
+    """The Operator parent is kept for this import. With the parent reported absent, the finder
+    serves it from the application, and the same import is refused."""
+    remove = (
+        ""
+        if operator_parent_kept
+        else (
+            "import lionagi._moved as moved\n"
+            "on_disk = moved.still_on_disk\n"
+            "moved.still_on_disk = lambda name: name != 'lionagi.studio.operator' and on_disk(name)\n"
+        )
+    )
+    out = _run_fresh(
+        _BLOCK_THE_APPLICATION + remove + "import warnings\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    try:\n"
+        "        import lionagi.studio.operator.redact as redact\n"
+        "    except ImportError as exc:\n"
+        "        print('refused', exc.name)\n"
+        "    else:\n"
+        "        print(redact.__name__)\n"
+        "print(len([w for w in caught if issubclass(w.category, DeprecationWarning)]))\n"
+        "print(sorted(m for m in sys.modules if m.partition('.')[0] == 'lionagi_studio'))\n"
+    )
+    lines = out.strip().splitlines()
+    if operator_parent_kept:
+        assert lines == ["lionhub.serve.daemon.services.redact", "1", "[]"], out
+    else:
+        assert lines[0] == "refused lionagi_studio", out
+
+
+def test_the_operator_parent_forwards_its_three_names_with_one_warning():
+    """One moved package, one warning, pointed at the line that read the names."""
+    out = _run_fresh(
+        "import sys, warnings\n"
+        "import lionagi.studio.operator as old\n"
+        "print(sorted(m for m in sys.modules if m.partition('.')[0] == 'lionagi_studio'))\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    from lionagi.studio.operator import (\n"
+        "        OperatorCoordinator,\n"
+        "        get_operator_coordinator,\n"
+        "        reset_operator_coordinator_for_testing,\n"
+        "    )\n"
+        "    old.OperatorCoordinator\n"
+        "import lionagi_studio.operator as new\n"
+        "print(\n"
+        "    OperatorCoordinator is new.OperatorCoordinator\n"
+        "    and get_operator_coordinator is new.get_operator_coordinator\n"
+        "    and reset_operator_coordinator_for_testing is new.reset_operator_coordinator_for_testing\n"
+        ")\n"
+        "moved = [w for w in caught if issubclass(w.category, DeprecationWarning)]\n"
+        "print(len(moved))\n"
+        "print(moved[0].message)\n"
+        "print(moved[0].filename, moved[0].lineno)\n"
+        "try:\n"
+        "    old.not_a_moved_name\n"
+        "except AttributeError:\n"
+        "    print('AttributeError')\n"
+    )
+    assert out.strip().splitlines() == [
+        "[]",
+        "True",
+        "1",
+        "lionagi.studio.operator moved to lionagi_studio.operator; the old import path is "
+        "removed in lionagi 2.0.0. Import from lionagi_studio.operator instead.",
+        "<string> 6",
+        "AttributeError",
+    ], out
+
+
+def test_a_forwarded_name_without_the_application_raises_without_a_warning():
+    """The application is imported before the warning, so a reader of an old name whose
+    application is not installed gets the import error and no word of where it moved."""
+    out = _run_fresh(
+        _BLOCK_THE_APPLICATION + "import warnings\n"
+        "import lionagi.studio.operator as old\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    try:\n"
+        "        old.OperatorCoordinator\n"
+        "    except ImportError as exc:\n"
+        "        print('refused', exc.name)\n"
+        "print(len([w for w in caught if issubclass(w.category, DeprecationWarning)]))\n"
+    )
+    assert out.strip().splitlines() == ["refused lionagi_studio", "0"], out
+
+
+def test_each_kept_parent_is_the_parent_of_a_module_moved_to_the_hub():
+    for name in KEPT_PARENTS:
+        children = [
+            row.old
+            for row in _moved.MOVED
+            if row.old.startswith(name + ".") and not row.new.startswith("lionagi_studio")
+        ]
+        assert children, f"{name} is kept but no hub row needs it as a parent"
+
+
+def test_a_kept_parent_imports_as_itself_and_its_children_still_move():
+    for name in sorted(KEPT_PARENTS):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            module = importlib.import_module(name)
+        assert module.__name__ == name
+        assert module.__file__.startswith(str(SOURCE_ROOTS[0]))
+        assert not [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for old, new in (
+            ("lionagi.studio.app", "lionagi_studio.app"),
+            ("lionagi.studio.services.agents", "lionagi_studio.services.agents"),
+            ("lionagi.studio.services.runs", "lionhub.serve.daemon.services.runs"),
+        ):
+            assert importlib.import_module(old) is importlib.import_module(new), old
 
 
 def test_finder_steps_aside_for_a_module_still_at_its_old_path(tmp_path, monkeypatch):
@@ -1150,6 +1337,11 @@ def _old_references(path: Path, source: str | None = None) -> list[str]:
                             own == "lionhub.orchestration.scheduler.liveness"
                             and name == "lionagi.studio.services.admin"
                         )
+                        # Schedule timing was extracted from the Studio config module.
+                        or (
+                            own == "lionhub.orchestration.schedule.timing"
+                            and name == "lionagi.studio.config"
+                        )
                         or name.startswith("lionagi.studio.scheduler.")
                         or name == "lionagi.studio.scheduler"
                         or name.startswith("lionagi.studio.services.scheduler_state")
@@ -1220,6 +1412,7 @@ def test_no_source_file_imports_an_old_name():
     files = [p for root in SOURCE_ROOTS for p in root.rglob("*.py")]
     assert any(p.name == "_moved.py" for p in files)
     assert any(p.is_relative_to(SOURCE_ROOTS[1]) for p in files)
+    assert any(p.is_relative_to(APP_ROOT) for p in files)
     offenders = [hit for p in files if p.name != "_moved.py" for hit in _old_references(p)]
     assert offenders == []
 
@@ -1260,11 +1453,11 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 
 
 # The core packages under lionagi/ that name a lionhub module: they hold a listed
-# interim edge into the hub (see test_provider_interim_edge_inventory) or, for studio,
-# import a hub orchestration or serve module. Every other package never names
-# lionhub. The set must match what the tree does, and it shrinks as each interim edge is
-# removed, so a package that stops naming lionhub is removed from it too.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service", "studio"})
+# interim edge into the hub (see test_provider_interim_edge_inventory). Every other
+# package never names lionhub. The set must match what the tree does, and it shrinks as
+# each interim edge is removed, so a package that stops naming lionhub is removed from it
+# too. The Studio application, which imports the hub, now lives outside lionagi/.
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1444,10 +1637,6 @@ PROVIDER_INTERIM_EDGES = {
         # Temporary 1.x adapter for Codex's configured default effort.
         "lionhub.providers.openai._codex_profile",
     ],
-    "studio/operator/engine.py": [
-        "lionhub.providers.anthropic.claude_code",
-        "lionhub.providers.google.gemini_code",
-    ],
 }
 
 
@@ -1457,8 +1646,9 @@ def test_provider_interim_edge_inventory():
 
 
 # Studio's temporary 1.x Codex profile access is indirect through the compatibility module.
+# The path is relative to the Studio application's package.
 STUDIO_PROVIDER_COMPAT_INTERIM_USE = (
-    "studio/operator/engine.py",
+    "operator/engine.py",
     "lionagi.service.connections._provider_compat.codex_unset_effort_1x",
 )
 
@@ -1466,7 +1656,7 @@ STUDIO_PROVIDER_COMPAT_INTERIM_USE = (
 def test_studio_codex_effort_uses_the_temporary_compatibility_edge():
     path, qualified_name = STUDIO_PROVIDER_COMPAT_INTERIM_USE
     module, _, helper = qualified_name.rpartition(".")
-    engine = SOURCE_ROOTS[0] / path
+    engine = APP_ROOT / path
     tree = ast.parse(engine.read_text(encoding="utf-8"), filename=str(engine))
     apply_effort = next(
         node

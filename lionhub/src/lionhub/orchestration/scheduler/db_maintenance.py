@@ -363,9 +363,9 @@ async def _prune_session_chunk(
     session_ids = sorted(set(session_ids))
 
     # Lock every candidate row for the rest of the transaction before its
-    # status is read — see the module-level design note on this race; the
-    # same hazard applies per chunk as it did to the whole set in the
-    # pre-chunking version of this function.
+    # status is read — see `_session_retention_predicate` in
+    # docs/internals/studio.md on this race; the same hazard applies per chunk
+    # as it did to the whole set in the pre-chunking version of this function.
     await _exec_chunked(
         conn,
         "UPDATE sessions SET updated_at = updated_at WHERE id",
@@ -421,13 +421,6 @@ async def _prune_session_chunk(
         refs.extend(result.fetchall())
     progression_ids = {row.id for row in refs if row.kind == "progression"}
     non_array_ids = {row.id for row in refs if row.non_array}
-    # Validate surviving JSON before publishing any archive. Only arrays can
-    # be removed below, so the store-wide non-array count stays the same.
-    non_array_count = (
-        await conn.execute(
-            text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
-        )
-    ).scalar_one()
     deferred_progressions = {row.id for row in refs if row.kind == "progression" and row.deferred}
     candidate_prog_ids = sorted(
         progression_ids - deferred_progressions - (deferred_progression_ids or set())
@@ -449,6 +442,21 @@ async def _prune_session_chunk(
         - current_deferred_ids
         - (deferred_direct_ids or set())
     )
+
+    # The message DELETE below parses every surviving collection in the store,
+    # and it runs only when this chunk has candidate messages. Those are the
+    # chunks that read every collection here first, before any archive is
+    # written, so malformed JSON fails the chunk while nothing has been
+    # published. A chunk with no candidate messages parses no collection
+    # outside its own lineage and pays for no store-wide read. Only arrays can
+    # be removed below, so the store-wide non-array count stays the same.
+    non_array_count: int | None = None
+    if candidate_msg_ids:
+        non_array_count = (
+            await conn.execute(
+                text(f"SELECT COUNT(*) FROM progressions p WHERE {non_array}")  # noqa: S608
+            )
+        ).scalar_one()
 
     if archive_destination is not None:
         # Archive-before-delete: durably write this chunk's doomed rows first.
@@ -509,16 +517,25 @@ async def _prune_session_chunk(
             preimages=preimage_rows,
         )
 
-    # Every destructive statement carries the terminal condition itself —
-    # see the module-level design note; the same reasoning applies per chunk.
-    still_terminal = f" AND session_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
+    # Every destructive statement carries the terminal condition itself, for the
+    # same race (see `_session_retention_predicate` in docs/internals/studio.md).
+    # The condition is a correlated EXISTS that looks each referenced session up
+    # by id. An `IN (SELECT id FROM sessions WHERE status IN (...))` form lists
+    # every terminal session in the store for every statement, so its cost grows
+    # with the whole store rather than with the chunk.
+    def still_terminal(column: str) -> str:
+        return (
+            f" AND EXISTS (SELECT 1 FROM sessions terminal_session"  # noqa: S608
+            f" WHERE terminal_session.id = {column}"
+            f" AND terminal_session.status IN ({sess_ph}))"
+        )
 
     for table in ("artifacts", "plays", "team_messages", "dispatch_outbox"):
         await _exec_chunked(
             conn,
             f"UPDATE {table} SET session_id = NULL WHERE session_id",  # noqa: S608
             session_ids,
-            suffix=still_terminal,
+            suffix=still_terminal(f"{table}.session_id"),
             suffix_params=_TERMINAL_SESSION_STATUSES,
         )
     await _exec_chunked(
@@ -526,16 +543,14 @@ async def _prune_session_chunk(
         "DELETE FROM terminal_deliveries WHERE transition_id IN ("
         "SELECT id FROM status_transitions WHERE entity_type = 'session' AND entity_id",
         session_ids,
-        suffix=f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph})))",  # noqa: S608
+        suffix=still_terminal("status_transitions.entity_id") + ")",
         suffix_params=_TERMINAL_SESSION_STATUSES,
     )
     await _exec_chunked(
         conn,
         "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
         session_ids,
-        suffix=(
-            f" AND entity_id IN (SELECT id FROM sessions WHERE status IN ({sess_ph}))"  # noqa: S608
-        ),
+        suffix=still_terminal("status_transitions.entity_id"),
         suffix_params=_TERMINAL_SESSION_STATUSES,
     )
     # branches cascade automatically via FK ON DELETE CASCADE
@@ -584,7 +599,6 @@ async def _prune_session_chunk(
             sorted(non_array_ids),
         )
     )
-    non_array_survivor_progressions = non_array_count - deferred_count
     if candidate_msg_ids:
         # One DELETE for the whole chunk. Its survivor check reads every progression's collection
         # in the store, and a DELETE per batch of ids repeated that read inside the write
@@ -609,11 +623,15 @@ async def _prune_session_chunk(
         )
         await conn.execute(text(f"DROP TABLE {message_table}"))
 
-    if deferred_count or non_array_survivor_progressions:
+    if non_array_count is None:
+        # Survivors were not counted, so the line names only what was.
+        if deferred_count:
+            _log.warning("Session prune: deferred_victim_progressions=%d", deferred_count)
+    elif deferred_count or non_array_count - deferred_count:
         _log.warning(
             "Session prune: deferred_victim_progressions=%d non_array_survivor_progressions=%d",
             deferred_count,
-            non_array_survivor_progressions,
+            non_array_count - deferred_count,
         )
     if deferred_direct_ids is not None:
         deferred_direct_ids.update(current_deferred_ids)
@@ -893,7 +911,10 @@ async def prune_old_data(
             # The chunk has committed and no transaction is open. A writer waiting on
             # the write lock retries on the busy handler's backoff, which sleeps up to
             # 100 ms per retry, so it cannot win a gap shorter than that sleep. Waiting
-            # here leaves the lock free long enough for it to take a turn.
+            # here leaves the lock free long enough for it to take a turn. Every chunk
+            # runs in its own write transaction, which on SQLite holds the store's single
+            # writer slot from its first statement, so a chunk that deleted nothing (all
+            # of its sessions kept) still held the lock, and the wait follows it too.
             if PRUNE_CHUNK_PAUSE_SECONDS > 0:
                 await asyncio.sleep(PRUNE_CHUNK_PAUSE_SECONDS)
 

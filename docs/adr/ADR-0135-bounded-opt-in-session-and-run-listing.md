@@ -59,7 +59,7 @@ before the listing DTO's NULL-to-zero timestamp fallback
 (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`).
 
 **P5 — Query labels and cursor encodings are not authorization.** Authentication and
-origin controls run before API routes (`lionagi/studio/app.py::create_app.require_studio_bearer_token`). File-store guards and
+origin controls run before API routes (`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app.require_studio_bearer_token`). File-store guards and
 configured store resolution precede listing (`lionhub/src/lionhub/orchestration/state_store.py::store_path`,
 `lionhub/src/lionhub/orchestration/state_store.py::require_file_store`, `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`). A project
 label is an ordinary user predicate (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). This
@@ -274,7 +274,7 @@ Both bodies contain only `detail` with `code`, `message`, and `restart_required:
 A well-formed token naming an unavailable key receives the restart response without
 trusting its payload. Foreign contexts share one response; do not expose foreign ids.
 Authentication refusal precedes token processing and keeps the existing authentication
-response, including configured-token 401 (`lionagi/studio/app.py::create_app.require_studio_bearer_token`).
+response, including configured-token 401 (`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app.require_studio_bearer_token`).
 
 Every page must execute the existing authentication/origin boundary, resolve the configured
 store independently of the token, establish current trusted scope, and validate cursor
@@ -520,7 +520,7 @@ not retry automatically or silently substitute v1. V1 remains explicitly selecta
 An absent configured file returns an exhausted empty page, with exact zero only if
 requested, and creates no database. If a supplied cursor's store has disappeared, return
 the D2 restart response. Non-file backends retain the existing unsupported-store response
-(`lionagi/studio/app.py::create_app._store_not_addressable_handler`); this ADR does not add backend support.
+(`lionhub/src/lionhub/serve/daemon/app.py::create_daemon_app._store_not_addressable_handler`); this ADR does not add backend support.
 
 The final result ORDER BY remains explicit. A final sort over at most the requested
 returned rows is allowed and must be visible in plan/work evidence. A candidate sort
@@ -583,7 +583,7 @@ they exist or pass at the source baseline. Existing v1 tests remain in force.
 
 | Contract | Test that fails if broken |
 | --- | --- |
-| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `tests/apps_studio_server/test_runs_list.py::test_runs_list_search_composes_with_pagination`. |
+| V1 shapes, defaults, matching offsets, totals, search and sort remain unchanged | `test_v1_default_and_explicit_version_identical`; `test_v1_matching_offsets_unchanged`; existing `test_runs_list_search_composes_with_pagination` at `apps/studio/backend/tests/lionagi_studio_tests/server/test_runs_list.py::test_runs_list_search_composes_with_pagination`. |
 | Selector, endpoint-specific controls and response discriminator | `test_v2_selector_validation_and_schema`; `test_v1_rejects_v2_controls`; `test_v2_sessions_does_not_add_filters`; `test_v2_run_page_diagnostics`. |
 | Complete raw ordering, NULLs, zero, equal timestamp/cost, deleted frontier | `test_v2_recent_keyset_equal_and_null_timestamps`; `test_v2_cost_keyset_zero_null_equal_cost_and_timestamp`; `test_v2_deleted_frontier_uses_saved_tuple`; `test_v2_raw_key_not_dto_fallback`. |
 | Codec/types/signature/context/errors without information echo | `test_v2_cursor_codec_roundtrip_and_tamper`; `test_v2_cursor_context_binding`; `test_v2_cursor_errors_do_not_echo_input`; `test_v2_cursor_allows_limit_and_count_change`. |

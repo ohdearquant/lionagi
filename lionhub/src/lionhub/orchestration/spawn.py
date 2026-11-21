@@ -20,6 +20,7 @@ from lionagi._paths import (
     _name_spellings,
     _resolve_profile_path,
     _unreadable_symlink_target,
+    is_user_lionagi_dir,
 )
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import _strip_frontmatter_prefix
@@ -232,13 +233,18 @@ def build_imodel_from_spec(
     workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
     tool_settings: dict[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+    secret_fill_skip: frozenset[str] | None = None,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
     effort is derived from that config either. ``tool_settings`` is a profile's tool set
     (``_profile_tool_settings``): it goes on a Claude Code request, and any other model is
-    refused.
+    refused. ``env`` is the whole environment the CLI child gets (a subscription account's,
+    ``resolve_leg_account``), and the codex config profile and default effort are read from
+    the codex home it names; ``secret_fill_skip`` names variables the secret lookup must not
+    fill into that child.
     """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
@@ -263,7 +269,7 @@ def build_imodel_from_spec(
         from lionhub.orchestration.console import progress
 
         profile_name = ms.model.split("/", 1)[1]
-        resolved_profile = resolve_codex_config_profile(profile_name)
+        resolved_profile = resolve_codex_config_profile(profile_name, env)
         if resolved_profile is not None:
             profile_model, codex_profile_overrides = resolved_profile
             if ignore_user_config:
@@ -285,7 +291,7 @@ def build_imodel_from_spec(
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
-        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides, env)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
@@ -306,6 +312,10 @@ def build_imodel_from_spec(
         merged = dict(codex_profile_overrides)
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
+    if env is not None:
+        extra["env"] = dict(env)
+    if secret_fill_skip:
+        extra["secret_fill_skip"] = frozenset(secret_fill_skip)
 
     model_instance = iModel(
         model=resolved_model,
@@ -380,7 +390,7 @@ def build_chat_model(
     if canonical == "codex":
         from lionhub.orchestration.console import progress
 
-        resolved_profile = resolve_codex_config_profile(model)
+        resolved_profile = resolve_codex_config_profile(model, env)
         if resolved_profile is not None:
             profile_name = model
             model, codex_profile_overrides = resolved_profile
@@ -400,6 +410,9 @@ def build_chat_model(
             mcp_servers,
             provider=provider,
             exclusive=mcp_exclusive or not mcp_servers,
+            # The codex config the child reads, and the home a generated profile goes in,
+            # are the ones its own environment names.
+            env=env,
         )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
@@ -419,7 +432,7 @@ def build_chat_model(
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
-        effort = codex_unset_effort_from_config(model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(model, codex_profile_overrides, env)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
@@ -699,6 +712,10 @@ class AgentProfile:
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
     mcp: str | None = None
     """MCP policy for this profile; ``none`` disables inherited MCP configuration."""
+    account: str | None = None
+    """Named subscription account the leg runs on (``lionhub.agent.subscription_accounts``)."""
+    codex_home: str | None = None
+    """Codex home a codex leg of this role runs under, as an absolute path."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -802,12 +819,34 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["contain_user_settings"] = True
     if profile.mcp is not None:
         config["mcp"] = profile.mcp
+    if profile.account is not None:
+        config["account"] = profile.account
+    if profile.codex_home is not None:
+        config["codex_home"] = profile.codex_home
     return config
 
 
-def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
-    """Index discoverable profiles by name and resolved runtime configuration."""
-    return {name: profile_config(load_agent_profile(name)) for name in list_agents()}
+def build_agent_profile_catalog(
+    refused: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration.
+
+    A profile refused because it chooses an account it may not choose is left out, so one such
+    file does not hide every other role; its reason, which names the file and the key, goes in
+    *refused* when given, and is printed as a warning either way. Any other load error raises.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+    from lionhub.orchestration.console import warn
+
+    catalog: dict[str, dict[str, Any]] = {}
+    for name in list_agents():
+        try:
+            catalog[name] = profile_config(load_agent_profile(name))
+        except SubscriptionAccountError as exc:
+            warn(f"left out of the profile list: {exc}")
+            if refused is not None:
+                refused[name] = str(exc)
+    return catalog
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:
@@ -880,11 +919,17 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
             if path is not None:
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
-                return _parse_profile(name, text)
+                profile = _parse_profile(name, text)
+                if not is_user_lionagi_dir(d):
+                    _refuse_profile_account(name, path, profile)
+                    _refuse_shadowing_an_account(name, path)
+                return profile
 
     plugin_path = _resolve_plugin_profile_path(name)
     if plugin_path is not None:
-        return _parse_profile(name, plugin_path.read_text())
+        profile = _parse_profile(name, plugin_path.read_text())
+        _refuse_profile_account(name, plugin_path, profile)
+        return profile
 
     if not dirs and not plugin_token:
         raise AgentProfileNotFoundError(
@@ -1004,6 +1049,163 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
         f"reading it as {DEFAULT_WORKLOAD}"
     )
     return DEFAULT_WORKLOAD
+
+
+def global_profile_codex_homes() -> tuple[str, ...]:
+    """Each ``codex_home`` a profile under ``~/.lionagi/agents`` names, in name order.
+
+    Those profiles are the only ones whose ``codex_home`` a leg honours, so these are the Codex
+    homes a role can run in beyond the accounts directory's own rows. Every name the directory
+    declares, in either layout and with any capitalisation of the ``.md`` suffix, is resolved
+    through ``_resolve_profile_path``, so the file read for a name is the one a leg of that name
+    loads, on a case-insensitive volume too. A name whose symlink target cannot be read resolves
+    to no file, as it does for a leg, and adds nothing. A profile that cannot be read otherwise,
+    or that the profile loader refuses, raises: the homes could not all be named.
+
+    Raises:
+        SubscriptionAccountError: a profile cannot be read or is refused by the loader.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    agents_dir = Path.home() / ".lionagi" / "agents"
+    if not agents_dir.is_dir():
+        return ()
+    names: set[str] = set()
+    for child in agents_dir.iterdir():
+        if child.is_dir():
+            nested = child / f"{child.name}.md"
+            if nested.is_file() or nested.is_symlink():
+                names.add(child.name)
+        elif child.suffix.lower() == ".md":
+            names.add(child.stem)
+    homes: list[str] = []
+    for name in sorted(names):
+        try:
+            path = _resolve_profile_path(agents_dir, name, unreadable_symlinks=[])
+        except AmbiguousProfileNameError as exc:
+            raise SubscriptionAccountError(
+                f"the Codex home a profile named {name!r} may name cannot be denied to a "
+                f"sandboxed child: {exc}"
+            ) from None
+        if path is None:
+            continue
+        profile = _parse_global_profile(
+            name, path, "the Codex home it may name cannot be denied to a sandboxed child"
+        )
+        if profile.codex_home is not None:
+            homes.append(profile.codex_home)
+    return tuple(dict.fromkeys(homes))
+
+
+def _parse_global_profile(name: str, path: Path, consequence: str) -> AgentProfile:
+    """Read and parse a profile under ``~/.lionagi/agents`` that a check depends on.
+
+    Any read or parse failure, whatever key it is about, comes out as one
+    ``SubscriptionAccountError`` naming the file and what could not be checked, so it leaves
+    through the same refusal as the check itself instead of as an unrelated error about a role
+    the caller never asked for.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    try:
+        return _parse_profile(name, path.read_text())
+    except (OSError, UnicodeDecodeError, ConfigurationError) as exc:
+        raise SubscriptionAccountError(
+            f"agent profile {name!r} at {path} cannot be read or parsed, so {consequence}: {exc}"
+        ) from None
+
+
+def _refuse_profile_account(name: str, path: Path, profile: AgentProfile) -> None:
+    """Refuse ``account`` and ``codex_home`` from a profile outside ``~/.lionagi/agents``.
+
+    A profile found in a project's ``.lionagi/agents`` comes with the checkout, and a plugin's
+    comes with the plugin; either choosing the sign-in a leg is handed would let that checkout
+    or plugin pick which of this machine's accounts, or which Codex home, the leg runs on. The
+    profile is refused rather than read without the keys: read without them, the leg would run
+    on this machine's own login, which hides the attempt and is the wrong account anyway.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    for key in ("account", "codex_home"):
+        if getattr(profile, key) is not None:
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} sets {key}; {key} is honoured only in a "
+                f"profile under {Path.home() / '.lionagi' / 'agents'}. Move it to a profile "
+                "there, or remove it from this one."
+            )
+
+
+def _refuse_shadowing_an_account(name: str, path: Path) -> None:
+    """Refuse a project profile that hides a global profile of the same name naming an account.
+
+    The project's ``.lionagi/agents`` is searched first, so a checkout carrying a profile of the
+    role's name, with neither key, would move a role the operator put on an account back onto
+    this machine's own login. A global profile of the name that is a symlink to a target that
+    cannot be read is refused too, rather than treated as absent: an unmounted volume would
+    otherwise hand the role to the checkout.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    unreadable: list[tuple[Path, str]] = []
+    try:
+        global_path = _resolve_profile_path(
+            Path.home() / ".lionagi" / "agents", name, unreadable_symlinks=unreadable
+        )
+    except AmbiguousProfileNameError:
+        # The global root refuses this name outright, so a request reaching it fails: the
+        # project profile displaces nothing there, and each global spelling still loads under
+        # its own name, which the project profile does not intercept.
+        return
+    if global_path is None:
+        if unreadable:
+            link, target = unreadable[0]
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} hides {link}, whose symlink target "
+                f"{target} cannot be read, so whether it names an account cannot be checked. "
+                "Restore the target, or rename the project profile."
+            )
+        return
+    shadowed = _parse_global_profile(
+        name, global_path, f"whether the profile at {path} hides an account cannot be checked"
+    )
+    for key in ("account", "codex_home"):
+        if getattr(shadowed, key) is not None:
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} hides {global_path}, which sets {key}; a "
+                "profile in a checkout cannot move a role off the account its global profile "
+                "names. Rename the project profile, or remove it."
+            )
+
+
+def _parse_profile_account(name: str, frontmatter: dict) -> tuple[str | None, str | None]:
+    """The profile's ``account`` and ``codex_home``, refused when malformed or both set.
+
+    A malformed value is refused rather than read as unset: an unset account runs the leg on
+    this machine's own login, which is the wrong account rather than a smaller setting. Whether
+    the account exists, and whether the home is a directory, is checked when a leg is spawned.
+    """
+    from lionhub.agent.subscription_accounts import (
+        SubscriptionAccountError,
+        validate_account_name,
+    )
+
+    account = frontmatter.get("account")
+    codex_home = frontmatter.get("codex_home")
+    if account is not None and codex_home is not None:
+        raise SubscriptionAccountError(
+            f"agent profile {name!r}: account and codex_home name the same thing; set one."
+        )
+    if account is not None:
+        validate_account_name(account, where=f"agent profile {name!r}: account")
+    if codex_home is not None and (
+        not isinstance(codex_home, str)
+        or codex_home.startswith("~")
+        or not os.path.isabs(codex_home)
+    ):
+        raise SubscriptionAccountError(
+            f"agent profile {name!r}: codex_home {codex_home!r} is not an absolute path."
+        )
+    return account, codex_home
 
 
 def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
@@ -1694,6 +1896,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "its worker is not contained"
             )
 
+    account, codex_home = _parse_profile_account(name, frontmatter)
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion
     if lion_system:
@@ -1731,6 +1934,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
         contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
         mcp=_parse_profile_mcp(name, frontmatter),
+        account=account,
+        codex_home=codex_home,
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1752,6 +1957,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "workload",
                 "contain_user_settings",
                 "mcp",
+                "account",
+                "codex_home",
             )
         },
     )

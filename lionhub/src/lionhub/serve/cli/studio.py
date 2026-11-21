@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -200,7 +201,36 @@ def _ensure_apps_importable() -> bool:
     repo_root_str = str(repo_root)
     if repo_root_str not in sys.path:
         sys.path.insert(0, repo_root_str)
+    # In a checkout the application's source root sits under apps/; a wheel carries
+    # lionagi_studio at its top level and needs no entry.
+    app_source = repo_root / "apps" / "studio" / "backend" / "src"
+    if app_source.is_dir() and str(app_source) not in sys.path:
+        sys.path.insert(0, str(app_source))
     return True
+
+
+def _studio_application_missing() -> bool:
+    """Report, before the server starts, a Studio application that is not installed.
+
+    The probe locates the module without running it, so the application is built once, by the
+    server. An application that is present but fails to import is reported by the server's own
+    import of it.
+    """
+    module = "lionagi_studio.app"
+    try:
+        missing = importlib.util.find_spec(module) is None
+        reason = ""
+    except ImportError as exc:
+        missing = True
+        reason = f" ({type(exc).__name__}: {exc})"
+    if missing:
+        print(
+            f"Error: the Studio application ({module}) is not installed{reason}. Install "
+            "lionagi with its studio extra (pip install 'lionagi[studio]'), or run from a "
+            "source checkout.",
+            file=sys.stderr,
+        )
+    return missing
 
 
 def _has_docker() -> bool:
@@ -499,6 +529,11 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
                 advice = "Choose another port with `li studio --port <port>`."
             log_error(f"Lion Studio did not start: {reason}. {advice}")
             return 1
+        # This process serves the page, so an absent application is reported before a code
+        # is minted and a link goes out that no server would answer.
+        _ensure_apps_importable()
+        if _studio_application_missing():
+            return 1
         code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")
@@ -522,12 +557,12 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
 
-    # The backend app lives inside the installed package
-    # (lionagi.studio.app); it does not import anything from the repo's
-    # apps/ tree, so a pip install must not be gated on finding one. The
-    # repo root is still added to sys.path when present, purely as a
-    # convenience for repo checkouts.
+    # The backend app is the lionagi_studio package. A wheel carries it at its top level, so a
+    # pip install is not gated on finding a checkout; in a checkout its source root under
+    # apps/ is added to sys.path.
     _ensure_apps_importable()
+    if _studio_application_missing():
+        return 1
 
     print(f"Lion Studio API: http://{host}:{port}")
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
@@ -540,7 +575,7 @@ def _start_backend_only(host: str, port: int) -> int:
     # would serve the pairing route from a process that never issued the code,
     # so a --no-frontend start, which mints nothing itself, runs one worker too.
     uvicorn.run(
-        "lionagi.studio.app:app",
+        "lionagi_studio.app:app",
         host=host,
         port=port,
         workers=1,
@@ -760,6 +795,8 @@ def _start_local(
             file=sys.stderr,
         )
         return 1
+    if _studio_application_missing():
+        return 1
 
     frontend_proc: subprocess.Popen | None = None
 
@@ -825,7 +862,7 @@ def _start_local(
     try:
         # One process, as in _start_backend_only: the dev page's code lives here.
         uvicorn.run(
-            "lionagi.studio.app:app",
+            "lionagi_studio.app:app",
             host=host,
             port=port,
             workers=1,

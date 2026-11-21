@@ -16,8 +16,8 @@ from lionagi.state.db import StateDB
 from lionagi.state.health import SessionHealth
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 from lionagi.state.lifecycle.deliveries import reconcile_unacknowledged, register_consumer
+from tests._stale_session_seed import _seed_stale_session
 from tests.apps_studio_server._helpers import run_async
-from tests.apps_studio_server.test_admin_transition import _seed_stale_session
 
 
 def test_admin_committed_transition_is_pushed_and_replayable(tmp_path, monkeypatch):

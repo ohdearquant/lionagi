@@ -1200,6 +1200,13 @@ Index(
     sqlite_where=text("schedule_run_id IS NOT NULL"),
     postgresql_where=text("schedule_run_id IS NOT NULL"),
 )
+# Pruning a session clears session_id on its dispatches the same way.
+Index(
+    "idx_dispatch_outbox_session",
+    dispatch_outbox.c.session_id,
+    sqlite_where=text("session_id IS NOT NULL"),
+    postgresql_where=text("session_id IS NOT NULL"),
+)
 
 # run_tags
 # Free-form review labels on a run (session); kept in canonical metadata (not

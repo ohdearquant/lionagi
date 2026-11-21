@@ -463,7 +463,10 @@ _REGISTERED: tuple[Verb, ...] = (
     ),
     Verb(
         name="job.output",
-        summary="Console tail and artifact list of a background run.",
+        summary=(
+            "Console tail, artifact list, final reply and, for an agent run, the path of "
+            "its saved branch transcript, where its tool calls are."
+        ),
         executor="job",
         own_schema=_JOB_OUTPUT_SCHEMA,
     ),

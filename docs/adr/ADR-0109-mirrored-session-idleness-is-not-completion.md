@@ -61,7 +61,7 @@ process-wide terminal callback if, and only if, `notify.on_terminal` resolves
 to a handler. The CLI entry point calls `register_settings_terminal_callback`
 before dispatching any subcommand, `li mirror` included
 (`lionhub/src/lionhub/serve/cli/main.py::_run`, inside `_run` and ahead of argparse dispatch),
-and Studio service startup calls it as well (`lionagi/studio/app.py::lifespan`,
+and Studio service startup calls it as well (`lionhub/src/lionhub/serve/daemon/app.py::lifespan`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not
 (`lionagi/state/lifecycle/notify_settings.py::register_settings_terminal_callback`). So with no

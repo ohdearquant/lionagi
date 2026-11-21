@@ -30,6 +30,8 @@ from lionhub.serve.cli.orchestrate.fanout import (
     FAILED_SYNTHESIS_MARKER,
     FAILED_WORKER_MARKER,
 )
+from tests._fanout_test_support import _completed as _completed
+from tests._fanout_test_support import _failed as _failed
 
 
 def _fanout_env(tmp_path) -> tuple[OrchestrationEnv, RunDir, Session]:
@@ -88,23 +90,6 @@ def _wire_fanout(monkeypatch, env, assignments, run_dag, warnings=None, progress
         monkeypatch.setattr(fanout_module, "progress", progress.append)
     monkeypatch.setattr(PlanningEngine, "new_run", lambda self, **kwargs: engine_run)
     return stop_persist
-
-
-def _completed(session, node, response, name="worker"):
-    """Leave a node the way a real run_dag leaves a finished one — terminal status
-    included, so a later pass over the same graph does not re-execute it."""
-    node.execution.status = EventStatus.COMPLETED
-    node.execution.response = response
-    return asyncio.create_task(
-        session.emit(NodeCompleted(op_id=str(node.id), name=name, elapsed=0.01))
-    )
-
-
-def _failed(session, node, name="worker"):
-    node.execution.status = EventStatus.FAILED
-    return asyncio.create_task(
-        session.emit(NodeFailed(op_id=str(node.id), name=name, elapsed=0.01))
-    )
 
 
 def _one_fails_one_completes(session):

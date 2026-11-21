@@ -485,9 +485,10 @@ async def test_invocation_reaper_index_matches_every_schema_path(tmp_path, sqlit
     assert repaired_columns == expected_columns
 
 
-_RUN_REFERENCE_INDEXES = (
+_PRUNE_REFERENCE_INDEXES = (
     ("idx_sched_runs_chain_parent", "schedule_runs", "chain_parent_id"),
     ("idx_dispatch_outbox_schedule_run", "dispatch_outbox", "schedule_run_id"),
+    ("idx_dispatch_outbox_session", "dispatch_outbox", "session_id"),
 )
 
 
@@ -506,14 +507,17 @@ def _index_statements(db_path) -> dict[str, str]:
     return {name: _flat_sql(sql) for name, sql in rows}
 
 
-async def test_run_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
-    """The columns that retention pruning nulls out are covered by partial indexes in
-    schema.sql, the table metadata and the runtime index list, and the two UPDATEs
-    plan as an index SEARCH on a store opened through StateDB."""
+async def test_prune_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
+    """Each index in the prune-reference list is declared alike in schema.sql, the
+    table metadata and the runtime index list, and a bare UPDATE nulling its column
+    plans as a SEARCH on it in a store opened through StateDB. The six statements a
+    session chunk runs to clear or delete its session references are planned as the
+    prune issues them by test_session_chunk_checks_terminal_status_by_session_id
+    in lionhub/tests/lionhub_tests/orchestration/scheduler/test_db_maintenance.py."""
     from lionagi.state.db import _SCHEMA_PATH, StateDB
     from lionagi.state.schema_migrations import MIGRATION_INDEXES
 
-    raw_db = tmp_path / "raw_run_reference_idx.db"
+    raw_db = tmp_path / "raw_prune_reference_idx.db"
     schema_lines = [
         ln
         for ln in _SCHEMA_PATH.read_text().splitlines()
@@ -533,12 +537,12 @@ async def test_run_reference_indexes_match_every_schema_path(tmp_path, sqlite_me
     async with sqlite_meta_engine.connect() as conn:
         metadata_indexes = await conn.run_sync(_metadata_indexes)
 
-    store_db = tmp_path / "store_run_reference_idx.db"
+    store_db = tmp_path / "store_prune_reference_idx.db"
     async with StateDB(store_db):
         pass
     store_indexes = _index_statements(store_db)
 
-    for name, table, column in _RUN_REFERENCE_INDEXES:
+    for name, table, column in _PRUNE_REFERENCE_INDEXES:
         predicate = f"{table}({column}) WHERE {column} IS NOT NULL"
         assert predicate in raw_indexes.get(name, ""), name
         assert metadata_indexes[table].get(name) == [column], name
@@ -554,22 +558,22 @@ async def test_run_reference_indexes_match_every_schema_path(tmp_path, sqlite_me
         assert not any(detail.startswith("SCAN") for detail in plan), plan
 
 
-async def test_reopening_a_store_without_run_reference_indexes_adds_them(tmp_path):
-    """A store that predates the run-reference indexes gains them when StateDB opens it."""
+async def test_reopening_a_store_without_prune_reference_indexes_adds_them(tmp_path):
+    """A store that predates the prune-reference indexes gains them when StateDB opens it."""
     from lionagi.state.db import StateDB
 
-    db_path = tmp_path / "pre_run_reference_idx.db"
+    db_path = tmp_path / "pre_prune_reference_idx.db"
     async with StateDB(db_path):
         pass
     with sqlite3.connect(db_path) as conn:
-        for name, _table, _column in _RUN_REFERENCE_INDEXES:
+        for name, _table, _column in _PRUNE_REFERENCE_INDEXES:
             conn.execute(f"DROP INDEX IF EXISTS {name}")
-    assert not {name for name, _t, _c in _RUN_REFERENCE_INDEXES} & set(_index_statements(db_path))
+    assert not {name for name, _t, _c in _PRUNE_REFERENCE_INDEXES} & set(_index_statements(db_path))
 
     async with StateDB(db_path):
         pass
     reopened = _index_statements(db_path)
-    for name, table, column in _RUN_REFERENCE_INDEXES:
+    for name, table, column in _PRUNE_REFERENCE_INDEXES:
         assert f"{table}({column}) WHERE {column} IS NOT NULL" in reopened.get(name, ""), name
 
 

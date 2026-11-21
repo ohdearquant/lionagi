@@ -66,7 +66,7 @@ aliases. UI code must join invocations, sessions, graphs, messages, artifacts, c
 effective health without a backend-owned projection contract.
 
 **P7 — executable workflow compilation is owned by Studio.**
-`lionagi/studio/services/workflow_compile.py` translates an authored workflow graph into an
+`apps/studio/backend/src/lionagi_studio/services/workflow_compile.py` translates an authored workflow graph into an
 `OperationGraph`, resolves engine definitions, validates expressions and paths, and constructs
 engine operations. `workflow_run.py` then duplicates persistence setup so a request can execute
 the graph. Compilation is runtime business logic. Keeping it inside the optional web application

@@ -16,6 +16,7 @@ __all__ = (
     "find_lionagi_dirs",
     "is_account_home",
     "is_account_lionagi_dir",
+    "is_user_lionagi_dir",
 )
 
 LIONAGI_HOME: Path = Path(os.environ.get("LIONAGI_HOME", Path.home() / ".lionagi")).expanduser()
@@ -73,6 +74,16 @@ def is_account_lionagi_dir(directory: Path) -> bool:
     """
     home = _account_home()
     return home is not None and _same_directory(directory, home / ".lionagi")
+
+
+def is_user_lionagi_dir(directory: Path) -> bool:
+    """Whether *directory* is the user-level `.lionagi` (``Path.home() / ".lionagi"``), by any
+    spelling.
+
+    The one answer to "is this the user's own profile directory": project discovery and the
+    child sandbox both ask it. A directory that cannot be compared answers False.
+    """
+    return _same_directory(directory, Path.home() / ".lionagi")
 
 
 def _find_git_root(cwd: Path) -> Path | None:

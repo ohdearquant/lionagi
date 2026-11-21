@@ -226,7 +226,7 @@ def _studio_config_default_origins(monkeypatch) -> list[str]:
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     import importlib
 
-    config = importlib.import_module("lionagi.studio.config")
+    config = importlib.import_module("lionagi_studio.config")
     return config.CORS_ORIGINS
 
 
@@ -278,7 +278,7 @@ _FETCH_SITE_RULE = re.compile(
 def test_studio_docs_state_the_fetch_site_rule_the_daemon_applies(page: Path) -> None:
     """Each trust section names the Sec-Fetch-Site values that pass without a
     bearer and those that need one; both lists must be what the daemon decides."""
-    from lionagi.studio.app import _fetch_site_accepted_without_origin
+    from lionhub.serve.daemon.app import _fetch_site_accepted_without_origin
 
     match = _FETCH_SITE_RULE.search(page.read_text())
     assert match, f"{page.name} does not state the Sec-Fetch-Site rule"
