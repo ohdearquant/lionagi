@@ -19,7 +19,9 @@
 
 - With the child sandbox on, a Codex child's command line carries no `--sandbox` and no `-s`: it
   carries `default_permissions` and a `permissions.lionagi_child` table as the last `-c`
-  overrides, with the same write roots and network setting the sandbox mode gave. The
+  overrides, with the same write roots and network setting the sandbox mode gave: the network
+  is off for a light child and a read-only one, and a heavy workspace-write child takes the user
+  config's `sandbox_workspace_write.network_access` (off when nothing sets it). The
   `sandbox_workspace_write` pins are no longer emitted in that state. With the child sandbox off
   the command line is unchanged.
 - A Codex launch under the profile refuses `sandbox_mode`, `permissions` and `default_permissions`

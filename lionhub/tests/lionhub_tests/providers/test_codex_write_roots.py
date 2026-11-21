@@ -77,6 +77,7 @@ def _expected(
     read_only=False,
     exclude_slash_tmp=False,
     exclude_tmpdir=False,
+    network=False,
 ) -> dict:
     """The table the builder gives these inputs, rendered and parsed as a command line carries it."""
     from lionhub.agent.child_sandbox import resolve_child_sandbox
@@ -92,6 +93,7 @@ def _expected(
         write=write,
         light=light,
         read_only=read_only,
+        network=network,
         exclude_slash_tmp=exclude_slash_tmp,
         exclude_tmpdir=exclude_tmpdir,
     )
@@ -161,6 +163,46 @@ def test_a_heavy_profile_honours_the_temp_directory_exclusions(tmp_path, key):
     table = _table(_codex(tmp_path, env=env))
     assert table == _expected(env, write=_legacy_roots(), **flags)
     assert table != _expected(env, write=_legacy_roots())
+
+
+@pytest.mark.parametrize("granted", [True, False])
+def test_a_heavy_profile_takes_the_network_setting_the_user_config_gives(tmp_path, granted):
+    env = _config_home(
+        tmp_path,
+        'sandbox_mode = "workspace-write"',
+        "",
+        "[sandbox_workspace_write]",
+        f"network_access = {str(granted).lower()}",
+    )
+    table = _table(_codex(tmp_path, env=env))
+    assert table["network"] == {"enabled": granted}
+    assert table == _expected(env, write=_legacy_roots(), network=granted)
+
+
+def test_a_heavy_profile_has_the_network_off_when_no_config_sets_it(tmp_path):
+    env = _config_home(tmp_path, 'sandbox_mode = "workspace-write"')
+    assert _table(_codex(tmp_path, env=env))["network"] == {"enabled": False}
+
+
+@pytest.mark.parametrize(
+    ("kw", "mode"),
+    [
+        ({"workload": "light"}, "workspace-write"),
+        ({}, "read-only"),
+        ({"sandbox": "read-only"}, "workspace-write"),
+    ],
+)
+def test_the_network_stays_off_for_light_and_read_only_profiles_whatever_the_config_says(
+    tmp_path, kw, mode
+):
+    env = _config_home(
+        tmp_path,
+        f'sandbox_mode = "{mode}"',
+        "",
+        "[sandbox_workspace_write]",
+        "network_access = true",
+    )
+    assert _table(_codex(tmp_path, env=env, **kw))["network"] == {"enabled": False}
 
 
 def test_settings_carried_from_an_ignored_user_config_are_in_the_table_not_pinned(tmp_path):
@@ -260,6 +302,16 @@ def test_an_add_dir_that_overlaps_the_probe_record_directory_is_refused(
     root = _record_overlaps(lionagi_home)[where]
     with pytest.raises(CLIInputRefusedError, match="probe record directory"):
         _codex(_project(tmp_path), env=_config_home(tmp_path), full_auto=True, add_dir=[str(root)])
+
+
+@pytest.mark.parametrize("kw", [{"sandbox": "read-only"}, {}])
+def test_an_add_dir_on_the_probe_record_directory_is_refused_under_a_read_only_profile(
+    tmp_path, lionagi_home, kw
+):
+    # A heavy request with no sandbox and no configured mode is read-only too.
+    root = _record_overlaps(lionagi_home)["equal"]
+    with pytest.raises(CLIInputRefusedError, match="probe record directory"):
+        _codex(_project(tmp_path), env=_config_home(tmp_path), add_dir=[str(root)], **kw)
 
 
 @pytest.mark.parametrize("where", ["above", "equal", "inside"])

@@ -1360,13 +1360,15 @@ def _caller_writable_roots(plain: _PlainRequest) -> list[str] | None:
 
 def _heavy_sandbox_settings(
     plain: _PlainRequest, env: Mapping[str, str] | None, carried: Any
-) -> tuple[str | None, bool, bool]:
-    """The sandbox mode and the two temp-directory exclusions codex would apply to a heavy run
-    that names no sandbox, as ``(mode, exclude_slash_tmp, exclude_tmpdir_env_var)``.
+) -> tuple[str | None, bool, bool, bool]:
+    """The sandbox mode, the two temp-directory exclusions and the network setting codex would
+    apply to a heavy run, as ``(mode, exclude_slash_tmp, exclude_tmpdir_env_var,
+    network_access)``.
 
     They come from the user config layers, a later layer beating an earlier one (the config
     file, then the profile the run selects). Under ``--ignore-user-config`` the settings the
-    ignored config carried stand in for them. A value no layer sets is ``None`` / ``False``.
+    ignored config carried stand in for them. A value no layer sets is ``None`` / ``False``;
+    ``False`` for ``network_access`` is codex's own default for a workspace-write sandbox.
     """
     from lionhub.providers.openai._codex_permissions import user_layer_tables
 
@@ -1386,19 +1388,20 @@ def _heavy_sandbox_settings(
             mode = value
         configured = table.get("sandbox_workspace_write")
         if isinstance(configured, Mapping):
-            for key in _NARROWING_WORKSPACE_KEYS:
+            for key in (*_NARROWING_WORKSPACE_KEYS, "network_access"):
                 if isinstance(configured.get(key), bool):
                     exclusions[key] = configured[key]
     if carried is not None:
         if carried.sandbox_mode:
             mode = carried.sandbox_mode
         for name, value in carried.workspace_write:
-            if name in _NARROWING_WORKSPACE_KEYS and isinstance(value, bool):
+            if name in (*_NARROWING_WORKSPACE_KEYS, "network_access") and isinstance(value, bool):
                 exclusions[name] = value
     return (
         mode,
         exclusions.get("exclude_slash_tmp", False),
         exclusions.get("exclude_tmpdir_env_var", False),
+        exclusions.get("network_access", False),
     )
 
 
@@ -1461,24 +1464,33 @@ def _permission_profile_args(
     without one: the user config's ``sandbox_mode`` (the one an ignored user config carried
     stands in), then the selected profile's, and ``read-only`` when neither sets it. A read-only
     profile has no write entry, the working directory included. A heavy workspace-write
-    profile honours the user config's ``exclude_slash_tmp`` and ``exclude_tmpdir_env_var``.
+    profile honours the user config's ``exclude_slash_tmp``, ``exclude_tmpdir_env_var`` and
+    ``network_access``; the network is off for a light request and for a read-only profile, as
+    the read-only sandbox mode left it.
     """
     light = plain.workload == "light"
-    exclude_slash_tmp = exclude_tmpdir = False
+    exclude_slash_tmp = exclude_tmpdir = network = False
     if light:
         mode: str | None = "read-only" if plain.sandbox == "read-only" else "workspace-write"
     else:
-        inherited, exclude_slash_tmp, exclude_tmpdir = _heavy_sandbox_settings(plain, env, carried)
+        inherited, exclude_slash_tmp, exclude_tmpdir, network = _heavy_sandbox_settings(
+            plain, env, carried
+        )
         if plain.full_auto:
             mode = "workspace-write"
         else:
             mode = plain.sandbox or inherited or "read-only"
     read_only = mode == "read-only"
+    # Computed in every mode, read-only included, so a root on the probe record directory is
+    # refused even where the table grants no write entry: the command line still carries each
+    # `add_dir` directory as `--add-dir`.
+    write_roots = _profile_write_roots(plain, cwd)
     table = permission_profile_table(
         deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
-        write=[] if read_only else _profile_write_roots(plain, cwd),
+        write=[] if read_only else write_roots,
         light=light,
         read_only=read_only,
+        network=network and not read_only,
         exclude_slash_tmp=exclude_slash_tmp and not read_only,
         exclude_tmpdir=exclude_tmpdir and not read_only,
     )

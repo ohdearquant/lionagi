@@ -97,6 +97,7 @@ def permission_profile_table(
     write: Iterable[str],
     light: bool,
     read_only: bool,
+    network: bool,
     exclude_slash_tmp: bool = False,
     exclude_tmpdir: bool = False,
 ) -> dict[str, Any]:
@@ -105,7 +106,9 @@ def permission_profile_table(
     ``deny`` entries are denied to read and to write; a path also named in ``write`` stays
     denied. ``write`` entries are the request's writable roots beyond its working directory.
     A light request also has ``/tmp`` and ``$TMPDIR`` made read-only (codex's ``:workspace``
-    leaves both writable) and the network off; a heavy one has the network on. ``read_only``
+    leaves both writable) and the network off whatever ``network`` says. ``network`` is the
+    caller's setting for a heavy request: the user config's ``network_access``, which codex
+    leaves off when nothing sets it. ``read_only``
     starts from codex's ``:read-only`` built-in, which refuses every write, the working
     directory included. ``exclude_slash_tmp`` and ``exclude_tmpdir`` make ``/tmp`` and
     ``$TMPDIR`` read-only for a heavy request, as the legacy workspace-write settings
@@ -124,7 +127,7 @@ def permission_profile_table(
     return {
         "extends": ":read-only" if read_only else ":workspace",
         "filesystem": filesystem,
-        "network": {"enabled": not light},
+        "network": {"enabled": network and not light},
     }
 
 

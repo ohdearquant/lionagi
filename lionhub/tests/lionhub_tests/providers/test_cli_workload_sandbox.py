@@ -5,8 +5,9 @@
 workspace-write sandbox with no network and no extra writable roots, agy under
 ``--sandbox``, Claude Code without its file-writing tools. A setting that would undo
 that is refused, and Pi, which has no sandbox to pin, refuses ``light`` outright. A
-``heavy`` codex agent keeps its network and temporary directories, but its extra writable
-roots are the child sandbox's ``allow_write`` list, not whatever the user config lists."""
+``heavy`` codex agent keeps the network setting its user config gives and its temporary
+directories, but its extra writable roots are the child sandbox's ``allow_write`` list, not
+whatever the user config lists."""
 
 from __future__ import annotations
 
@@ -107,7 +108,7 @@ def _profile_table(args: list[str]) -> dict:
     return tomllib.loads("table = " + rows[0].split("=", 1)[1])["table"]
 
 
-def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
+def _expected_profile(env, *, write, light=False, read_only=False, network=False) -> dict:
     """The table a launch builds for these inputs, rendered and parsed as a command line carries it."""
     try:
         import tomllib
@@ -128,6 +129,7 @@ def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
         write=write,
         light=light,
         read_only=read_only,
+        network=network,
     )
     return tomllib.loads("table = " + toml_override_value(table))["table"]
 
@@ -178,7 +180,8 @@ def test_the_heavy_profile_beats_the_user_configs_writable_roots(tmp_path, sandb
     # Codex ignores `sandbox_workspace_write.*` under a profile, so the profile's write entries
     # are the child sandbox's roots and never the roots the user config lists.
     table = _profile_table(args)
-    assert table == _expected_profile(env, write=_default_roots())
+    # The ignored config's `network_access = true` carries into the profile's network key.
+    assert table == _expected_profile(env, write=_default_roots(), network=True)
     assert "everything" not in str(table)
     assert _pairs(args, "-c")[-1].startswith("permissions.lionagi_child=")
 

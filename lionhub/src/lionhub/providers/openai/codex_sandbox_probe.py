@@ -444,6 +444,9 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             write=[] if light else [str(dirs["entry"])],
             light=light,
             read_only=False,
+            # The heavy runs set the network on, so the network arms test the profile's
+            # network key both ways: off refuses, on reaches the listener.
+            network=not light,
         )
 
     q = shlex.quote

@@ -75,7 +75,7 @@ def _profile_table(args: list[str]) -> dict:
     return _toml_loads("table = " + rows[0].split("=", 1)[1])["table"]
 
 
-def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
+def _expected_profile(env, *, write, light=False, read_only=False, network=False) -> dict:
     """The table a launch builds for these inputs, rendered and parsed as a command line carries it."""
     policy = resolve_child_sandbox(None)
     table = permission_profile_table(
@@ -83,6 +83,7 @@ def _expected_profile(env, *, write, light=False, read_only=False) -> dict:
         write=write,
         light=light,
         read_only=read_only,
+        network=network,
     )
     return _toml_loads("table = " + toml_override_value(table))["table"]
 
@@ -227,7 +228,8 @@ def test_with_the_child_sandbox_on_there_is_no_sandbox_mode_on_the_command_line(
         env, write=[] if light or read_only else _default_roots(), light=light, read_only=read_only
     )
     assert table["extends"] == (":read-only" if read_only else ":workspace")
-    assert table["network"]["enabled"] is (not light)
+    # The test's user config sets no `network_access`, so the network is off for every request.
+    assert table["network"]["enabled"] is False
     if light and not read_only:
         assert table["filesystem"][":tmpdir"] == "read"
         assert table["filesystem"][":slash_tmp"] == "read"
