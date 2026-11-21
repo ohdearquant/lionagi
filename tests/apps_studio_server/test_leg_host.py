@@ -96,6 +96,39 @@ def test_the_leg_host_refusals(host: Path, overrides: dict, names: str) -> None:
         leg_host.validate_launch(_request(**overrides))
 
 
+def _logins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An accounts directory holding one Claude Code account, ``alpha``, set for the daemon."""
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    (logins / "claude-alpha").write_text("example-login\n")
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+    return logins
+
+
+def test_a_launch_may_name_an_account_in_the_hosts_accounts_directory(
+    host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _logins(tmp_path, monkeypatch)
+    assert leg_host.validate_launch(_request(action_account="alpha")).account == "alpha"
+    assert leg_host.validate_launch(_request()).account is None
+
+
+@pytest.mark.parametrize(
+    ("account", "names"),
+    [
+        ("beta", "no claude_code entry"),
+        ("Alpha", "not an account name"),
+        ("../alpha", "not an account name"),
+    ],
+)
+def test_an_account_the_leg_would_refuse_is_refused_at_launch(
+    host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account: str, names: str
+) -> None:
+    _logins(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match=f"action_account: .*{names}"):
+        leg_host.validate_launch(_request(action_account=account))
+
+
 def test_a_project_profile_cannot_replace_the_hosts_own(
     host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -222,10 +255,14 @@ def test_the_leg_environment_is_the_allow_list() -> None:
         "OPENAI_API_KEY": "key",
         "LIONAGI_STATE_DB_URL": "postgres://x",
     }
+    parent["LIONAGI_HOME"] = "/srv/lionagi"
+    parent["LIONAGI_LOGINS_DIR"] = "/srv/logins"
     assert leg_host.leg_env(parent) == {
         "PATH": "/usr/bin",
         "HOME": "/home/agent",
         "CLAUDE_CODE_OAUTH_TOKEN": "login",
+        "LIONAGI_HOME": "/srv/lionagi",
+        "LIONAGI_LOGINS_DIR": "/srv/logins",
     }
 
 
@@ -334,6 +371,47 @@ def test_a_leg_launch_turns_mcp_off_and_echoes_its_head(
     assert recorded["node_metadata"] == {"repo": "lionagi", "head": HEAD}
 
 
+def test_a_named_account_reaches_li_agent_and_is_echoed(
+    host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionhub.serve.daemon.services.launches as svc
+
+    _logins(tmp_path, monkeypatch)
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", TOKEN)
+    recorded: dict = {}
+
+    async def _record(argv, **kwargs):
+        recorded.update(kwargs, argv=argv)
+        return "0123abcd4567"
+
+    async def _no_sweep(repo, *, live):
+        return []
+
+    monkeypatch.setattr(svc, "launch_detached_argv", _record)
+    monkeypatch.setattr(leg_host, "sweep_worktrees", _no_sweep)
+    client = _client(monkeypatch, tmp_path)
+
+    resp = client.post(
+        "/api/launches/",
+        json=_request(action_account="alpha"),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["action_account"] == "alpha"
+    argv = recorded["argv"]
+    at = argv.index("--account")
+    assert argv[at + 1] == "alpha" and at < argv.index("--")
+    assert recorded["leg"].account == "alpha"
+
+    missing = client.post(
+        "/api/launches/",
+        json=_request(action_account="beta"),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert missing.status_code == 422 and "action_account" in missing.json()["detail"]
+
+
 def test_a_leg_host_refuses_other_writes_but_only_after_the_bearer(
     host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,7 +425,12 @@ def test_a_leg_host_refuses_other_writes_but_only_after_the_bearer(
     )
     assert refused.status_code == 403
     caps = client.get("/api/launches/capabilities", headers={"Authorization": f"Bearer {TOKEN}"})
-    assert caps.json() == {"leg_host": True, "pinned_head": True, "max_concurrent": 2}
+    assert caps.json() == {
+        "leg_host": True,
+        "pinned_head": True,
+        "named_account": True,
+        "max_concurrent": 2,
+    }
 
 
 def test_a_plain_daemon_serves_no_pinned_heads_and_keeps_no_results(
@@ -360,6 +443,16 @@ def test_a_plain_daemon_serves_no_pinned_heads_and_keeps_no_results(
     resp = client.post("/api/launches/", json=_request())
     assert resp.status_code == 422
     assert "leg-host mode" in resp.json()["detail"]
+    named = client.post(
+        "/api/launches/",
+        json={
+            "action_kind": "agent",
+            "action_agent": "reviewer",
+            "action_prompt": "hi",
+            "action_account": "alpha",
+        },
+    )
+    assert named.status_code == 422 and "action_account" in named.json()["detail"]
     assert client.get("/api/launches/0123abcd4567/result").status_code == 404
     assert client.get("/api/launches/capabilities").json()["leg_host"] is False
 

@@ -194,18 +194,21 @@ def _launch(remote: Remote, args: argparse.Namespace) -> str:
     caps = _call(remote, "GET", "/api/launches/capabilities")
     if not (isinstance(caps, dict) and caps.get("leg_host") and caps.get("pinned_head")):
         raise RemoteError(f"remote {remote.name!r} is not a leg host; it would not pin the head")
-    started = _call(
-        remote,
-        "POST",
-        "/api/launches/",
-        {
-            "action_kind": "agent",
-            "action_agent": args.agent,
-            "action_prompt": args.prompt,
-            "action_repo": args.repo,
-            "action_head": args.head,
-        },
-    )
+    if args.account is not None and not caps.get("named_account"):
+        # A host without the field would drop it and run the profile's own account.
+        raise RemoteError(
+            f"remote {remote.name!r} does not take a named account; it would run the profile's own"
+        )
+    body = {
+        "action_kind": "agent",
+        "action_agent": args.agent,
+        "action_prompt": args.prompt,
+        "action_repo": args.repo,
+        "action_head": args.head,
+    }
+    if args.account is not None:
+        body["action_account"] = args.account
+    started = _call(remote, "POST", "/api/launches/", body)
     inv_id = started.get("invocation_id") if isinstance(started, dict) else None
     if not isinstance(inv_id, str) or not _INVOCATION_ID.fullmatch(inv_id):
         raise RemoteError(f"remote {remote.name!r} returned no invocation id")
@@ -213,6 +216,12 @@ def _launch(remote: Remote, args: argparse.Namespace) -> str:
         _call(remote, "POST", f"/api/invocations/{inv_id}/cancel")
         raise RemoteError(
             f"remote {remote.name!r} did not confirm head {args.head}; launch {inv_id} cancelled"
+        )
+    if args.account is not None and started.get("action_account") != args.account:
+        _call(remote, "POST", f"/api/invocations/{inv_id}/cancel")
+        raise RemoteError(
+            f"remote {remote.name!r} did not confirm account {args.account!r}; "
+            f"launch {inv_id} cancelled"
         )
     return inv_id
 
@@ -291,6 +300,11 @@ def add_remote_subparser(subparsers: argparse._SubParsersAction) -> argparse.Arg
     run.add_argument("-a", "--agent", required=True, help="Profile name on the leg host.")
     run.add_argument("--repo", required=True, help="Repository name the leg host serves.")
     run.add_argument("--head", required=True, type=_head, help="Full 40-hex commit to run at.")
+    run.add_argument(
+        "--account",
+        default=None,
+        help="Subscription account on the leg host to run on instead of the profile's.",
+    )
     run.add_argument("--poll", type=float, default=5.0, help="Seconds between status reads.")
     run.add_argument("prompt", help="The leg's prompt.")
     for action, text in (

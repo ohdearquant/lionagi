@@ -80,9 +80,10 @@ def _validate_request(data: dict[str, Any]) -> None:
     """Raise ValueError if *data* fails security or structural checks."""
     if leg_host.enabled():
         leg_host.validate_launch(data)
-    elif data.get("action_repo") or data.get("action_head"):
+    elif data.get("action_repo") or data.get("action_head") or data.get("action_account"):
         raise ValueError(
-            "action_repo and action_head are served only by a Studio daemon in leg-host mode"
+            "action_repo, action_head and action_account are served only by a Studio daemon in "
+            "leg-host mode"
         )
     kind = data.get("action_kind") or ""
     if kind not in _LAUNCH_VALID_KINDS:
@@ -189,6 +190,9 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         # The leg reaches no MCP server: none is configured on a leg host, and this
         # turns off the search for one from the worktree upward.
         argv.insert(argv.index("--"), "--no-mcp-config")
+        if leg.account is not None:
+            separator = argv.index("--")
+            argv[separator:separator] = ["--account", leg.account]
         # A worktree a crash or restart left behind goes before another is made.
         await leg_host.sweep_worktrees(leg.repo, live=_live_invocation_ids())
     inv_id = await launch_detached_argv(
@@ -210,6 +214,10 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     response = {"invocation_id": inv_id, "action_kind": data["action_kind"]}
     if leg is not None:
         response["action_head"] = leg.head
+        if leg.account is not None:
+            # Echoed so a caller can tell a host that ran the account from one that dropped
+            # the field and ran the role's own.
+            response["action_account"] = leg.account
     return response
 
 
@@ -492,6 +500,7 @@ class LaunchRequest(BaseModel):
     action_cwd: str | None = None
     action_repo: str | None = None
     action_head: str | None = None
+    action_account: str | None = None
 
 
 @studio_route("/launches/", method="POST", area="launches", status_code=202)

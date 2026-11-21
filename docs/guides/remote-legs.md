@@ -60,6 +60,8 @@ connected socket before the token is sent. `li remote` sends that address as the
 the one name a leg host bound to it admits. Proxies and redirects are never followed.
 
 `li remote run` waits for the leg and prints its result. Ctrl-C cancels the remote leg.
+`--account <name>` runs the leg on that subscription account on the leg host instead of the one
+its profile names; a launch whose response does not confirm the account is cancelled.
 `li remote status`, `li remote output` and `li remote cancel` take an invocation id.
 
 ## What a leg host refuses
@@ -80,8 +82,8 @@ At start-up it also removes worktrees left behind by an earlier run.
 **On a launch** (answered 422):
 
 - any `action_kind` other than `agent`;
-- any request field other than `action_kind`, `action_agent`, `action_prompt`, `action_repo` and
-  `action_head`. That covers `action_cwd` (only a worktree the daemon made is a working
+- any request field other than `action_kind`, `action_agent`, `action_prompt`, `action_repo`,
+  `action_head` and `action_account`. That covers `action_cwd` (only a worktree the daemon made is a working
   directory there), `action_model` (the profile decides the model), extra arguments and a
   project;
 - an `action_agent` that is not a bare name (`[a-z0-9_-]+`). The name is resolved only in the
@@ -91,7 +93,11 @@ At start-up it also removes worktrees left behind by an earlier run.
 - a profile the child sandbox exempts from any default read denial (`allow_read`);
 - an `action_head` that is not exactly 40 lowercase hex characters. Branch names, tags and
   short hashes are refused;
-- an `action_repo` the host does not serve.
+- an `action_repo` the host does not serve;
+- an `action_account` that `li agent --account` would refuse on the host: a malformed name, or a
+  name with no entry for the profile's provider in the host's accounts directory (see
+  `docs/internals/subscription-accounts.md`). A launch that names no account runs on the account
+  its role names, if any.
 
 **When the leg starts** (the invocation fails with the reason):
 
@@ -109,7 +115,9 @@ nothing more. A caller without it gets 401 from every route except `/health`.
   touches only that path, through `git worktree remove`. Before every leg launch the daemon also
   removes leftover worktrees whose invocation is no longer running.
 - **An environment built from an allow-list**: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
-  `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, and `CLAUDE_CODE_OAUTH_TOKEN` when the daemon has it.
+  `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, `CLAUDE_CODE_OAUTH_TOKEN` when the daemon has it, and
+  `LIONAGI_HOME` and `LIONAGI_LOGINS_DIR` when the daemon has them, so the leg finds its accounts in
+  the directory the daemon checked a named account against.
   The daemon's bearer, any `LIONAGI_REMOTE_*` variable and every other credential variable stay
   with the daemon. lionagi then removes every credential-named variable other than the provider's
   own login from the Claude Code process it starts, on any machine. Claude Code withholds
@@ -172,8 +180,8 @@ when it exits, fails or is cancelled.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/launches/capabilities` | `{"leg_host": true, "pinned_head": true, "max_concurrent": N}`; `li remote` refuses a daemon that is not a leg host |
-| `POST /api/launches/` | start a leg; the 202 echoes `action_head` |
+| `GET /api/launches/capabilities` | `{"leg_host": true, "pinned_head": true, "named_account": true, "max_concurrent": N}`; `li remote` refuses a daemon that is not a leg host, and refuses `--account` on one without `named_account` |
+| `POST /api/launches/` | start a leg; the 202 echoes `action_head`, and `action_account` when the launch named one |
 | `GET /api/invocations/{id}` | status |
 | `GET /api/launches/{id}/result` | the result once the leg has exited |
 | `POST /api/invocations/{id}/cancel` | stop the leg |

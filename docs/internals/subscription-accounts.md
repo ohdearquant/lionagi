@@ -133,4 +133,3 @@ The tool's own output is never logged.
 ## Not in this cut
 
 - **(design choice)** An account is never chosen automatically by remaining quota. Recording which account each leg ran on comes first.
-- A leg started by the leg-host daemon runs on its role's account, but the launch request cannot name one. The daemon's own `LIONAGI_LOGINS_DIR` and `LIONAGI_HOME` settings are not passed to the leg, so the leg finds the accounts directory as an unconfigured process does: from `~/.lionagi/.env`, else `~/.lionagi/logins`.
