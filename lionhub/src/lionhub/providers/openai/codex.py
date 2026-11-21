@@ -1090,14 +1090,16 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
 
     if not resolve_child_sandbox(None).enabled:
         return
-    flags = _command_line_layer(plain)
     reasons = []
     if plain.bypass_approvals:
         reasons.append("bypass_approvals turns codex's sandbox off")
     if plain.sandbox == "danger-full-access":
         reasons.append("sandbox='danger-full-access' turns codex's sandbox off")
-    profiles = flags.get("profiles") if isinstance(flags.get("profiles"), Mapping) else {}
-    tables = [flags, *(t for t in profiles.values() if isinstance(t, Mapping))]
+    layers = _command_line_layers(plain)
+    tables: list[Mapping[str, Any]] = []
+    for layer in layers:
+        profiles = layer.get("profiles") if isinstance(layer.get("profiles"), Mapping) else {}
+        tables.extend([layer, *(t for t in profiles.values() if isinstance(t, Mapping))])
     if any(t.get("sandbox_mode") == "danger-full-access" for t in tables):
         reasons.append("config_overrides set sandbox_mode to 'danger-full-access'")
     if any(_sets(t, ("default_permissions",)) for t in tables):
@@ -1113,7 +1115,10 @@ def _refuse_sandbox_off_while_confined(plain: _PlainRequest, cwd: Path) -> None:
                     f"{str(found)!r} sets default_permissions, a permissions profile codex "
                     "applies in place of its sandbox"
                 )
-            elif not (plain.full_auto or plain.sandbox or _sets(flags, ("sandbox_mode",))):
+            else:
+                # The permission profile governs and no ``--sandbox`` flag is emitted, so a
+                # request's own mode (``full_auto``, ``sandbox``) does not displace what the
+                # config sets: the config is inspected in every case.
                 found_mode = _codex_config_turning_sandbox_off(plain.env, cwd, plain.profile)
                 if found_mode is not None:
                     reasons.append(found_mode)
@@ -1379,7 +1384,7 @@ def _permission_profile_args(
     ]
 
 
-def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, str]) -> None:
+def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, str] | None) -> None:
     """Refuse, before spawn, a profiled launch that another layer could weaken or that runs on
     a codex binary not shown to enforce the profile.
 
@@ -1389,6 +1394,7 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
     """
     governed = refuse_a_second_sandbox_setting(
         flags=_command_line_layer(plain),
+        decoded_flags=_command_line_layer_decoded(plain),
         env=env,
         cwd=cwd,
         profile=plain.profile,
@@ -2160,6 +2166,9 @@ class CodexCodeRequest(BaseModel):
         # With the child sandbox on (and no bypass, which is refused in that state) the child
         # runs under a permission profile instead of a sandbox mode.
         policy = _permission_profile_policy(plain)
+        if policy is not None:
+            # ``as_cmd_args`` reaches the same refusals as a spawn does.
+            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
@@ -2569,10 +2578,12 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "apply. Set those settings in the run's config overrides and drop the profile, or "
             "run without ignore_user_config."
         )
-    flags = _command_line_layer(plain)
-    if _sets(flags, ("profile",)):
+    layers = _command_line_layers(plain)
+    flags = layers[0]
+    profile_layer = next((layer for layer in layers if _sets(layer, ("profile",))), None)
+    if profile_layer is not None:
         # A value that is not a string is named by its type: its content is not echoed.
-        selected = flags["profile"]
+        selected = profile_layer["profile"]
         named = (
             f"profile = {selected!r}, which selects a profile"
             if isinstance(selected, str)
@@ -2638,7 +2649,9 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "so the run would start without what codex does with it. Remove the key, and set "
             "the sandbox in the run's config overrides."
         )
-    if config.get("default_permissions") is not None and not _sets(flags, ("default_permissions",)):
+    if config.get("default_permissions") is not None and not any(
+        _sets(layer, ("default_permissions",)) for layer in layers
+    ):
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {config_path} sets "
             "`default_permissions`, a permissions profile codex applies in place of "
@@ -2656,7 +2669,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         )
         mode = None
     if (
-        any(_sets(flags, key) for key in _SANDBOX_MODE_KEYS)
+        any(_sets(layer, key) for layer in layers for key in _SANDBOX_MODE_KEYS)
         or plain.sandbox
         or plain.full_auto
         or plain.bypass_approvals
@@ -2669,7 +2682,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             name: value
             for name in names
             if (value := _workspace_write_value(name, table.get(name), config_path)) is not None
-            and not _sets(flags, ("sandbox_workspace_write", name))
+            and not any(_sets(layer, ("sandbox_workspace_write", name)) for layer in layers)
         }
         for names in (_WIDENING_WORKSPACE_KEYS, _NARROWING_WORKSPACE_KEYS)
     )
@@ -2846,6 +2859,43 @@ def _command_line_layer(plain: _PlainRequest) -> dict[str, Any]:
             table = table[part]
         table[last] = copy(value)  # a later dotted key writes into it
     return root
+
+
+def _command_line_layer_decoded(plain: _PlainRequest) -> dict[str, Any]:
+    """The run's `-c` overrides read the other way: as TOML dotted keys.
+
+    ``_command_line_layer`` splits a key at every `.`, the way codex's loader is documented to
+    read it; ``_override_key_path`` reads it as TOML does, where a part may be quoted, spaced
+    around its dots or written with escapes. A guarded key can hide in either reading, so a
+    refusal checks both. Only an override whose TOML path differs from its split path is
+    placed here (the other is in the split table already). A key TOML cannot read is left out:
+    ``_override_key_path`` refuses it where the argv is built."""
+    root: dict[str, Any] = {}
+    for key, value in plain.overrides:
+        try:
+            path = _override_key_path(key, "a config override key")
+        except ValueError:
+            continue
+        if path == key.strip(_TRIMMED).split("."):
+            continue
+        *parents, last = path
+        table = root
+        for part in parents:
+            if not isinstance(table.get(part), dict):
+                table[part] = {}
+            table = table[part]
+        table[last] = copy(value)
+    return root
+
+
+def _command_line_layers(plain: _PlainRequest) -> list[dict[str, Any]]:
+    """Both readings of the run's `-c` overrides: the split-at-dot table, then (when any key
+    reads differently as a TOML dotted key) the table of those keys."""
+    layers = [_command_line_layer(plain)]
+    decoded = _command_line_layer_decoded(plain)
+    if decoded:
+        layers.append(decoded)
+    return layers
 
 
 def _sets(table: Mapping[str, Any], key_path: Sequence[str]) -> bool:
@@ -3091,8 +3141,7 @@ def _exclusive_cmd_args(
             _exclusive_check(refuse_declaring_project_layer, plain, cwd)
         else:
             refuse_declaring_project_layer(plain, cwd)
-    if _permission_profile_policy(plain) is not None:
-        _gate_a_profiled_launch(plain, cwd, child_env)
+    # Under the permission profile ``_cmd_args`` runs the launch gate against ``child_env``.
     cmd = [CODEX_CLI, *request._cmd_args(plain, cwd, child_env)]
     _refuse_oversized_command(cmd)
     return cmd

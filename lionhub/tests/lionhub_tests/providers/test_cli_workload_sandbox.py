@@ -71,6 +71,18 @@ def sandbox_on(monkeypatch):
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
 
 
+@pytest.fixture(autouse=True)
+def _no_host_probe_record(monkeypatch):
+    """These tests cover argv, roots and config refusals, not the probe record.
+
+    The launch gate runs on every render under the permission profile, and an unpatched record
+    lookup would run the host's codex binary to read its version.
+    """
+    import lionhub.providers.openai.codex as codex_module
+
+    monkeypatch.setattr(codex_module, "require_passing_probe_record", lambda binary: "probe-record")
+
+
 def _default_roots():
     import os
 
@@ -575,8 +587,19 @@ def test_a_named_profile_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox
     assert _codex(tmp_path, env=env, profile="q")[:2] == ["exec", "--json"]
 
 
-def test_a_request_that_sets_its_own_mode_is_not_judged_by_the_configs_mode(tmp_path, sandbox_on):
+@pytest.mark.parametrize("request_kw", [{"full_auto": True}, {"sandbox": "workspace-write"}])
+def test_a_request_mode_does_not_shield_a_config_that_turns_the_sandbox_off(
+    tmp_path, sandbox_on, request_kw
+):
+    # Under the permission profile no `--sandbox` flag is emitted, so the request's own mode
+    # displaces nothing: the config still decides, and a config that turns the sandbox off is refused.
     env = _home_with_config(tmp_path, 'sandbox_mode = "danger-full-access"\n')
+    with pytest.raises(CLIInputRefusedError, match="danger-full-access"):
+        _codex(tmp_path, env=env, **request_kw)
+
+
+def test_a_request_mode_with_a_harmless_config_mode_renders_the_profile_only(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, 'sandbox_mode = "workspace-write"\n')
     args = _codex(tmp_path, env=env, full_auto=True)
     # The profile governs, so the request's own mode is not rendered as a sandbox flag at all.
     assert "--sandbox" not in args

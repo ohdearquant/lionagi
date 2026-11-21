@@ -18,3 +18,12 @@
   overrides, a user config that sets `default_permissions` or defines `[permissions.lionagi_child]`,
   and a project `.codex/config.toml`. A user config that sets a root `sandbox_mode` is accepted,
   and the leg log says in one line that the command-line profile governs over it.
+- Under the profile, an override key is refused when either reading of it names a guarded key
+  (`sandbox_mode`, `default_permissions`, `permissions.*`, `profile`, `sandbox_workspace_write.*`):
+  split at dots, the way Codex reads command-line keys, or decoded as a TOML dotted key, so a
+  quoted part, spaces around a dot or a `\u` escape does not hide it. A profile the run could apply
+  (the request's `profile`, a `profile` override, or the root `profile` key of `config.toml`) is
+  refused when it sets `sandbox_mode`, `default_permissions` or `permissions`, as a
+  `[profiles.<name>]` table or a `CODEX_HOME/<name>.config.toml` file. A request's own `full_auto`
+  or `sandbox` setting no longer exempts a user config that turns the sandbox off, because no
+  `--sandbox` flag is emitted, and `as_cmd_args()` reaches the same refusals as a launch.

@@ -201,7 +201,7 @@ _PROFILED = {
 
 @pytest.mark.parametrize("name", sorted(_PROFILED))
 def test_with_the_child_sandbox_on_there_is_no_sandbox_mode_on_the_command_line(
-    tmp_path, sandbox_on, name
+    tmp_path, sandbox_on, passing_binary, name
 ):
     kw = _PROFILED[name]
     env = _home(tmp_path)
@@ -245,7 +245,9 @@ def _linked_worktree(tmp_path: Path) -> Path:
     return wt
 
 
-def test_a_heavy_profile_writes_exactly_the_roots_the_sandbox_mode_granted(tmp_path, sandbox_on):
+def test_a_heavy_profile_writes_exactly_the_roots_the_sandbox_mode_granted(
+    tmp_path, sandbox_on, passing_binary
+):
     wt = _linked_worktree(tmp_path)
     extra = tmp_path / "extra"
     extra.mkdir()
@@ -260,7 +262,9 @@ def test_a_heavy_profile_writes_exactly_the_roots_the_sandbox_mode_granted(tmp_p
     assert set(added) <= set(_profile_table(args)["filesystem"])
 
 
-def test_a_light_profile_writes_nothing_beyond_the_working_directory(tmp_path, sandbox_on):
+def test_a_light_profile_writes_nothing_beyond_the_working_directory(
+    tmp_path, sandbox_on, passing_binary
+):
     wt = _linked_worktree(tmp_path)
     env = _home(tmp_path)
     args = _codex(wt, env, workload="light")
