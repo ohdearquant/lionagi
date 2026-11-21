@@ -811,7 +811,8 @@ def _contain_claude_worker(
     The run bounds the worker, not its role: a role may narrow what containment grants
     and never widen it. The tools the role declares must all be in
     ``_CONTAINED_CLAUDE_TOOLS``; they replace that list, and the worker is granted only
-    the tools it has. What the role's ``allowed_tools`` names is granted beside those, and
+    the tools it has. A role that declared no built-in tool (an empty ``tools`` value) keeps
+    none: only an absent value takes the contained list. What the role's ``allowed_tools`` names is granted beside those, and
     each entry must be one rule: a name with no whitespace, comma or parenthesis, then
     optionally one parenthesised argument pattern with balanced parentheses and no comma
     that closes at the entry's last character. The name must be a tool the worker has
@@ -827,11 +828,13 @@ def _contain_claude_worker(
     source = f"agent profile {role!r}" if role else "the worker's tool settings"
     contained = ", ".join(_CONTAINED_CLAUDE_TOOLS)
     declared = kwargs.get("tools")
-    tools = (
-        list(dict.fromkeys(t.strip() for t in declared.split(",")))
-        if declared
-        else list(_CONTAINED_CLAUDE_TOOLS)
-    )
+    if declared is None:
+        tools = list(_CONTAINED_CLAUDE_TOOLS)
+    elif declared == "":
+        # The narrowest declaration there is; read as unset it would become the widest.
+        tools = []
+    else:
+        tools = list(dict.fromkeys(t.strip() for t in declared.split(",")))
     outside = [t for t in tools if t not in _CONTAINED_CLAUDE_TOOLS]
     if outside:
         raise ConfigurationError(
@@ -868,7 +871,7 @@ def _contain_claude_worker(
         ):
             raise ConfigurationError(
                 f"{source}: allowed_tools include {entry!r}, which is neither one of the "
-                f"worker's tools ({', '.join(tools)}) nor a tool of an MCP server the run "
+                f"worker's tools ({', '.join(tools) or 'none'}) nor a tool of an MCP server the run "
                 f"hands it ({', '.join(servers) or 'none'}). Containment gives a worker only "
                 f"{contained} and those servers; a role may narrow that, never widen it."
             )
