@@ -1399,6 +1399,7 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/tools/base.py",
         "lionhub/src/lionhub/tools/communication/__init__.py",
         "lionhub/src/lionhub/tools/communication/messenger.py",
+        "apps/studio/backend/src/lionagi_studio/**",
         "tests/conftest.py",
         "tests/_shared_conftest.py",
         "tests/state/conftest.py",
@@ -3069,6 +3070,21 @@ def _compat_filter_problems(
     for entry, source in sorted(hub_dependencies.items()):
         if entry not in listed and not any(entry.startswith(tree) for tree in hub_trees):
             problems.append(f"the compat filter lacks {entry!r}, which {source} needs")
+    # The Studio application has its own import root outside lionagi/ and lionhub/, so
+    # a test importing it is covered only by an entry for that root.
+    studio_root = "apps/studio/backend/src/lionagi_studio/**"
+    for path in test_sources:
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if isinstance(node, ast.ImportFrom) and not node.level:
+                imported = [node.module or ""]
+            elif isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            else:
+                continue
+            studio = [n for n in imported if n.split(".")[0] == "lionagi_studio"]
+            if studio and studio_root not in listed:
+                label = f"{path.relative_to(root).as_posix()}:{node.lineno}"
+                problems.append(f"the compat filter lacks {studio_root!r}, which {label} needs")
     return problems
 
 

@@ -271,25 +271,28 @@ class TestMarketplaceRootLookup:
         """A lionagi checkout under tmp_path."""
         return cls._project(tmp_path / "checkout", "lionagi")
 
-    def test_module_root_is_the_fixed_depth_ancestor_at_the_current_location(self):
-        """In a source checkout the resolved root is the directory a fixed
-        three-level climb from the module reaches."""
-        import lionagi_studio.services.plugins as plugins_mod
-
-        fixed_depth = Path(plugins_mod.__file__).resolve().parents[3]
-        if not (fixed_depth / ".claude-plugin" / "marketplace.json").exists():
-            pytest.skip("no marketplace manifest at the fixed-depth ancestor")
-        assert plugins_mod._REPO_ROOT == fixed_depth
-
-    def test_walk_from_the_current_location_reaches_the_same_root(self):
-        """Walking up from the module finds the same root as the fixed climb."""
-        import lionagi_studio.services.plugins as plugins_mod
-
+    @staticmethod
+    def _source_checkout(plugins_mod) -> Path:
+        """The checkout this test file sits in, when the module under test is its source."""
+        checkout = Path(__file__).resolve().parents[6]
         module_file = Path(plugins_mod.__file__).resolve()
-        fixed_depth = module_file.parents[3]
-        if not (fixed_depth / ".claude-plugin" / "marketplace.json").exists():
-            pytest.skip("no marketplace manifest at the fixed-depth ancestor")
-        assert plugins_mod._find_repo_root(module_file) == fixed_depth
+        if not plugins_mod._is_project_root(checkout) or not module_file.is_relative_to(checkout):
+            pytest.skip("the module under test is not the source of a lionagi checkout")
+        return checkout
+
+    def test_module_root_is_the_checkout_at_the_current_location(self):
+        """In a source checkout the resolved root is the checkout itself."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        assert plugins_mod._REPO_ROOT == self._source_checkout(plugins_mod)
+
+    def test_walk_from_the_current_location_reaches_the_checkout(self):
+        """Walking up from the module at its real location reaches the checkout."""
+        import lionagi_studio.services.plugins as plugins_mod
+
+        checkout = self._source_checkout(plugins_mod)
+        module_file = Path(plugins_mod.__file__).resolve()
+        assert plugins_mod._find_repo_root(module_file) == checkout
 
     @pytest.mark.parametrize("depth", [1, 2, 4, 6])
     def test_walk_finds_the_manifest_directory_at_any_depth(self, tmp_path, depth):
@@ -355,7 +358,7 @@ class TestMarketplaceRootLookup:
         assert plugins_mod._find_repo_root(module_file) == root
 
     @pytest.mark.parametrize("install_dir", ["site-packages", "dist-packages"])
-    def test_installed_copy_inside_a_manifest_directory_keeps_the_fixed_depth_root(
+    def test_installed_copy_inside_a_manifest_directory_keeps_its_install_directory(
         self, tmp_path, install_dir
     ):
         """An installed copy never takes the manifest of a directory enclosing its environment."""
@@ -363,9 +366,8 @@ class TestMarketplaceRootLookup:
 
         project = self._checkout(tmp_path)
         install = project / ".venv" / "lib" / "python3.12" / install_dir
-        module_file = install / "lionagi" / "studio" / "services" / "plugins.py"
+        module_file = install / "lionagi_studio" / "services" / "plugins.py"
 
-        assert module_file.parents[3] == install
         assert plugins_mod._find_repo_root(module_file) == install
 
     def test_without_a_manifest_the_fixed_depth_ancestor_is_returned(self, tmp_path):

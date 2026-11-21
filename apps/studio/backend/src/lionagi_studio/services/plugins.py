@@ -38,13 +38,13 @@ def _find_repo_root(start: Path) -> Path:
     A project root holds ``.claude-plugin/marketplace.json`` and a ``pyproject.toml`` naming
     the project ``lionagi``, so another project's marketplace that happens to enclose this
     copy is passed over. ``start`` is a file path, so the search begins at its directory and
-    moves up. It stops at a ``site-packages`` or ``dist-packages`` directory: an installed
-    copy belongs to its environment, even when that environment sits inside a checkout. When
-    the search stops or finds no root, the result is ``start.parents[3]``.
+    moves up. It stops at a ``site-packages`` or ``dist-packages`` directory and returns it:
+    an installed copy belongs to its environment, even when that environment sits inside a
+    checkout. When the search finds no root, the result is ``start.parents[3]``.
     """
     for ancestor in start.parents:
         if ancestor.name in _INSTALL_DIR_NAMES:
-            break
+            return ancestor
         if _is_project_root(ancestor):
             return ancestor
     return start.parents[3]

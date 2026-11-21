@@ -681,6 +681,9 @@ jobs:
             - 'lionhub/src/lionhub/tools/base.py'
             - 'lionhub/src/lionhub/tools/communication/__init__.py'
             - 'lionhub/src/lionhub/tools/communication/messenger.py'
+            # A compatibility test that imports the Studio application needs its
+            # import root, which lives outside lionagi/ and lionhub/.
+            - 'apps/studio/backend/src/lionagi_studio/**'
             - 'tests/conftest.py'
             - 'tests/_shared_conftest.py'
             - 'tests/state/conftest.py'
