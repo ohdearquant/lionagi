@@ -140,6 +140,38 @@ def test_the_cli_cannot_read_the_credential_locations(monkeypatch, tmp_path, _ho
     assert '(deny file-read* file-write* (subpath (param "DENY_READ_0")))' in _profile(argv)
 
 
+def test_the_cli_cannot_read_the_subscription_account_sign_ins(monkeypatch, tmp_path):
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    logins = (tmp_path / "logins").resolve()
+    logins.mkdir()
+    token = logins / "claude-alpha"
+    token.write_text("x\n")
+    codex_home = (tmp_path / "codex-beta").resolve()
+    codex_home.mkdir()
+    (logins / "accounts.toml").write_text(f'[codex.beta]\nhome = "{codex_home}"\n')
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+    work = tmp_path / "work"
+    work.mkdir()
+
+    argv = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    denied = {v for k, v in _params(argv).items() if k.startswith("DENY_READ_")}
+
+    assert {str(logins), str(token), str(codex_home)} <= denied
+
+
+def test_the_cli_is_refused_when_the_accounts_file_cannot_be_read(monkeypatch, tmp_path):
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    (logins / "accounts.toml").write_text("not toml [")
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+    work = tmp_path / "work"
+    work.mkdir()
+
+    with pytest.raises(ConfigurationError, match="child_sandbox"):
+        _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+
+
 @pytest.fixture
 def leg_roots(monkeypatch, tmp_path):
     """A workspace, the policy's temporary directory and a shared uv cache, all resolved."""

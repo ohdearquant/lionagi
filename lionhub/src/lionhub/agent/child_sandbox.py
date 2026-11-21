@@ -41,6 +41,7 @@ __all__ = (
     "check_sandbox_backend",
     "claude_settings_argument",
     "claude_settings_for",
+    "credential_deny_read",
     "default_allow_write",
     "effective_policy",
     "lionagi_home_config_paths",
@@ -443,6 +444,25 @@ def _subscription_account_credentials() -> tuple[str, ...]:
     return tuple(dict.fromkeys(named))
 
 
+def credential_deny_read() -> tuple[str, ...]:
+    """Every credential location and local store a child of any engine may not read.
+
+    ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, and every sign-in the
+    subscription accounts directory keeps or names. The Claude Code policy starts from it, and
+    the Seatbelt policies lionagi builds itself (the API write set, the gemini-cli process) take
+    it whole, so no list can drop an entry the others deny.
+
+    Raises:
+        ConfigurationError: the subscription accounts directory or file cannot be read, so its
+            sign-ins cannot be named; the launch is refused rather than run with them readable.
+    """
+    return tuple(
+        dict.fromkeys(
+            (*DEFAULT_DENY_READ, *_lionagi_home_credentials(), *_subscription_account_credentials())
+        )
+    )
+
+
 def _lies_under(path: str, entry: str) -> bool:
     """Whether ``path`` lies inside the directory ``entry`` names, both as written with ``~``."""
     inner = os.path.normpath(os.path.expanduser(path))
@@ -613,11 +633,7 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
     extends = _read_extends(raw.get("extends", []))
     layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
-    deny: list[str] = [
-        *DEFAULT_DENY_READ,
-        *_lionagi_home_credentials(),
-        *_subscription_account_credentials(),
-    ]
+    deny: list[str] = list(credential_deny_read())
     allow: list[str] = list(default_allow_write())
     edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}

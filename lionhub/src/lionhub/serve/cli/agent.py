@@ -671,7 +671,7 @@ def _make_api_agent_spec(
     )
     spec.coding_tools = _API_TOOL_SETS[tools]
     if tools in _API_CONFINED_TOOL_SETS:
-        from lionhub.agent.child_sandbox import DEFAULT_DENY_READ, _lionagi_home_credentials
+        from lionhub.agent.child_sandbox import credential_deny_read
         from lionhub.tools._seatbelt import SeatbeltPolicy
 
         # The credential locations and local stores a CLI child may not read are unreadable to
@@ -679,7 +679,7 @@ def _make_api_agent_spec(
         spec.seatbelt = SeatbeltPolicy.for_workspace(
             cwd or Path.cwd(),
             network=network,
-            deny_read=(*DEFAULT_DENY_READ, *_lionagi_home_credentials()),
+            deny_read=credential_deny_read(),
             per_leg_uv_cache=True,
             _command_env_names=_command_env_names,
         )

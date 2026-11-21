@@ -441,6 +441,81 @@ def test_the_write_set_denies_reading_the_child_sandbox_credential_list(monkeypa
     assert not own <= {str(Path(p).expanduser().resolve()) for p in DEFAULT_DENY_READ}
 
 
+def _accounts(tmp_path, monkeypatch) -> dict[str, Path]:
+    """An accounts directory holding a Claude token file and a Codex row whose home is elsewhere."""
+    logins = (tmp_path / "logins").resolve()
+    logins.mkdir()
+    token = logins / "claude-alpha"
+    token.write_text("decoy-token\n")
+    codex_home = (tmp_path / "codex-beta").resolve()
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("decoy-auth\n")
+    (logins / "accounts.toml").write_text(f'[codex.beta]\nhome = "{codex_home}"\n')
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+    return {"logins": logins, "token": token, "codex_home": codex_home}
+
+
+def test_the_write_set_denies_reading_the_subscription_account_sign_ins(monkeypatch, tmp_path):
+    import lionhub.serve.cli.agent as agent_mod
+
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+    signins = _accounts(tmp_path, monkeypatch)
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+    )
+
+    assert {str(path) for path in signins.values()} <= set(spec.seatbelt.deny_read)
+
+
+def test_the_write_set_is_refused_when_the_accounts_file_cannot_be_read(monkeypatch, tmp_path):
+    import lionhub.serve.cli.agent as agent_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    (logins / "accounts.toml").write_text("not toml [")
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+
+    with pytest.raises(ConfigurationError, match="child_sandbox"):
+        agent_mod._make_api_agent_spec(
+            cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+        )
+
+
+@needs_seatbelt
+@pytest.mark.asyncio
+async def test_bash_cannot_read_a_subscription_account_sign_in(roots, monkeypatch):
+    from lionhub.agent.child_sandbox import credential_deny_read
+
+    home = roots / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    signins = _accounts(roots / "outside", monkeypatch)
+    workspace = roots / "workspace"
+    (workspace / "own.txt").write_text("own\n")
+    tools = _bound_tools(workspace, deny_read=credential_deny_read())
+
+    token = await tools["bash"](f"cat {signins['token']}", cwd=str(workspace))
+    listing = await tools["bash"](f"ls {signins['logins']}", cwd=str(workspace))
+    auth = await tools["bash"](f"cat {signins['codex_home'] / 'auth.json'}", cwd=str(workspace))
+    own = await tools["bash"]("cat own.txt", cwd=str(workspace))
+
+    for result in (token, listing, auth):
+        assert result["return_code"] != 0, result
+        assert "Operation not permitted" in result["stderr"], result
+        assert "decoy" not in result["stdout"]
+    assert own["return_code"] == 0, own
+    assert own["stdout"].strip() == "own"
+
+
 @pytest.mark.parametrize("host", ["no-sandbox-exec", "not-macos"])
 @pytest.mark.parametrize("resumed", [False, True], ids=["new", "resumed"])
 @pytest.mark.asyncio

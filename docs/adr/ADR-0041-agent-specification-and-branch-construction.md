@@ -40,10 +40,18 @@ Decision:
   out, since denying `/dev/null` breaks every command that reads it. The other forms stay denied,
   so an entry that is a link to `/dev/null` is itself still denied. As with the roots, the paths
   reach the policy as parameters, never inside its text.
-- **Where the list comes from.** The write set and the gemini-cli policy both pass the child
-  sandbox's `DEFAULT_DENY_READ` (generic credential locations, local stores and shell histories)
-  plus lionagi's own `.env` under `LIONAGI_HOME`. The gemini-cli policy keeps no entry of the list
-  readable for its own sign-in, which it reads from its own state directory.
+- **Where the list comes from.** One function in the child sandbox module,
+  `credential_deny_read`, builds the list. The Claude Code policy starts from it, and the write
+  set and the gemini-cli policy each pass it whole, so no policy can drop an entry another one
+  denies. It holds `DEFAULT_DENY_READ` (generic credential locations, local stores and shell
+  histories), lionagi's own `.env` under `LIONAGI_HOME`, and every sign-in the subscription
+  accounts directory keeps or names: the directory itself, the token files in it, the `.env` files
+  its rows read and the homes of its Codex rows, each named as written and at the path it resolves
+  to. When the directory setting, the accounts file or one of its rows cannot be read, those
+  sign-ins cannot be named, so the launch is refused with a configuration error rather than run
+  with them readable. The
+  gemini-cli policy keeps no entry of the list readable for its own sign-in, which it reads from
+  its own state directory.
 - **Overlap is refused.** A policy is refused when an unreadable entry is a writable root or holds
   one, since the leg could not use its own tree. It is also refused when an entry lies inside a
   writable root. The one exception is the temporary directory when it is not the workspace.
