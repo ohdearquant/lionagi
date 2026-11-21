@@ -247,8 +247,17 @@ _GEMINI_EFFORT_CLAMP: dict[str, str] = {
 }
 
 
-def _clamp_gemini_effort(effort: str, is_pro: bool) -> str:
-    """Map lionagi's effort vocabulary onto agy's Low/Medium/High tiers; Pro has no Medium."""
+# Efforts above high: a model that has an XHigh tier gets it, every other model gets High.
+_GEMINI_XHIGH_EFFORTS: frozenset[str] = frozenset({"xhigh", "max", "ultra"})
+
+
+def _clamp_gemini_effort(effort: str, is_pro: bool, *, has_xhigh: bool = False) -> str:
+    """Map lionagi's effort vocabulary onto agy's Low/Medium/High tiers; Pro has no Medium.
+
+    A model with an XHigh tier (``has_xhigh``) takes it for ``xhigh``, ``max`` and ``ultra``.
+    """
+    if has_xhigh and effort in _GEMINI_XHIGH_EFFORTS:
+        return "XHigh"
     tier = _GEMINI_EFFORT_CLAMP.get(effort, "Medium")
     if is_pro and tier == "Medium":
         return "High"

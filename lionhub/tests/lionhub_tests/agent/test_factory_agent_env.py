@@ -179,14 +179,92 @@ async def test_agent_env_rejects_entries_no_environment_can_hold(bad_env, hidden
         assert hidden not in message
 
 
-@pytest.mark.parametrize("key", ["CODEX_HOME", "HOME"])
 @pytest.mark.parametrize("model", ["codex/gpt-5.5", "openai-codex/gpt-5.5"])
-async def test_a_codex_agent_env_may_not_move_the_codex_home(key, model):
-    """This process writes the MCP server profile and reads the default effort from
-    the codex home; a child reading another home would miss both."""
+async def test_a_codex_agent_env_may_not_move_home(model):
+    """HOME moves every tool's configuration, not only codex's; CODEX_HOME is the way."""
     config = AgentSpec.compose("reviewer", model=model)
-    with pytest.raises(ConfigurationError, match=key):
-        await create_agent(config, load_settings=False, agent_env={key: "/elsewhere"})
+    with pytest.raises(ConfigurationError, match="HOME"):
+        await create_agent(config, load_settings=False, agent_env={"HOME": "/elsewhere"})
+
+
+@pytest.mark.parametrize("model", ["codex/gpt-5.5", "openai-codex/gpt-5.5"])
+async def test_a_codex_agent_env_codex_home_decides_the_default_effort(
+    model, tmp_path, monkeypatch
+):
+    """The default effort is read from the home the child reads, not this process's."""
+    parent_home = tmp_path / "parent"
+    child_home = tmp_path / "child"
+    for home, effort in ((parent_home, "high"), (child_home, "low")):
+        home.mkdir()
+        (home / "config.toml").write_text(f'model_reasoning_effort = "{effort}"\n')
+    monkeypatch.setenv("CODEX_HOME", str(parent_home))
+    config = AgentSpec.compose("reviewer", model=model)
+    branch = await create_agent(
+        config, load_settings=False, agent_env={"CODEX_HOME": str(child_home)}
+    )
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
+    assert reveal_redacted(payload["request"].env)["CODEX_HOME"] == str(child_home)
+    assert payload["request"].reasoning_effort == "low"
+
+
+@pytest.mark.parametrize("home", ["relative/codex-home", "/no/such/codex-home"])
+async def test_a_codex_home_overlay_must_be_an_existing_absolute_directory(home):
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    with pytest.raises(ConfigurationError, match="CODEX_HOME"):
+        await create_agent(config, load_settings=False, agent_env={"CODEX_HOME": home})
+
+
+async def test_a_codex_home_overlay_lets_the_homes_sign_in_decide(tmp_path, monkeypatch):
+    """As for a leg on a named account, the variables by which codex signs in from the
+    environment are dropped, inherited or overlaid, and the secret lookup skips them."""
+    home = tmp_path / "codex"
+    home.mkdir()
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-not-a-key")
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5")
+    branch = await create_agent(
+        config,
+        load_settings=False,
+        agent_env={"CODEX_HOME": str(home), "CODEX_API_KEY": "overlaid-not-a-key"},
+    )
+    state = branch.chat_model.endpoint._runtime_state
+    env = reveal_redacted(state["env"])
+    assert env["CODEX_HOME"] == str(home.resolve())
+    assert "OPENAI_API_KEY" not in env
+    assert "CODEX_API_KEY" not in env
+    assert {"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"} <= state["secret_fill_skip"]
+
+
+async def test_a_codex_home_overlay_resolves_a_config_profile_in_that_home(tmp_path, monkeypatch):
+    """A model name that is a codex config profile is looked up in the home the child reads.
+    Control: the same name without the overlay is looked up in this process's home, which has
+    no such profile, and goes to codex unchanged."""
+    parent_home = tmp_path / "parent"
+    child_home = tmp_path / "child"
+    parent_home.mkdir()
+    child_home.mkdir()
+    (child_home / "leg.config.toml").write_text(
+        'model = "gpt-5.5"\nmodel_reasoning_effort = "low"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(parent_home))
+    requests = []
+    for overlay in ({"CODEX_HOME": str(child_home)}, None):
+        config = AgentSpec.compose("reviewer", model="codex/leg")
+        branch = await create_agent(config, load_settings=False, agent_env=overlay)
+        payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
+        requests.append(payload["request"])
+    in_home, control = requests
+    assert in_home.model == "gpt-5.5"
+    assert reveal_redacted(in_home.config_overrides) == {"model_reasoning_effort": "low"}
+    assert control.model == "leg"
+
+
+@pytest.mark.parametrize("home", ["relative/codex-home", "/no/such/codex-home"])
+async def test_a_claude_code_agent_env_passes_codex_home_through(home):
+    """CODEX_HOME means a home only to a codex agent; to any other it is an ordinary variable."""
+    config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
+    branch = await create_agent(config, load_settings=False, agent_env={"CODEX_HOME": home})
+    env = reveal_redacted(branch.chat_model.endpoint._runtime_state["env"])
+    assert env["CODEX_HOME"] == home
 
 
 async def test_a_claude_code_agent_env_may_set_home():

@@ -145,6 +145,7 @@ def _build_worker(
         def __init__(self):
             self.is_cli = is_cli
             self.config = SimpleNamespace(kwargs={}, provider=provider)
+            self._runtime_state = {}
 
     class _IModel:
         def __init__(self):
@@ -158,6 +159,8 @@ def _build_worker(
             built.update(kw)
             self.name = kw.get("name")
             self.id = "b1"
+            self.metadata = {}
+            built["branch"] = self
 
     async def _fake_create_agent(spec, **kw):
         built["spec"] = spec
@@ -166,6 +169,11 @@ def _build_worker(
 
     def _fake_build_imodel(*a, **kw):
         built["imodel_kwargs"] = kw
+        # A CLI endpoint keeps a child environment as runtime state, as the real one does.
+        if kw.get("env") is not None and is_cli:
+            imodel.endpoint._runtime_state["env"] = kw["env"]
+            if kw.get("secret_fill_skip"):
+                imodel.endpoint._runtime_state["secret_fill_skip"] = kw["secret_fill_skip"]
         _add_workload_kwarg(
             imodel.endpoint.config.kwargs,
             imodel.endpoint,

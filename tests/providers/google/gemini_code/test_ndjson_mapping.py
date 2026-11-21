@@ -567,11 +567,20 @@ async def test_on_text_loop_closed_error_propagates():
         ("gemini-3.8-flash-pro-argon", "Gemini 3.1 Pro (Low)"),
         # an undotted major version 4 is the 4 family, unless a dotted version is named;
         # a date is not a version, and 4k is a size, not a version
-        ("gemini-4-flash", "Gemini 4 Argon (Medium)"),
-        ("gemini-v4-flash", "Gemini 4 Argon (Medium)"),
-        ("gemini-4-flash-2026.10", "Gemini 4 Argon (Medium)"),
-        ("gemini-4-flash-100.5", "Gemini 4 Argon (Medium)"),
+        ("gemini-v4", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-preview-2026.10", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-preview-100.5", "Gemini 4 Argon (Medium)"),
         ("gemini-4k-flash", "Gemini 3.5 Flash (Medium)"),
+        # ...but a Gemini 4 name with a word that could name an unlisted family goes to
+        # agy as given, which refuses a name it does not serve, rather than being served
+        # as Argon
+        ("gemini-4-flash", "gemini-4-flash"),
+        ("gemini-v4-flash", "gemini-v4-flash"),
+        ("gemini-4-flash-2026.10", "gemini-4-flash-2026.10"),
+        ("gemini-4-flash-100.5", "gemini-4-flash-100.5"),
+        ("gemini-4-xenon-high", "gemini-4-xenon-high"),
+        # two family words name no one family
+        ("gemini-4-argon-neon", "gemini-4-argon-neon"),
         # ...and a numeral of any script after the 4 makes it part of a longer word
         ("gemini4\u00b2", "Gemini 3.5 Flash (Medium)"),
         ("gemini-3.8-flash-4", "Gemini 3.8 Flash (Medium)"),
@@ -587,8 +596,10 @@ async def test_on_text_loop_closed_error_propagates():
         # a dot after the 4 with no letter or numeral after it ends the 4, as a trailing dot
         # ends a dotted version
         ("gemini-4.", "Gemini 4 Argon (Medium)"),
-        ("gemini-4-flash.", "Gemini 4 Argon (Medium)"),
-        ("gemini-4.-flash", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-preview.", "Gemini 4 Argon (Medium)"),
+        ("gemini-4.-preview", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-flash.", "gemini-4-flash."),
+        ("gemini-4.-flash", "gemini-4.-flash"),
         # a dot and a letter or numeral of any script after the 4 name a release the table
         # does not list
         ("gemini-4.\u00e9", "Gemini 3.5 Flash (Medium)"),
@@ -736,6 +747,71 @@ def test_resolve_agy_model_4_argon_is_the_default_and_stays_on_family():
         assert resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
     for spec in ("gemini-14-flash", "gemini-4.5-flash"):
         assert not resolve_agy_model(spec).startswith("Gemini 4 Argon"), spec
+
+
+@pytest.mark.parametrize(
+    "spec,effort,expected",
+    [
+        # Each family's ids resolve to that family; a bare id is the High tier.
+        ("gemini-4-neon", None, "Gemini 4 Neon (High)"),
+        ("gemini-4-neon-low", None, "Gemini 4 Neon (Low)"),
+        ("gemini-4-neon-medium", None, "Gemini 4 Neon (Medium)"),
+        ("gemini-4-neon-high", None, "Gemini 4 Neon (High)"),
+        ("gemini-4-neon-xhigh", None, "Gemini 4 Neon (XHigh)"),
+        ("neon", None, "Gemini 4 Neon (High)"),
+        ("gemini-4-carbon", None, "Gemini 4 Carbon (High)"),
+        ("gemini-4-carbon-low", None, "Gemini 4 Carbon (Low)"),
+        ("gemini-4-hydrogen", None, "Gemini 4 Hydrogen (High)"),
+        ("gemini-4-hydrogen-xhigh", None, "Gemini 4 Hydrogen (XHigh)"),
+        # Carbon has no XHigh tier, so it has no xhigh id either; the free-form
+        # reading of the name keeps it on Carbon at its highest tier.
+        ("gemini-4-carbon-xhigh", None, "Gemini 4 Carbon (High)"),
+        # xhigh, max and ultra take XHigh where the family has it, and High elsewhere.
+        ("gemini-4-neon", "xhigh", "Gemini 4 Neon (XHigh)"),
+        ("gemini-4-neon", "max", "Gemini 4 Neon (XHigh)"),
+        ("gemini-4-neon", "ultra", "Gemini 4 Neon (XHigh)"),
+        ("gemini-4-hydrogen-low", "xhigh", "Gemini 4 Hydrogen (XHigh)"),
+        ("gemini-4-carbon", "xhigh", "Gemini 4 Carbon (High)"),
+        ("gemini-4-argon", "xhigh", "Gemini 4 Argon (High)"),
+        ("gemini-4-neon-xhigh", "low", "Gemini 4 Neon (Low)"),
+        ("gemini-4-neon", "medium", "Gemini 4 Neon (Medium)"),
+        # Free-form names stay on the family they name.
+        ("neon xhigh", None, "Gemini 4 Neon (XHigh)"),
+        ("neon-max", None, "Gemini 4 Neon (XHigh)"),
+        ("gemini-4-neon-preview", None, "Gemini 4 Neon (Medium)"),
+        ("gemini-neon-preview", "high", "Gemini 4 Neon (High)"),
+        ("argon-xhigh", None, "Gemini 4 Argon (High)"),
+        # A Gemini 4 name for a family this table does not list goes to agy as given,
+        # with or without an effort.
+        ("gemini-4-xenon", None, "gemini-4-xenon"),
+        ("gemini-4-xenon", "high", "gemini-4-xenon"),
+        ("gemini-4-flash", "low", "gemini-4-flash"),
+        # Neon, Carbon and Hydrogen are named by whole words only: a longer word that
+        # contains one names no family, so these resolve as they did before the families.
+        ("carbonite-7b", None, "carbonite-7b"),
+        ("carbonite-7b", "high", "carbonite-7b"),
+        ("neonate", None, "neonate"),
+        ("gemini-4-neonate", None, "gemini-4-neonate"),
+        ("hydrogenated-flash", None, "Gemini 3.5 Flash (Medium)"),
+        ("gemini-4-neon_high", None, "Gemini 4 Neon (High)"),
+        ("Gemini-4-NEON xhigh", None, "Gemini 4 Neon (XHigh)"),
+    ],
+)
+def test_resolve_agy_model_gemini_4_families(spec, effort, expected):
+    assert resolve_agy_model(spec, effort=effort) == expected
+
+
+@pytest.mark.parametrize(
+    "model,effort,expected",
+    [
+        ("Gemini 4 Neon (High)", "xhigh", "Gemini 4 Neon (XHigh)"),
+        ("Gemini 4 Neon (XHigh)", "medium", "Gemini 4 Neon (Medium)"),
+        ("Gemini 4 Hydrogen (Low)", "max", "Gemini 4 Hydrogen (XHigh)"),
+        ("Gemini 4 Carbon (Low)", "xhigh", "Gemini 4 Carbon (High)"),
+    ],
+)
+def test_resolve_agy_model_reapplies_effort_onto_each_gemini_4_family(model, effort, expected):
+    assert resolve_agy_model(model, effort=effort, reapply_effort=True) == expected
 
 
 @pytest.mark.parametrize(
