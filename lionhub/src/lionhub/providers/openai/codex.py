@@ -79,6 +79,7 @@ from ._codex_permissions import (
     deny_entries,
     permission_profile_table,
     refuse_a_second_sandbox_setting,
+    refuse_write_roots_on_denied_paths,
     refuse_write_roots_on_probe_record_dir,
     require_passing_probe_record,
 )
@@ -1490,8 +1491,15 @@ def _permission_profile_args(
     # refused even where the table grants no write entry: the command line still carries each
     # `add_dir` directory as `--add-dir`.
     write_roots = _profile_write_roots(plain, cwd)
+    deny = deny_entries(policy.deny_read, codex_home_for_env(env), env)
+    # The same holds for every denied location: no write root, the working directory included
+    # when the profile writes it, may be one, hold one or lie inside one, so nothing rests on a
+    # denial winning over a grant.
+    if not read_only:
+        refuse_write_roots_on_denied_paths([str(cwd)], deny, what="the working directory")
+    refuse_write_roots_on_denied_paths(write_roots, deny)
     table = permission_profile_table(
-        deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
+        deny=deny,
         write=[] if read_only else write_roots,
         light=light,
         read_only=read_only,

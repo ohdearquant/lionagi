@@ -569,6 +569,35 @@ def refuse_write_roots_on_probe_record_dir(
                     )
 
 
+def refuse_write_roots_on_denied_paths(
+    roots: Iterable[str], deny: Iterable[str], *, what: str = "the write root"
+) -> None:
+    """Refuse a write root that is a denied location, holds one or lies inside one.
+
+    ``deny`` is the profile's deny list (``deny_entries``: each ``deny_read`` entry in all its
+    forms, the child's ``CODEX_HOME`` and the probe record directory). A root that overlaps an
+    entry would put a write grant and a read denial on the same path in one profile, and
+    whether the denial wins over the grant is not measured, so the launch is refused instead.
+    The written and the resolved spelling of each side are compared, so a link does not hide
+    the overlap. ``what`` names the root in the refusal.
+    """
+    denied = [
+        (entry, path)
+        for entry in deny
+        for path in dict.fromkeys((Path(os.path.abspath(entry)), Path(os.path.realpath(entry))))
+    ]
+    for root in roots:
+        for root_path in dict.fromkeys((Path(os.path.abspath(root)), Path(os.path.realpath(root)))):
+            for entry, path in denied:
+                if root_path == path or root_path in path.parents or path in root_path.parents:
+                    raise CLIInputRefusedError(
+                        f"{what} {str(root)!r} is, contains or lies inside {entry!r}, which "
+                        "the codex child is denied reading; the profile would grant writes "
+                        "where it denies reads, and which one holds is not measured. Name a "
+                        "directory that neither holds nor lies inside a denied location."
+                    )
+
+
 def _failed_arms(record: Mapping[str, Any], env: Mapping[str, str]) -> list[str]:
     """The arms of ``REQUIRED_ARMS`` that did not pass for a launch with environment ``env``.
 

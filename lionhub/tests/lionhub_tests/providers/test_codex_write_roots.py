@@ -42,7 +42,7 @@ def _pairs(args: list[str], flag: str) -> list[str]:
 def _project(tmp_path):
     """A working directory that is neither the home directory nor an ancestor of one."""
     project = tmp_path / "project"
-    project.mkdir()
+    project.mkdir(exist_ok=True)
     return project
 
 
@@ -123,27 +123,27 @@ def _legacy(workload: str, mode: str | None) -> dict:
 def test_the_table_grants_the_write_set_the_old_mode_granted(tmp_path, workload, user_mode):
     lines = [f'sandbox_mode = "{user_mode}"'] if user_mode else []
     env = _config_home(tmp_path, *lines)
-    args = _codex(tmp_path, workload=workload, env=env)
+    args = _codex(_project(tmp_path), workload=workload, env=env)
     assert _table(args) == _expected(env, **_legacy(workload, user_mode))
 
 
 @pytest.mark.parametrize("sandbox", ["read-only", "workspace-write"])
 def test_a_heavy_request_that_names_its_sandbox_gets_that_write_set(tmp_path, sandbox):
     env = _config_home(tmp_path)
-    args = _codex(tmp_path, env=env, sandbox=sandbox)
+    args = _codex(_project(tmp_path), env=env, sandbox=sandbox)
     assert _table(args) == _expected(env, **_legacy("heavy", sandbox))
 
 
 def test_a_heavy_request_naming_no_sandbox_is_read_only_when_no_config_sets_a_mode(tmp_path):
     env = _config_home(tmp_path)
-    table = _table(_codex(tmp_path, env=env))
+    table = _table(_codex(_project(tmp_path), env=env))
     assert table == _expected(env, write=[], read_only=True)
     assert table != _expected(env, write=_legacy_roots())
 
 
 def test_full_auto_is_workspace_write_whatever_mode_the_user_config_sets(tmp_path):
     env = _config_home(tmp_path, 'sandbox_mode = "read-only"')
-    table = _table(_codex(tmp_path, env=env, full_auto=True))
+    table = _table(_codex(_project(tmp_path), env=env, full_auto=True))
     assert table == _expected(env, write=_legacy_roots())
 
 
@@ -160,7 +160,7 @@ def test_a_heavy_profile_honours_the_temp_directory_exclusions(tmp_path, key):
         "exclude_slash_tmp": key == "exclude_slash_tmp",
         "exclude_tmpdir": key == "exclude_tmpdir_env_var",
     }
-    table = _table(_codex(tmp_path, env=env))
+    table = _table(_codex(_project(tmp_path), env=env))
     assert table == _expected(env, write=_legacy_roots(), **flags)
     assert table != _expected(env, write=_legacy_roots())
 
@@ -174,14 +174,14 @@ def test_a_heavy_profile_takes_the_network_setting_the_user_config_gives(tmp_pat
         "[sandbox_workspace_write]",
         f"network_access = {str(granted).lower()}",
     )
-    table = _table(_codex(tmp_path, env=env))
+    table = _table(_codex(_project(tmp_path), env=env))
     assert table["network"] == {"enabled": granted}
     assert table == _expected(env, write=_legacy_roots(), network=granted)
 
 
 def test_a_heavy_profile_has_the_network_off_when_no_config_sets_it(tmp_path):
     env = _config_home(tmp_path, 'sandbox_mode = "workspace-write"')
-    assert _table(_codex(tmp_path, env=env))["network"] == {"enabled": False}
+    assert _table(_codex(_project(tmp_path), env=env))["network"] == {"enabled": False}
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,7 @@ def test_the_network_stays_off_for_light_and_read_only_profiles_whatever_the_con
         "[sandbox_workspace_write]",
         "network_access = true",
     )
-    assert _table(_codex(tmp_path, env=env, **kw))["network"] == {"enabled": False}
+    assert _table(_codex(_project(tmp_path), env=env, **kw))["network"] == {"enabled": False}
 
 
 def test_settings_carried_from_an_ignored_user_config_are_in_the_table_not_pinned(tmp_path):
@@ -213,7 +213,7 @@ def test_settings_carried_from_an_ignored_user_config_are_in_the_table_not_pinne
         "[sandbox_workspace_write]",
         "exclude_slash_tmp = true",
     )
-    args = _codex(tmp_path, env=env, ignore_user_config=True)
+    args = _codex(_project(tmp_path), env=env, ignore_user_config=True)
     assert not [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
     assert _table(args) == _expected(env, write=_legacy_roots(), exclude_slash_tmp=True)
 
@@ -394,4 +394,126 @@ def test_a_root_beside_the_probe_record_directory_is_still_granted(tmp_path, lio
     args = _codex(
         _project(tmp_path), env=_config_home(tmp_path), full_auto=True, add_dir=[str(beside)]
     )
+    assert str(beside) in "\n".join(_pairs(args, "-c"))
+
+
+# ---------------------------------- a write root cannot reach CODEX_HOME or a denied location
+
+
+def _denied(tmp_path, monkeypatch, target, allow_write=()):
+    """The child's CODEX_HOME, or a credential directory the settings deny (as ``~/.config/gh``
+    is), and the child env.
+
+    Returns the denied path and the environment; the settings also carry ``allow_write``.
+    """
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    env = _config_home(tmp_path)
+    if target == "codex_home":
+        denied = tmp_path / "codex-home"
+        deny_read: list[str] = []
+    else:
+        denied = tmp_path / "config" / "gh"
+        denied.mkdir(parents=True)
+        (denied / "hosts.yml").write_text("token\n")
+        deny_read = [str(denied)]
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: {"child_sandbox": {"deny_read": deny_read, "allow_write": list(allow_write)}},
+    )
+    return denied, env
+
+
+def _overlap(denied, where):
+    """A root that holds the denied path, is it, or lies inside it."""
+    return {"above": denied.parent, "equal": denied, "inside": denied / "sub"}[where]
+
+
+_TARGETS = pytest.mark.parametrize("target", ["codex_home", "deny_entry"])
+_WHERE = pytest.mark.parametrize("where", ["above", "equal", "inside"])
+
+
+@_TARGETS
+@_WHERE
+@pytest.mark.parametrize("kw", [{"full_auto": True}, {"workload": "light"}])
+def test_a_working_directory_over_codex_home_or_a_denied_location_is_refused(
+    tmp_path, monkeypatch, target, where, kw
+):
+    denied, env = _denied(tmp_path, monkeypatch, target)
+    cwd = _overlap(denied, where)
+    cwd.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(CLIInputRefusedError, match="the working directory .* denied reading"):
+        _codex(cwd, env=env, **kw)
+
+
+@_TARGETS
+@_WHERE
+def test_an_add_dir_over_codex_home_or_a_denied_location_is_refused(
+    tmp_path, monkeypatch, target, where
+):
+    denied, env = _denied(tmp_path, monkeypatch, target)
+    root = _overlap(denied, where)
+    with pytest.raises(CLIInputRefusedError, match="denied reading"):
+        _codex(_project(tmp_path), env=env, full_auto=True, add_dir=[str(root)])
+
+
+@_TARGETS
+@pytest.mark.parametrize("kw", [{"sandbox": "read-only"}, {}])
+def test_an_add_dir_over_a_denied_location_is_refused_under_a_read_only_profile(
+    tmp_path, monkeypatch, target, kw
+):
+    # The command line still carries the directory as `--add-dir`.
+    denied, env = _denied(tmp_path, monkeypatch, target)
+    with pytest.raises(CLIInputRefusedError, match="denied reading"):
+        _codex(_project(tmp_path), env=env, add_dir=[str(denied.parent)], **kw)
+
+
+@_TARGETS
+@_WHERE
+def test_a_caller_writable_root_over_codex_home_or_a_denied_location_is_refused(
+    tmp_path, monkeypatch, target, where
+):
+    denied, env = _denied(tmp_path, monkeypatch, target)
+    root = _overlap(denied, where)
+    with pytest.raises(CLIInputRefusedError, match="denied reading"):
+        _codex(
+            _project(tmp_path),
+            env=env,
+            full_auto=True,
+            config_overrides={"sandbox_workspace_write.writable_roots": [str(root)]},
+        )
+
+
+@_TARGETS
+@_WHERE
+def test_a_heavy_root_from_settings_over_codex_home_or_a_denied_location_is_refused(
+    tmp_path, monkeypatch, target, where
+):
+    named = tmp_path / "codex-home" if target == "codex_home" else tmp_path / "config" / "gh"
+    root = _overlap(named, where)
+    _, env = _denied(tmp_path, monkeypatch, target, allow_write=[str(root)])
+    with pytest.raises(CLIInputRefusedError, match="denied reading"):
+        _codex(_project(tmp_path), env=env, full_auto=True)
+
+
+def test_a_read_only_launch_may_start_over_codex_home(tmp_path, monkeypatch):
+    # `:read-only` grants no write over the working directory.
+    denied, env = _denied(tmp_path, monkeypatch, "codex_home")
+    args = _codex(denied.parent, env=env, sandbox="read-only")
+    assert _table(args)["extends"] == ":read-only"
+
+
+def test_a_link_to_a_denied_location_does_not_hide_it(tmp_path, monkeypatch):
+    denied, env = _denied(tmp_path, monkeypatch, "deny_entry")
+    alias = tmp_path / "alias"
+    alias.symlink_to(denied.parent)
+    with pytest.raises(CLIInputRefusedError, match="denied reading"):
+        _codex(_project(tmp_path), env=env, full_auto=True, add_dir=[str(alias)])
+
+
+def test_a_root_beside_a_denied_location_is_still_granted(tmp_path, monkeypatch):
+    denied, env = _denied(tmp_path, monkeypatch, "deny_entry")
+    beside = denied.parent / "gh-other"
+    args = _codex(_project(tmp_path), env=env, full_auto=True, add_dir=[str(beside)])
     assert str(beside) in "\n".join(_pairs(args, "-c"))

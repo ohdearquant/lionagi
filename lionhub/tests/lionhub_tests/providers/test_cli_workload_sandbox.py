@@ -327,7 +327,8 @@ def test_a_light_codex_agent_refuses_a_profile_lionagi_did_not_write(tmp_path):
 
 
 def _home_with_config(tmp_path, text: str) -> dict[str, str]:
-    home = tmp_path / "codex-home"
+    # Beside the working directory, not inside it: a write root over CODEX_HOME is refused.
+    home = tmp_path.parent / f"{tmp_path.name}-codex-home"
     home.mkdir()
     (home / "config.toml").write_text(text)
     return {"CODEX_HOME": str(home)}

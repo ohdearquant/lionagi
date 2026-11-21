@@ -574,11 +574,13 @@ Under a Codex permission profile the table, not a sandbox mode, grants write acc
 - A heavy request that names no sandbox takes the mode Codex would have used without `--sandbox`: the user config's `sandbox_mode`, then the selected profile's.
 - A denied location is emitted as written, as the sandbox places it (the real path of its directory plus its own name) when that differs, and at each link hop. A leading `~` expands against the child's `HOME` and the account's home directory, both when they differ, never the launching process's `HOME`: a child given its own `HOME` still reaches the account's home by its absolute path.
 - The user config is checked for a setting that turns the sandbox off for every confined launch, including one that names `--full-auto` or a sandbox on the command line.
+- No write root overlaps a denied location. A write root (`--add-dir`, a caller's `writable_roots`, the child sandbox's roots, a linked worktree's git roots), or the working directory of a light or heavy launch, that is a denied location, holds one or lies inside one is refused before the launch. The denied locations are every deny entry in each form above, the child's `CODEX_HOME` and the probe record directory, and both spellings of each side, as written and resolved, are compared. Whether a deny entry wins over a write grant on the same path is not measured, so this is a refusal rather than a measured probe arm, and no launch rests on the deny winning. A read-only launch may start over a denied location, since `:read-only` grants no write over its working directory; an `--add-dir` directory overlapping one is refused in every mode.
 
 Limits added by this amendment:
 
 - A heavy request with no explicit sandbox, whose user config and selected profile set no `sandbox_mode`, is taken as read-only. The Codex default for the unset case is not measured here.
 - A per-profile `allow_read` list is applied to a Claude Code child but not to a Codex child: the Codex request does not carry the agent profile name, so the sandbox's default read policy applies.
+- A working directory above a denied location is refused for a light or heavy launch, so a Codex child cannot start with write over a directory that holds a credential location the settings name (a projects root above a denied project, for example). The overlap is judged on the spellings seen when the command line is built; a link made afterwards is not seen.
 
 ### Probe arms and the probe record
 
