@@ -46,8 +46,10 @@ Decision:
   server socket, an agent socket) answers a confined command and reads or writes for it.
 - **Where the list comes from.** One function in the child sandbox module,
   `credential_deny_read`, builds the list. The Claude Code policy starts from it, and the write
-  set and the gemini-cli policy each pass it whole, so no policy can drop an entry another one
-  denies. It holds `DEFAULT_DENY_READ` (generic credential locations, local stores and shell
+  set and the gemini-cli policy each pass it whole through `configured_deny_read`, which adds the
+  `deny_read` entries of the global `child_sandbox` block and its `extends` files with no
+  profile's `allow_read` exemption, so no policy can drop an entry another one denies and a path
+  the user adds there reaches all three. It holds `DEFAULT_DENY_READ` (generic credential locations, local stores and shell
   histories), lionagi's own `.env` under `LIONAGI_HOME`, and every sign-in the subscription
   accounts directory keeps or names: the directory itself, the token files in it, the `.env` files
   its rows read and the homes of its Codex rows, each named as written and at the path it resolves

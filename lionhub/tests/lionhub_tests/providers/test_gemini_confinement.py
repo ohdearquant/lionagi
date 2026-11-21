@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+import lionhub.agent.child_sandbox as child_sandbox
 import lionhub.providers.google.gemini_code as gemini_code
 import lionhub.tools._seatbelt as seatbelt
 from lionagi._errors import ConfigurationError
@@ -407,3 +408,45 @@ def _answer_pong(server: socket.socket) -> None:
             return
         with conn:
             conn.sendall(b"pong")
+
+
+def test_the_cli_cannot_read_the_paths_the_settings_add(monkeypatch, tmp_path, _home):
+    """``child_sandbox.deny_read`` in the global settings reaches the gemini-cli policy, so an
+    entry the user adds there is denied to this process as it is to a Claude Code child."""
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    store = (_home / "private-store").resolve()
+    store.mkdir()
+    outside = (tmp_path / "outside-home").resolve()
+    outside.mkdir()
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: {
+            "child_sandbox": {"enabled": False, "deny_read": ["~/private-store", str(outside)]}
+        },
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+
+    argv = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    denied = {v for k, v in _params(argv).items() if k.startswith("DENY_READ_")}
+
+    # enabled: false turns off the Claude Code sandbox only; this policy keeps every entry.
+    assert {str(store), str(outside)} <= denied
+
+
+def test_a_malformed_settings_block_refuses_the_cli_without_an_opt_out(
+    monkeypatch, tmp_path, _home
+):
+    from lionhub.agent.child_sandbox import CHILD_SANDBOX_OPT_OUT
+
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"deny_read": "relative"}}
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+
+    with pytest.raises(ConfigurationError, match="deny_read") as refused:
+        _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    assert CHILD_SANDBOX_OPT_OUT not in str(refused.value)

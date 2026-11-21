@@ -29,6 +29,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.session.branch import Branch
+from lionhub.agent import child_sandbox
 from lionhub.agent.child_sandbox import CHILD_SANDBOX_OPT_OUT
 from lionhub.tools import _seatbelt
 from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
@@ -938,3 +939,53 @@ async def test_no_confined_command_can_connect_to_the_daemon_reconnect_socket(ro
         assert "Operation not permitted" in confined["stderr"], confined
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_the_write_set_denies_reading_the_paths_the_settings_add(monkeypatch, tmp_path):
+    """``child_sandbox.deny_read`` in the global settings reaches the write set's policy."""
+    import lionhub.serve.cli.agent as agent_mod
+
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    store = home / "private-store"
+    store.mkdir()
+    outside = (tmp_path / "outside-home").resolve()
+    outside.mkdir()
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: {
+            "child_sandbox": {"enabled": False, "deny_read": ["~/private-store", str(outside)]}
+        },
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+    )
+
+    # enabled: false turns off the Claude Code sandbox only; this policy keeps every entry.
+    assert {str(store), str(outside)} <= set(spec.seatbelt.deny_read)
+
+
+def test_a_malformed_settings_block_refuses_the_write_set_without_an_opt_out(monkeypatch, tmp_path):
+    import lionhub.serve.cli.agent as agent_mod
+
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"deny_read": "relative"}}
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+
+    with pytest.raises(ConfigurationError, match="deny_read") as refused:
+        agent_mod._make_api_agent_spec(
+            cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+        )
+    assert CHILD_SANDBOX_OPT_OUT not in str(refused.value)
