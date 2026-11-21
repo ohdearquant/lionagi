@@ -159,6 +159,8 @@
       "os.environ.get:\"PATH\"",
       "os.environ.get:\"TMPDIR\"",
       "os.environ.get:\"TMPDIR\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\"",
       "os.environ:\"TMPDIR\""
     ],
     "lionhub/src/lionhub/serve/cli/_agent_depth.py": [
@@ -1470,7 +1472,7 @@
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
-      "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n)"
+      "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n    \"user_layer_tables\",\n)"
     ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
@@ -1491,7 +1493,7 @@
       "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
     ],
     "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
-      "__all__ = (\"StubProvider\", \"main\", \"probe\", \"run_codex\", \"tool_outputs\", \"write_record\")"
+      "__all__ = (\n    \"ScratchRootError\",\n    \"StubProvider\",\n    \"UnixListener\",\n    \"main\",\n    \"probe\",\n    \"run_codex\",\n    \"tool_outputs\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
@@ -4360,6 +4362,7 @@
       "refuse_oversized_argument",
       "refuse_oversized_command",
       "refuse_text_strict_utf8_cannot_encode",
+      "resolve_cli_program",
       "resolve_cli_workspace",
       "reveal_redacted",
       "spawned_create_time",
@@ -4551,6 +4554,7 @@
       "AudioTranscriptionRequest"
     ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
+      "binary_sha256",
       "codex_binary_version",
       "deny_entries",
       "permission_profile_table",
@@ -4558,7 +4562,10 @@
       "probe_record_dir",
       "probe_record_path",
       "refuse_a_second_sandbox_setting",
-      "require_passing_probe_record"
+      "refuse_write_roots_on_denied_paths",
+      "refuse_write_roots_on_probe_record_dir",
+      "require_passing_probe_record",
+      "user_layer_tables"
     ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "codex_config_defining_profile",
@@ -4609,7 +4616,9 @@
       "toml_override_value"
     ],
     "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "ScratchRootError",
       "StubProvider",
+      "UnixListener",
       "main",
       "probe",
       "run_codex",
