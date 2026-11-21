@@ -45,9 +45,11 @@ catalogues don't support every level lionagi recognizes:
   (`_CODEX_ULTRA_MODELS`, `_CODEX_MAX_ONLY_MODELS`,
   `_CODEX_XHIGH_CEILING_MODELS`). Unrecognized (future) models pass through
   unclamped rather than being rejected.
-- **Gemini** (`_clamp_gemini_effort`): the CLI has no effort kwarg at all —
-  effort is baked into the `--model` name as `Low`/`Medium`/`High`, and the
-  Pro variant has no `Medium` tier (`Medium` promotes to `High` for Pro).
+- **Gemini** (`_clamp_gemini_effort`): effort is baked into the `--model` name
+  as `Low`/`Medium`/`High`, plus `XHigh` for a family that has it (Gemini 4
+  Neon and Hydrogen, `has_xhigh=True`), where `xhigh`, `max` and `ultra` take
+  it; the Pro variant has no `Medium` tier (`Medium` promotes to `High` for
+  Pro).
 
 ## Runtime-state adoption
 
