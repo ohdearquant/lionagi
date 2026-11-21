@@ -18,6 +18,7 @@ from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 from lionhub.tools.seatbelt_link_probe import (
     REQUIRED_ARMS,
     VolumeIdentityError,
+    policy_digest,
     require_passing_link_record,
     write_record,
 )
@@ -59,6 +60,13 @@ def _policy(base: Path) -> SeatbeltPolicy:
     return SeatbeltPolicy.for_workspace(workspace, per_leg_uv_cache=True)
 
 
+def _record(base: Path, mount: str = "/Volumes/Test", uuid: str = _UUID, arms=None) -> Path:
+    """A record for the write set's policy shape, as the probe writes one."""
+    return write_record(
+        mount, uuid, _PASSED if arms is None else arms, policy_digest(_policy(base))
+    )
+
+
 # ---------------------------------------------------------------------------- policy text
 def test_the_policy_denies_a_hard_link_outside_its_roots_and_under_its_denied_paths():
     policy = SeatbeltPolicy(
@@ -76,6 +84,32 @@ def test_the_policy_denies_a_hard_link_outside_its_roots_and_under_its_denied_pa
     assert text.index("(deny file-link") > text.index("(allow file-write*\n")
 
 
+def test_the_file_link_denies_are_the_last_rules_whatever_options_are_on():
+    # Every option that renders rules turned on: nothing after the first file-link deny may
+    # allow anything, so no later rule can lift it.
+    text = SeatbeltPolicy(
+        writable_roots=("/w", "/t"),
+        read_only=("/w/.git",),
+        network=True,
+        pty=True,
+        deny_read=("/d",),
+    ).profile()
+    tail = text[text.index("(deny file-link") :]
+
+    assert "(allow" not in tail
+    assert [line for line in tail.splitlines() if line] == [
+        line for line in tail.splitlines() if line.startswith("(deny file-link")
+    ]
+
+
+def test_the_digest_covers_the_network_terminal_and_unreadable_rules(monkeypatch):
+    policy = SeatbeltPolicy(writable_roots=("/w",), read_only=("/w/.git",))
+    before = policy_digest(policy)
+    monkeypatch.setattr(_seatbelt, "_PTY_POLICY", _seatbelt._PTY_POLICY + "(allow file-link)\n")
+
+    assert policy_digest(policy) != before
+
+
 def test_a_policy_with_no_writable_root_denies_every_hard_link():
     assert "(deny file-link)\n" in SeatbeltPolicy(writable_roots=()).profile()
 
@@ -83,13 +117,14 @@ def test_a_policy_with_no_writable_root_denies_every_hard_link():
 # ---------------------------------------------------------------------------- the probe
 @needs_seatbelt
 def test_the_probe_passes_on_this_volume_and_its_record_lets_the_launch_through(home):
-    mount, uuid, arms = seatbelt_link_probe.probe(home / "scratch")
+    mount, uuid, arms, digest = seatbelt_link_probe.probe(home / "scratch")
 
     assert set(arms) == set(REQUIRED_ARMS)
     assert all(arm["passed"] for arm in arms.values()), arms
     assert "Operation not permitted" in arms["link_out_of_roots_refused"]["evidence"]
     assert list((home / "scratch").iterdir()) == []  # the working directory is removed
-    path = write_record(mount, uuid, arms)
+    assert digest == policy_digest(_policy(home))
+    path = write_record(mount, uuid, arms, digest)
     assert path.parent == home / "home" / "seatbelt-link-probes"
 
     require_passing_link_record(_policy(home))
@@ -99,10 +134,12 @@ def test_the_probe_passes_on_this_volume_and_its_record_lets_the_launch_through(
 def test_the_probe_fails_its_refusal_arms_when_the_policy_has_no_write_rules(home, monkeypatch):
     # A policy that grants every write cannot refuse a link; the arms must say so, not pass.
     monkeypatch.setattr(SeatbeltPolicy, "profile", lambda self: "(version 1)\n(allow default)\n")
-    _, _, arms = seatbelt_link_probe.probe(home / "scratch")
+    _, _, arms, _ = seatbelt_link_probe.probe(home / "scratch")
 
     assert arms["link_out_of_roots_refused"]["passed"] is False
     assert arms["link_from_read_only_refused"]["passed"] is False
+    assert arms["link_through_symlink_refused"]["passed"] is False
+    assert arms["link_to_outside_name_refused"]["passed"] is False
     assert arms["link_inside_root_works"]["passed"] is True
 
 
@@ -137,7 +174,7 @@ def test_a_volume_with_no_record_is_refused_with_the_command_that_makes_one(home
 
 
 def test_a_record_with_every_arm_passed_lets_the_launch_through(home, one_volume):
-    write_record("/Volumes/Test", _UUID, _PASSED)
+    _record(home)
 
     require_passing_link_record(_policy(home))
 
@@ -145,12 +182,12 @@ def test_a_record_with_every_arm_passed_lets_the_launch_through(home, one_volume
 @pytest.mark.parametrize("arm", REQUIRED_ARMS)
 def test_a_record_with_a_failed_or_missing_arm_is_refused(home, one_volume, arm):
     failed = {**_PASSED, arm: {"passed": False, "evidence": "test"}}
-    write_record("/Volumes/Test", _UUID, failed)
+    _record(home, arms=failed)
     with pytest.raises(ConfigurationError, match=f"did not all pass \\({arm}\\)"):
         require_passing_link_record(_policy(home))
 
     missing = {name: value for name, value in _PASSED.items() if name != arm}
-    write_record("/Volumes/Test", _UUID, missing)
+    _record(home, arms=missing)
     with pytest.raises(ConfigurationError, match=f"did not all pass \\({arm}\\)"):
         require_passing_link_record(_policy(home))
 
@@ -167,7 +204,7 @@ def test_a_record_with_a_failed_or_missing_arm_is_refused(home, one_volume, arm)
 def test_a_record_made_for_another_kernel_policy_volume_or_format_is_refused(
     home, one_volume, field, value, reason
 ):
-    path = write_record("/Volumes/Test", _UUID, _PASSED)
+    path = _record(home)
     record = json.loads(path.read_text())
     record[field] = value
     path.write_text(json.dumps(record))
@@ -177,7 +214,7 @@ def test_a_record_made_for_another_kernel_policy_volume_or_format_is_refused(
 
 
 def test_a_record_that_cannot_be_parsed_is_refused(home, one_volume):
-    path = write_record("/Volumes/Test", _UUID, _PASSED)
+    path = _record(home)
     path.write_text("{not json")
 
     with pytest.raises(ConfigurationError, match="cannot be read"):
@@ -185,7 +222,7 @@ def test_a_record_that_cannot_be_parsed_is_refused(home, one_volume):
 
 
 def test_a_policy_change_asks_for_a_new_probe(home, one_volume, monkeypatch):
-    write_record("/Volumes/Test", _UUID, _PASSED)
+    _record(home)
     original = SeatbeltPolicy.profile
     monkeypatch.setattr(
         SeatbeltPolicy, "profile", lambda self: original(self).replace("(deny file-link", ";")
@@ -197,7 +234,7 @@ def test_a_policy_change_asks_for_a_new_probe(home, one_volume, monkeypatch):
 
 @pytest.mark.parametrize("where", ["above", "equal", "inside"])
 def test_a_writable_root_over_the_record_directory_is_refused(home, one_volume, where):
-    write_record("/Volumes/Test", _UUID, _PASSED)
+    _record(home)
     records = home / "home" / "seatbelt-link-probes"
     root = {"above": home / "home", "equal": records, "inside": records / "sub"}[where]
     root.mkdir(parents=True, exist_ok=True)
@@ -218,10 +255,54 @@ def test_every_writable_roots_volume_is_checked(home, monkeypatch):
             ("/Volumes/Work", other) if str(path) == workspace else ("/Volumes/Test", _UUID)
         ),
     )
-    write_record("/Volumes/Test", _UUID, _PASSED)
+    _record(home)
 
     with pytest.raises(ConfigurationError, match="/Volumes/Work"):
         require_passing_link_record(policy)
 
-    write_record("/Volumes/Work", other, _PASSED)
+    _record(home, "/Volumes/Work", other)
     require_passing_link_record(policy)
+
+
+def test_a_record_for_another_policy_shape_is_refused(home, one_volume):
+    # A launch policy whose roots or read-only paths differ from the shape the probe measured
+    # (here: the workspace's .git no longer read-only) has another digest.
+    policy = _policy(home)
+    _record(home)
+    narrower = SeatbeltPolicy(writable_roots=policy.writable_roots)
+
+    with pytest.raises(ConfigurationError, match="another policy text"):
+        require_passing_link_record(narrower)
+
+
+def test_the_probe_writes_exactly_the_required_arms(home, monkeypatch):
+    # Without the sandbox: every link call answers as refused, which is enough to see the keys.
+    monkeypatch.setattr(
+        seatbelt_link_probe, "_ln", lambda policy, cwd, source, name: (1, "Operation not permitted")
+    )
+    arms, digest = seatbelt_link_probe._probe(home / "root")
+
+    assert set(arms) == set(REQUIRED_ARMS)
+    assert digest == policy_digest(_policy(home / "root"))
+
+
+def test_a_failing_diskutil_is_named_as_the_cause(monkeypatch, tmp_path):
+    monkeypatch.setattr(seatbelt_link_probe, "_mount_point", lambda path: "/Volumes/Test")
+    monkeypatch.setattr(seatbelt_link_probe, "_DISKUTIL", "/usr/bin/false")
+
+    with pytest.raises(VolumeIdentityError, match="info exited 1"):
+        seatbelt_link_probe.volume_identity(tmp_path)
+
+
+def test_roots_on_one_device_ask_for_the_volume_once(home, monkeypatch):
+    asked: list = []
+
+    def identity(path):
+        asked.append(path)
+        return "/Volumes/Test", _UUID
+
+    monkeypatch.setattr(seatbelt_link_probe, "volume_identity", identity)
+    _record(home)
+    require_passing_link_record(_policy(home))
+
+    assert len(asked) == 1

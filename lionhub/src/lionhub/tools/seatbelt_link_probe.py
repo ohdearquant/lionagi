@@ -60,6 +60,8 @@ _EVIDENCE_CHARS = 240
 REQUIRED_ARMS: tuple[str, ...] = (
     "link_out_of_roots_refused",
     "link_from_read_only_refused",
+    "link_through_symlink_refused",
+    "link_to_outside_name_refused",
     "link_inside_root_works",
 )
 
@@ -115,7 +117,13 @@ def volume_identity(path: str | os.PathLike[str]) -> tuple[str, str]:
             check=False,
             stdin=subprocess.DEVNULL,
         )
-        info = plistlib.loads(proc.stdout) if proc.returncode == 0 else {}
+        if proc.returncode != 0:
+            raise VolumeIdentityError(
+                f"the volume UUID of {mount!r} cannot be read: {_DISKUTIL} info exited "
+                f"{proc.returncode} "
+                f"{proc.stderr.decode('utf-8', 'replace').strip()[:_EVIDENCE_CHARS]!r}"
+            )
+        info = plistlib.loads(proc.stdout)
     except (OSError, subprocess.SubprocessError, ValueError, ExpatError) as exc:
         raise VolumeIdentityError(f"the volume UUID of {mount!r} cannot be read: {exc}") from None
     uuid = info.get("VolumeUUID") if isinstance(info, dict) else None
@@ -132,11 +140,19 @@ def _kernel() -> str:
     return f"{uname.sysname} {uname.release} {uname.version}"
 
 
-def policy_digest() -> str:
-    """SHA-256 of the policy text for a fixed set of roots, so a record names the rules it
-    measured and any change to the policy's text asks for a new probe."""
+def policy_digest(policy: SeatbeltPolicy) -> str:
+    """SHA-256 of ``policy``'s text with every option that renders rules turned on: its own
+    number of writable roots and read-only paths, the network and terminal rules, and one
+    unreadable entry. Paths travel as parameters, so the text records the policy's shape and
+    every rule any launch can render, not its paths. The probe records the digest of the policy
+    it measured and a launch compares its own, so a change to any rule, or to the roots and
+    read-only paths the write set is built with, asks for a new probe."""
     text = SeatbeltPolicy(
-        writable_roots=("/w",), read_only=("/w/.git",), deny_read=("/d",)
+        writable_roots=policy.writable_roots,
+        read_only=policy.read_only,
+        network=True,
+        pty=True,
+        deny_read=("/unreadable",),
     ).profile()
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -186,14 +202,40 @@ def _ln(policy: SeatbeltPolicy, cwd: Path, source: str, name: str) -> tuple[int,
     return proc.returncode, proc.stderr.strip()[-_EVIDENCE_CHARS:]
 
 
-def _refused_arm(policy: SeatbeltPolicy, ws: Path, source: str, name: str) -> dict[str, Any]:
+def _links(path: Path) -> int:
+    try:
+        return path.stat().st_nlink
+    except OSError:
+        return 0
+
+
+def _refused_arm(
+    policy: SeatbeltPolicy, ws: Path, source: str, name: str, *, target: Path
+) -> dict[str, Any]:
+    """A link that must be refused: a non-zero exit with the sandbox's refusal text (the
+    environment pins ``LC_ALL=C`` so that text is English), no entry at ``name`` (relative to
+    the workspace, or absolute), and ``target``, the file the link would name, with the link
+    count it had before."""
+    before = _links(target)
     rc, err = _ln(policy, ws, source, name)
     made = os.path.lexists(ws / name)
-    passed = rc != 0 and not made and "Operation not permitted" in err
-    return {"passed": passed, "evidence": f"ln {source} {name}: rc={rc} made={made} {err!r}"}
+    links = _links(target)
+    passed = (
+        rc != 0
+        and not made
+        and before >= 1
+        and links == before
+        and "Operation not permitted" in err
+    )
+    return {
+        "passed": passed,
+        "evidence": (
+            f"ln {source} {name}: rc={rc} made={made} target_links={before}->{links} {err!r}"
+        ),
+    }
 
 
-def _probe(root: Path) -> dict[str, dict[str, Any]]:
+def _probe(root: Path) -> tuple[dict[str, dict[str, Any]], str]:
     ws = root / "workspace"
     (ws / ".git").mkdir(parents=True)
     (ws / ".git" / "config").write_text("original\n", encoding="utf-8")
@@ -201,6 +243,7 @@ def _probe(root: Path) -> dict[str, dict[str, Any]]:
     outside = root / "outside" / "target.txt"
     outside.parent.mkdir()
     outside.write_text("original\n", encoding="utf-8")
+    (ws / "outside-alias").symlink_to(outside)
     # The policy the API write set builds for this workspace, with a uv cache of its own as a
     # write-capable API leg gets, so the shared uv cache is not a root here.
     policy = SeatbeltPolicy.for_workspace(ws, per_leg_uv_cache=True)
@@ -210,43 +253,59 @@ def _probe(root: Path) -> dict[str, dict[str, Any]]:
                 f"the probe's outside file {str(outside)!r} lies inside the writable root "
                 f"{root_path!r}; give a --scratch directory outside it"
             )
+    placed = outside.parent / "placed-link"
     arms = {
-        "link_out_of_roots_refused": _refused_arm(policy, ws, str(outside), "out-link"),
-        "link_from_read_only_refused": _refused_arm(policy, ws, ".git/config", "git-link"),
+        "link_out_of_roots_refused": _refused_arm(
+            policy, ws, str(outside), "out-link", target=outside
+        ),
+        "link_from_read_only_refused": _refused_arm(
+            policy, ws, ".git/config", "git-link", target=ws / ".git" / "config"
+        ),
+        # `ln` follows a symlink source, and a confined command can make the symlink itself.
+        "link_through_symlink_refused": _refused_arm(
+            policy, ws, "outside-alias", "alias-link", target=outside
+        ),
+        # A file of the command's own, given a name outside the roots.
+        "link_to_outside_name_refused": _refused_arm(
+            policy, ws, "inside.txt", str(placed), target=ws / "inside.txt"
+        ),
     }
+    before = _links(ws / "inside.txt")
     rc, err = _ln(policy, ws, "inside.txt", "inside-link")
-    try:
-        links = (ws / "inside.txt").stat().st_nlink
-    except OSError:
-        links = 0
+    links = _links(ws / "inside.txt")
     arms["link_inside_root_works"] = {
-        "passed": rc == 0 and links == 2,
-        "evidence": f"ln inside.txt inside-link: rc={rc} st_nlink={links} {err!r}",
+        "passed": rc == 0 and before >= 1 and links == before + 1,
+        "evidence": f"ln inside.txt inside-link: rc={rc} st_nlink={before}->{links} {err!r}",
     }
     if outside.read_text(encoding="utf-8") != "original\n":
         arms["link_out_of_roots_refused"]["passed"] = False
         arms["link_out_of_roots_refused"]["evidence"] += " (the outside file changed)"
-    return arms
+    return arms, policy_digest(policy)
 
 
-def probe(scratch: str | os.PathLike[str] | None = None) -> tuple[str, str, dict[str, dict]]:
-    """Run every arm on the volume holding ``scratch``; its mount point, its volume UUID and
-    arm name to ``{"passed": bool, "evidence": str}``. The working directory is a fresh
-    subdirectory of ``scratch``, removed afterwards."""
+def probe(
+    scratch: str | os.PathLike[str] | None = None,
+) -> tuple[str, str, dict[str, dict], str]:
+    """Run every arm on the volume holding ``scratch``; its mount point, its volume UUID, arm
+    name to ``{"passed": bool, "evidence": str}``, and the digest of the policy measured. The
+    working directory is a fresh subdirectory of ``scratch``, removed afterwards."""
     parent = _scratch_parent(scratch)
     mount, uuid = volume_identity(parent)
     root = Path(os.path.realpath(tempfile.mkdtemp(prefix="p-", dir=parent)))
     try:
         if volume_identity(root) != (mount, uuid):
             raise VolumeIdentityError(f"the probe directory {str(root)!r} is not on {mount!r}")
-        return mount, uuid, _probe(root)
+        arms, digest = _probe(root)
+        return mount, uuid, arms, digest
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def write_record(mount: str, uuid: str, arms: Mapping[str, Mapping[str, Any]]) -> Path:
+def write_record(
+    mount: str, uuid: str, arms: Mapping[str, Mapping[str, Any]], policy_sha256: str
+) -> Path:
     """Write the record ``require_passing_link_record`` reads for the volume, replacing any
-    earlier one."""
+    earlier one; ``policy_sha256`` is ``policy_digest`` of the policy the arms ran under."""
     path = _record_path(uuid)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -254,7 +313,7 @@ def write_record(mount: str, uuid: str, arms: Mapping[str, Mapping[str, Any]]) -
         "mount": mount,
         "volume_uuid": uuid,
         "kernel": _kernel(),
-        "policy_sha256": policy_digest(),
+        "policy_sha256": policy_sha256,
         "probed_at": datetime.now(timezone.utc).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
     }
@@ -264,7 +323,7 @@ def write_record(mount: str, uuid: str, arms: Mapping[str, Mapping[str, Any]]) -
     return path
 
 
-def _record_problem(uuid: str) -> str | None:
+def _record_problem(uuid: str, digest: str) -> str | None:
     path = _record_path(uuid)
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -278,7 +337,7 @@ def _record_problem(uuid: str) -> str | None:
         return "has a link probe record naming another volume"
     if record.get("kernel") != _kernel():
         return "has a link probe record made under another kernel"
-    if record.get("policy_sha256") != policy_digest():
+    if record.get("policy_sha256") != digest:
         return "has a link probe record made for another policy text"
     arms = record.get("arms")
     failed = [
@@ -302,7 +361,9 @@ def require_passing_link_record(policy: SeatbeltPolicy) -> None:
             stale or failed; or a root overlaps the record directory.
     """
     records = Path(os.path.realpath(link_record_dir()))
+    digest = policy_digest(policy)
     checked: set[str] = set()
+    devices: set[int] = set()
     for root in policy.writable_roots:
         root_path = Path(root)
         if _within(root_path, records) or _within(records, root_path):
@@ -311,11 +372,19 @@ def require_passing_link_record(policy: SeatbeltPolicy) -> None:
                 f"directory {str(records)!r}, where a confined command could write a record; "
                 "start the agent from another directory"
             )
+        try:
+            device: int | None = os.stat(root_path).st_dev
+        except OSError:
+            device = None
+        if device is not None and device in devices:
+            continue
         mount, uuid = volume_identity(root_path)
+        if device is not None:
+            devices.add(device)
         if uuid in checked:
             continue
         checked.add(uuid)
-        problem = _record_problem(uuid)
+        problem = _record_problem(uuid, digest)
         if problem is not None:
             raise ConfigurationError(
                 f"the volume mounted at {mount!r}, which holds the writable root {root!r}, "
@@ -343,11 +412,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("this host has no Seatbelt sandbox (macOS /usr/bin/sandbox-exec)", file=sys.stderr)
         return 2
     try:
-        mount, uuid, arms = probe(args.scratch)
+        mount, uuid, arms, digest = probe(args.scratch)
     except ConfigurationError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    path = write_record(mount, uuid, arms)
+    path = write_record(mount, uuid, arms, digest)
     for name, arm in arms.items():
         print(f"{'pass' if arm['passed'] else 'FAIL'}  {name}  {arm['evidence']}")
     print(f"volume: {mount} ({uuid})")
