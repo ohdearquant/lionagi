@@ -1494,6 +1494,15 @@ def _permission_profile_args(
         exclude_slash_tmp=exclude_slash_tmp and not read_only,
         exclude_tmpdir=exclude_tmpdir and not read_only,
     )
+    return _permission_profile_overrides(table)
+
+
+def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
+    """The ``-c`` pair that defines the permission profile ``table`` and selects it.
+
+    The one rendering of the profile onto a command line: a launch and the sandbox probe both
+    emit it through here, so a probe record vouches for the overrides a launch really carries.
+    """
     name = _rendered_override_value(PERMISSION_PROFILE, "The permission profile name")
     rendered = _rendered_override_value(table, "The permission profile")
     return [

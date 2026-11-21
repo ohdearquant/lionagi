@@ -293,12 +293,12 @@ every CLI request model (`exclude=True`, never serialized):
 
 | Engine | `light` |
 |--------|---------|
-| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, `-c sandbox_workspace_write.exclude_slash_tmp=true`, `-c sandbox_workspace_write.exclude_tmpdir_env_var=true`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir`, a `profile` lionagi did not generate, and any `config_overrides` key under `sandbox_mode`, `sandbox_workspace_write`, `default_permissions` (which names a permissions profile codex applies in place of the mode), `permissions`, `profile` or `profiles` are refused with `CLIInputRefusedError`, at construction and again where the process would start. Where the command line is built, so is a user or project codex config that sets a root `profile` key or `default_permissions`, defines the profile the request names, or cannot be read. The sandbox writes only the working directory (`/tmp` and `$TMPDIR` are excluded), and codex starts the MCP servers it is given outside it |
+| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, `-c sandbox_workspace_write.exclude_slash_tmp=true`, `-c sandbox_workspace_write.exclude_tmpdir_env_var=true`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir`, a `profile` lionagi did not generate, and any `config_overrides` key under `sandbox_mode`, `sandbox_workspace_write`, `default_permissions` (which names a permissions profile codex applies in place of the mode), `permissions`, `profile` or `profiles` are refused with `CLIInputRefusedError`, at construction and again where the process would start. Where the command line is built, so is a user or project codex config that sets a root `profile` key or `default_permissions`, defines the profile the request names, or cannot be read. The sandbox writes only the working directory (`/tmp` and `$TMPDIR` are excluded), and codex starts the MCP servers it is given outside it. **Replaced while the child sandbox is on:** the command line carries a permission profile in place of `--sandbox` and these `sandbox_workspace_write` pins ([amendment](#amendment-a-codex-child-runs-under-a-permission-profile-while-the-child-sandbox-is-on)) |
 | claude_code | `Edit`, `Write` and `NotebookEdit` are added to `--disallowedTools`, merged with the caller's list into one flag. Bash stays. Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a command run through Bash can still write |
 | gemini-cli | `--sandbox`, always |
 | pi | refused before the process starts: Pi has no sandbox lionagi can pin |
 
-A `heavy` request's command line is exactly the one it had before workloads existed.
+A `heavy` request's command line is exactly the one it had before workloads existed, except for a codex child while the child sandbox is on, which runs under a permission profile ([amendment](#amendment-a-codex-child-runs-under-a-permission-profile-while-the-child-sandbox-is-on)).
 
 The class is chosen as follows:
 
@@ -565,7 +565,7 @@ This amendment replaces two statements of D5 for a request that runs with the ch
 - **Refused before the process starts.** `config_overrides` keys under `sandbox_mode`, `permissions` and `default_permissions`; a user config that sets `default_permissions` or defines `[permissions.lionagi_child]`; and a project `.codex/config.toml`. A user config that sets a root `sandbox_mode` is not refused: the command-line profile governs over it, and the leg log says so in one line naming the config and the probe record. An override key is refused when either reading of it names a guarded key (`sandbox_mode`, `default_permissions`, `permissions.*`, `profile`, `sandbox_workspace_write.*`): split at dots, as Codex reads command-line keys, or decoded as a TOML dotted key, so a quoted part, spaces around a dot or a `\u` escape does not hide it. A profile the run could apply (the request's `profile`, a `profile` override, or the root `profile` key of `config.toml`) is refused when its `[profiles.<name>]` table or its `CODEX_HOME/<name>.config.toml` file sets `sandbox_mode`, `default_permissions` or `permissions`. A request's `full_auto` or `sandbox` does not exempt a user config that turns the sandbox off, because no `--sandbox` flag is emitted, and `as_cmd_args()` reaches the same refusals as a launch.
 - **A probe record is required.** A profiled launch refuses unless a record exists for the codex binary it runs, keyed by the binary's resolved path, its version and the SHA-256 of its bytes, with every required arm passed (a conditional arm may be recorded as skipped, see below). The refusal names `python -m lionhub.providers.openai.codex_sandbox_probe`, which runs the binary against a loopback stub provider in a scratch directory and accepts on canary reads, not on codex's startup header. The record's directory is on the child sandbox's edit-deny list and among the profile's deny entries, so a child cannot forge one.
 
-#### Write roots, deny placement and the sandbox-off check
+### Write roots, deny placement and the sandbox-off check
 
 Under a Codex permission profile the table, not a sandbox mode, grants write access, and it grants what the mode it replaces granted:
 
@@ -580,7 +580,7 @@ Limits added by this amendment:
 - A heavy request with no explicit sandbox, whose user config and selected profile set no `sandbox_mode`, is taken as read-only. The Codex default for the unset case is not measured here.
 - A per-profile `allow_read` list is applied to a Claude Code child but not to a Codex child: the Codex request does not carry the agent profile name, so the sandbox's default read policy applies.
 
-#### Probe arms and the probe record
+### Probe arms and the probe record
 
 The probe's arms test what they name, and the record they write cannot be forged by the child it admits:
 

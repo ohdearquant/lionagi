@@ -41,7 +41,6 @@ from typing import Any
 
 from lionhub.providers.openai._codex_permissions import (
     _RECORD_FORMAT,
-    PERMISSION_PROFILE,
     REQUIRED_ARMS,
     binary_sha256,
     codex_binary_version,
@@ -330,7 +329,7 @@ def run_codex(argv: list[str], env: dict[str, str], cwd: Path) -> int:
 
 
 def _argv(binary: str, url: str, table: Mapping[str, Any], cwd: Path, add_dirs: Sequence[Path]):
-    from lionhub.providers.openai.codex import _rendered_override_value
+    from lionhub.providers.openai.codex import _permission_profile_overrides
 
     provider = f'model_providers.stub={{name="stub",base_url="{url}/v1",wire_api="responses"}}'
     argv = [
@@ -346,15 +345,7 @@ def _argv(binary: str, url: str, table: Mapping[str, Any], cwd: Path, add_dirs: 
     ]
     for path in add_dirs:
         argv += ["--add-dir", str(path)]
-    argv += [
-        "-c",
-        f"default_permissions={_rendered_override_value(PERMISSION_PROFILE, 'The profile name')}",
-        "-c",
-        f"permissions.{PERMISSION_PROFILE}={_rendered_override_value(table, 'The profile')}",
-        "-C",
-        str(cwd),
-        "probe",
-    ]
+    argv += [*_permission_profile_overrides(table), "-C", str(cwd), "probe"]
     return argv
 
 
@@ -440,7 +431,9 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
 
     def table(home: Path, *, light: bool) -> dict[str, Any]:
         return permission_profile_table(
-            deny=deny_entries(deny_read, home),
+            # Expanded against the HOME the probe's child gets, as a launch expands its entries
+            # against the child's HOME.
+            deny=deny_entries(deny_read, home, _env(home)),
             write=[] if light else [str(dirs["entry"])],
             light=light,
             read_only=False,
@@ -456,7 +449,7 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     denied_sock, control_sock = dirs["deny"] / "d.sock", dirs["open"] / "c.sock"
     real = [
         p
-        for p in deny_entries(policy_deny, homes["heavy"])
+        for p in deny_entries(policy_deny, homes["heavy"], _env(homes["heavy"]))
         if os.path.isfile(p) and not p.startswith(str(root))
     ][:_REAL_PATHS_OPENED]
     heavy_commands = [

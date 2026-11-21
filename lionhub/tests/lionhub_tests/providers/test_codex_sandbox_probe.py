@@ -342,6 +342,37 @@ def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbo
     assert sorted(networks) == [False, True, True]
 
 
+def test_the_probe_carries_the_profile_overrides_a_launch_renders(tmp_path, sandbox_on):
+    from lionhub.providers.openai.codex import _permission_profile_overrides
+
+    fake = FakeCodex()
+    probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
+    for argv, _env, _cwd in fake.runs:
+        row = next(a for a in argv if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
+        table = _toml_loads("table = " + row.split("=", 1)[1])["table"]
+        pair = _permission_profile_overrides(table)
+        start = argv.index(pair[1]) - 1
+        assert argv[start : start + len(pair)] == pair
+
+
+def test_a_tilde_deny_entry_expands_against_the_home_the_probe_child_gets(tmp_path, monkeypatch):
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    child_home = tmp_path / "child-home"
+    child_home.mkdir()
+    monkeypatch.setenv("HOME", str(child_home))
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"deny_read": ["~/vault"]}}
+    )
+    fake = FakeCodex()
+    probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
+    for argv, env, _cwd in fake.runs:
+        assert env["HOME"] == str(child_home)
+        row = next(a for a in argv if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
+        denied = _toml_loads("table = " + row.split("=", 1)[1])["table"]["filesystem"]
+        assert denied.get(str(child_home / "vault")) == "deny"
+
+
 def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(tmp_path, sandbox_on):
     fake = FakeCodex()
     scratch = tmp_path / "scratch"
