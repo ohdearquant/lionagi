@@ -145,6 +145,7 @@ _EXPECTED_DENY_READ = (
     "~/.pgpass",
     "~/.my.cnf",
     "~/.secrets",
+    "~/.codex",
     "~/.codex/auth.json",
     "~/.claude/.credentials.json",
     "~/.claude.json",
@@ -432,6 +433,43 @@ def test_an_exemption_naming_a_path_not_on_the_list_is_refused(profile):
     settings = _settings(profiles={"builder": {"allow_read": ["~/.nothing"]}})
     with pytest.raises(ConfigurationError, match="not on the deny list"):
         resolve_child_sandbox(profile, settings)
+
+
+def test_the_default_codex_home_is_denied_whole_and_its_sign_in_stays_listed():
+    """A Codex home's config.toml can hold provider keys and MCP server env values."""
+    deny = resolve_child_sandbox(None, {}).deny_read
+    assert {"~/.codex", "~/.codex/auth.json"} <= set(deny)
+
+
+@pytest.mark.parametrize("profile", ["builder", "reviewer", None])
+def test_an_exemption_for_a_file_inside_a_denied_directory_is_refused_naming_it(profile):
+    """Lifting the file alone would leave it denied by the directory while reading as granted."""
+    settings = _settings(profiles={"builder": {"allow_read": ["~/.codex/auth.json"]}})
+    with pytest.raises(ConfigurationError, match=r"lies under '~/\.codex', still denied"):
+        resolve_child_sandbox(profile, settings)
+
+
+def test_exempting_the_directory_with_the_file_lifts_both():
+    settings = _settings(profiles={"builder": {"allow_read": ["~/.codex", "~/.codex/auth.json"]}})
+    deny = resolve_child_sandbox("builder", settings).deny_read
+    assert "~/.codex" not in deny
+    assert "~/.codex/auth.json" not in deny
+    assert "~/.codex" in resolve_child_sandbox(None, settings).deny_read
+
+
+def test_the_directory_rule_holds_for_paths_added_to_the_list():
+    settings = _settings(
+        deny_read=["~/vault", "~/vault/key"], profiles={"builder": {"allow_read": ["~/vault/key"]}}
+    )
+    with pytest.raises(ConfigurationError, match=r"lies under '~/vault'"):
+        resolve_child_sandbox("builder", settings)
+
+
+def test_a_sibling_whose_name_extends_a_denied_directory_is_not_inside_it():
+    settings = _settings(
+        deny_read=["~/vault", "~/vault-old"], profiles={"builder": {"allow_read": ["~/vault-old"]}}
+    )
+    assert "~/vault-old" not in resolve_child_sandbox("builder", settings).deny_read
 
 
 # --------------------------------------------------------------------------- refusals
@@ -1281,6 +1319,9 @@ _REFUSALS = {
     "unknown key": lambda tmp_path, monkeypatch: resolve_child_sandbox(None, _settings(surprise=1)),
     "allow_read not on the list": lambda tmp_path, monkeypatch: resolve_child_sandbox(
         "builder", _settings(profiles={"builder": {"allow_read": ["~/.nothing"]}})
+    ),
+    "allow_read inside another denied entry": lambda tmp_path, monkeypatch: resolve_child_sandbox(
+        "builder", _settings(profiles={"builder": {"allow_read": ["~/.codex/auth.json"]}})
     ),
     "missing extends file": lambda tmp_path, monkeypatch: resolve_child_sandbox(
         None, _settings(extends=[str(tmp_path / "absent.yaml")])
