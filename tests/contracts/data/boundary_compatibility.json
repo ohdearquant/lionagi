@@ -374,7 +374,7 @@
       "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n    }\n)"
     ],
     "lionagi/_paths.py": [
-      "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n)"
+      "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n    \"is_user_lionagi_dir\",\n)"
     ],
     "lionagi/_settings.py": [
       "__all__ = (\n    \"find_project_settings_file\",\n    \"load_global_settings_layer\",\n    \"load_project_settings_layer\",\n    \"load_settings\",\n)"
@@ -2296,7 +2296,8 @@
       "ensure_lionagi_dir",
       "find_lionagi_dirs",
       "is_account_home",
-      "is_account_lionagi_dir"
+      "is_account_lionagi_dir",
+      "is_user_lionagi_dir"
     ],
     "lionagi/_provider_errors.py": [
       "EmissionError",
@@ -4292,6 +4293,7 @@
       "build_chat_model",
       "build_deadline_preamble",
       "build_imodel_from_spec",
+      "global_profile_codex_homes",
       "list_agents",
       "load_agent_profile",
       "profile_config",

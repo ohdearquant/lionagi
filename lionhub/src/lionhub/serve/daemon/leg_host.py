@@ -87,11 +87,22 @@ _LEG_ENV_ALLOW = (
     "TERM",
     "TMPDIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    # Where the leg finds its lionagi home and its subscription accounts: the ones the daemon
+    # checked a named account against, rather than the defaults an unconfigured process uses.
+    "LIONAGI_HOME",
+    "LIONAGI_LOGINS_DIR",
 )
 
 #: Request fields a leg-host launch may carry. Any other field set to a value is refused.
 _ALLOWED_FIELDS = frozenset(
-    {"action_kind", "action_agent", "action_prompt", "action_repo", "action_head"}
+    {
+        "action_kind",
+        "action_agent",
+        "action_prompt",
+        "action_repo",
+        "action_head",
+        "action_account",
+    }
 )
 
 #: Files in a worktree that would configure the leg from the tree under review.
@@ -123,7 +134,12 @@ def max_launches() -> int:
 
 def capabilities() -> dict[str, Any]:
     """What ``GET /api/launches/capabilities`` reports, so a client can refuse a plain daemon."""
-    return {"leg_host": enabled(), "pinned_head": enabled(), "max_concurrent": max_launches()}
+    return {
+        "leg_host": enabled(),
+        "pinned_head": enabled(),
+        "named_account": enabled(),
+        "max_concurrent": max_launches(),
+    }
 
 
 def _lionagi_home() -> Path:
@@ -240,6 +256,9 @@ class LegLaunch:
     repo: LegRepo
     head: str
     agent: str
+    account: str | None = None
+    """The subscription account the leg runs on in place of its role's, passed as
+    ``li agent --account``; None runs it on the account its role names, if any."""
 
 
 def _profile_provider(agent: str) -> str | None:
@@ -301,7 +320,31 @@ def validate_launch(data: dict[str, Any]) -> LegLaunch:
             f"profile {agent!r} is exempted from reading {', '.join(lifted)}; a leg host lifts no "
             "read denial"
         )
-    return LegLaunch(repo=repo, head=head, agent=agent)
+    account = data.get("action_account")
+    if account in (None, ""):
+        account = None
+    else:
+        from lionhub.agent.subscription_accounts import (
+            SubscriptionAccountError,
+            resolve_account,
+            validate_account_name,
+        )
+
+        # Checked against the accounts directory the leg is handed: a malformed name, or one
+        # with no entry for the profile's provider, is refused before a worktree is made. The
+        # credential itself is read only by the leg, so an entry whose token cannot be read
+        # fails the leg, not the launch. The refusal names no path on this host.
+        try:
+            validate_account_name(account, where="action_account")
+        except SubscriptionAccountError as exc:
+            raise ValueError(str(exc)) from None
+        try:
+            resolve_account(account, provider)
+        except SubscriptionAccountError:
+            raise ValueError(
+                f"action_account: {account!r} is not an account this host has for {provider}"
+            ) from None
+    return LegLaunch(repo=repo, head=head, agent=agent, account=account)
 
 
 def _worktree_path(repo: LegRepo, invocation_id: str) -> Path:

@@ -260,7 +260,8 @@ def profile_list(
         (set(), None, False) if fields is None else _parse_fields(fields)
     )
     with _resolving_under(cwd):
-        catalog = build_agent_profile_catalog()
+        refused: dict[str, str] = {}
+        catalog = build_agent_profile_catalog(refused)
         if names is not None:
             wanted = set(names)
             catalog = {name: config for name, config in catalog.items() if name in wanted}
@@ -280,6 +281,11 @@ def profile_list(
             "roots": _roots(),
             "profiles": profiles,
             "count": len(profiles),
+            **(
+                {"refused": [{"name": k, "reason": v} for k, v in sorted(refused.items())]}
+                if refused
+                else {}
+            ),
         }
 
 
