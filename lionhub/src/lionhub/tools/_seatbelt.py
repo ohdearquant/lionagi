@@ -282,6 +282,13 @@ class SeatbeltPolicy:
         ]
         if self.network:
             parts.append(_NETWORK_POLICY)
+            # A connect() to a unix socket is judged by the network rules, not by file-read*, so
+            # without these a listener inside an unreadable path (a daemon's socket in its store
+            # directory) still answers, and the daemon reads the store for the command.
+            parts += [
+                f'(deny network-outbound (subpath (param "DENY_READ_{i}")))\n'
+                for i in range(len(self.deny_read))
+            ]
         if self.pty:
             parts.append(_PTY_POLICY)
         return "".join(parts)

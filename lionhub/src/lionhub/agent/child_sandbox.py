@@ -431,7 +431,10 @@ def _subscription_account_credentials() -> tuple[str, ...]:
     try:
         listed = credential_paths()
     except SubscriptionAccountError as exc:
-        raise _refusal(f"child_sandbox: {exc}") from None
+        raise ConfigurationError(
+            f"the subscription accounts cannot be read, so their sign-ins cannot be made "
+            f"unreadable to the child: {exc}"
+        ) from None
     home = Path.home()
     named: list[str] = []
     for written in listed:
@@ -453,8 +456,10 @@ def credential_deny_read() -> tuple[str, ...]:
     it whole, so no list can drop an entry the others deny.
 
     Raises:
-        ConfigurationError: the subscription accounts directory or file cannot be read, so its
-            sign-ins cannot be named; the launch is refused rather than run with them readable.
+        ConfigurationError: the directory setting, the accounts file or one of its rows cannot
+            be read, so the sign-ins cannot be named; the launch is refused rather than run with
+            them readable. The text carries no opt-out: turning the Claude Code child sandbox off
+            does not lift this refusal for the policies lionagi builds itself.
     """
     return tuple(
         dict.fromkeys(
@@ -633,7 +638,10 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
     extends = _read_extends(raw.get("extends", []))
     layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
-    deny: list[str] = list(credential_deny_read())
+    try:
+        deny: list[str] = list(credential_deny_read())
+    except ConfigurationError as exc:
+        raise _refusal(f"child_sandbox: {exc}") from None
     allow: list[str] = list(default_allow_write())
     edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}

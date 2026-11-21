@@ -168,8 +168,9 @@ def test_the_cli_is_refused_when_the_accounts_file_cannot_be_read(monkeypatch, t
     work = tmp_path / "work"
     work.mkdir()
 
-    with pytest.raises(ConfigurationError, match="child_sandbox"):
+    with pytest.raises(ConfigurationError, match="sign-ins") as refused:
         _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    assert "child_sandbox: {enabled: false}" not in str(refused.value)
 
 
 @pytest.fixture

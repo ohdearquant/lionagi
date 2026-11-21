@@ -12,11 +12,16 @@ workspace is outside all three.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shlex
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +29,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 from lionagi.session.branch import Branch
+from lionhub.agent.child_sandbox import CHILD_SANDBOX_OPT_OUT
 from lionhub.tools import _seatbelt
 from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 from lionhub.tools.coding import CodingToolkit
@@ -484,10 +490,12 @@ def test_the_write_set_is_refused_when_the_accounts_file_cannot_be_read(monkeypa
     (logins / "accounts.toml").write_text("not toml [")
     monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
 
-    with pytest.raises(ConfigurationError, match="child_sandbox"):
+    with pytest.raises(ConfigurationError, match="sign-ins") as refused:
         agent_mod._make_api_agent_spec(
             cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
         )
+    # Turning the Claude Code child sandbox off does not lift this refusal, so it names no opt-out.
+    assert CHILD_SANDBOX_OPT_OUT not in str(refused.value)
 
 
 @needs_seatbelt
@@ -799,3 +807,77 @@ def test_api_read_policy_does_not_probe_uv(monkeypatch, tmp_path):
     )
 
     assert spec.seatbelt is None
+
+
+def test_a_network_on_policy_denies_connecting_inside_each_unreadable_path(roots):
+    workspace = roots / "workspace"
+    off = SeatbeltPolicy.for_workspace(workspace, deny_read=[roots / "outside"])
+    on = SeatbeltPolicy.for_workspace(workspace, network=True, deny_read=[roots / "outside"])
+
+    rule = '(deny network-outbound (subpath (param "DENY_READ_0")))'
+    assert rule not in off.profile()
+    assert on.profile().index(rule) > on.profile().index("(allow network-outbound)")
+
+
+@contextlib.contextmanager
+def _listener(path: Path):
+    """A unix socket at ``path`` that answers each connection with ``pong``."""
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen()
+
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                conn.sendall(b"pong")
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        server.close()
+        thread.join(timeout=5)
+
+
+@needs_seatbelt
+@pytest.mark.asyncio
+async def test_a_listener_inside_an_unreadable_path_cannot_be_connected_to(roots):
+    """connect() is judged by the network rules, not file-read*, so a daemon socket in a denied
+    store directory needs its own rule, or the daemon reads the store for the command."""
+    # A unix socket path is limited to about a hundred bytes, so the sockets sit in a short one.
+    base = Path(tempfile.mkdtemp(prefix="sbx", dir="/private/tmp")).resolve()
+    try:
+        denied, open_dir = base / "denied", base / "open"
+        denied.mkdir()
+        open_dir.mkdir()
+        (denied / "store.txt").write_text("decoy\n")
+        workspace = roots / "workspace"
+        on = _bound_tools(workspace, network=True, deny_read=[denied])
+        off = _bound_tools(workspace, network=False, deny_read=[denied])
+        (workspace / "client.py").write_text(
+            "import socket, sys\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect(sys.argv[1])\n"
+            "print(s.recv(4).decode())\n"
+        )
+        client = f"{shlex.quote(sys.executable)} -I client.py"
+        with _listener(denied / "s"), _listener(open_dir / "s"):
+            read = await on["bash"](f"cat {denied / 'store.txt'}", cwd=str(workspace))
+            inside_off = await off["bash"](f"{client} {denied / 's'}", cwd=str(workspace))
+            outside_on = await on["bash"](f"{client} {open_dir / 's'}", cwd=str(workspace))
+            inside_on = await on["bash"](f"{client} {denied / 's'}", cwd=str(workspace))
+
+        assert read["return_code"] != 0 and "decoy" not in read["stdout"], read
+        assert inside_off["return_code"] != 0 and "pong" not in inside_off["stdout"], inside_off
+        assert outside_on["return_code"] == 0, outside_on
+        assert outside_on["stdout"].strip() == "pong"
+        assert inside_on["return_code"] != 0, inside_on
+        assert "pong" not in inside_on["stdout"]
+        assert "Operation not permitted" in inside_on["stderr"], inside_on
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
