@@ -1378,6 +1378,17 @@ class CodexCodeRequest(BaseModel):
             "it did not spawn itself. May be a coroutine function."
         ),
     )
+    secret_fill_skip: SkipJsonSchema[frozenset[str]] = Field(
+        default=frozenset(),
+        exclude=True,
+        repr=False,
+        description=(
+            "Environment variable names the configured secret lookup must not "
+            "fill into this CLI process, in addition to the routed account key "
+            "names. Names only, never values. Empty leaves the lookup's fill "
+            "exactly as it is."
+        ),
+    )
 
     @field_validator("env", mode="before")
     @classmethod
@@ -3010,6 +3021,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             stdin_data=plain.prompt,
             on_spawn=request.on_spawn,
             engine="codex",
+            secret_fill_skip=request.secret_fill_skip,
             workload=plain.workload,
             auth_env=functools.partial(_codex_auth_env, plain),
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
@@ -3895,7 +3907,7 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CODEX_HANDLER_PARAMS
     _handler_kwarg = "codex_handlers"
     _request_model = CodexCodeRequest
-    _runtime_state_fields = ("env", "on_spawn")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True

@@ -177,6 +177,17 @@ def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
         raise
 
 
+def _codex_home_setting(agent_env: Mapping[str, str]) -> str:
+    """The real path of an overlay's ``CODEX_HOME``, refused unless it is an existing absolute
+    directory."""
+    from lionhub.agent.subscription_accounts import validate_codex_home
+
+    try:
+        return validate_codex_home(agent_env["CODEX_HOME"], where="agent_env CODEX_HOME")
+    except ConfigurationError as exc:
+        raise _AgentSettingError(str(exc)) from None
+
+
 async def create_agent(
     config: AgentSpec,
     *,
@@ -210,12 +221,13 @@ async def create_agent(
     environment does not reach the agent. Every case where the overlay could
     not reach a child raises instead of dropping it: a caller-supplied
     ``chat_model``, no ``spec.model``, or an endpoint that takes no
-    environment. A codex agent's overlay may not set ``CODEX_HOME`` or
-    ``HOME``: this process resolves the codex home for the agent's MCP server
-    profile and default reasoning effort, and would read a different one than
-    the child. Only the overlay is checked: an ``env`` passed with a later call
-    replaces the child environment this factory built, and one naming another
-    ``CODEX_HOME`` or ``HOME`` is not refused. The overlay is runtime state and
+    environment. A codex agent's overlay may set ``CODEX_HOME`` (an absolute
+    path): its default reasoning effort, its codex config profile, and the
+    profile that carries its MCP servers' secret fields are then read from and
+    written to that home, the one the child reads. It may not set ``HOME``,
+    which also moves every other tool's configuration. Only the overlay is
+    checked: an ``env`` passed with a later call replaces the child environment
+    this factory built, and one naming another ``HOME`` is not refused. The overlay is runtime state and
     is not serialized, so a model restored with ``iModel.from_dict`` spawns its
     child with this process's environment; an agent rebuilt with
     ``create_agent`` gets the overlay only when ``agent_env`` is passed again.
@@ -397,6 +409,11 @@ async def create_agent(
         # Settings are looked up under the provider the name resolves to, so an alias such as
         # "openai-codex" takes its provider's; the model is built under the name as written.
         provider_key = _canonical_provider(provider)
+        if agent_env and "CODEX_HOME" in agent_env and provider_key == "codex":
+            # An absolute, existing home, used as its real path: this process's codex reads
+            # and the child then name the same directory. For any other agent the variable is
+            # an ordinary one, passed through.
+            agent_env = {**agent_env, "CODEX_HOME": _codex_home_setting(agent_env)}
 
         extra = {}
         default_effort = spec_origin == "default"
@@ -415,7 +432,9 @@ async def create_agent(
             # exceeds this one's ceiling. Same seam the CLI builders use.
             from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
 
-            effort = codex_unset_effort_from_config(model_name)
+            effort = codex_unset_effort_from_config(
+                model_name, env={**os.environ, **agent_env} if agent_env else None
+            )
             derived = effort is not None
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider_key)
@@ -496,14 +515,33 @@ async def create_agent(
             # Decided by the endpoint that was built, so an alias or another case of
             # the provider name ("openai-codex", "Codex") is treated as codex.
             if isinstance(chat_model.endpoint, CodexCLIEndpoint):
-                moved = sorted(k for k in ("CODEX_HOME", "HOME") if agent_env and k in agent_env)
-                if moved:
+                if agent_env and "HOME" in agent_env:
                     raise _AgentSettingError(
-                        f"agent_env cannot set {' or '.join(moved)} for a codex agent: this "
-                        "process resolves the codex home for the agent's MCP server profile "
-                        "and default reasoning effort, and would read a different one than "
-                        "the child."
+                        "agent_env cannot set HOME for a codex agent: it moves every tool's "
+                        "configuration, not only codex's. Set CODEX_HOME to run codex under "
+                        "another home."
                     )
+                if agent_env and "CODEX_HOME" in agent_env:
+                    from lionhub.agent.subscription_accounts import (
+                        _CODEX_OUTRANKING_ENV,
+                        codex_home_child_env,
+                    )
+
+                    # The home's own sign-in decides the account, as for a leg on a named
+                    # account: the variables by which codex signs in from the environment
+                    # are dropped, and the secret lookup does not put them back.
+                    # Checked again here, where the endpoint built decides what is codex.
+                    home = _codex_home_setting(agent_env)
+                    unplaced = chat_model.endpoint.adopt_runtime_state(
+                        {
+                            "env": codex_home_child_env(home, {**os.environ, **agent_env}),
+                            "secret_fill_skip": frozenset(_CODEX_OUTRANKING_ENV),
+                        }
+                    )
+                    if unplaced:
+                        raise _AgentSettingError(
+                            f"agent_env CODEX_HOME: the codex endpoint did not take {unplaced!r}."
+                        )
                 # Codex attaches the signed-in account's app connectors and plugins
                 # whatever MCP servers the request carries, and a connector acts as
                 # the account. Kept in the endpoint's config, so a restored model
@@ -1510,24 +1548,13 @@ def apply_forwarded_mcp_servers(
             "them. Drop `env` and `http_headers` from the server config."
         )
     if secret_fields and child_env is not None:
-        from lionhub.providers.openai._codex_profile import (
-            codex_home_for_env,
-            refuse_non_absolute_codex_home,
-        )
+        from lionhub.providers.openai._codex_profile import refuse_non_absolute_codex_home
 
-        # The profile file is written under this process's codex home, and codex looks for
-        # `-p <name>` under the home its own environment names.
+        # Codex looks for `-p <name>` under the home its own environment names, so the
+        # profile file is written there.
         refuse_non_absolute_codex_home(child_env)
-        if codex_home_for_env(child_env).resolve() != _codex_home().resolve():
-            raise ConfigurationError(
-                f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which "
-                "reach codex only through a profile file written under this process's codex "
-                "home, and the child's environment names a different one (CODEX_HOME or HOME), "
-                "where codex would not find it. Run the child under this process's codex home, "
-                "or drop `env` and `http_headers` from the server config."
-            )
     if secret_fields:
-        _write_codex_mcp_secret_profile(kwargs, secret_fields)
+        _write_codex_mcp_secret_profile(kwargs, secret_fields, child_env)
     if overrides:
         kwargs["config_overrides"] = overrides
     return True
@@ -1849,23 +1876,30 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
 
 
-def _codex_home() -> Path:
+def _codex_home(env: Mapping[str, str] | None = None) -> Path:
+    """The codex home a child running under *env* reads (``None``: this process's)."""
     from lionhub.providers.openai._codex_profile import codex_home_for_env
 
-    return codex_home_for_env(None)
+    return codex_home_for_env(env)
 
 
-def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:
+def _missing_generated_codex_profile(
+    kwargs: dict[str, Any], env: Mapping[str, str] | None = None
+) -> str | None:
     """The generated profile a request names whose file is gone, if any.
 
     That file holds the `env`/`http_headers` of the servers a run was handed
     and is removed when the process that wrote it exits, so a resumed request
-    still naming it would hand codex a profile whose file is gone.
+    still naming it would hand codex a profile whose file is gone. It is looked
+    for in the codex home of *env*, the child's environment.
     """
     from lionhub.providers.openai._codex_profile import is_generated_codex_profile
 
     name = kwargs.get("profile")
-    if is_generated_codex_profile(name) and not (_codex_home() / f"{name}.config.toml").is_file():
+    if (
+        is_generated_codex_profile(name)
+        and not (_codex_home(env) / f"{name}.config.toml").is_file()
+    ):
         return name
     return None
 
@@ -1898,11 +1932,15 @@ def _reap_stale_codex_mcp_profiles(codex_home: Path) -> None:
 
 
 def _write_codex_mcp_secret_profile(
-    kwargs: dict[str, Any], secret_fields: dict[str, dict[str, Any]]
+    kwargs: dict[str, Any],
+    secret_fields: dict[str, dict[str, Any]],
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Route MCP server fields that may carry secrets (`env`, `http_headers`)
     to codex via a private, on-disk config profile (`-p <name>`) instead of
-    the `-c` command line, keeping them out of `ps` and request logs.
+    the `-c` command line, keeping them out of `ps` and request logs. The file
+    goes in the codex home of *env*, the child's environment, where codex
+    looks for it.
     """
     import atexit
     import uuid
@@ -1940,7 +1978,7 @@ def _write_codex_mcp_secret_profile(
                 "the MCP server config."
             )
 
-    codex_home = _codex_home()
+    codex_home = _codex_home(env)
     codex_home.mkdir(parents=True, exist_ok=True)
     _reap_stale_codex_mcp_profiles(codex_home)
     profile_name = f"{CODEX_MCP_PROFILE_PREFIX}{uuid.uuid4().hex}"

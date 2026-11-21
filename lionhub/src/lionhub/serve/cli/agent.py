@@ -236,6 +236,12 @@ def _subscription_read_rules(
 _NO_PERSISTED_EXECUTION = object()
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
+# The subscription account a branch was launched on (names and paths only, never a token); a
+# resume runs on the same one unless a Claude Code resume names another.
+_SUBSCRIPTION_ACCOUNT_KEY = "subscription_account"
+# The accounts a Claude Code branch was later resumed on, in order, appended and never
+# rewritten; the branch runs on the last one.
+_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY = "subscription_account_switches"
 # An API model has no tool loop of its own, so lionagi runs one in-process, and
 # only for a profile that names the tool set the leg may use (`api_tools`). The
 # read set runs with this process's own permissions. The write set adds the editor
@@ -1878,6 +1884,7 @@ async def _run_agent(
     *,
     notify_sender: str | None = None,
     mcp_submit_snapshot: str | None = None,
+    account: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
     _worker_spawn_continuation: object | None = None,
@@ -1990,6 +1997,19 @@ async def _run_agent(
                     "(Studio Operator turns do), so those hooks are NOT active "
                     "for this run"
                 )
+
+        # The line's --account wins over the role's account or codex_home.
+        if account is not None:
+            requested_account: dict[str, str] | None = {"account": account}
+        elif getattr(profile, "account", None) is not None:
+            requested_account = {"account": profile.account}
+        elif getattr(profile, "codex_home", None) is not None:
+            requested_account = {"codex_home": profile.codex_home}
+        else:
+            requested_account = None
+        leg_account = None
+        account_switches: list[dict[str, Any]] = []
+        account_switched_from: dict[str, Any] | None = None
 
         profile_disables_mcp = getattr(profile, "mcp", None) == "none"
         if mcp_config is not None and mcp_submit_snapshot is not None:
@@ -2283,6 +2303,12 @@ async def _run_agent(
                 else:
                     message += " Set yolo: true in the agent profile for sandboxed file access."
                 warn(message)
+            if requested_account is not None:
+                from lionhub.agent.subscription_accounts import resolve_leg_account
+
+                # Read now, before any run is allocated: a credential that cannot be read
+                # refuses the launch, with no fallback to this machine's own login.
+                leg_account = resolve_leg_account(provider, **requested_account)
             chat_model = build_chat_model(
                 provider,
                 model,
@@ -2298,7 +2324,20 @@ async def _run_agent(
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
                 tool_settings=tool_settings,
+                env=leg_account.env if leg_account is not None else None,
+                secret_fill_skip=leg_account.secret_fill_skip if leg_account is not None else None,
             )
+            if leg_account is not None:
+                from lionhub.agent.subscription_accounts import leg_account_reached
+
+                if isinstance(chat_model, str) or not leg_account_reached(
+                    leg_account, getattr(chat_model.endpoint, "_runtime_state", None)
+                ):
+                    raise ConfigurationError(
+                        f"the {provider!r} model was built without the account's environment "
+                        "or its secret-lookup skip set, so the leg would not run on the "
+                        "account alone."
+                    )
             requested_effort = effort
             effort = resolve_persisted_effort(provider, chat_model, effort)
             if not isinstance(chat_model, str) and not chat_model.is_cli:
@@ -2502,6 +2541,109 @@ async def _run_agent(
                 )
         else:
             cfg = branch.chat_model.endpoint.config.kwargs
+            recorded_account = branch.metadata.get(_SUBSCRIPTION_ACCOUNT_KEY)
+            if not isinstance(recorded_account, dict):
+                recorded_account = None
+            prior_switches = branch.metadata.get(_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY)
+            if isinstance(prior_switches, list):
+                account_switches = [s for s in prior_switches if isinstance(s, dict)]
+            if account is None:
+                # A role's account or codex_home picks the account of a new run; a resumed
+                # branch keeps the one it ran on unless the line names another.
+                requested_account = None
+            # The branch now runs on the account of its latest switch, else the one it started on.
+            current_account = account_switches[-1] if account_switches else recorded_account
+            recorded_home = current_account.get("codex_home") if current_account else None
+            recorded_request: dict[str, str] | None = None
+            if current_account is not None and "account" in current_account:
+                recorded_request = {"account": current_account["account"]}
+            elif recorded_home is not None:
+                recorded_request = {"codex_home": recorded_home}
+            resumed_provider = branch.chat_model.endpoint.config.provider
+            if requested_account is not None and requested_account != recorded_request:
+                from lionhub.agent.subscription_accounts import (
+                    account_provider,
+                    resolve_leg_account,
+                )
+
+                kind = account_provider(resumed_provider)
+                if kind is None:
+                    raise ConfigurationError(
+                        f"this branch's model provider {resumed_provider!r} takes no subscription "
+                        "account; resume it without --account."
+                    )
+                if kind == "claude_code":
+                    # A Claude Code transcript is kept on this machine, not under the login, so
+                    # a session can move to another account, such as off one that has run out.
+                    account_switched_from = recorded_request or {}
+                    recorded_request = requested_account
+                else:
+                    # A codex session lives under the home it ran in: the leg resumes there,
+                    # under whichever account names that home.
+                    requested_home = (
+                        resolve_leg_account(resumed_provider, **requested_account).record.get(
+                            "codex_home"
+                        )
+                        if kind == "codex" and recorded_home is not None
+                        else None
+                    )
+                    if requested_home is None or requested_home != recorded_home:
+                        raise ConfigurationError(
+                            f"this branch ran on {current_account or 'no named account'}; it "
+                            f"cannot be resumed on {requested_account}. Resume it without "
+                            "--account, or with an account on the same Codex home."
+                        )
+                    # Recorded as a move, so a later resume without --account stays on this
+                    # account even after the one before it is pointed at another home.
+                    account_switched_from = recorded_request or {}
+                    recorded_request = requested_account
+            if recorded_request is not None:
+                from lionhub.agent.subscription_accounts import (
+                    account_provider,
+                    resolve_leg_account,
+                )
+
+                leg_account = resolve_leg_account(resumed_provider, **recorded_request)
+                kind_of_leg = account_provider(resumed_provider)
+                if (
+                    recorded_home is not None
+                    and leg_account.record.get("codex_home") != recorded_home
+                ):
+                    raise ConfigurationError(
+                        f"account {recorded_request.get('account')!r} now names the Codex home "
+                        f"{leg_account.record.get('codex_home')!r}; this branch ran in "
+                        f"{recorded_home!r}, where its session is kept. Resume it with --account "
+                        "naming an account on that home."
+                    )
+                placed_runtime = {"env": leg_account.env}
+                if leg_account.secret_fill_skip:
+                    placed_runtime["secret_fill_skip"] = leg_account.secret_fill_skip
+                # The parse model is its own endpoint when it is not the chat model; one of the
+                # same account provider spawns the same child and runs on the same account.
+                parse = getattr(branch, "parse_model", None)
+                endpoints = [branch.chat_model.endpoint]
+                if (
+                    parse is not None
+                    and parse is not branch.chat_model
+                    and getattr(parse, "is_cli", False)
+                    and account_provider(parse.endpoint.config.provider) == kind_of_leg
+                ):
+                    endpoints.append(parse.endpoint)
+                for endpoint in endpoints:
+                    adopt = getattr(endpoint, "adopt_runtime_state", None)
+                    if adopt is None or adopt(placed_runtime):
+                        raise ConfigurationError(
+                            "this branch's model cannot take the account's environment, so "
+                            "the resumed leg would run on this machine's own login."
+                        )
+            if account_switched_from is not None:
+                from lionhub.orchestration.console import warn
+
+                warn(
+                    "account changed on resume: "
+                    f"{account_switched_from.get('account') or 'no named account'} -> "
+                    f"{recorded_request['account']}"
+                )
             on_tool_loop = (
                 not getattr(branch.chat_model, "is_cli", False)
                 and _API_LAUNCH_KEY in branch.metadata
@@ -2637,13 +2779,16 @@ async def _run_agent(
                 cfg,
                 mcp_resolution.servers,
                 provider=provider,
+                env=leg_account.env if leg_account is not None else None,
                 # A set named by a config file, or declared empty, is the whole set: the provider's
                 # own servers are left out too. A set found by search joins what the provider finds
                 # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
                 # leg to what its CLI finds.
                 exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
             )
-            missing_profile = _missing_generated_codex_profile(cfg)
+            missing_profile = _missing_generated_codex_profile(
+                cfg, leg_account.env if leg_account is not None else None
+            )
             if missing_profile is not None:
                 raise McpConfigError(
                     f"this branch's earlier run gave codex its MCP servers' env and headers "
@@ -2740,6 +2885,11 @@ async def _run_agent(
         # re-derived from persisted content (a markerless branch with an
         # explicitly requested role must get that role's
         # system prompt rather than have it silently dropped).
+        if leg_account is not None and not is_resumed_branch:
+            branch.metadata[_SUBSCRIPTION_ACCOUNT_KEY] = dict(leg_account.record)
+        if account_switched_from is not None and leg_account is not None:
+            account_switches.append(dict(leg_account.record))
+            branch.metadata[_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY] = account_switches
         if not is_resumed_branch:
             # The file on the line is what a resume reads again, named or not: a
             # leg submitted through the MCP server is pointed at a snapshot of the
@@ -2812,6 +2962,15 @@ async def _run_agent(
             "started_at": time.time(),
             "ended_at": None,
         }
+        if (
+            _canonical_provider(branch.chat_model.endpoint.config.provider)
+            in PROVIDERS_EFFORT_VIA_MODEL_NAME
+        ):
+            from lionhub.providers.google.gemini_code import resolve_agy_model
+
+            # The exact `agy --model` name the spec resolved to, beside the spec as given:
+            # a spec the resolver maps to another family or passes through shows here.
+            run_manifest["resolved_model"] = resolve_agy_model(branch.chat_model.model_name)
         _api_usage = (
             APIUsageCollector(run_id=run.run_id, branch_id=branch_id)
             if api_launch is not None
@@ -2826,6 +2985,17 @@ async def _run_agent(
         # Its api_usage record names the account that paid.
         if api_account is not None and not _endpoint_routing_enabled(branch.chat_model.endpoint):
             run_manifest["api_account"] = api_account
+        if leg_account is not None:
+            # Names and paths only; the token never reaches a record.
+            run_manifest.update(leg_account.record)
+        if account_switches:
+            # The account the branch started on (null: this machine's own login), then each
+            # account it was resumed on since, this run's last.
+            started_on = branch.metadata.get(_SUBSCRIPTION_ACCOUNT_KEY)
+            run_manifest["account_history"] = [
+                started_on.get("account") if isinstance(started_on, dict) else None,
+                *(switch.get("account") for switch in account_switches),
+            ]
         _write_run_manifest = getattr(run, "write_manifest", None)
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
@@ -3693,6 +3863,7 @@ async def _run_agent(
                         if mcp_submit_snapshot is not None
                         else {}
                     ),
+                    account=account,
                     _auto_resumed=True,
                     _worker_spawn_continuation=_resumed_continuation,
                     _injection_totals=_injection_totals,
@@ -3896,6 +4067,16 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
     agent.add_argument(
+        "--account",
+        default=None,
+        help=(
+            "Run the leg on this named subscription account: a Claude Code token or a Codex "
+            "home listed in LIONAGI_LOGINS_DIR (default ~/.lionagi/logins). Wins over the "
+            "profile's 'account' and 'codex_home'. A name that does not resolve, or a token "
+            "that cannot be read, refuses the launch."
+        ),
+    )
+    agent.add_argument(
         "--workload",
         choices=WORKLOADS,
         default=None,
@@ -4068,6 +4249,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 images=image_uris,
                 mcp_config=getattr(args, "mcp_config", None),
                 no_mcp_config=getattr(args, "no_mcp_config", False),
+                account=getattr(args, "account", None),
                 **(
                     {"mcp_submit_snapshot": args.mcp_submit_snapshot}
                     if getattr(args, "mcp_submit_snapshot", None) is not None

@@ -115,6 +115,7 @@ _PRELOAD_MODULES = (
     "lionhub.agent.nudge",
     "lionhub.agent.permissions",
     "lionhub.agent.settings",
+    "lionhub.agent.subscription_accounts",
     "lionhub.hooks.external",
     "lionhub.orchestration",
     "lionhub.orchestration.console",
