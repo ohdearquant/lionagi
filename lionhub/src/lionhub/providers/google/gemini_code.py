@@ -81,12 +81,13 @@ def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
     working directory, the temporary directory and ``_AGY_STATE_DIRS``; network on, since the CLI
     talks to its service; pseudo-terminals allowed for its shell tool. The shared uv cache is not
     writable; the CLI and its commands get a new, empty one through ``UV_CACHE_DIR``, so a
-    workspace's environment is synced before the CLI starts. The credential locations a CLI
-    child may not read are unreadable to it too, except ``_AGY_SIGN_IN_READS``.
+    workspace's environment is synced before the CLI starts. The locations a CLI child may not
+    read, the settings' ``child_sandbox.deny_read`` entries included, are unreadable to it too,
+    except ``_AGY_SIGN_IN_READS``.
     On a host without the sandbox a ``yolo`` request is refused, since it would run commands
     unconfined, and any other request runs as before with agy's own flags.
     """
-    from lionhub.agent.child_sandbox import credential_deny_read
+    from lionhub.agent.child_sandbox import configured_deny_read
     from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 
     if not seatbelt_available():
@@ -101,7 +102,7 @@ def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
         path = Path(os.path.expanduser(directory))
         path.mkdir(parents=True, exist_ok=True)
         state.append(path)
-    deny_read = [p for p in credential_deny_read() if p not in _AGY_SIGN_IN_READS]
+    deny_read = [p for p in configured_deny_read() if p not in _AGY_SIGN_IN_READS]
     if "=" in binary:
         # /usr/bin/env would read the path as one more variable to set.
         raise ConfigurationError(f"the agy path {binary!r} contains '='; install it elsewhere")
