@@ -50,7 +50,7 @@ def test_specific_synthetic_move_beats_parent_in_either_order(monkeypatch, speci
 
 _FLOW = "lionhub.orchestration.flow"
 _SCHEDULE_PACKAGE = "lionhub.orchestration.schedule"
-_FORBIDDEN_ROOTS = ("lionagi.cli", "lionagi.studio", "lionhub.serve.cli")
+_FORBIDDEN_ROOTS = ("lionagi.cli", "lionagi.studio", "lionagi_studio", "lionhub.serve.cli")
 
 
 def _under(name: str, prefix: str) -> bool:
@@ -200,6 +200,8 @@ def test_schedule_boundary_accepts_only_the_permitted_flow_edge(source):
         "import lionhub.serve.cli.orchestrate\n",
         "from lionagi import studio\n",
         "from lionagi.studio import cli\n",
+        "from lionagi_studio import cli\n",
+        "import lionagi_studio.app\n",
         "from lionhub.serve.cli import main\n",
         "from ..flow import checkpoint\n",
         "import lionhub.orchestration.flow\n",

@@ -788,7 +788,7 @@ class TestPlaybookArtifactsPassThrough:
     ):
         source = (
             Path(__file__).resolve().parents[6]
-            / "lionagi/studio/builtin_playbooks/resolve-issues.playbook.yaml"
+            / "apps/studio/backend/src/lionagi_studio/builtin_playbooks/resolve-issues.playbook.yaml"
         )
         playbooks_dir = tmp_path / ".lionagi/playbooks"
         playbooks_dir.mkdir(parents=True)
@@ -821,7 +821,7 @@ class TestPlaybookArtifactsPassThrough:
 
         source = (
             Path(__file__).resolve().parents[6]
-            / "lionagi/studio/builtin_playbooks/resolve-issues.playbook.yaml"
+            / "apps/studio/backend/src/lionagi_studio/builtin_playbooks/resolve-issues.playbook.yaml"
         )
         contract = _load_flow_spec(str(source)).get("artifacts")
         assert contract is not None

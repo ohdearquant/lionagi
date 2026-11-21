@@ -7,7 +7,7 @@
 daemon's own routes, ``/health`` and the lifespan that owns the scheduler, the reconnect channel,
 the transcript mirror and every other process resource. Called with no attachment it serves the
 daemon API alone and imports no application module. Called with an attachment, such as
-``lionagi.studio.app.attach_studio``, it lets that application add its routes and its startup and
+``lionagi_studio.app.attach_studio``, it lets that application add its routes and its startup and
 shutdown hooks to the same process (ADR-0138 F1 and F2).
 """
 
@@ -452,7 +452,7 @@ async def lifespan(app_instance):
 
         register_settings_terminal_callback()
         # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
-        # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+        # served: li studio, python -m lionagi_studio, or uvicorn pointed at this module.
         from lionhub.serve.daemon import leg_host
         from lionhub.serve.daemon.daemon_log import SCHEDULER_LOGGER
 

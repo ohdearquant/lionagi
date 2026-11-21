@@ -124,7 +124,7 @@ re-planning turn if the critic returns `should_continue=true`:
 
 Gate verdicts are stored on the play row (`gate_passed`, `gate_feedback`) and served over
 the `/api/shows` endpoints. No Studio page displays them:
-`lionagi/studio/services/shows.py`
+`apps/studio/backend/src/lionagi_studio/services/shows.py`
 
 ---
 

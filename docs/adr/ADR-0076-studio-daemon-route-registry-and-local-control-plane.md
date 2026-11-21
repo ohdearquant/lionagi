@@ -21,25 +21,25 @@ This ADR answers five concrete problems in the shipped daemon.
 modules call `studio_route()`, but registration happens as a Python import side effect.
 Without one explicit composition root, a valid decorated handler can remain unreachable,
 duplicate registration can depend on import order, and clients cannot tell which route
-set is authoritative (`lionagi/studio/registry.py`; `lionagi/studio/app.py`).
+set is authoritative (`apps/studio/backend/src/lionagi_studio/registry.py`; `apps/studio/backend/src/lionagi_studio/app.py`).
 
 **P2 — One process has three delivery shapes.** Studio must run as an API-only daemon,
 serve a built Vite distribution, or sit behind the Vite development server. A catch-all
 SPA route would intercept FastAPI's trailing-slash redirects, while returning the SPA for
-unknown `/api/*` paths would turn API errors into HTML (`lionagi/studio/app.py`;
-`lionagi/studio/cli.py`).
+unknown `/api/*` paths would turn API errors into HTML (`apps/studio/backend/src/lionagi_studio/app.py`;
+`apps/studio/backend/src/lionagi_studio/cli.py`).
 
 **P3 — Readiness depends on some lifecycle work but not all maintenance.** Stateful
 routes must not observe phantom sessions left from a prior process, yet a WAL checkpoint
 or optional transcript mirror must not indefinitely block liveness. Shutdown must settle
-owned tasks and launched subprocesses before the scheduler stops (`lionagi/studio/app.py`).
+owned tasks and launched subprocesses before the scheduler stops (`lionhub/src/lionhub/serve/daemon/app.py`).
 
 **P4 — Loopback-first is not the same as an absent trust boundary.** A browser can reach
 a loopback daemon through DNS rebinding or cross-origin requests. When a bearer token is
 configured, schema and API paths expose protected information; the static SPA must still
 load without attaching a token to document navigation. State-changing requests with a
 body must not accept form-compatible content types that avoid a CORS preflight
-(`lionagi/studio/app.py`; `lionagi/studio/config.py`).
+(`lionhub/src/lionhub/serve/daemon/app.py`; `lionhub/src/lionhub/serve/daemon/settings.py`).
 
 **P5 — “SSE” names a framing mechanism, not one event protocol.** Session output,
 persisted session signals, show-directory changes, and Leo turns all emit unnamed
@@ -69,7 +69,7 @@ Out of scope:
 
 ### D1 — Declarative route registry and explicit composition root
 
-`lionagi/studio/registry.py` is the public HTTP composition root. Its shipped Python
+`apps/studio/backend/src/lionagi_studio/registry.py` is the public HTTP composition root. Its shipped Python
 contract is:
 
 ```python
@@ -188,7 +188,7 @@ Exact semantics:
   FastAPI's trailing-slash redirect behavior for routes such as `/api/runs/`.
 - `python -m lionagi.studio` starts Uvicorn with `HOST` and `STUDIO_PORT`.
 
-The shipped defaults in `lionagi/studio/config.py` are port `8765` and host
+The shipped defaults in `lionhub/src/lionhub/serve/daemon/settings.py` are port `8765` and host
 `127.0.0.1`. The port is inherited from the existing Studio surface; no separate
 rationale is recorded beyond compatibility. Loopback is the safety-oriented default.
 

@@ -693,7 +693,7 @@ emissions and persistence before recording its cutoff; observer unbinding is cle
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py::SessionObserver.unbind_db_persistence`), ahead of the
 CLI and Studio closing the store (`lionhub/src/lionhub/orchestration/runs.py::teardown_persist` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`,
-`lionagi/studio/services/workflow_run.py::_teardown_run_persist`). `retryable` closing work waits durably;
+`apps/studio/backend/src/lionagi_studio/services/workflow_run.py::_teardown_run_persist`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
 

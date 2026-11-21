@@ -301,10 +301,14 @@ class TestSpecValidationAcceptsValidFields:
         drop out of the accepted set unnoticed.
         """
         root = Path(__file__).resolve().parents[6]
-        playbooks = sorted(root.glob("examples/playbooks/*.playbook.yaml")) + sorted(
-            root.glob("lionagi/studio/builtin_playbooks/*.playbook.yaml")
+        examples = sorted(root.glob("examples/playbooks/*.playbook.yaml"))
+        builtin = sorted(
+            root.glob("apps/studio/backend/src/lionagi_studio/builtin_playbooks/*.playbook.yaml")
         )
-        assert playbooks, "found no shipped playbooks — the glob is wrong, not the repo"
+        # Each source is checked on its own: one empty glob would hide behind the other.
+        assert examples, "found no example playbooks — the glob is wrong, not the repo"
+        assert builtin, "found no built-in playbooks — the glob is wrong, not the repo"
+        playbooks = examples + builtin
 
         rejected = {}
         for path in playbooks:

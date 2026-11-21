@@ -352,7 +352,7 @@ Decision: when a node has a `reference_id`, its result is also exposed to consum
 name. A definition's step keys are unique by construction, since they are keys in a mapping, so the
 names are unambiguous without any new validation.
 
-**This is additive, not a rename.** `lionagi/studio/services/workflow_compile.py` documents and
+**This is additive, not a rename.** `apps/studio/backend/src/lionagi_studio/services/workflow_compile.py` documents and
 uses the `{pred_id}_result` key when mapping upstream context onto an engine node's positional
 input. Changing the key would break that consumer silently, because it falls back to flow-level
 inputs and would degrade to a plausible wrong answer rather than an error. Both keys are written.
@@ -368,7 +368,7 @@ not been measured on any real pipeline. Revisit with that measurement rather tha
 
 ## D12 — The safe expression evaluator moves out of the Studio layer
 
-`StudioExprCondition` in `lionagi/studio/services/workflow_compile.py` is the only `EdgeCondition`
+`StudioExprCondition` in `apps/studio/backend/src/lionagi_studio/services/workflow_compile.py` is the only `EdgeCondition`
 subclass in the package. It compiles a restricted-grammar expression with no calls, no builtins and
 no globals, and it evaluates against `{"result": ..., "context": ...}`, which is exactly the shape
 `_check_edge_conditions` passes to `Edge.check_condition`. It is the right evaluator and it already

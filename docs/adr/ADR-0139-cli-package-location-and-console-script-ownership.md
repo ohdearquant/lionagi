@@ -292,7 +292,7 @@ four files. These match Amendment 1's counts
 (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:275`).
 Representative edges include shared run persistence, scheduler parser construction,
 and schedule declaration/export
-(`lionagi/studio/operator/coordinator.py::OperatorCoordinator._run_turn`,
+(`apps/studio/backend/src/lionagi_studio/operator/coordinator.py::OperatorCoordinator._run_turn`,
 `lionagi/studio/scheduler/subprocess.py:279@2a49c9fe`,
 `lionhub/src/lionhub/serve/cli/machine_schedule.py::_validate`,
 `lionhub/src/lionhub/serve/cli/machine_schedule.py::_export`).

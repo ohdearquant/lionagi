@@ -208,7 +208,7 @@ participate in Studio's plugin iteration. The discovery contract consumes only
 The loader is:
 
 ```python
-# lionagi/studio/services/plugins.py
+# apps/studio/backend/src/lionagi_studio/services/plugins.py
 def _iter_marketplace_plugins() -> list[tuple[Path, str, str]]: ...
 ```
 
@@ -326,7 +326,7 @@ renamed, or removed.
 The path contract is:
 
 ```python
-# lionagi/studio/services/plugins.py
+# apps/studio/backend/src/lionagi_studio/services/plugins.py
 def _resolve_marketplace_source(source_rel: str) -> Path | None: ...
 ```
 
@@ -371,7 +371,7 @@ layout while blocking absolute, traversal, and symlink escape paths.
 The scanners are:
 
 ```python
-# lionagi/studio/services/plugins.py
+# apps/studio/backend/src/lionagi_studio/services/plugins.py
 def _scan_skills(plugin_dir: Path) -> list[dict[str, Any]]: ...
 def _scan_agents(plugin_dir: Path) -> list[dict[str, Any]]: ...
 ```
@@ -446,7 +446,7 @@ visible while unreadable or misplaced files do not create stale phantom entries.
 The installed-cache contract is:
 
 ```python
-# lionagi/studio/services/plugins.py
+# apps/studio/backend/src/lionagi_studio/services/plugins.py
 THIRDPARTY_DIR = Path.home() / ".claude" / "plugins" / "cache"
 
 def _iter_thirdparty_plugins(

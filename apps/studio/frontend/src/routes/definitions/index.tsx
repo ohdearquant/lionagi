@@ -18,7 +18,7 @@ export interface DefinitionsRouteSearch {
   kind?: string;
 }
 
-// Backend enum (lionagi/studio/services/definitions.py KIND_DIRS) — a value
+// Backend enum (apps/studio/backend/src/lionagi_studio/services/definitions.py KIND_DIRS) — a value
 // outside this set is never emitted, so accepting it here means the filter
 // silently matches nothing while looking like a legitimate empty result.
 const KINDS = ["agent", "playbook"] as const;

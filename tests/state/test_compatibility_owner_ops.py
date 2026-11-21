@@ -2915,9 +2915,9 @@ async def test_an_operator_turn_records_the_status_its_teardown_decided_in_compa
 
     import lionhub.orchestration.runs as runs_mod
     from lionagi.state.compat import Closure
-    from lionagi.studio.operator.coordinator import OperatorCoordinator
-    from lionagi.studio.operator.store import OperatorStore
-    from lionagi.studio.operator.types import OperatorEngineEvent
+    from lionagi_studio.operator.coordinator import OperatorCoordinator
+    from lionagi_studio.operator.store import OperatorStore
+    from lionagi_studio.operator.types import OperatorEngineEvent
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")

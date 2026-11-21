@@ -23,7 +23,7 @@ type ConnectivityStatus = "checking" | "connected" | "unreachable" | "wrongApp" 
 /**
  * Probe the configured API base's /health endpoint and classify what answered.
  * The lionagi daemon serves an unauthenticated `{ status: "ok" }` at /health
- * (lionagi/studio/app.py) with no auth gate — any other shape, a non-2xx, or
+ * (apps/studio/backend/src/lionagi_studio/app.py) with no auth gate — any other shape, a non-2xx, or
  * a body that isn't JSON at all means something other than the daemon is on
  * that port. A network-level failure (nothing listening, CORS) is a separate
  * bucket: there's no program to point at, just nothing running yet.

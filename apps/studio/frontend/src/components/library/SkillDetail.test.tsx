@@ -3,7 +3,7 @@
  *
  * The backend deliberately answers `versions: null, version: null,
  * history_available: false` when the version-history store can't be read
- * (see lionagi/studio/services/definitions.py's `_get_skill_definition`).
+ * (see apps/studio/backend/src/lionagi_studio/services/definitions.py's `_get_skill_definition`).
  * That's the right backend behavior, but a frontend that assumes `versions`
  * is always an array crashes exactly during the outage an operator most
  * needs to read the pane. This asserts the pane renders the disk-backed

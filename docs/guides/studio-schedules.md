@@ -67,7 +67,7 @@ Select a schedule to open its detail dialog.
 The page and dialogs are implemented by `routes/schedules/index.tsx` and
 `components/schedules/` under `apps/studio/frontend/src/`. The CLI and UI use
 the daemon's schedules service, `lionhub/src/lionhub/serve/daemon/services/schedules.py`; CLI
-flags and output are defined in `lionagi/studio/cli.py`. Keep the daemon
+flags and output are defined in `apps/studio/backend/src/lionagi_studio/cli.py`. Keep the daemon
 running for automatic fires.
 
 Run lists, recent-run summaries, the status view's `latest_run` and single-run
