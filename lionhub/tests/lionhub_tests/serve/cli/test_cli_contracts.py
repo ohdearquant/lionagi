@@ -100,6 +100,7 @@ def test_scheduled_cli_inherits_invocation_from_environment(
 # goldens: sorted flag sets, pinned from the actual parser definitions
 
 AGENT_HELP_FLAGS = [
+    "--account",
     "--agent",
     "--bypass",
     "--context-budget",

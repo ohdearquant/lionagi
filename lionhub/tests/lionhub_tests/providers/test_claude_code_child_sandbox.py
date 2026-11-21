@@ -48,6 +48,7 @@ def _stubbed_cli(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     monkeypatch.setattr(claude_code, "resolve_claude_cli", lambda: "claude")
     monkeypatch.setattr(child_sandbox, "_cli_version", lambda binary: CLAUDE_CLI_FLOOR)
     monkeypatch.setattr(child_sandbox, "check_sandbox_backend", lambda: None)
@@ -109,7 +110,11 @@ def test_a_request_that_names_no_policy_resolves_the_default(monkeypatch, tmp_pa
     assert block["enabled"] is True
     assert block["failIfUnavailable"] is True
     assert block["allowUnsandboxedCommands"] is False
-    assert block["filesystem"]["denyRead"] == [*DEFAULT_DENY_READ, "~/.lionagi/.env"]
+    assert block["filesystem"]["denyRead"] == [
+        *DEFAULT_DENY_READ,
+        "~/.lionagi/.env",
+        "~/.lionagi/logins",
+    ]
 
 
 def test_the_default_policy_follows_the_global_settings(monkeypatch, tmp_path):
@@ -118,7 +123,7 @@ def test_the_default_policy_follows_the_global_settings(monkeypatch, tmp_path):
     )
     args = ClaudeCodeRequest(prompt="hi", repo=tmp_path).as_cmd_args()
     deny = _settings_json(args)["sandbox"]["filesystem"]["denyRead"]
-    assert deny == [*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/vault"]
+    assert deny == [*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/.lionagi/logins", "~/vault"]
 
 
 def test_the_global_settings_can_turn_the_default_off(monkeypatch, tmp_path):

@@ -414,6 +414,31 @@ def _lionagi_home_credentials() -> tuple[str, ...]:
         return (str(env),)
 
 
+def _subscription_account_credentials() -> tuple[str, ...]:
+    """The sign-ins the subscription accounts directory keeps or names: its token files, the
+    ``.env`` files its rows read and its Codex homes, each whole
+    (``lionhub.agent.subscription_accounts.credential_paths``).
+
+    Each is named as written and by every link it passes through to the path it resolves to,
+    so a home or file named through a symlink is denied at its target too."""
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError, credential_paths
+
+    try:
+        listed = credential_paths()
+    except SubscriptionAccountError as exc:
+        raise _refusal(f"child_sandbox: {exc}") from None
+    home = Path.home()
+    named: list[str] = []
+    for written in listed:
+        for path in _written_and_resolved(written):
+            try:
+                # Written the way a user writes it in ``allow_read`` when it sits under the home.
+                named.append(f"~/{Path(path).relative_to(home).as_posix()}")
+            except ValueError:
+                named.append(path)
+    return tuple(dict.fromkeys(named))
+
+
 def _profile_file_is_global(profile: str) -> bool:
     """Whether ``profile`` resolves to a file in the user's ``~/.lionagi/agents``.
 
@@ -560,7 +585,8 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
 
     Raises:
         ConfigurationError: any malformed value, unknown key, ``allow_read`` entry that is not on
-            the deny list, or unreadable ``extends`` file.
+            the deny list, or unreadable ``extends`` file, or a subscription accounts file that
+            cannot be read, so its sign-ins cannot be named.
     """
     if settings is None:
         warn_project_child_sandbox()
@@ -575,7 +601,11 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
     extends = _read_extends(raw.get("extends", []))
     layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
-    deny: list[str] = [*DEFAULT_DENY_READ, *_lionagi_home_credentials()]
+    deny: list[str] = [
+        *DEFAULT_DENY_READ,
+        *_lionagi_home_credentials(),
+        *_subscription_account_credentials(),
+    ]
     allow: list[str] = list(default_allow_write())
     edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}

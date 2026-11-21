@@ -1325,6 +1325,17 @@
         },
         {
           "option_strings": [
+            "--account"
+          ],
+          "dest": "account",
+          "required": false,
+          "nargs": null,
+          "default": null,
+          "choices": null,
+          "help": "Run the leg on this named subscription account: a Claude Code token or a Codex home listed in LIONAGI_LOGINS_DIR (default ~/.lionagi/logins). Wins over the profile's 'account' and 'codex_home'. A name that does not resolve, or a token that cannot be read, refuses the launch."
+        },
+        {
+          "option_strings": [
             "--workload"
           ],
           "dest": "workload",

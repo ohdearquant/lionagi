@@ -47,9 +47,10 @@ _REAL_GLOBAL_SETTINGS = child_sandbox._global_settings
 
 POLICY = ChildSandboxPolicy(True, ("~/.ssh", "/opt/keys"), ("~/.cache/uv",))
 
-#: What a resolved policy denies reading when no layer adds anything: the built-in list, then
-#: lionagi's own credential file under ``LIONAGI_HOME`` (pointed at the test home below).
-RESOLVED_DENY_READ = (*DEFAULT_DENY_READ, "~/.lionagi/.env")
+#: What a resolved policy denies reading when no layer adds anything: the built-in list,
+#: lionagi's own credential file under ``LIONAGI_HOME`` (pointed at the test home below), then
+#: the subscription accounts directory under it.
+RESOLVED_DENY_READ = (*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/.lionagi/logins")
 
 #: What the file tools are denied when no layer adds anything: the configuration list, then the
 #: read list.
@@ -86,6 +87,7 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
     agents = home / ".lionagi" / "agents"
     agents.mkdir(parents=True)
@@ -1255,6 +1257,14 @@ def _unreadable_global(tmp_path, monkeypatch):
     resolve_child_sandbox(None)
 
 
+def _unreadable_accounts(tmp_path, monkeypatch):
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    (logins / "accounts.toml").write_text("not toml [")
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+    resolve_child_sandbox(None, {})
+
+
 def _backend_check(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(child_sandbox.shutil, "which", _which_without("bwrap"))
@@ -1314,6 +1324,7 @@ _REFUSALS = {
         None, _settings(allow_write=["~/.cache/uv/../../.ssh"])
     ),
     "unreadable global settings file": _unreadable_global,
+    "unreadable accounts file": _unreadable_accounts,
     "CLI below the floor": _floor_check((2, 1, 322)),
     "unreadable CLI version": _floor_check(None),
     "no sandbox backend": _backend_check,
@@ -1448,3 +1459,118 @@ def test_resolving_warns_about_a_project_block_in_the_working_directory(
     assert resolve_child_sandbox(None) == DEFAULT_POLICY
     assert len(project_warnings) == 1
     assert str(settings_file.resolve()) in project_warnings[0]
+
+
+# ---- subscription account sign-ins ------------------------------------------------------
+
+
+def test_every_sign_in_the_accounts_directory_names_is_denied(monkeypatch, tmp_path):
+    """A child must not read another account's token, wherever the directory keeps or names it."""
+    logins = tmp_path / "elsewhere" / "logins"
+    logins.mkdir(parents=True)
+    tokens = tmp_path / "tokens.env"
+    gone = tmp_path / "codex-gone"
+    (logins / "accounts.toml").write_text(
+        f'[claude_code.work]\ndotenv = {{ file = "{tokens}", var = "TOKEN" }}\n'
+        '[claude_code.mail]\nkeychain = { service = "svc", account = "acct" }\n'
+        f'[codex.two]\nhome = "{gone}"\n'
+    )
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+
+    deny = resolve_child_sandbox(None, {}).deny_read
+
+    assert {str(logins), str(tokens), str(gone)} <= set(deny)
+    assert "~/.lionagi/logins" not in deny
+
+
+def test_a_sign_in_under_the_home_is_named_the_way_allow_read_names_it(isolated_home):
+    logins = isolated_home / ".lionagi" / "logins"
+    logins.mkdir(parents=True)
+    (logins / "accounts.toml").write_text(f'[codex.one]\nhome = "{isolated_home}/codex-one"\n')
+
+    deny = resolve_child_sandbox(None, {}).deny_read
+
+    assert {"~/.lionagi/logins", "~/codex-one"} <= set(deny)
+
+
+def test_a_sign_in_named_through_a_link_is_denied_at_its_target(monkeypatch, tmp_path):
+    """The sandbox matches the path a read resolves to, so a link alone would deny nothing."""
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    home = tmp_path / "data" / "codex-x"
+    home.mkdir(parents=True)
+    link = tmp_path / "links" / "codex-x"
+    link.parent.mkdir()
+    link.symlink_to(home)
+    tokens = tmp_path / "data" / "tokens.env"
+    tokens.write_text("TOKEN=x\n")
+    tokens_link = tmp_path / "links" / "tokens.env"
+    tokens_link.symlink_to(tokens)
+    (logins / "accounts.toml").write_text(
+        f'[claude_code.work]\ndotenv = {{ file = "{tokens_link}", var = "TOKEN" }}\n'
+        f'[codex.x]\nhome = "{link}/"\n'
+    )
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+
+    deny = set(resolve_child_sandbox(None, {}).deny_read)
+
+    assert {str(link), str(home.resolve()), str(tokens_link), str(tokens.resolve())} <= deny
+    # Named without the trailing slash it was written with.
+    assert f"{link}/" not in deny
+
+
+def test_a_token_file_that_links_out_of_the_directory_is_denied_at_its_target(
+    monkeypatch, tmp_path
+):
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    token = tmp_path / "elsewhere" / "token"
+    token.parent.mkdir()
+    token.write_text("x\n")
+    (logins / "claude-work").symlink_to(token)
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", str(logins))
+
+    deny = set(resolve_child_sandbox(None, {}).deny_read)
+
+    assert {str(logins / "claude-work"), str(token.resolve())} <= deny
+
+
+@pytest.mark.parametrize("where", ["codex home", "dotenv file", "logins directory"])
+def test_a_sign_in_written_with_dot_dot_is_denied_by_its_plain_path(monkeypatch, tmp_path, where):
+    """A deny entry may not carry `..` (a policy carrying one is refused when rebuilt), and each
+    hand-written path the accounts directory names may be written with one."""
+    logins = tmp_path / "logins"
+    logins.mkdir()
+    (tmp_path / "a").mkdir()
+    target = tmp_path / ("logins" if where == "logins directory" else "signin")
+    if where == "codex home":
+        target.mkdir()
+        row = f'[codex.x]\nhome = "{tmp_path}/a/../signin"\n'
+    elif where == "dotenv file":
+        target.write_text("T=tok\n")
+        row = f'[claude_code.x]\ndotenv = {{ file = "{tmp_path}/a/../signin", var = "T" }}\n'
+    else:
+        row = ""
+    (logins / "accounts.toml").write_text(row)
+    named = f"{tmp_path}/a/../logins" if where == "logins directory" else str(logins)
+    monkeypatch.setenv("LIONAGI_LOGINS_DIR", named)
+
+    policy = resolve_child_sandbox(None, {})
+
+    assert str(target.resolve()) in policy.deny_read
+    assert not [entry for entry in policy.deny_read if ".." in entry.split("/")]
+    assert policy_from_dict(policy.to_dict()) == policy
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['[codex.two]\nhome = "relative/home"\n', "[claude_code.x]\nfile = 1\n", "not toml ["],
+)
+def test_an_accounts_file_that_cannot_be_read_refuses_the_policy(isolated_home, text):
+    """Its sign-ins could not be named, so a child would be free to read them."""
+    logins = isolated_home / ".lionagi" / "logins"
+    logins.mkdir(parents=True)
+    (logins / "accounts.toml").write_text(text)
+
+    with pytest.raises(ConfigurationError):
+        resolve_child_sandbox(None, {})
