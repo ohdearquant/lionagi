@@ -671,15 +671,16 @@ def _make_api_agent_spec(
     )
     spec.coding_tools = _API_TOOL_SETS[tools]
     if tools in _API_CONFINED_TOOL_SETS:
-        from lionhub.agent.child_sandbox import credential_deny_read
+        from lionhub.agent.child_sandbox import configured_deny_read
         from lionhub.tools._seatbelt import SeatbeltPolicy
 
-        # The credential locations and local stores a CLI child may not read are unreadable to
-        # this loop's bash and editor too, and its commands get a uv cache of their own.
+        # The locations a CLI child may not read, the settings' child_sandbox.deny_read entries
+        # included, are unreadable to this loop's bash and editor too, and its commands get a
+        # uv cache of their own.
         spec.seatbelt = SeatbeltPolicy.for_workspace(
             cwd or Path.cwd(),
             network=network,
-            deny_read=credential_deny_read(),
+            deny_read=configured_deny_read(),
             per_leg_uv_cache=True,
             _command_env_names=_command_env_names,
         )
