@@ -5211,6 +5211,17 @@
             },
             {
               "option_strings": [
+                "--account"
+              ],
+              "dest": "account",
+              "required": false,
+              "nargs": null,
+              "default": null,
+              "choices": null,
+              "help": "Subscription account on the leg host to run on instead of the profile's."
+            },
+            {
+              "option_strings": [
                 "--poll"
               ],
               "dest": "poll",

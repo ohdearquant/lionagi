@@ -14813,6 +14813,17 @@
               }
             ],
             "title": "Action Head"
+          },
+          "action_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Account"
           }
         },
         "type": "object",

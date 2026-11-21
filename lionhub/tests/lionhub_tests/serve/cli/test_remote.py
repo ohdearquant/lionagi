@@ -95,8 +95,12 @@ class _FakeLegHost(BaseHTTPRequestHandler):
     """Answers the leg-host protocol and records each request's path, bearer and Host."""
 
     seen: list[tuple[str, str, str | None, str | None]] = []
+    bodies: list[dict] = []
     leg_host = True
     echo_head = True
+    named_account = True
+    echo_account = True
+    cancel_fails = False
     redirect = False
     statuses: list[str] = []
 
@@ -120,9 +124,10 @@ class _FakeLegHost(BaseHTTPRequestHandler):
             self.send_header("Location", "http://127.0.0.1:9/")
             self.end_headers()
         elif self.path == "/api/launches/capabilities":
-            self._send(
-                200, {"leg_host": self.leg_host, "pinned_head": self.leg_host, "max_concurrent": 2}
-            )
+            caps = {"leg_host": self.leg_host, "pinned_head": self.leg_host, "max_concurrent": 2}
+            if self.named_account:
+                caps["named_account"] = self.leg_host
+            self._send(200, caps)
         elif self.path == f"/api/invocations/{INV}":
             self._send(
                 200, {"id": INV, "status": self.statuses.pop(0) if self.statuses else "completed"}
@@ -140,10 +145,15 @@ class _FakeLegHost(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path == "/api/launches/":
+            self.bodies.append(body)
             reply = {"invocation_id": INV, "action_kind": "agent"}
             if self.echo_head:
                 reply["action_head"] = body.get("action_head")
+            if self.echo_account and "action_account" in body:
+                reply["action_account"] = body["action_account"]
             self._send(202, reply)
+        elif self.cancel_fails:
+            self._send(500, {"detail": "cancel failed"})
         else:
             self._send(202, {"invocation_id": INV, "status": "cancelling"})
 
@@ -153,8 +163,10 @@ class _FakeLegHost(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_host(remotes):
-    _FakeLegHost.seen, _FakeLegHost.statuses = [], ["running"]
+    _FakeLegHost.seen, _FakeLegHost.statuses, _FakeLegHost.bodies = [], ["running"], []
     _FakeLegHost.leg_host, _FakeLegHost.echo_head, _FakeLegHost.redirect = True, True, False
+    _FakeLegHost.named_account, _FakeLegHost.echo_account = True, True
+    _FakeLegHost.cancel_fails = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeLegHost)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -181,6 +193,7 @@ def _run_args(**overrides: object) -> argparse.Namespace:
         "head": HEAD,
         "poll": 0.01,
         "prompt": "review",
+        "account": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -216,6 +229,88 @@ def test_a_launch_that_does_not_confirm_the_head_is_cancelled(
     assert remote_cli.run_remote(_run_args()) == 1
     assert "did not confirm head" in capsys.readouterr().err
     assert _FakeLegHost.seen[-1][:2] == ("POST", f"/api/invocations/{INV}/cancel")
+
+
+def test_a_run_sends_no_account_unless_one_is_named(fake_host, monkeypatch) -> None:
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    assert remote_cli.run_remote(_run_args()) == 0
+    assert "action_account" not in _FakeLegHost.bodies[0]
+
+
+def test_a_named_account_is_sent_and_confirmed(fake_host, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    assert remote_cli.run_remote(_run_args(account="alpha")) == 0
+    assert _FakeLegHost.bodies[0]["action_account"] == "alpha"
+    assert capsys.readouterr().out == "LGTM\n"
+
+
+def test_a_host_that_takes_no_account_gets_no_launch(fake_host, capsys, monkeypatch) -> None:
+    """A host without the field would drop it and run the profile's own account."""
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    _FakeLegHost.named_account = False
+    assert remote_cli.run_remote(_run_args(account="alpha")) == 1
+    assert "does not take a named account" in capsys.readouterr().err
+    assert [p for _m, p, _a, _h in _FakeLegHost.seen] == ["/api/launches/capabilities"]
+
+
+def test_a_launch_that_does_not_confirm_the_account_is_cancelled(
+    fake_host, capsys, monkeypatch
+) -> None:
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    _FakeLegHost.echo_account = False
+    assert remote_cli.run_remote(_run_args(account="alpha")) == 1
+    assert "did not confirm account" in capsys.readouterr().err
+    assert _FakeLegHost.seen[-1][:2] == ("POST", f"/api/invocations/{INV}/cancel")
+
+
+def test_a_failed_cancel_after_an_unconfirmed_account_says_the_leg_may_still_run(
+    fake_host, capsys, monkeypatch
+) -> None:
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    _FakeLegHost.echo_account, _FakeLegHost.cancel_fails = False, True
+    assert remote_cli.run_remote(_run_args(account="alpha")) == 1
+    err = capsys.readouterr().err
+    assert "did not confirm account 'alpha'" in err
+    assert f"cancelling launch {INV} failed, it may still run" in err
+
+
+def test_an_empty_account_is_refused_before_anything_is_sent() -> None:
+    parser = argparse.ArgumentParser()
+    remote_cli.add_remote_subparser(parser.add_subparsers())
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "remote",
+                "run",
+                "legbox",
+                "-a",
+                "reviewer",
+                "--repo",
+                "lionagi",
+                "--head",
+                HEAD,
+                "--account",
+                "",
+                "review",
+            ]
+        )
+    args = parser.parse_args(
+        [
+            "remote",
+            "run",
+            "legbox",
+            "-a",
+            "reviewer",
+            "--repo",
+            "lionagi",
+            "--head",
+            HEAD,
+            "--account",
+            "alpha",
+            "review",
+        ]
+    )
+    assert args.account == "alpha"
 
 
 def test_a_redirect_is_not_followed(fake_host, capsys, monkeypatch) -> None:
