@@ -50,7 +50,12 @@ POLICY = ChildSandboxPolicy(True, ("~/.ssh", "/opt/keys"), ("~/.cache/uv",))
 #: What a resolved policy denies reading when no layer adds anything: the built-in list,
 #: lionagi's own credential file under ``LIONAGI_HOME`` (pointed at the test home below), then
 #: the subscription accounts directory under it.
-RESOLVED_DENY_READ = (*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/.lionagi/logins")
+RESOLVED_DENY_READ = (
+    *DEFAULT_DENY_READ,
+    "~/.lionagi/.env",
+    "~/.lionagi/logins",
+    "~/.lionagi/studio",
+)
 
 #: What the file tools are denied when no layer adds anything: the configuration list, then the
 #: read list.
@@ -89,6 +94,9 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
+    # The store path is fixed when lionagi.state.db is first imported, under whichever HOME
+    # that was; the reconnect socket directory the deny list names sits beside it.
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
     agents = home / ".lionagi" / "agents"
     agents.mkdir(parents=True)
     for name in GLOBAL_PROFILES:

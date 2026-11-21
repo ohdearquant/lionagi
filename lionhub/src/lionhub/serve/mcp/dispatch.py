@@ -152,6 +152,7 @@ _PRELOAD_MODULES = (
     "lionhub.serve.cli.orchestrate._orchestration",
     "lionhub.serve.cli.team",
     "lionhub.serve.cli.wait",
+    "lionhub.serve.daemon.reconnect",
     "lionhub.serve.daemon.services",
     "lionhub.serve.daemon.services._sse",
     "lionhub.serve.daemon.services.run_tags_store",
