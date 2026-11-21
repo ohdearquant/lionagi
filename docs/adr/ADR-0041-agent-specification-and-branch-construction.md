@@ -138,7 +138,10 @@ Limits:
   command. The Studio daemon's reconnect socket is not one of them, since its directory is on the
   list. That holds for the write set and the gemini-cli policy. A Claude Code child gets the same
   directory on its deny list, but its sandbox has its own unix-socket rule, which this amendment
-  does not change or measure. A Codex child is not denied it.
+  does not change or measure. A Codex child is not denied it. The list names the socket's
+  directory as the launching process resolves it: beside that process's own store file, or in its
+  LionAGI home when its store is not a file. A daemon started with another store path or home
+  keeps its socket outside the list of a leg launched by a process configured differently.
 
 ## Amendment 3 (2026-10-27) — child environments for coding tools
 
