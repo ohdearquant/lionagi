@@ -42,6 +42,7 @@ __all__ = (
     "check_sandbox_backend",
     "claude_settings_argument",
     "claude_settings_for",
+    "credential_deny_read",
     "default_allow_write",
     "effective_policy",
     "lionagi_home_config_paths",
@@ -431,7 +432,10 @@ def _subscription_account_credentials() -> tuple[str, ...]:
     try:
         listed = credential_paths()
     except SubscriptionAccountError as exc:
-        raise _refusal(f"child_sandbox: {exc}") from None
+        raise ConfigurationError(
+            f"the subscription accounts cannot be read, so their sign-ins cannot be made "
+            f"unreadable to the child: {exc}"
+        ) from None
     home = Path.home()
     named: list[str] = []
     for written in listed:
@@ -442,6 +446,50 @@ def _subscription_account_credentials() -> tuple[str, ...]:
             except ValueError:
                 named.append(path)
     return tuple(dict.fromkeys(named))
+
+
+def _daemon_socket_directory() -> tuple[str, ...]:
+    """The private directory holding the Studio daemon's same-user reconnect socket
+    (``lionhub.serve.daemon.reconnect.default_socket_path``), beside the daemon's store.
+
+    A connection there is answered with a pairing code and the daemon's key for this start, so
+    no child may reach it. The directory holds nothing else, and naming it whole covers the
+    socket however often the daemon recreates it."""
+    from lionhub.serve.daemon.reconnect import default_socket_path
+
+    directory = default_socket_path().parent
+    try:
+        # Written the way a user writes it in ``allow_read`` when it sits under the home.
+        return (f"~/{directory.relative_to(Path.home()).as_posix()}",)
+    except ValueError:
+        return (str(directory),)
+
+
+def credential_deny_read() -> tuple[str, ...]:
+    """Every credential location and local store a child of any engine may not read.
+
+    ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, every sign-in the
+    subscription accounts directory keeps or names, and the directory of the Studio daemon's
+    reconnect socket. The Claude Code policy starts from it, and the Seatbelt policies lionagi
+    builds itself (the API write set, the gemini-cli process) take it whole, so no list can drop
+    an entry the others deny.
+
+    Raises:
+        ConfigurationError: the directory setting, the accounts file or one of its rows cannot
+            be read, so the sign-ins cannot be named; the launch is refused rather than run with
+            them readable. The text carries no opt-out: turning the Claude Code child sandbox off
+            does not lift this refusal for the policies lionagi builds itself.
+    """
+    return tuple(
+        dict.fromkeys(
+            (
+                *DEFAULT_DENY_READ,
+                *_lionagi_home_credentials(),
+                *_subscription_account_credentials(),
+                *_daemon_socket_directory(),
+            )
+        )
+    )
 
 
 def _lies_under(path: str, entry: str) -> bool:
@@ -613,11 +661,10 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     layers = [("child_sandbox", {k: v for k, v in raw.items() if k in _LAYER_KEYS})]
     extends = _read_extends(raw.get("extends", []))
     layers += [(f"extends[{i}]", d) for i, (_, d) in enumerate(extends)]
-    deny: list[str] = [
-        *DEFAULT_DENY_READ,
-        *_lionagi_home_credentials(),
-        *_subscription_account_credentials(),
-    ]
+    try:
+        deny: list[str] = list(credential_deny_read())
+    except ConfigurationError as exc:
+        raise _refusal(f"child_sandbox: {exc}") from None
     allow: list[str] = list(default_allow_write())
     edit: list[str] = [name for names, _ in extends for name in names]
     profiles: dict[str, list[str]] = {}

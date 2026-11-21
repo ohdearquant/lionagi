@@ -662,12 +662,18 @@ class CodingToolkit(LionTool):
             # read and write; a relative cwd= is likewise taken from the workspace.
             run_cwd = str(workspace_root / cwd) if cwd else str(workspace_root)
             wrap = seatbelt.wrap if seatbelt is not None else None
+            supplier = prepared_command_environment
+            if seatbelt is not None and seatbelt.child_env:
+                # The policy's own entries, such as a per-leg uv cache, win over the host's.
+                def supplier() -> dict[str, str]:
+                    return {**prepared_command_environment(), **dict(seatbelt.child_env)}
+
             response = await _run_bash(
                 command,
                 timeout,
                 run_cwd,
                 wrap=wrap,
-                _command_env_supplier=prepared_command_environment,
+                _command_env_supplier=supplier,
             )
             return response.model_dump()
 

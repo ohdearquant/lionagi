@@ -56,6 +56,9 @@ def _stubbed_cli(monkeypatch, tmp_path_factory):
     # set to the defaults with the sandbox on; tests of the global switch override it.
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
+    # The store path is fixed when lionagi.state.db is first imported, under whichever HOME
+    # that was; the reconnect socket directory the deny list names sits beside it.
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
 
 
 def _effective(policy=POLICY):
@@ -114,6 +117,7 @@ def test_a_request_that_names_no_policy_resolves_the_default(monkeypatch, tmp_pa
         *DEFAULT_DENY_READ,
         "~/.lionagi/.env",
         "~/.lionagi/logins",
+        "~/.lionagi/studio",
     ]
 
 
@@ -123,7 +127,13 @@ def test_the_default_policy_follows_the_global_settings(monkeypatch, tmp_path):
     )
     args = ClaudeCodeRequest(prompt="hi", repo=tmp_path).as_cmd_args()
     deny = _settings_json(args)["sandbox"]["filesystem"]["denyRead"]
-    assert deny == [*DEFAULT_DENY_READ, "~/.lionagi/.env", "~/.lionagi/logins", "~/vault"]
+    assert deny == [
+        *DEFAULT_DENY_READ,
+        "~/.lionagi/.env",
+        "~/.lionagi/logins",
+        "~/.lionagi/studio",
+        "~/vault",
+    ]
 
 
 def test_the_global_settings_can_turn_the_default_off(monkeypatch, tmp_path):
