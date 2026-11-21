@@ -282,36 +282,44 @@ def _finish_child_lease(
         log.warning("%s; no capped pools are held%s", label, witness_note)
 
 
+def resolve_cli_program(program: str, *, cwd: Path | None, env: Mapping[str, str]) -> str | None:
+    """The executable a spawn of ``program`` in ``cwd`` with ``env`` would run, or None.
+
+    A name with a directory part is taken as a path (a relative one against the child's working
+    directory); a bare name is looked up on the ``PATH`` in ``env``. This is the lookup the spawn
+    admission uses, shared so that a check made on the executable names the file that runs.
+    """
+    child_cwd = None
+
+    def child_path(value: str) -> str:
+        nonlocal child_cwd
+        if os.path.isabs(value):
+            return value
+        if child_cwd is None:
+            child_cwd = os.path.realpath(os.fspath(cwd) if cwd is not None else os.getcwd())
+        return os.path.join(child_cwd, value)
+
+    if os.path.dirname(program):
+        candidate = child_path(program)
+        usable = (
+            os.path.exists(candidate)
+            and os.access(candidate, os.X_OK)
+            and not os.path.isdir(candidate)
+        )
+        return candidate if usable else None
+    path = env.get("PATH", os.defpath)
+    # Empty PATH components name the child's cwd, including PATH=''.
+    # Passing absolute components to which also avoids the parent's cwd.
+    search = os.pathsep.join(child_path(part) for part in path.split(os.pathsep))
+    return shutil.which(program, mode=os.X_OK, path=search)
+
+
 def _require_cli_executable(cmd: list[str], *, cwd: Path | None, env: Mapping[str, str]) -> None:
     """Refuse an unresolved executable before attempting an OS launch."""
     try:
         if not cmd or not isinstance(cmd[0], str) or not cmd[0]:
             raise ValueError("a CLI executable is required")
-        program = cmd[0]
-        child_cwd = None
-
-        def child_path(value: str) -> str:
-            nonlocal child_cwd
-            if os.path.isabs(value):
-                return value
-            if child_cwd is None:
-                child_cwd = os.path.realpath(os.fspath(cwd) if cwd is not None else os.getcwd())
-            return os.path.join(child_cwd, value)
-
-        if os.path.dirname(program):
-            candidate = child_path(program)
-            available = (
-                os.path.exists(candidate)
-                and os.access(candidate, os.X_OK)
-                and not os.path.isdir(candidate)
-            )
-        else:
-            path = env.get("PATH", os.defpath)
-            # Empty PATH components name the child's cwd, including PATH=''.
-            # Passing absolute components to which also avoids the parent's cwd.
-            search = os.pathsep.join(child_path(part) for part in path.split(os.pathsep))
-            available = shutil.which(program, mode=os.X_OK, path=search) is not None
-        if not available:
+        if resolve_cli_program(cmd[0], cwd=cwd, env=env) is None:
             raise ValueError("the CLI executable is unavailable")
     except Exception as exc:
         raise _WorkerSpawnAdmissionError("CLI executable is unavailable before launch") from exc

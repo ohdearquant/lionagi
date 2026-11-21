@@ -461,3 +461,49 @@ def test_the_probe_record_directory_is_written_with_a_tilde_under_the_home(tmp_p
     assert _probe_record_dir_entry() == "~/.lionagi/codex-sandbox-probes"
     monkeypatch.setattr(paths, "LIONAGI_HOME", tmp_path.parent / "elsewhere")
     assert _probe_record_dir_entry() == str(tmp_path.parent / "elsewhere" / "codex-sandbox-probes")
+
+
+def test_the_probe_record_directory_is_a_deny_entry_of_the_profile(
+    tmp_path, sandbox_on, record_dir, passing_binary
+):
+    env = _home(tmp_path)
+    assert str(record_dir) in deny_entries([], codex_home_for_env(env), env)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, sandbox="workspace-write")
+    plain = codex_module._plain_request(request)
+    args = codex_module._exclusive_cmd_args(request, plain, tmp_path, env)
+    row = [o for o in _pairs(args, "-c") if o.startswith(f"permissions.{PERMISSION_PROFILE}=")][0]
+    assert str(record_dir) in row
+
+
+def test_the_probe_record_directory_is_denied_where_a_link_on_its_path_resolves(
+    tmp_path, sandbox_on, monkeypatch
+):
+    import lionagi._paths as paths
+
+    real = tmp_path / "real-home"
+    (real / "codex-sandbox-probes").mkdir(parents=True)
+    link = tmp_path / "link-home"
+    link.symlink_to(real)
+    monkeypatch.setattr(paths, "LIONAGI_HOME", link)
+    resolved = os.path.realpath(real / "codex-sandbox-probes")
+    # The policy's edit denial names the directory as written and where the link resolves.
+    edit = [os.path.expanduser(entry) for entry in resolve_child_sandbox(None).deny_edit]
+    assert str(link / "codex-sandbox-probes") in edit
+    assert resolved in edit
+    env = _home(tmp_path)
+    assert resolved in deny_entries([], codex_home_for_env(env), env)
+
+
+def test_the_launch_looks_the_binary_up_on_the_path_of_the_childs_final_environment(
+    tmp_path, sandbox_on, record_dir, monkeypatch
+):
+    probed = _fake_binary(tmp_path / "probed")
+    other = _fake_binary(tmp_path / "other")
+    probe_module.write_record(str(probed), _passing_arms())
+    monkeypatch.setattr(codex_module, "CODEX_CLI", "codex")
+    # The parent's PATH finds the unprobed binary first; the child's environment decides.
+    monkeypatch.setenv("PATH", f"{other.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+    home = _home(tmp_path)
+    assert _gate(tmp_path, {**home, "PATH": str(probed.parent)}) is None
+    with pytest.raises(CLIInputRefusedError, match="no probe record"):
+        _gate(tmp_path, {**home, "PATH": str(other.parent)})

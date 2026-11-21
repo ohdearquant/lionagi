@@ -13,6 +13,7 @@ import os
 
 import pytest
 
+from lionagi._errors import CLIInputRefusedError
 from lionhub.providers.openai.codex import CodexCodeRequest, toml_override_value
 
 
@@ -23,7 +24,11 @@ def _child_sandbox_on(monkeypatch):
     import lionhub.providers.openai.codex as codex_module
 
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
-    monkeypatch.setattr(codex_module, "require_passing_probe_record", lambda binary: "probe-record")
+    monkeypatch.setattr(
+        codex_module,
+        "require_passing_probe_record",
+        lambda binary, env=None, cwd=None: "probe-record",
+    )
 
 
 def _codex(tmp_path, **kw) -> list[str]:
@@ -226,3 +231,78 @@ def test_writable_roots_set_in_the_selected_config_profile_are_write_entries(tmp
     )
     assert not [o for o in _pairs(args, "-c") if "sandbox_workspace_write" in o]
     assert _table(args) == _expected(env, write=["/opt/build"])
+
+
+# ------------------------------------------------- a write root cannot reach the probe record
+
+
+@pytest.fixture
+def lionagi_home(tmp_path, monkeypatch):
+    """A lionagi home under the test's own directory; the probe records live below it."""
+    import lionagi._paths as paths
+
+    home = tmp_path / "lionagi-home"
+    (home / "codex-sandbox-probes").mkdir(parents=True)
+    monkeypatch.setattr(paths, "LIONAGI_HOME", home)
+    return home
+
+
+def _record_overlaps(home):
+    """Roots that contain the record directory, are it, or lie inside it."""
+    record = home / "codex-sandbox-probes"
+    return {"above": home, "equal": record, "inside": record / "sub"}
+
+
+@pytest.mark.parametrize("where", ["above", "equal", "inside"])
+def test_an_add_dir_that_overlaps_the_probe_record_directory_is_refused(
+    tmp_path, lionagi_home, where
+):
+    root = _record_overlaps(lionagi_home)[where]
+    with pytest.raises(CLIInputRefusedError, match="probe record directory"):
+        _codex(_project(tmp_path), env=_config_home(tmp_path), full_auto=True, add_dir=[str(root)])
+
+
+@pytest.mark.parametrize("where", ["above", "equal", "inside"])
+def test_a_caller_writable_root_that_overlaps_the_probe_record_directory_is_refused(
+    tmp_path, lionagi_home, where
+):
+    root = _record_overlaps(lionagi_home)[where]
+    with pytest.raises(CLIInputRefusedError, match="probe record directory"):
+        _codex(
+            _project(tmp_path),
+            env=_config_home(tmp_path),
+            full_auto=True,
+            config_overrides={"sandbox_workspace_write.writable_roots": [str(root)]},
+        )
+
+
+@pytest.mark.parametrize("where", ["above", "equal", "inside"])
+def test_a_heavy_root_from_settings_that_overlaps_the_probe_record_directory_is_refused(
+    tmp_path, lionagi_home, monkeypatch, where
+):
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    root = _record_overlaps(lionagi_home)[where]
+    monkeypatch.setattr(
+        child_sandbox,
+        "_global_settings",
+        lambda: {"child_sandbox": {"allow_write": [str(root)]}},
+    )
+    with pytest.raises(CLIInputRefusedError, match="probe record directory"):
+        _codex(_project(tmp_path), env=_config_home(tmp_path), full_auto=True)
+
+
+def test_a_link_to_the_probe_record_directory_does_not_hide_it(tmp_path, lionagi_home):
+    alias = tmp_path / "alias"
+    alias.symlink_to(lionagi_home / "codex-sandbox-probes")
+    with pytest.raises(CLIInputRefusedError, match="probe record directory"):
+        _codex(_project(tmp_path), env=_config_home(tmp_path), full_auto=True, add_dir=[str(alias)])
+
+
+def test_a_root_beside_the_probe_record_directory_is_still_granted(tmp_path, lionagi_home):
+    # The same parent and a name that begins with the record directory's: not an overlap.
+    beside = lionagi_home / "codex-sandbox-probes-other"
+    args = _codex(
+        _project(tmp_path), env=_config_home(tmp_path), full_auto=True, add_dir=[str(beside)]
+    )
+    assert str(beside) in "\n".join(_pairs(args, "-c"))

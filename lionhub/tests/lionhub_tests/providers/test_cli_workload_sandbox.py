@@ -80,7 +80,11 @@ def _no_host_probe_record(monkeypatch):
     """
     import lionhub.providers.openai.codex as codex_module
 
-    monkeypatch.setattr(codex_module, "require_passing_probe_record", lambda binary: "probe-record")
+    monkeypatch.setattr(
+        codex_module,
+        "require_passing_probe_record",
+        lambda binary, env=None, cwd=None: "probe-record",
+    )
 
 
 def _default_roots():

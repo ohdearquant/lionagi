@@ -59,22 +59,33 @@ PERMISSION_PROFILE = "lionagi_child"
 #: The command that writes a probe record for the codex binary on PATH.
 PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 
-#: The record format this module reads. A record of another format is no record.
-_RECORD_FORMAT = 1
+#: The record format this module reads. A record of another format is no record. Format 2 adds
+#: the SHA-256 of the binary's bytes to the record's key and to the record itself.
+_RECORD_FORMAT = 2
 
-#: Arms every passing record carries, each of which must have passed.
+#: Arms every passing record carries, each of which must have passed, except the arms named in
+#: ``CONDITIONAL_ARMS``.
 REQUIRED_ARMS: tuple[str, ...] = (
     "deny_canary",
+    "unix_socket_refused",
     "own_codex_home",
     "read_control",
     "write_cwd",
     "write_entry",
     "write_outside_refused",
     "light_tmp_refused",
+    "light_tmpdir_refused",
     "light_network_off",
     "heavy_network_on",
     "user_layer_sandbox_mode",
 )
+
+#: Arms of ``REQUIRED_ARMS`` that apply only when an environment variable is set: arm name to
+#: the variable. The probe records such an arm as skipped (``passed`` false, ``skipped`` true)
+#: when the variable is unset in its own environment, and the record then satisfies
+#: ``REQUIRED_ARMS`` only for a launch whose environment leaves the variable unset too. A
+#: launch that sets it needs the arm to have passed.
+CONDITIONAL_ARMS: Mapping[str, str] = {"light_tmpdir_refused": "TMPDIR"}
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
@@ -151,8 +162,9 @@ def deny_entries(
 ) -> list[str]:
     """The absolute paths a profile denies: each ``deny_read`` entry as written, the place it
     occupies once its parent directory is resolved (the path the Seatbelt rule places it at),
-    every link it passes through and where it resolves, then the child's own ``CODEX_HOME``
-    the same way.
+    every link it passes through and where it resolves, then the child's own ``CODEX_HOME`` and
+    the probe record directory the same way: a child that can read or write a record there
+    could forge the proof a profiled launch rests on.
 
     A ``~`` expands against the ``HOME`` of ``env``, the child's environment, and falls back to
     the account's home directory; the parent's ``HOME`` plays no part.
@@ -164,7 +176,7 @@ def deny_entries(
 
     home = _child_home(env)
     entries: list[str] = []
-    for entry in (*deny_read, str(codex_home)):
+    for entry in (*deny_read, str(codex_home), str(probe_record_dir())):
         if _GLOB_CHARS.search(entry):
             raise ConfigurationError(
                 f"child_sandbox: deny_read entry {entry!r} is a pattern, which a codex child's "
@@ -468,9 +480,22 @@ def codex_binary_version(binary: str) -> str | None:
     return found.group(0) if found else None
 
 
-def probe_record_path(resolved: str, version: str) -> Path:
-    """The record file for one binary, named by its resolved path and version."""
-    digest = hashlib.sha256(f"{resolved}\0{version}".encode()).hexdigest()[:24]
+def binary_sha256(path: str) -> str | None:
+    """The SHA-256 of the file at ``path`` as hex, or None when it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def probe_record_path(resolved: str, version: str, sha256: str) -> Path:
+    """The record file for one binary, named by its resolved path, version and the SHA-256 of
+    its bytes: a binary replaced in place under the same path and version has no record."""
+    digest = hashlib.sha256(f"{resolved}\0{version}\0{sha256}".encode()).hexdigest()[:24]
     return probe_record_dir() / f"codex-{version}-{digest}.json"
 
 
@@ -481,7 +506,10 @@ def probe_record(binary: str) -> tuple[Path, dict[str, Any] | None, str, str | N
     version = codex_binary_version(binary)
     if version is None:
         return probe_record_dir() / "unknown", None, resolved, None
-    path = probe_record_path(resolved, version)
+    sha256 = binary_sha256(resolved)
+    if sha256 is None:
+        return probe_record_dir() / "unknown", None, resolved, version
+    path = probe_record_path(resolved, version, sha256)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
@@ -491,24 +519,85 @@ def probe_record(binary: str) -> tuple[Path, dict[str, Any] | None, str, str | N
     return path, data, resolved, version
 
 
-def _failed_arms(record: Mapping[str, Any]) -> list[str]:
+def refuse_write_roots_on_probe_record_dir(roots: Iterable[str]) -> None:
+    """Refuse a write root that contains the probe record directory or lies inside it.
+
+    A child that can write under the record directory can forge the record a launch rests on,
+    and a root above it grants that write. The written and the resolved spelling of each side
+    are compared, so a link does not hide the overlap.
+    """
+    record = probe_record_dir()
+    record_paths = {Path(os.path.abspath(record)), Path(os.path.realpath(record))}
+    for root in roots:
+        for root_path in {Path(os.path.abspath(root)), Path(os.path.realpath(root))}:
+            for record_path in record_paths:
+                if (
+                    root_path == record_path
+                    or root_path in record_path.parents
+                    or record_path in root_path.parents
+                ):
+                    raise CLIInputRefusedError(
+                        f"the write root {str(root)!r} contains or lies inside the codex probe "
+                        f"record directory {str(record)!r}; a child that can write there could "
+                        "forge the record a profiled launch rests on. Name a directory outside "
+                        "it."
+                    )
+
+
+def _failed_arms(record: Mapping[str, Any], env: Mapping[str, str]) -> list[str]:
+    """The arms of ``REQUIRED_ARMS`` that did not pass for a launch with environment ``env``.
+
+    A conditional arm recorded as skipped counts as satisfied only when ``env`` leaves its
+    variable unset or empty; a launch that sets it needs the arm to have passed.
+    """
     arms = record.get("arms")
     if not isinstance(arms, Mapping):
         return list(REQUIRED_ARMS)
     failed = []
     for name in REQUIRED_ARMS:
         arm = arms.get(name)
-        if not isinstance(arm, Mapping) or arm.get("passed") is not True:
+        if not isinstance(arm, Mapping):
+            failed.append(name)
+        elif arm.get("passed") is True:
+            continue
+        elif (
+            name in CONDITIONAL_ARMS
+            and arm.get("skipped") is True
+            and not env.get(CONDITIONAL_ARMS[name])
+        ):
+            continue
+        else:
             failed.append(name)
     return failed
 
 
-def require_passing_probe_record(binary: str) -> Path:
+def _launch_binary(binary: str, env: Mapping[str, str], cwd: str | os.PathLike[str] | None) -> str:
+    """``binary`` resolved the way the spawn resolves it: on the ``PATH`` in ``env``."""
+    from lionhub.providers._cli_subprocess import resolve_cli_program
+
+    try:
+        found = resolve_cli_program(binary, cwd=Path(cwd) if cwd is not None else None, env=env)
+    except Exception:  # noqa: BLE001 -- an unresolvable name is reported by the record lookup
+        return binary
+    return found or binary
+
+
+def require_passing_probe_record(
+    binary: str,
+    env: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> Path:
     """Refuse a profiled launch on a codex binary without a passing probe record.
 
-    The record must name this binary's resolved path and version, be of the current format, and
-    hold every arm in ``REQUIRED_ARMS`` as passed. Returns the record's path.
+    ``binary`` is resolved against the ``PATH`` in ``env`` (the child's final environment, the
+    process environment when None) with the lookup the spawn uses, and ``cwd`` is the child's
+    working directory. The record must name the resolved binary's path, its version and the
+    SHA-256 of its bytes, be of the current format, and hold every arm in ``REQUIRED_ARMS`` as
+    passed, a conditional arm being allowed to be skipped as ``CONDITIONAL_ARMS`` says. Returns
+    the record's path.
     """
+    launch_env = os.environ if env is None else env
+    binary = _launch_binary(binary, launch_env, cwd)
     path, record, resolved, version = probe_record(binary)
     problem = None
     if version is None:
@@ -519,10 +608,11 @@ def require_passing_probe_record(binary: str) -> Path:
         record.get("format") != _RECORD_FORMAT
         or record.get("binary") != resolved
         or record.get("version") != version
+        or record.get("sha256") != binary_sha256(resolved)
     ):
         problem = f"the probe record {str(path)!r} is not for codex {version} at {resolved!r}"
     else:
-        failed = _failed_arms(record)
+        failed = _failed_arms(record, launch_env)
         if failed:
             problem = (
                 f"the probe record {str(path)!r} has arms that did not pass: {', '.join(failed)}"

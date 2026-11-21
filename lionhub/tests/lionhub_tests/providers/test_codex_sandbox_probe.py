@@ -32,6 +32,7 @@ from lionhub.providers.openai._codex_permissions import (
     PERMISSION_PROFILE,
     PROBE_COMMAND,
     REQUIRED_ARMS,
+    binary_sha256,
     probe_record,
     probe_record_path,
     require_passing_probe_record,
@@ -84,6 +85,7 @@ def _under(target: Path, roots: list[Path]) -> bool:
 
 
 _REAL_STUB = probe_module.StubProvider
+_REAL_TEMP_ROOTS = probe_module._temp_roots
 _PORTS = itertools.count(40000)
 _LIVE_STUBS: dict[str, InMemoryStub] = {}
 
@@ -133,6 +135,49 @@ def _ask(base: str, items: list[dict]) -> dict:
     return _parse_sse(stub._reply(request).decode())
 
 
+@pytest.fixture(autouse=True)
+def _scratch_may_sit_in_a_temp_root(monkeypatch):
+    """The tests' scratch directories live under pytest's temp root, which the probe refuses for
+    a real scratch root; the tests that exercise that refusal set the roots themselves."""
+    monkeypatch.setattr(probe_module, "_temp_roots", lambda: [])
+
+
+class FakeListener:
+    """A unix listener that counts connects in memory, as the probe's own one counts accepts.
+
+    Pytest's temp paths can exceed the platform's unix-socket path limit, so the arm tests swap
+    the real listener for this one; the real class has its own test on a short relative path."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.accepted = 0
+
+    def stop(self) -> None:
+        return None
+
+
+_LISTENERS: dict[Path, FakeListener] = {}
+
+
+@pytest.fixture(autouse=True)
+def _unix_listeners_in_memory(monkeypatch):
+    _LISTENERS.clear()
+
+    def start(path):
+        listener = FakeListener(path)
+        _LISTENERS[Path(path)] = listener
+        return listener, None
+
+    monkeypatch.setattr(probe_module, "_start_listener", start)
+
+
+@pytest.fixture(autouse=True)
+def _tmpdir_is_set(tmp_path, monkeypatch):
+    """TMPDIR names a directory, so the second light-tmp arm runs rather than being skipped."""
+    (tmp_path / "tmpdir").mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmpdir"))
+
+
 class FakeCodex:
     """Stands in for the codex binary: enforces the profile on its command line, except for
     the behaviours named in ``leaks`` (an arm name each), which it gets wrong."""
@@ -166,12 +211,36 @@ class FakeCodex:
         words = shlex.split(cmd.rsplit("; echo rc=", 1)[0])
         files = table["filesystem"]
         deny = [Path(p) for p, mode in files.items() if mode == "deny"]
-        grants = [cwd, *map(Path, add_dirs), *(Path(p) for p, m in files.items() if m == "write")]
+        table_writes = (
+            []
+            if "table_write_ignored" in self.leaks
+            else [Path(p) for p, m in files.items() if m == "write"]
+        )
+        grants = [cwd, *map(Path, add_dirs), *table_writes]
         scratch = cwd.parent
         leaks = self.leaks
         # A user-layer sandbox_mode that wins over the profile is a profile that is not applied.
         ignored = "user_layer_sandbox_mode" in leaks and (home / "config.toml").exists()
-        if words[0] in ("/bin/cat", "head"):
+        if words[0] == "/bin/sh" and words[1:4] == ["-c", ': < "$1"', "_"]:
+            # The shell opens its argument for reading and reads nothing.
+            target = Path(words[-1])
+            refused = (_under(target, deny) and not ignored) or "opens_always_fail" in leaks
+            if refused:
+                return f"/bin/sh: {target}: Permission denied\nrc=1"
+            return "rc=0"
+        if words[0] != "/bin/sh" and words[1:2] == ["-c"]:
+            # The child's connect to a unix socket: refused inside the denied set, else made.
+            target = Path(words[-1])
+            refused = _under(target, deny) and not ignored
+            refused &= "unix_socket_refused" not in leaks
+            refused |= "unix_always_fails" in leaks
+            if refused:
+                return "PermissionError: [Errno 1] Operation not permitted\nrc=1"
+            listener = _LISTENERS.get(target)
+            if listener is not None:
+                listener.accepted += 1
+            return "rc=0"
+        if words[0] == "/bin/cat":
             target = Path(words[-1])
             ours = scratch in target.parents
             refused = _under(target, deny) and not ignored
@@ -186,7 +255,10 @@ class FakeCodex:
             target = Path(words[-1])
             where = target.parent.name
             if "lionagi-probe-" in target.name:
-                if "light_tmp_refused" in leaks:
+                which = (
+                    "light_tmpdir_refused" if target.name.endswith("-env") else "light_tmp_refused"
+                )
+                if which in leaks:
                     return "rc=0"
                 return f"sh: {target}: Permission denied\nrc=1"
             allowed = ignored or (_under(target, grants) and not _under(target, deny))
@@ -274,12 +346,17 @@ def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(tmp_path, sa
     fake = FakeCodex()
     scratch = tmp_path / "scratch"
     probe_module.probe("codex", runner=fake, scratch=scratch)
+    opens = []
     for command in fake.commands:
         words = shlex.split(command.rsplit("; echo rc=", 1)[0])
+        assert words[0] != "head"
         if words[0] == "/bin/cat":
             assert words[1].startswith(str(scratch))
-        if words[0] == "head":
-            assert words[:3] == ["head", "-c", "0"]
+        if words[0] == "/bin/sh":
+            assert words[1:4] == ["-c", ': < "$1"', "_"]
+            opens.append(words[4])
+    # The first open is the control of a readable file the profile allows.
+    assert opens and opens[0].startswith(str(scratch))
 
 
 def test_the_stand_in_answers_each_step_in_order_then_a_final_message():
@@ -351,7 +428,8 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 1
+    assert record["format"] == 2
+    assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
     assert set(record["arms"]) == set(REQUIRED_ARMS)
@@ -380,7 +458,8 @@ def test_the_record_is_keyed_by_the_version(tmp_path, record_dir):
     with pytest.raises(CLIInputRefusedError, match="no probe record for codex 0.163.0"):
         require_passing_probe_record(str(binary))
     # A record file moved to the new version's name still names the old version.
-    moved = probe_record_path(os.path.realpath(binary), "0.163.0")
+    real = os.path.realpath(binary)
+    moved = probe_record_path(real, "0.163.0", binary_sha256(real))
     shutil.copy(path, moved)
     with pytest.raises(CLIInputRefusedError, match="is not for codex 0.163.0"):
         require_passing_probe_record(str(binary))
@@ -390,10 +469,43 @@ def test_a_record_of_another_format_is_no_record(tmp_path, record_dir):
     binary = _fake_binary(tmp_path / "bin")
     path = probe_module.write_record(str(binary), _passing_arms())
     record = json.loads(path.read_text())
-    record["format"] = 2
+    record["format"] = 1
     path.write_text(json.dumps(record))
     with pytest.raises(CLIInputRefusedError, match="is not for codex"):
         require_passing_probe_record(str(binary))
+
+
+def test_the_record_is_keyed_by_the_bytes_of_the_binary(tmp_path, record_dir):
+    binary = _fake_binary(tmp_path / "bin")
+    path = probe_module.write_record(str(binary), _passing_arms())
+    assert require_passing_probe_record(str(binary)) == path
+    assert json.loads(path.read_text())["sha256"] == binary_sha256(os.path.realpath(binary))
+    # The same path and the same version, but other bytes: a replaced binary has no record.
+    binary.write_text(binary.read_text() + "# replaced\n")
+    with pytest.raises(CLIInputRefusedError, match="no probe record for codex 0.162.1") as refused:
+        require_passing_probe_record(str(binary))
+    assert PROBE_COMMAND in str(refused.value)
+    # A record file copied to the replaced binary's name still names the old bytes.
+    real = os.path.realpath(binary)
+    shutil.copy(path, probe_record_path(real, "0.162.1", binary_sha256(real)))
+    with pytest.raises(CLIInputRefusedError, match="is not for codex 0.162.1"):
+        require_passing_probe_record(str(binary))
+
+
+def test_the_binary_is_looked_up_on_the_path_of_the_given_environment(
+    tmp_path, record_dir, monkeypatch
+):
+    probed = _fake_binary(tmp_path / "probed")
+    other = _fake_binary(tmp_path / "other")
+    path = probe_module.write_record(str(probed), _passing_arms())
+    # The parent's PATH finds the unprobed binary first; the child's PATH finds the probed one.
+    monkeypatch.setenv("PATH", f"{other.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+    child = {"PATH": str(probed.parent)}
+    assert require_passing_probe_record("codex", env=child, cwd=tmp_path) == path
+    with pytest.raises(CLIInputRefusedError, match="no probe record"):
+        require_passing_probe_record("codex", env={"PATH": str(other.parent)}, cwd=tmp_path)
+    with pytest.raises(CLIInputRefusedError, match="no probe record"):
+        require_passing_probe_record("codex", cwd=tmp_path)
 
 
 def test_a_record_with_a_failing_arm_is_refused(tmp_path, record_dir):
@@ -454,3 +566,150 @@ def test_main_reports_a_missing_codex_binary(monkeypatch, capsys):
     monkeypatch.setattr(probe_module.shutil, "which", lambda name: None)
     assert probe_module.main([]) == 2
     assert "not on PATH" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------- arms that test what they say
+def _failed_arm_names(arms: dict[str, dict]) -> set[str]:
+    return {name for name, arm in arms.items() if not arm["passed"]}
+
+
+def test_a_deny_arm_fails_when_its_same_run_control_open_fails(tmp_path, sandbox_on):
+    # A shell that cannot open anything also "refuses" every denied path; the control open of a
+    # readable file in the same run tells the two apart.
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("opens_always_fail",)), scratch=tmp_path / "scratch"
+    )
+    assert not arms["deny_canary"]["passed"]
+    assert "control open of a readable file succeeded: False" in arms["deny_canary"]["evidence"]
+
+
+def test_the_control_open_is_the_same_command_on_a_readable_file(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    opens = [
+        shlex.split(c.rsplit("; echo rc=", 1)[0])
+        for c in fake.commands
+        if c.startswith("/bin/sh -c")
+    ]
+    assert opens
+    assert all(words[:4] == ["/bin/sh", "-c", ': < "$1"', "_"] for words in opens)
+    assert opens[0][4].endswith(os.path.join("open", "f.txt"))
+
+
+def test_the_write_entry_is_granted_by_the_profile_table_alone(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert arms["write_entry"]["passed"]
+    assert all("--add-dir" not in argv for argv, _, _ in fake.runs)
+
+
+def test_the_write_entry_arm_fails_when_only_add_dir_would_grant_it(tmp_path, sandbox_on):
+    # A sandbox that ignores the table's write entry passes the arm only if --add-dir covers it.
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("table_write_ignored",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"write_entry"}
+
+
+def test_the_scratch_root_defaults_under_the_lionagi_state_directory(tmp_path, monkeypatch):
+    import lionagi._paths as paths
+
+    monkeypatch.setattr(paths, "LIONAGI_HOME", tmp_path / "home")
+    parent = probe_module._scratch_parent(None)
+    assert parent == Path(os.path.realpath(tmp_path / "home" / "state" / "codex-probe"))
+    assert parent.is_dir()
+
+
+def test_a_scratch_root_inside_a_temp_root_is_refused(tmp_path, monkeypatch):
+    temp = tmp_path / "temp"
+    monkeypatch.setattr(probe_module, "_temp_roots", lambda: [temp, Path(os.path.realpath(temp))])
+    with pytest.raises(probe_module.ScratchRootError):
+        probe_module._scratch_parent(temp / "scratch")
+    assert probe_module._scratch_parent(tmp_path / "elsewhere").is_dir()
+
+
+def test_the_temp_roots_name_slash_tmp_and_tmpdir(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch-tmp"))
+    roots = _REAL_TEMP_ROOTS()
+    assert Path("/tmp") in roots
+    assert Path(os.path.realpath("/tmp")) in roots
+    assert tmp_path / "scratch-tmp" in roots
+
+
+def test_with_tmpdir_unset_the_second_light_arm_is_skipped_not_run_on_tmp_again(
+    tmp_path, sandbox_on, monkeypatch
+):
+    monkeypatch.delenv("TMPDIR", raising=False)
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert list(arms) == list(REQUIRED_ARMS)
+    skipped = arms["light_tmpdir_refused"]
+    assert skipped["skipped"] is True
+    assert skipped["passed"] is False
+    assert "TMPDIR" in skipped["evidence"]
+    assert len([c for c in fake.commands if "lionagi-probe-" in c]) == 1
+    assert _failed_arm_names(arms) == {"light_tmpdir_refused"}
+
+
+def test_a_skipped_conditional_arm_satisfies_the_record_only_while_tmpdir_is_unset(
+    tmp_path, record_dir
+):
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["light_tmpdir_refused"] = {
+        "passed": False,
+        "skipped": True,
+        "evidence": "skipped: TMPDIR is unset",
+    }
+    probe_module.write_record(str(binary), arms)
+    without = {"PATH": os.environ.get("PATH", "")}
+    require_passing_probe_record(str(binary), env=without)
+    with pytest.raises(CLIInputRefusedError, match="light_tmpdir_refused"):
+        require_passing_probe_record(str(binary), env={**without, "TMPDIR": str(tmp_path)})
+
+
+def test_an_arm_that_is_not_conditional_cannot_be_skipped_into_a_pass(tmp_path, record_dir):
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["deny_canary"] = {"passed": False, "skipped": True, "evidence": "skipped"}
+    probe_module.write_record(str(binary), arms)
+    with pytest.raises(CLIInputRefusedError, match="did not pass: deny_canary"):
+        require_passing_probe_record(str(binary), env={"PATH": os.environ.get("PATH", "")})
+
+
+def test_the_unix_arm_fails_when_the_denied_socket_accepts_a_connection(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("unix_socket_refused",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"unix_socket_refused"}
+    assert "accepted 1 connection" in arms["unix_socket_refused"]["evidence"]
+
+
+def test_the_unix_arm_fails_when_its_control_connect_fails(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("unix_always_fails",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"unix_socket_refused"}
+
+
+def test_the_unix_arm_fails_closed_when_a_listener_cannot_be_bound(
+    tmp_path, sandbox_on, monkeypatch
+):
+    monkeypatch.setattr(probe_module, "_start_listener", lambda path: (None, "OSError: too long"))
+    arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == {"unix_socket_refused"}
+    assert "fails closed" in arms["unix_socket_refused"]["evidence"]
+
+
+def test_the_unix_listener_counts_the_connections_that_reach_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a relative socket name stays under the platform's path limit
+    listener = probe_module.UnixListener(Path("s.sock"))
+    try:
+        listener.start()
+    except OSError as exc:
+        pytest.skip(f"this host refuses to bind a unix socket: {exc}")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect("s.sock")
+    listener.stop()
+    assert listener.accepted == 1
+    assert not Path("s.sock").exists()

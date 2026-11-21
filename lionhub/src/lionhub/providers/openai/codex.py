@@ -79,6 +79,7 @@ from ._codex_permissions import (
     deny_entries,
     permission_profile_table,
     refuse_a_second_sandbox_setting,
+    refuse_write_roots_on_probe_record_dir,
     require_passing_probe_record,
 )
 from ._codex_profile import (
@@ -1425,7 +1426,9 @@ def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     else the child sandbox's ``allow_write`` list, then every ``add_dir`` directory and the
     linked worktree's git roots, the last two being the directories passed with ``--add-dir``.
     A leading ``~`` is expanded and a relative entry is made absolute against the working
-    directory, which codex starts in.
+    directory, which codex starts in. A root that contains the probe record directory or lies
+    inside it is refused: a child that could write there could forge the record the launch
+    rests on.
     """
     if plain.workload == "light":
         return []
@@ -1437,7 +1440,9 @@ def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     absolute = (
         entry if os.path.isabs(entry) else os.path.join(str(cwd), entry) for entry in entries
     )
-    return list(dict.fromkeys(absolute))
+    write_roots = list(dict.fromkeys(absolute))
+    refuse_write_roots_on_probe_record_dir(write_roots)
+    return write_roots
 
 
 def _permission_profile_args(
@@ -1503,7 +1508,7 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
         profile=plain.profile,
         ignore_user_config=plain.ignore_user_config,
     )
-    record = require_passing_probe_record(CODEX_CLI)
+    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd)
     if governed is not None:
         log.warning(
             "the command-line permission profile governs over the sandbox_mode set in %s, as the "

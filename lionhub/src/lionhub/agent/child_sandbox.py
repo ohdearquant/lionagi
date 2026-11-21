@@ -716,22 +716,38 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
         # directory follows LIONAGI_HOME, so it is added here, where the policy is assembled: a
         # child that could write a record there could forge the proof a codex launch rests on.
         deny_edit=tuple(
-            dict.fromkeys([*DEFAULT_DENY_EDIT, _probe_record_dir_entry(), *edit, *deny])
+            dict.fromkeys([*DEFAULT_DENY_EDIT, *_probe_record_dir_entries(), *edit, *deny])
         ),
         profile=profile or None,
     )
 
 
-def _probe_record_dir_entry() -> str:
-    """The codex probe record directory as a ``deny_edit`` entry, written with ``~`` when it
-    lies under the home directory, as the other entries are."""
+def _home_relative(path: str) -> str:
+    """``path`` written with ``~`` when it lies under the home directory, as the deny entries
+    are, and as given otherwise."""
+    try:
+        return "~/" + Path(path).relative_to(Path.home()).as_posix()
+    except ValueError:
+        return path
+
+
+def _probe_record_dir_entries() -> tuple[str, ...]:
+    """The codex probe record directory as ``deny_edit`` entries: the directory as written, then
+    every link its path passes through and where it resolves, the way every other deny entry
+    is placed, each written with ``~`` under the home directory."""
     from lionhub.providers.openai._codex_permissions import probe_record_dir
 
-    path = probe_record_dir()
-    try:
-        return "~/" + path.relative_to(Path.home()).as_posix()
-    except ValueError:
-        return str(path)
+    return tuple(
+        dict.fromkeys(
+            _home_relative(path) for path in _written_and_resolved(str(probe_record_dir()))
+        )
+    )
+
+
+def _probe_record_dir_entry() -> str:
+    """The codex probe record directory as written, as a ``deny_edit`` entry; the links on its
+    path and where they resolve follow it in ``_probe_record_dir_entries``."""
+    return _probe_record_dir_entries()[0]
 
 
 def policy_from_dict(data: dict) -> ChildSandboxPolicy:

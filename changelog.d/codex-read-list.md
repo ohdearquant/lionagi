@@ -6,6 +6,14 @@
   probe record shows that the codex binary it runs enforces the profile. The record is written by
   `python -m lionhub.providers.openai.codex_sandbox_probe`, and its directory is on the child
   sandbox's edit-deny list so a child cannot forge one.
+- The probe record directory is now also a deny entry of the Codex permission profile, resolved
+  through symlinks as the other deny entries are. A write root (`--add-dir`, a caller's
+  `writable_roots`, the child sandbox's roots or a linked worktree's git roots) that contains the
+  record directory or lies inside it is refused before the launch. The record is keyed by the
+  resolved path, the version and the SHA-256 of the binary's bytes, so a binary replaced in place
+  has no record, and the binary a launch looks up is the one found on the `PATH` of the child's
+  final environment, by the lookup the spawn uses. Records of the earlier format are not read:
+  run the probe again.
 
 ### Changed
 
@@ -43,3 +51,27 @@
   against the child's `HOME`, then the account's home directory, never the launching process's
   `HOME`. A per-profile `allow_read` list is not applied to a Codex child, which does not know the
   agent profile the way a Claude Code child does; the sandbox's default read policy applies.
+- The probe's arms test what they name. The real-path deny arms open the path for zero bytes
+  with `/bin/sh -c ': < "$1"'` (BSD `head -c 0` exits 1 on its own argument check, so those arms
+  passed when nothing was denied), and each has a same-run control, the same open on a readable
+  file, that must succeed. The write-entry arm tests an entry only the profile table grants and
+  passes no `--add-dir`. The scratch root is a caller-given directory (`--scratch`), by default
+  under the lionagi home's `state` directory, and the probe refuses one inside `/tmp`,
+  `/var/tmp`, the platform temp directory or `$TMPDIR`. With `TMPDIR` unset the second temporary
+  directory arm is recorded as skipped instead of testing `/tmp` twice; that arm is listed in
+  `CONDITIONAL_ARMS`, and such a record satisfies a launch whose `TMPDIR` is also unset.
+  A new unix-socket arm has the child connect to an in-process listener inside a denied
+  directory and passes only when the connect is refused and a same-run connect to a socket
+  outside every denied path succeeds, so a launch is refused on a host where Codex's sandbox
+  lets the connect through.
+
+### Limits
+
+- The probe refuses a scratch root inside the temp directories it can name (`/tmp`, `/var/tmp`,
+  the platform temp directory, `$TMPDIR`). It cannot list every other location a Codex version
+  leaves writable under `:workspace`, so a caller-given scratch directory elsewhere that the
+  profile leaves writable is the caller's to avoid.
+- The profile's deny entry and the write-root refusal keep a Codex child from writing the probe
+  record directory; they do not stop another process of the same account from writing it. The
+  write-root refusal compares the spellings it sees when the command line is built, and a link
+  made later is not seen.
