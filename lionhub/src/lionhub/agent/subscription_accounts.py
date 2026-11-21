@@ -257,17 +257,19 @@ def _table_entry(path: Path, provider: str, name: str, row: object) -> Subscript
 
 
 def credential_paths(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    """Every file or directory the accounts directory keeps or names a sign-in in.
+    """Every file or directory the accounts directory or a global profile names a sign-in in.
 
     That is the directory itself, which holds the token files and ``accounts.toml``, each
-    ``.env`` file a Claude Code row reads, and each Codex home as a whole: besides its
-    ``auth.json``, a home's ``config.toml`` can hold provider keys and MCP server ``env`` values.
+    ``.env`` file a Claude Code row reads, each Codex home a ``[codex.<name>]`` row lists and
+    each ``codex_home`` a profile under ``~/.lionagi/agents`` names, every home as a whole:
+    besides its ``auth.json``, a home's ``config.toml`` can hold provider keys and MCP server
+    ``env`` values.
     A Codex home that no longer exists is still named. A keychain item is not a file and is not
     listed. No secret is read. The child sandbox denies a child reading any of these.
 
     Raises:
-        SubscriptionAccountError: the directory setting, the accounts file or one of its rows
-            cannot be read.
+        SubscriptionAccountError: the directory setting, the accounts file or one of its rows,
+            or a global profile, cannot be read.
     """
     directory = logins_dir(environ)
     accounts_file = directory / ACCOUNTS_FILE
@@ -288,6 +290,10 @@ def credential_paths(environ: Mapping[str, str] | None = None) -> tuple[str, ...
                 f"{str(accounts_file)!r} [codex.{name}] home must be an absolute path."
             )
         paths.append(home)
+    # A role's profile may name a Codex home directly; only the global profiles are honoured.
+    from lionhub.orchestration.spawn import global_profile_codex_homes
+
+    paths += global_profile_codex_homes()
     # A deny entry may not carry a `..` segment, and `..` after a link would name another
     # directory than the one a reader reaches, so each path is listed in both spellings: the
     # directory setting and the `.env` files are written by hand as freely as a home.

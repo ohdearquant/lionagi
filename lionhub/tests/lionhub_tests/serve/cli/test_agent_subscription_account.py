@@ -198,6 +198,101 @@ def _capture(monkeypatch, tmp_path) -> dict[str, list]:
     return seen
 
 
+@pytest.mark.parametrize(
+    "keys", [{"account": "alpha"}, {"codex_home": "/opt/codex-two"}], ids=["account", "codex_home"]
+)
+def test_a_plugin_profile_cannot_choose_the_account(tmp_path, monkeypatch, keys):
+    import lionhub.orchestration.spawn as spawn
+
+    (key,) = keys
+    path = tmp_path / "plugin" / "r.md"
+    path.parent.mkdir()
+    path.write_text(_role(model="codex/gpt-5.5", **keys))
+    monkeypatch.setattr(spawn, "_resolve_plugin_profile_path", lambda name: path)
+    with pytest.raises(SubscriptionAccountError, match=key) as caught:
+        spawn.load_agent_profile("plug/r", cwd=tmp_path)
+    assert str(path) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "keys", [{"account": "alpha"}, {"codex_home": "/opt/codex-two"}], ids=["account", "codex_home"]
+)
+def test_a_checkout_profile_cannot_hide_a_global_one_that_names_an_account(profile_dirs, keys):
+    """Found first, a keyless checkout profile of the role's name would move the role off the
+    account its global profile names and onto this machine's own login."""
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (key,) = keys
+    (profile_dirs.global_agents / "r.md").write_text(_role(model="codex/gpt-5.5", **keys))
+    local = profile_dirs.checkout_agents / "r.md"
+    local.write_text(_role(model="codex/gpt-5.5"))
+    with pytest.raises(SubscriptionAccountError, match=f"hides .*sets {key}") as caught:
+        load_agent_profile("r", cwd=profile_dirs.checkout)
+    assert str(local) in str(caught.value)
+
+
+def test_a_checkout_profile_may_hide_a_global_one_that_names_no_account(profile_dirs):
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (profile_dirs.global_agents / "r.md").write_text(_role(model="claude_code/sonnet"))
+    (profile_dirs.checkout_agents / "r.md").write_text(_role(model="codex/gpt-5.5"))
+    assert load_agent_profile("r", cwd=profile_dirs.checkout).model == "codex/gpt-5.5"
+
+
+def test_a_refused_profile_is_left_out_of_the_catalog_not_every_role(profile_dirs, monkeypatch):
+    """One checkout file choosing an account must not hide every other role from the list."""
+    from lionhub.orchestration import spawn
+    from lionhub.serve.mcp import roster
+
+    monkeypatch.setattr(spawn, "_plugin_agent_profiles", lambda: {})
+    monkeypatch.chdir(profile_dirs.checkout)
+    bad = profile_dirs.checkout_agents / "bad.md"
+    bad.write_text(_role(model="codex/gpt-5.5", account="alpha"))
+    (profile_dirs.checkout_agents / "good.md").write_text(_role(model="codex/gpt-5.5"))
+    refused: dict[str, str] = {}
+    catalog = spawn.build_agent_profile_catalog(refused)
+    assert "good" in catalog and "bad" not in catalog
+    assert str(bad) in refused["bad"]
+    listed = roster.profile_list(cwd=str(profile_dirs.checkout))
+    assert [p["name"] for p in listed["profiles"]] == ["good"]
+    assert listed["refused"][0]["name"] == "bad" and str(bad) in listed["refused"][0]["reason"]
+
+
+def test_the_refusal_says_how_to_fix_it(profile_dirs):
+    from lionhub.orchestration.spawn import load_agent_profile
+
+    (profile_dirs.checkout_agents / "r.md").write_text(_role(account="alpha"))
+    with pytest.raises(SubscriptionAccountError, match="Move it to a profile there") as caught:
+        load_agent_profile("r", cwd=profile_dirs.checkout)
+    assert "--account" not in str(caught.value)
+
+
+def test_a_global_profiles_codex_home_is_denied_to_a_claude_child(profile_dirs, logins, tmp_path):
+    home = tmp_path / "codex-for-role"
+    home.mkdir()
+    nested = profile_dirs.global_agents / "nested"
+    nested.mkdir()
+    (nested / "nested.md").write_text(_role(model="codex/gpt-5.5", codex_home=str(home)))
+    (profile_dirs.global_agents / "plain.md").write_text(_role(model="codex/gpt-5.5"))
+    assert str(home) in accounts.credential_paths()
+
+
+def test_a_checkout_profiles_codex_home_is_not_read_for_the_deny_list(profile_dirs, logins):
+    """Only global profiles are honoured, so only they are read; a checkout profile with the key
+    is refused when it is loaded instead."""
+    (profile_dirs.checkout_agents / "r.md").write_text(
+        _role(model="codex/gpt-5.5", codex_home="/opt/codex-local")
+    )
+    assert "/opt/codex-local" not in accounts.credential_paths()
+
+
+def test_a_malformed_global_codex_home_refuses_the_deny_list(profile_dirs, logins):
+    """Its home could not be named, so a child would be free to read it."""
+    (profile_dirs.global_agents / "r.md").write_text(_role(codex_home="relative/codex"))
+    with pytest.raises(SubscriptionAccountError, match="not an absolute path"):
+        accounts.credential_paths()
+
+
 @pytest.mark.asyncio
 async def test_a_leg_whose_checkout_profile_names_an_account_does_not_start(
     monkeypatch, tmp_path, logins, profile_dirs

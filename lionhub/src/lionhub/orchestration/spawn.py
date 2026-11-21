@@ -20,6 +20,7 @@ from lionagi._paths import (
     _name_spellings,
     _resolve_profile_path,
     _unreadable_symlink_target,
+    is_user_lionagi_dir,
 )
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import _strip_frontmatter_prefix
@@ -825,9 +826,27 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
     return config
 
 
-def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
-    """Index discoverable profiles by name and resolved runtime configuration."""
-    return {name: profile_config(load_agent_profile(name)) for name in list_agents()}
+def build_agent_profile_catalog(
+    refused: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Index discoverable profiles by name and resolved runtime configuration.
+
+    A profile refused because it chooses an account it may not choose is left out, so one such
+    file does not hide every other role; its reason, which names the file and the key, goes in
+    *refused* when given, and is printed as a warning either way. Any other load error raises.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+    from lionhub.orchestration.console import warn
+
+    catalog: dict[str, dict[str, Any]] = {}
+    for name in list_agents():
+        try:
+            catalog[name] = profile_config(load_agent_profile(name))
+        except SubscriptionAccountError as exc:
+            warn(f"left out of the profile list: {exc}")
+            if refused is not None:
+                refused[name] = str(exc)
+    return catalog
 
 
 def _resolve_plugin_profile_path(name: str) -> Path | None:
@@ -901,8 +920,9 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
                 profile = _parse_profile(name, text)
-                if d != Path.home() / ".lionagi":
+                if not is_user_lionagi_dir(d):
                     _refuse_profile_account(name, path, profile)
+                    _refuse_shadowing_an_account(name, path)
                 return profile
 
     plugin_path = _resolve_plugin_profile_path(name)
@@ -1031,6 +1051,46 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
+def global_profile_codex_homes() -> tuple[str, ...]:
+    """Each ``codex_home`` a profile under ``~/.lionagi/agents`` names, in file order.
+
+    Those profiles are the only ones whose ``codex_home`` a leg honours, so these are the Codex
+    homes a role can run in beyond the accounts directory's own rows. Both layouts are read, as
+    the resolver reads them. A profile whose symlink target cannot be read is skipped, as the
+    resolver cannot load it either. A profile that cannot be read otherwise, or whose
+    ``account`` or ``codex_home`` is malformed, raises: the homes could not all be named.
+
+    Raises:
+        SubscriptionAccountError: a profile cannot be read or its keys are malformed.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    agents_dir = Path.home() / ".lionagi" / "agents"
+    if not agents_dir.is_dir():
+        return ()
+    found: list[tuple[str, Path]] = []
+    for child in sorted(agents_dir.iterdir()):
+        nested = child / f"{child.name}.md"
+        if child.is_dir() and nested.is_file():
+            found.append((child.name, nested))
+    found += [(path.stem, path) for path in sorted(agents_dir.glob("*.md")) if path.is_file()]
+    homes: list[str] = []
+    for name, path in found:
+        if _unreadable_symlink_target(path) is not None:
+            continue
+        try:
+            text = path.read_text()
+        except OSError as exc:
+            raise SubscriptionAccountError(
+                f"agent profile {str(path)!r} cannot be read, so the Codex home it may name "
+                f"cannot be denied: {exc}"
+            ) from None
+        profile = _parse_profile(name, text)
+        if profile.codex_home is not None:
+            homes.append(profile.codex_home)
+    return tuple(dict.fromkeys(homes))
+
+
 def _refuse_profile_account(name: str, path: Path, profile: AgentProfile) -> None:
     """Refuse ``account`` and ``codex_home`` from a profile outside ``~/.lionagi/agents``.
 
@@ -1046,8 +1106,32 @@ def _refuse_profile_account(name: str, path: Path, profile: AgentProfile) -> Non
         if getattr(profile, key) is not None:
             raise SubscriptionAccountError(
                 f"agent profile {name!r} at {path} sets {key}; {key} is honoured only in a "
-                f"profile under {Path.home() / '.lionagi' / 'agents'}. Set it there, or pass "
-                "--account."
+                f"profile under {Path.home() / '.lionagi' / 'agents'}. Move it to a profile "
+                "there, or remove it from this one."
+            )
+
+
+def _refuse_shadowing_an_account(name: str, path: Path) -> None:
+    """Refuse a project profile that hides a global profile of the same name naming an account.
+
+    The project's ``.lionagi/agents`` is searched first, so a checkout carrying a profile of the
+    role's name, with neither key, would move a role the operator put on an account back onto
+    this machine's own login.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    global_path = _resolve_profile_path(
+        Path.home() / ".lionagi" / "agents", name, unreadable_symlinks=[]
+    )
+    if global_path is None:
+        return
+    shadowed = _parse_profile(name, global_path.read_text())
+    for key in ("account", "codex_home"):
+        if getattr(shadowed, key) is not None:
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} hides {global_path}, which sets {key}; a "
+                "profile in a checkout cannot move a role off the account its global profile "
+                "names. Rename the project profile, or remove it."
             )
 
 
