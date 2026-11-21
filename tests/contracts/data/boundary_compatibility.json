@@ -154,6 +154,13 @@
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "os.environ.get:'PATH'"
     ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "os.environ.get:\"HOME\"",
+      "os.environ.get:\"PATH\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\""
+    ],
     "lionhub/src/lionhub/serve/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
@@ -1459,6 +1466,9 @@
     "lionhub/src/lionhub/providers/openai/_audio_schemas.py": [
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
+      "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n)"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
     ],
@@ -1476,6 +1486,9 @@
     ],
     "lionhub/src/lionhub/providers/openai/codex.py": [
       "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
+    ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "__all__ = (\"StubProvider\", \"main\", \"probe\", \"run_codex\", \"tool_outputs\", \"write_record\")"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
@@ -4533,6 +4546,16 @@
       "AudioSpeechRequest",
       "AudioTranscriptionRequest"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
+      "codex_binary_version",
+      "deny_entries",
+      "permission_profile_table",
+      "probe_record",
+      "probe_record_dir",
+      "probe_record_path",
+      "refuse_a_second_sandbox_setting",
+      "require_passing_probe_record"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "codex_config_defining_profile",
       "codex_config_setting_default_permissions",
@@ -4580,6 +4603,14 @@
       "stream_codex_cli",
       "stream_codex_cli_events",
       "toml_override_value"
+    ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "StubProvider",
+      "main",
+      "probe",
+      "run_codex",
+      "tool_outputs",
+      "write_record"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "OpenAIEmbeddingRequest",

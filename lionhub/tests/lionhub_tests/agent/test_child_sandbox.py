@@ -59,7 +59,9 @@ RESOLVED_DENY_READ = (
 
 #: What the file tools are denied when no layer adds anything: the configuration list, then the
 #: read list.
-DEFAULT_EDIT = tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *RESOLVED_DENY_READ]))
+DEFAULT_EDIT = tuple(
+    dict.fromkeys([*DEFAULT_DENY_EDIT, "~/.lionagi/codex-sandbox-probes", *RESOLVED_DENY_READ])
+)
 
 DEFAULT_POLICY = ChildSandboxPolicy(True, RESOLVED_DENY_READ, DEFAULT_ALLOW_WRITE, DEFAULT_EDIT)
 
