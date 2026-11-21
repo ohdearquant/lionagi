@@ -51,7 +51,9 @@ Decision:
   histories), lionagi's own `.env` under `LIONAGI_HOME`, and every sign-in the subscription
   accounts directory keeps or names: the directory itself, the token files in it, the `.env` files
   its rows read and the homes of its Codex rows, each named as written and at the path it resolves
-  to. When the directory setting, the accounts file or one of its rows cannot be read, those
+  to. It also holds the private directory of the Studio daemon's same-user reconnect socket,
+  beside the daemon's store, because a connection there is answered with a pairing code and the
+  daemon's key for that start. When the directory setting, the accounts file or one of its rows cannot be read, those
   sign-ins cannot be named, so the launch is refused with a configuration error rather than run
   with them readable. On the write set and the gemini-cli policy the refusal names no opt-out:
   turning the Claude Code child sandbox off does not lift it there. The
@@ -104,6 +106,9 @@ Required checks:
   a denied directory. Three controls run beside it: a file in that directory cannot be read, the
   same connect is refused with the network off, and a listener outside the list answers with the
   network on.
+- On the write set and on the gemini-cli policy, a confined command cannot connect to a listener
+  at the Studio daemon's reconnect socket path under a temporary LionAGI home, while a listener
+  outside the list answers.
 - The gemini-cli argv denies every entry of the list and sets a new, empty `UV_CACHE_DIR` on each
   launch. The shared uv cache is not one of its roots. A `yolo` request on a host without the
   sandbox, and a CLI path containing `=`, are refused.
@@ -128,8 +133,10 @@ Limits:
   allowed.
 - With the network on, a unix socket outside the list stays reachable: an ssh agent, a container
   daemon, or any other local service listening outside the denied entries answers a confined
-  command. The Claude Code child sandbox has its own unix-socket rule, which this amendment does
-  not change or measure.
+  command. The Studio daemon's reconnect socket is not one of them, since its directory is on the
+  list. That holds for the write set and the gemini-cli policy. A Claude Code child gets the same
+  directory on its deny list, but its sandbox has its own unix-socket rule, which this amendment
+  does not change or measure. A Codex child is not denied it.
 
 ## Amendment 3 (2026-10-27) — child environments for coding tools
 

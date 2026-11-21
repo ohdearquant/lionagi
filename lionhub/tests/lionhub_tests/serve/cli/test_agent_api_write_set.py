@@ -881,3 +881,55 @@ async def test_a_listener_inside_an_unreadable_path_cannot_be_connected_to(roots
         assert "Operation not permitted" in inside_on["stderr"], inside_on
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_the_credential_list_names_the_daemon_reconnect_socket_directory():
+    from lionhub.agent.child_sandbox import credential_deny_read
+    from lionhub.serve.daemon.reconnect import default_socket_path
+
+    named = {os.path.realpath(os.path.expanduser(entry)) for entry in credential_deny_read()}
+
+    assert os.path.realpath(default_socket_path().parent) in named
+
+
+@needs_seatbelt
+@pytest.mark.asyncio
+async def test_no_confined_command_can_connect_to_the_daemon_reconnect_socket(roots, monkeypatch):
+    """The reconnect socket answers a same-user connect with a pairing code and the daemon's key."""
+    import lionhub.serve.daemon.reconnect as reconnect
+    from lionhub.agent.child_sandbox import credential_deny_read
+
+    base = Path(tempfile.mkdtemp(prefix="sbx", dir="/private/tmp")).resolve()
+    try:
+        # A temporary LionAGI home whose store, and so whose reconnect socket, sit in a short path.
+        lionagi_home = base / "home" / ".lionagi"
+        monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", lionagi_home)
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
+        sock = reconnect.default_socket_path()
+        assert sock == lionagi_home / "studio" / "studio-reconnect.sock"
+        sock.parent.mkdir(parents=True, mode=0o700)
+        (base / "open").mkdir()
+        workspace = roots / "workspace"
+        (workspace / "client.py").write_text(
+            "import socket, sys\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect(sys.argv[1])\n"
+            "print(s.recv(4).decode())\n"
+        )
+        client = f"{shlex.quote(sys.executable)} -I client.py"
+        on = _bound_tools(workspace, network=True, deny_read=credential_deny_read())
+        with _listener(sock), _listener(base / "open" / "s"):
+            direct = socket.socket(socket.AF_UNIX)
+            direct.connect(str(sock))
+            live = direct.recv(4)
+            direct.close()
+            outside = await on["bash"](f"{client} {base / 'open' / 's'}", cwd=str(workspace))
+            confined = await on["bash"](f"{client} {sock}", cwd=str(workspace))
+
+        assert live == b"pong"
+        assert outside["return_code"] == 0 and outside["stdout"].strip() == "pong", outside
+        assert confined["return_code"] != 0, confined
+        assert "pong" not in confined["stdout"]
+        assert "Operation not permitted" in confined["stderr"], confined
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

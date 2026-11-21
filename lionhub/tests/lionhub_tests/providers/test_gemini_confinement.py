@@ -10,9 +10,12 @@ temporary directory in every test, so the state directory created here is never 
 from __future__ import annotations
 
 import contextlib
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -340,3 +343,67 @@ def test_the_confined_child_uses_its_own_terminal_and_not_another(tmp_path):
     assert out["foreign"] == "PermissionError"
     assert b"FOREIGN" not in shown
     assert "own-terminal" in out["own"]
+
+
+@pytest.mark.skipif(not seatbelt_available(), reason="needs macOS sandbox-exec")
+def test_the_cli_cannot_connect_to_the_daemon_reconnect_socket(monkeypatch, tmp_path):
+    """The reconnect socket answers a same-user connect with a pairing code and the daemon's key;
+    the gemini-cli policy always has the network on."""
+    import lionhub.serve.daemon.reconnect as reconnect
+
+    granted_temp = tmp_path / "temp"
+    granted_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(granted_temp))
+    work = tmp_path / "work"
+    work.mkdir()
+    # A unix socket path is limited to about a hundred bytes, so the sockets sit in a short one.
+    base = Path(tempfile.mkdtemp(prefix="sbx", dir="/private/tmp")).resolve()
+    servers = []
+    try:
+        lionagi_home = base / "home" / ".lionagi"
+        monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", lionagi_home)
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
+        sock = reconnect.default_socket_path()
+        assert sock == lionagi_home / "studio" / "studio-reconnect.sock"
+        sock.parent.mkdir(parents=True, mode=0o700)
+        (base / "open").mkdir()
+        for path in (sock, base / "open" / "s"):
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(path))
+            server.listen()
+            servers.append(server)
+            threading.Thread(target=_answer_pong, args=(server,), daemon=True).start()
+        client = work / "client.py"
+        client.write_text(
+            "import socket, sys\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect(sys.argv[1])\n"
+            "print(s.recv(4).decode())\n"
+        )
+        wrapped = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+
+        def connect(target: Path) -> subprocess.CompletedProcess:
+            argv = [*wrapped[: wrapped.index(AGY)], sys.executable, "-I", str(client), str(target)]
+            return subprocess.run(argv, capture_output=True, text=True, timeout=60, cwd=work)
+
+        outside = connect(base / "open" / "s")
+        confined = connect(sock)
+
+        assert outside.returncode == 0 and outside.stdout.strip() == "pong", outside
+        assert confined.returncode != 0, confined
+        assert "pong" not in confined.stdout
+        assert "Operation not permitted" in confined.stderr, confined
+    finally:
+        for server in servers:
+            server.close()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _answer_pong(server: socket.socket) -> None:
+    while True:
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        with conn:
+            conn.sendall(b"pong")

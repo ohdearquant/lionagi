@@ -447,13 +447,31 @@ def _subscription_account_credentials() -> tuple[str, ...]:
     return tuple(dict.fromkeys(named))
 
 
+def _daemon_socket_directory() -> tuple[str, ...]:
+    """The private directory holding the Studio daemon's same-user reconnect socket
+    (``lionhub.serve.daemon.reconnect.default_socket_path``), beside the daemon's store.
+
+    A connection there is answered with a pairing code and the daemon's key for this start, so
+    no child may reach it. The directory holds nothing else, and naming it whole covers the
+    socket however often the daemon recreates it."""
+    from lionhub.serve.daemon.reconnect import default_socket_path
+
+    directory = default_socket_path().parent
+    try:
+        # Written the way a user writes it in ``allow_read`` when it sits under the home.
+        return (f"~/{directory.relative_to(Path.home()).as_posix()}",)
+    except ValueError:
+        return (str(directory),)
+
+
 def credential_deny_read() -> tuple[str, ...]:
     """Every credential location and local store a child of any engine may not read.
 
-    ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, and every sign-in the
-    subscription accounts directory keeps or names. The Claude Code policy starts from it, and
-    the Seatbelt policies lionagi builds itself (the API write set, the gemini-cli process) take
-    it whole, so no list can drop an entry the others deny.
+    ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, every sign-in the
+    subscription accounts directory keeps or names, and the directory of the Studio daemon's
+    reconnect socket. The Claude Code policy starts from it, and the Seatbelt policies lionagi
+    builds itself (the API write set, the gemini-cli process) take it whole, so no list can drop
+    an entry the others deny.
 
     Raises:
         ConfigurationError: the directory setting, the accounts file or one of its rows cannot
@@ -463,7 +481,12 @@ def credential_deny_read() -> tuple[str, ...]:
     """
     return tuple(
         dict.fromkeys(
-            (*DEFAULT_DENY_READ, *_lionagi_home_credentials(), *_subscription_account_credentials())
+            (
+                *DEFAULT_DENY_READ,
+                *_lionagi_home_credentials(),
+                *_subscription_account_credentials(),
+                *_daemon_socket_directory(),
+            )
         )
     )
 
