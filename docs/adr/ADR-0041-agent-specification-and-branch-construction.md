@@ -103,7 +103,7 @@ Required checks:
   is not returned to a confined command and is returned outside it. The user's login keychain is
   never used.
 - Under a network-on policy, a confined command cannot connect to a unix socket listening inside
-  a denied directory. Three controls run beside it: a file in that directory cannot be read, the
+  a denied directory, directly or through a symlink it plants in the workspace. Three controls run beside it: a file in that directory cannot be read, the
   same connect is refused with the network off, and a listener outside the list answers with the
   network on.
 - On the write set and on the gemini-cli policy, a confined command cannot connect to a listener
@@ -118,7 +118,9 @@ Limits:
 - Every read outside the list stays open, and with `api_network: true` it can still leave the
   machine. The list names known locations. A credential kept elsewhere is readable.
 - On the gemini-cli policy the network is never off, so every read outside the list can leave the
-  machine on every leg.
+  machine on every leg. That includes the CLI's own state directory, `~/.gemini/antigravity-cli`,
+  where it keeps its refreshed login: the CLI must read and write it, and the commands its shell
+  tool runs share its sandbox, so they can read that login too.
 - The editor, reader and search tools run in this process, outside the policy. They keep their own
   path checks, not the unreadable list: a final symlink is refused, the resolved path must lie in
   the workspace, and protected names (`.env`, `.netrc` and private-key file names) are refused.

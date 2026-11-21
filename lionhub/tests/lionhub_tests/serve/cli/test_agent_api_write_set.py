@@ -871,6 +871,8 @@ async def test_a_listener_inside_an_unreadable_path_cannot_be_connected_to(roots
             inside_off = await off["bash"](f"{client} {denied / 's'}", cwd=str(workspace))
             outside_on = await on["bash"](f"{client} {open_dir / 's'}", cwd=str(workspace))
             inside_on = await on["bash"](f"{client} {denied / 's'}", cwd=str(workspace))
+            planted = await on["bash"](f"ln -s {denied / 's'} link", cwd=str(workspace))
+            via_link = await on["bash"](f"{client} link", cwd=str(workspace))
 
         assert read["return_code"] != 0 and "decoy" not in read["stdout"], read
         assert inside_off["return_code"] != 0 and "pong" not in inside_off["stdout"], inside_off
@@ -879,6 +881,9 @@ async def test_a_listener_inside_an_unreadable_path_cannot_be_connected_to(roots
         assert inside_on["return_code"] != 0, inside_on
         assert "pong" not in inside_on["stdout"]
         assert "Operation not permitted" in inside_on["stderr"], inside_on
+        # A link the command plants in its own tree reaches the same socket and is refused too.
+        assert planted["return_code"] == 0, planted
+        assert via_link["return_code"] != 0 and "pong" not in via_link["stdout"], via_link
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
