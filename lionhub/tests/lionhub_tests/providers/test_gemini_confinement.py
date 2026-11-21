@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -122,16 +123,34 @@ def test_a_policy_without_pty_renders_no_pty_rule(tmp_path):
 @pytest.mark.skipif(not seatbelt_available(), reason="needs macOS sandbox-exec")
 def test_the_confined_command_cannot_delete_outside_the_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    # The policy grants the temporary directory, and pytest's tmp_path lies inside it on
+    # macOS. Point the policy's temporary directory at a sibling of "outside", so "outside"
+    # sits under no granted root.
+    granted_temp = tmp_path / "temp"
+    granted_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(granted_temp))
     work, outside = tmp_path / "work", tmp_path / "outside"
     for directory in (work / "inside", outside):
         directory.mkdir(parents=True)
         (directory / "MARKER").write_text("decoy\n")
 
+    def confined(argv: list[str]) -> list[str]:
+        # The policy _confined_agy_command builds, applied to another command instead of agy.
+        wrapped = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+        return [*wrapped[: wrapped.index(AGY)], *argv]
+
     def rm(target: Path) -> int:
-        # The policy _confined_agy_command builds, applied to rm instead of agy.
-        argv = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
-        argv = [*argv[: argv.index(AGY)], "/bin/rm", "-r", str(target)]
-        return subprocess.run(argv, capture_output=True, timeout=60).returncode
+        return subprocess.run(
+            confined(["/bin/rm", "-r", str(target)]), capture_output=True, timeout=60
+        ).returncode
+
+    roots = [
+        Path(value)
+        for name, value in _params(confined(["/bin/true"])).items()
+        if name.startswith("WRITABLE_ROOT_")
+    ]
+    assert str(granted_temp.resolve()) in {str(root) for root in roots}
+    assert not [root for root in roots if outside.resolve().is_relative_to(root)], roots
 
     assert rm(outside) != 0
     assert (outside / "MARKER").read_text() == "decoy\n"
