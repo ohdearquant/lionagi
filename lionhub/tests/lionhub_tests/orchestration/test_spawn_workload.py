@@ -323,6 +323,72 @@ def test_an_empty_tools_list_is_refused_rather_than_read_as_no_restriction():
         _profile_tool_settings(_role_declaring(tools=[]))
 
 
+def test_a_role_declares_an_agent_with_no_builtin_tool():
+    settings = _profile_tool_settings(_role_declaring(tools="none"))
+    assert settings == {"tools": ""}
+    written = _parse_profile("role", "---\nmodel: claude_code/sonnet\ntools: none\n---\n\nRead.\n")
+    assert _profile_tool_settings(written) == settings
+    for model in _both_builders(settings):
+        argv = _claude_argv(model)
+        assert argv.count("--tools") == 1
+        assert _values_after(argv, "--tools") == [""]
+        assert "--allowedTools" not in argv
+        assert "--disallowedTools" not in argv
+
+
+def test_an_agent_with_no_builtin_tool_keeps_the_roles_allow_and_deny_lists():
+    settings = _profile_tool_settings(
+        _role_declaring(
+            tools="none", allowed_tools=["mcp__box__run"], disallowed_tools=["WebFetch"]
+        )
+    )
+    assert settings == {
+        "tools": "",
+        "allowed_tools": ["mcp__box__run"],
+        "disallowed_tools": ["WebFetch"],
+    }
+    for model in _both_builders(settings, workload="light"):
+        argv = _claude_argv(model)
+        assert _values_after(argv, "--tools") == [""]
+        assert _values_after(argv, "--allowedTools") == ["mcp__box__run"]
+        assert _values_after(argv, "--disallowedTools")[0] == "WebFetch"
+
+
+@pytest.mark.parametrize("value", [["none"], ["Read", "none"], [" none "]], ids=repr)
+def test_a_tools_list_that_names_none_as_a_tool_is_refused(value):
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")) as refused:
+        _profile_tool_settings(_role_declaring(tools=value))
+    assert "no list around it" in str(refused.value)
+
+
+@pytest.mark.parametrize("value", ["None", "NONE", "none ", "no", ""], ids=repr)
+def test_only_the_exact_word_declares_no_builtin_tool(value):
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")) as refused:
+        _profile_tool_settings(_role_declaring(tools=value))
+    assert "or none for an agent with no built-in tool" in str(refused.value)
+
+
+@pytest.mark.parametrize("field", ["allowed_tools", "disallowed_tools"])
+def test_the_word_none_is_a_value_of_tools_alone(field):
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word(field)) as refused:
+        _profile_tool_settings(_role_declaring(**{field: "none"}))
+    assert "list of" in str(refused.value)
+    assert "built-in" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "spec", ["codex/gpt-5.5", "gemini-cli/gemini-3-pro", "openai/gpt-4.1-mini"]
+)
+def test_a_role_with_no_builtin_tool_is_refused_on_another_provider(spec):
+    settings = _profile_tool_settings(_role_declaring(tools="none"))
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        build_imodel_from_spec(spec, tool_settings=settings)
+    with pytest.raises(ConfigurationError, match=_named_as_a_whole_word("tools")):
+        build_chat_model(
+            spec.split("/")[0], spec.split("/", 1)[1], False, False, None, tool_settings=settings
+        )
+
+
 @pytest.mark.parametrize("field", _TOOL_FIELDS)
 @pytest.mark.parametrize(
     "spec",
