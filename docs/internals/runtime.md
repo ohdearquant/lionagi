@@ -1459,22 +1459,32 @@ headless print mode (`--output-format json`), which emits exactly one terminal J
 The public names/aliases `gemini-code` / `gemini-cli` / `gemini_cli` are kept for backward
 compat even though the underlying binary is `agy`.
 
-- **`resolve_agy_model` resolution/precedence rules.** `agy` has no separate effort flag;
-  effort is expressed only via a Low/Medium/High suffix baked into the model display name.
-  lionagi's effort scale (`none|minimal|low|medium|high|xhigh|max`) is clamped onto Gemini 3.1
-  Pro's Low/High-only range via `_clamp_gemini_effort`. An exact, already-`(...)`-qualified
+- **`resolve_agy_model` resolution/precedence rules.** Effort is expressed via a
+  Low/Medium/High suffix baked into the model display name, plus XHigh for the Gemini 4 Neon
+  and Hydrogen families. lionagi's effort scale (`none|minimal|low|medium|high|xhigh|max`) is
+  clamped onto those tiers, and onto Gemini 3.1 Pro's Low/High-only range, via
+  `_clamp_gemini_effort`: `xhigh`, `max` and `ultra` are XHigh on a family that has it and
+  High elsewhere. The Gemini 4 families are Argon, Neon, Carbon and Hydrogen;
+  `gemini-4-<family>` and `<family>` resolve to the family's High tier, and `-low`, `-medium`,
+  `-high` (and `-xhigh` for Neon and Hydrogen) to that tier. An exact, already-`(...)`-qualified
   `model` (a concrete agy display name) wins over `effort` by default. `reapply_effort=True`
   exists specifically to let a new `effort` replace the suffix baked into a *persisted* prior
   resolution (e.g. `li agent -r ... --effort ...`), while a `model` the caller explicitly typed
   in the current turn still wins regardless. A free-form name that is neither a listed alias nor
-  an exact display name, and contains `pro`, `flash`, `gemini` or `argon`, picks its family in
-  this order: Pro (3.1 Pro); a dotted version it spells out, with a one- or two-digit major and
-  any number of dotted parts (3.8 or 3.6 Flash, any other 3.5 Flash; a date such as `2026.10` or
-  a three-digit number is not a version); `argon` or a major version 4 that is not part of a
-  longer number and is followed by neither a letter nor a numeral of any script, nor by a dot and
-  one of those (4 Argon); otherwise 3.5 Flash. Its tier comes from a
-  `low` / `high` / `xhigh` / `max` word in the name, else Medium (Low for Pro). Any other name
-  passes through unchanged for agy to reject.
+  an exact display name, and contains `pro`, `flash`, `gemini` or a Gemini 4 family word, picks
+  its family in this order: Pro (3.1 Pro); a dotted version it spells out, with a one- or
+  two-digit major and any number of dotted parts (3.8 or 3.6 Flash, any other 3.5 Flash; a date
+  such as `2026.10` or a three-digit number is not a version); exactly one Gemini 4 family word
+  (that family); a major version 4 that is not part of a longer number and is followed by neither
+  a letter nor a numeral of any script, nor by a dot and one of those, with no other word than
+  a tier or one of `gemini`, `google`, `v`, `preview`, `latest`, `exp`, `experimental`
+  (4 Argon); otherwise 3.5 Flash. A name with two
+  family words, or a major version 4 beside another word (`gemini-4-flash`, `gemini-4-xenon`),
+  could name a family the table does not list, so it passes through unchanged for agy to accept
+  or reject rather than being served as Argon. Its tier comes from a `low` / `high` / `xhigh` /
+  `max` word in the name (`xhigh` / `max` are XHigh on Neon and Hydrogen), else Medium (Low for
+  Pro). Any other name passes through unchanged for agy to reject. `li agent` records the
+  resolved name in run.json as `resolved_model`, beside `model`.
 - **No per-tool stdout events.** `stream_gemini_cli`'s `on_tool_use`/`on_tool_result`
   callbacks are accepted for interface parity with other CLI providers but never fire in this
   transport, because `agy`'s json output surfaces no per-tool events on stdout (they exist only
@@ -1658,10 +1668,11 @@ un-normalized value like `"High"`. Codex reasoning-effort ceilings are model-dep
 codex CLI's live model list: `gpt-5.6-sol`/`gpt-5.6-terra` accept `max`/`ultra`,
 `gpt-5.6-luna` accepts `max` only, and every earlier model tops out at `xhigh`; unrecognized
 (future) models intentionally pass through unclamped so a genuinely supported new tier is
-never silently degraded. agy (the Antigravity CLI) has no effort flag/kwarg at all — effort is
-expressed only as a Low/Medium/High suffix baked into the resolved `--model` name, and Gemini
-3.1 Pro has no Medium tier, so lionagi's 8-level `none|minimal|low|medium|high|xhigh|max|ultra`
-vocabulary collapses onto this 3-tier scale via `_GEMINI_EFFORT_CLAMP`.
+never silently degraded. For agy (the Antigravity CLI), lionagi expresses effort only as a
+Low/Medium/High suffix baked into the resolved `--model` name, plus XHigh on the Gemini 4 Neon
+and Hydrogen families, and Gemini 3.1 Pro has no Medium tier, so lionagi's 8-level
+`none|minimal|low|medium|high|xhigh|max|ultra` vocabulary collapses onto this scale via
+`_GEMINI_EFFORT_CLAMP`, with `xhigh`, `max` and `ultra` taking XHigh where it exists.
 
 ### `rate_limited_processor.py`
 

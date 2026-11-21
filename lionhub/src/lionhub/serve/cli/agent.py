@@ -2962,6 +2962,15 @@ async def _run_agent(
             "started_at": time.time(),
             "ended_at": None,
         }
+        if (
+            _canonical_provider(branch.chat_model.endpoint.config.provider)
+            in PROVIDERS_EFFORT_VIA_MODEL_NAME
+        ):
+            from lionhub.providers.google.gemini_code import resolve_agy_model
+
+            # The exact `agy --model` name the spec resolved to, beside the spec as given:
+            # a spec the resolver maps to another family or passes through shows here.
+            run_manifest["resolved_model"] = resolve_agy_model(branch.chat_model.model_name)
         _api_usage = (
             APIUsageCollector(run_id=run.run_id, branch_id=branch_id)
             if api_launch is not None
