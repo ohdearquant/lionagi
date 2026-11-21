@@ -1,11 +1,76 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27 and 2026-11-20 (see Amendments
-  1 to 4)
+  1 to 4); Amendment 5 (2026-11-21) is Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
+
+**Status: Proposed.**
+
+This amendment replaces the sentence of Amendment 2's Limits that reads "Making a hard link to a
+file outside the roots, or to a file in `.git`, is refused." It was measured on the internal disk
+only. On a volume mounted with ownership ignored (`noowners`, the default for an external APFS
+disk), the policy as Amendments 2 and 4 build it lets a confined command make both links: `ln` of
+a file outside the roots, and of the working directory's `.git/config`, into the working directory
+succeeds there, while a plain write, a write into `.git`, and a move into or out of the roots are
+still refused. Seatbelt does not judge the source of `link(2)` by the write rules on that volume.
+It does judge the file-link operation itself: `(deny file-link)` alone refuses every link there.
+
+Decision:
+
+- **File-link rules.** After the unreadable entries, the policy renders
+  `(deny file-link (require-not (require-any (subpath WRITABLE_ROOT_i) ...)))` and one
+  `(deny file-link (subpath ...))` for each read-only path and each unreadable entry. A policy
+  with no writable root renders `(deny file-link)`. Every policy built by `SeatbeltPolicy` carries
+  them: the write set and the gemini-cli policy alike. A link inside a root to a file inside a root
+  still works.
+- **A probe per volume.** `python -m lionhub.tools.seatbelt_link_probe --scratch <dir>` makes, in
+  a fresh directory under `<dir>`, a workspace with a `.git/config` and a file outside the
+  workspace, builds the write set's policy for that workspace, and runs three arms: a link to the
+  outside file must be refused, a link to `.git/config` must be refused, and a link to a file in
+  the workspace must work. A refusal arm passes only on a non-zero exit, no link made and the
+  `Operation not permitted` text. The scratch directory is refused inside `/tmp`, `/var/tmp`, the
+  platform temp directory or `$TMPDIR`, which the policy makes writable. Without `--scratch` it
+  uses `<lionagi home>/state/seatbelt-link-probe`.
+- **The record.** The probe writes `LIONAGI_HOME/seatbelt-link-probes/volume-<UUID>.json`,
+  keyed by the volume UUID `diskutil info` reports for the mount point `df -P` names. It carries
+  the kernel (`uname` system, release and version), the SHA-256 of the policy text for a fixed set
+  of roots, and each arm's outcome and evidence.
+- **The launch check.** A write-capable API launch (`api_tools: write`) is refused before the
+  run exists unless, for the volume of every writable root of its policy, a record exists that
+  is of the current format, names that volume, was made under the running kernel and for the
+  current policy text, and holds every arm as passed. A volume with no UUID cannot be keyed and
+  is refused. A writable root that holds the record directory or lies inside it is refused, since
+  a confined command could write a record there. The refusal names the volume and the probe
+  command.
+
+Required checks:
+
+- The policy text carries the file-link rules after the write grant, one per read-only path and
+  unreadable entry, and `(deny file-link)` with no root.
+- On the host volume the probe passes all three arms and its record lets a launch through; with a
+  policy that grants every write, both refusal arms fail and the control passes.
+- A launch is refused with no record, with a record whose arm failed or is missing (each arm), a
+  record made for another kernel, policy text, volume or format, an unreadable record, and a
+  writable root above, equal to or inside the record directory. With records for two volumes, a
+  launch is refused until both pass.
+- The write-set launch asks the check with its own policy, and the read set does not.
+
+Limits:
+
+- The probe measures one volume at a time, by its UUID. A volume that is reformatted or replaced
+  gets a new UUID and needs a new probe; a volume whose mount options change without a new UUID
+  keeps its record.
+- The probe and the check cover the write set. The gemini-cli policy gets the file-link rules but
+  no launch check; Gemini legs with tools stay held on this host.
+- A hard link that already exists inside a root before the leg starts is still written through to
+  the file it shares, as Amendment 2 says.
+- The record directory is outside every writable root of a checked launch. Another process of the
+  same account can still write it.
 
 ## Amendment 4 (2026-11-20) — credential locations unreadable, a uv cache per leg, no keychain service
 
