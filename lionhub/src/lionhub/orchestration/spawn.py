@@ -1052,43 +1052,67 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
 
 
 def global_profile_codex_homes() -> tuple[str, ...]:
-    """Each ``codex_home`` a profile under ``~/.lionagi/agents`` names, in file order.
+    """Each ``codex_home`` a profile under ``~/.lionagi/agents`` names, in name order.
 
     Those profiles are the only ones whose ``codex_home`` a leg honours, so these are the Codex
-    homes a role can run in beyond the accounts directory's own rows. Both layouts are read, as
-    the resolver reads them. A profile whose symlink target cannot be read is skipped, as the
-    resolver cannot load it either. A profile that cannot be read otherwise, or whose
-    ``account`` or ``codex_home`` is malformed, raises: the homes could not all be named.
+    homes a role can run in beyond the accounts directory's own rows. Every name the directory
+    declares, in either layout and with any capitalisation of the ``.md`` suffix, is resolved
+    through ``_resolve_profile_path``, so the file read for a name is the one a leg of that name
+    loads, on a case-insensitive volume too. A name whose symlink target cannot be read resolves
+    to no file, as it does for a leg, and adds nothing. A profile that cannot be read otherwise,
+    or that the profile loader refuses, raises: the homes could not all be named.
 
     Raises:
-        SubscriptionAccountError: a profile cannot be read or its keys are malformed.
+        SubscriptionAccountError: a profile cannot be read or is refused by the loader.
     """
     from lionhub.agent.subscription_accounts import SubscriptionAccountError
 
     agents_dir = Path.home() / ".lionagi" / "agents"
     if not agents_dir.is_dir():
         return ()
-    found: list[tuple[str, Path]] = []
-    for child in sorted(agents_dir.iterdir()):
-        nested = child / f"{child.name}.md"
-        if child.is_dir() and nested.is_file():
-            found.append((child.name, nested))
-    found += [(path.stem, path) for path in sorted(agents_dir.glob("*.md")) if path.is_file()]
+    names: set[str] = set()
+    for child in agents_dir.iterdir():
+        if child.is_dir():
+            nested = child / f"{child.name}.md"
+            if nested.is_file() or nested.is_symlink():
+                names.add(child.name)
+        elif child.suffix.lower() == ".md":
+            names.add(child.stem)
     homes: list[str] = []
-    for name, path in found:
-        if _unreadable_symlink_target(path) is not None:
-            continue
+    for name in sorted(names):
         try:
-            text = path.read_text()
-        except OSError as exc:
+            path = _resolve_profile_path(agents_dir, name, unreadable_symlinks=[])
+        except AmbiguousProfileNameError as exc:
             raise SubscriptionAccountError(
-                f"agent profile {str(path)!r} cannot be read, so the Codex home it may name "
-                f"cannot be denied: {exc}"
+                f"the Codex home a profile named {name!r} may name cannot be denied to a "
+                f"sandboxed child: {exc}"
             ) from None
-        profile = _parse_profile(name, text)
+        if path is None:
+            continue
+        profile = _parse_global_profile(
+            name, path, "the Codex home it may name cannot be denied to a sandboxed child"
+        )
         if profile.codex_home is not None:
             homes.append(profile.codex_home)
     return tuple(dict.fromkeys(homes))
+
+
+def _parse_global_profile(name: str, path: Path, consequence: str) -> AgentProfile:
+    """Read and parse a profile under ``~/.lionagi/agents`` that a check depends on.
+
+    Any read or parse failure, whatever key it is about, comes out as one
+    ``SubscriptionAccountError`` naming the file and what could not be checked, so it leaves
+    through the same refusal as the check itself instead of as an unrelated error about a role
+    the caller never asked for.
+    """
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    try:
+        return _parse_profile(name, path.read_text())
+    except (OSError, UnicodeDecodeError, ConfigurationError) as exc:
+        raise SubscriptionAccountError(
+            f"agent profile {name!r} at {path} cannot be read or parsed, so {consequence}: {exc}"
+        ) from None
 
 
 def _refuse_profile_account(name: str, path: Path, profile: AgentProfile) -> None:
@@ -1116,16 +1140,34 @@ def _refuse_shadowing_an_account(name: str, path: Path) -> None:
 
     The project's ``.lionagi/agents`` is searched first, so a checkout carrying a profile of the
     role's name, with neither key, would move a role the operator put on an account back onto
-    this machine's own login.
+    this machine's own login. A global profile of the name that is a symlink to a target that
+    cannot be read is refused too, rather than treated as absent: an unmounted volume would
+    otherwise hand the role to the checkout.
     """
     from lionhub.agent.subscription_accounts import SubscriptionAccountError
 
-    global_path = _resolve_profile_path(
-        Path.home() / ".lionagi" / "agents", name, unreadable_symlinks=[]
-    )
-    if global_path is None:
+    unreadable: list[tuple[Path, str]] = []
+    try:
+        global_path = _resolve_profile_path(
+            Path.home() / ".lionagi" / "agents", name, unreadable_symlinks=unreadable
+        )
+    except AmbiguousProfileNameError:
+        # The global root refuses this name outright, so a request reaching it fails: the
+        # project profile displaces nothing there, and each global spelling still loads under
+        # its own name, which the project profile does not intercept.
         return
-    shadowed = _parse_profile(name, global_path.read_text())
+    if global_path is None:
+        if unreadable:
+            link, target = unreadable[0]
+            raise SubscriptionAccountError(
+                f"agent profile {name!r} at {path} hides {link}, whose symlink target "
+                f"{target} cannot be read, so whether it names an account cannot be checked. "
+                "Restore the target, or rename the project profile."
+            )
+        return
+    shadowed = _parse_global_profile(
+        name, global_path, f"whether the profile at {path} hides an account cannot be checked"
+    )
     for key in ("account", "codex_home"):
         if getattr(shadowed, key) is not None:
             raise SubscriptionAccountError(
