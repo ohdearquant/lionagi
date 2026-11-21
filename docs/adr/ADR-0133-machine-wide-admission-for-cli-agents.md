@@ -554,6 +554,17 @@ admits. A queue would order them, but it needs a shared structure that survives 
 the broker again. DEFERRED: if starvation is measured, a queue file of `(since, pid)` entries under
 the same per-slot discipline is the candidate design.
 
+## Amendment: a codex child runs under a permission profile while the child sandbox is on
+
+Status: Proposed
+
+This amendment replaces two statements of D5 for a request that runs with the child sandbox on (the default): the `codex` row of the table above, and the sentence "A `heavy` request's command line is exactly the one it had before workloads existed". With the child sandbox off (`child_sandbox: {enabled: false}`) both stand as written, and a codex command line is byte for byte what it was.
+
+- **No sandbox mode.** The command line carries no `--sandbox` and no `-s`, for `light`, `heavy`, `full_auto` and an explicit `sandbox`: codex lets a mode on the command line beat a permission profile without a word. It carries `-c default_permissions="lionagi_child"` and `-c permissions.lionagi_child=<inline table>` instead, the last two `-c` overrides, so codex, which keeps the last `-c` of a key, reads them over any caller override. `approval_policy` is rendered as before. The `sandbox_workspace_write` pins of `light` and the `writable_roots` pin of `heavy` are not emitted, because codex ignores them under a profile.
+- **The table.** It starts from `:workspace`, or from `:read-only` when the request's sandbox is `read-only`. Its write entries are exactly the roots the sandbox mode granted before: none for `light`; for `heavy` the child sandbox's writable roots (or the caller's own `sandbox_workspace_write.writable_roots` when the run's overrides set it), every `add_dir` directory and the linked worktree's git directories. Its deny entries are every `deny_read` path of the child sandbox policy and the child's own `CODEX_HOME`, named from the environment the child really gets, so the command line is rendered after the secret fill. Network is off for `light` and on for `heavy`, and `light` marks `:tmpdir` and `:slash_tmp` read-only, which keeps `/tmp` and `$TMPDIR` closed to writes as `exclude_slash_tmp` and `exclude_tmpdir_env_var` did.
+- **Refused before the process starts.** `config_overrides` keys under `sandbox_mode`, `permissions` and `default_permissions`; a user config that sets `default_permissions` or defines `[permissions.lionagi_child]`; and a project `.codex/config.toml`. A user config that sets a root `sandbox_mode` is not refused: the command-line profile governs over it, and the leg log says so in one line naming the config and the probe record.
+- **A probe record is required.** A profiled launch refuses unless a record exists for the codex binary it runs, keyed by the binary's resolved path and version, with every required arm passed. The refusal names `python -m lionhub.providers.openai.codex_sandbox_probe`, which runs the binary against a loopback stub provider in a scratch directory and accepts on canary reads, not on codex's startup header. The record's directory is on the child sandbox's edit-deny list, so a child cannot forge one.
+
 ## Notes
 
 The engine pool name is the engine string lower-cased (`codex`, `claude`, `gemini`, `pi`); the

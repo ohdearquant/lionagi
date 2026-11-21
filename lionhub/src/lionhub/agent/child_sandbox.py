@@ -5,7 +5,8 @@
 
 One list names the credential locations a child must not read, the toolchain caches it may
 write, and the configuration a child must not edit. It is resolved from the global lionagi
-settings file only and rendered into the settings Claude Code understands. Any malformed value
+settings file only and rendered into the settings Claude Code understands and into the permission
+profile a Codex child runs under. Any malformed value
 raises ``ConfigurationError`` so a child never starts unconfined because of a configuration
 mistake. Every refusal raised here ends with the same sentence naming the opt-out,
 ``CHILD_SANDBOX_OPT_OUT``.
@@ -664,9 +665,26 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
         deny_read=tuple(p for p in deny if p not in exempt),
         allow_write=tuple(dict.fromkeys(allow)),
         # A read exemption never lifts the edit denial, so the whole read list is kept here.
-        deny_edit=tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *edit, *deny])),
+        # DEFAULT_DENY_EDIT stays the constant it is documented to be. The codex probe record
+        # directory follows LIONAGI_HOME, so it is added here, where the policy is assembled: a
+        # child that could write a record there could forge the proof a codex launch rests on.
+        deny_edit=tuple(
+            dict.fromkeys([*DEFAULT_DENY_EDIT, _probe_record_dir_entry(), *edit, *deny])
+        ),
         profile=profile or None,
     )
+
+
+def _probe_record_dir_entry() -> str:
+    """The codex probe record directory as a ``deny_edit`` entry, written with ``~`` when it
+    lies under the home directory, as the other entries are."""
+    from lionhub.providers.openai._codex_permissions import probe_record_dir
+
+    path = probe_record_dir()
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def policy_from_dict(data: dict) -> ChildSandboxPolicy:
