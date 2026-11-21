@@ -457,16 +457,15 @@ def _profile_file_is_global(profile: str) -> bool:
     first, so a project that declares the same name shadows the global file and this returns
     False. A plugin profile, a name no directory declares and an ambiguous name all return False.
     """
-    from lionagi._paths import _resolve_profile_path, find_lionagi_dirs
+    from lionagi._paths import _resolve_profile_path, find_lionagi_dirs, is_user_lionagi_dir
 
-    home = (Path.home() / ".lionagi").resolve()
     for directory in find_lionagi_dirs():
         try:
             path = _resolve_profile_path(directory / "agents", profile)
         except (OSError, ValueError):
             return False
         if path is not None:
-            return directory.resolve() == home
+            return is_user_lionagi_dir(directory)
     return False
 
 
