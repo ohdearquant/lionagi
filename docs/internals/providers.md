@@ -564,6 +564,24 @@ operator's own. The names are read from the child's environment after the secret
 There is no setting that turns the removal off. Removed values are still given to the log
 redactor.
 
+### A Claude child's MCP server set
+
+A request's `mcp_servers` can hold a bearer token in a server's `headers` or a key in its `env`.
+`_ndjson_from_cli()` writes a non-empty set to `mcp.json` in a fresh directory under the temporary
+directory (the directory `0700`, the file `0600`), passes that path after `--mcp-config`, and
+removes the directory once the child is gone, whether the stream ended, failed or was abandoned.
+The values are not in the child's argument list, which a process listing shows to every local
+user. An empty set (`{}`, the exclusive "no servers" form) holds nothing and stays inline, and a
+request that names its own `mcp_config` is passed through unchanged.
+
+Every header value (whole, and by its last word for the `Bearer <token>` form) and every `env`
+value under a name that reads as a credential is handed to the spawn as `secret_values`.
+`ndjson_from_cli()` adds those to the values it removes from the messages it logs and raises;
+a value shorter than eight characters is left out, as for every other redacted value.
+
+The file keeps the set off the command line and out of logs. The child still holds it: the CLI
+reads the file to connect to its servers.
+
 ## CLI agent admission
 
 **`providers/_subagent_admission.py`** (design: ADR-0133)

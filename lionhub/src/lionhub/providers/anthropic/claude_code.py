@@ -7,6 +7,8 @@ import contextlib
 import json
 import logging
 import os
+import shutil
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from textwrap import shorten
@@ -34,6 +36,7 @@ from lionhub.providers._agentic_handlers import AgenticHandlersMixin
 from lionhub.providers._cli_subprocess import (
     Redacted,
     SpawnedProcess,
+    _name_reads_as_credential,
     _resolve_cli_path,
     build_declarative_cli_args,
     claude_code_auth_env,
@@ -646,8 +649,12 @@ class ClaudeCodeRequest(BaseModel):
         """
         return self.input_format != "stream-json"
 
-    def as_cmd_args(self) -> list[str]:
+    def as_cmd_args(self, mcp_servers_file: str | Path | None = None) -> list[str]:
         """Build argument list for the Claude Code CLI.
+
+        ``mcp_servers_file`` is where the caller wrote a non-empty ``mcp_servers`` set; the
+        list then names that file. Without it the set is rendered inline, which puts every
+        header and ``env`` value it holds on the command line.
 
         The prompt is not in the list unless the input format is ``stream-json``: ``-p`` then
         stands alone and the CLI reads the prompt from stdin, where the CLI's own cap
@@ -741,12 +748,15 @@ class ClaudeCodeRequest(BaseModel):
         # `is not None` (not truthiness) — an explicit {} must still force
         # zero MCP servers rather than falling back to CLI discovery.
         if self.mcp_servers is not None and not self.mcp_config:
-            args.extend(
-                [
-                    "--mcp-config",
-                    json.dumps({"mcpServers": self.mcp_servers}),
-                ]
-            )
+            if mcp_servers_file is not None and self.mcp_servers:
+                args.extend(["--mcp-config", str(mcp_servers_file)])
+            else:
+                args.extend(
+                    [
+                        "--mcp-config",
+                        json.dumps({"mcpServers": self.mcp_servers}),
+                    ]
+                )
 
         # model default – always emit
         if "--model" not in args:
@@ -818,11 +828,70 @@ ClaudeSession = CLISession
 # --------------------------------------------------------------------------- NDJSON stream
 
 
-# TODO: migrate create_subprocess_exec + wait_for to anyio
+def _write_private_mcp_servers(servers: Mapping[str, Any]) -> tuple[str, Path]:
+    """Write a server set where only this user can read it; return its directory and file.
+
+    A server set can hold a bearer token in a header or a key in a server's ``env``. Inline
+    after ``--mcp-config`` it sits on the child's command line, which any local user can
+    list for as long as the child runs. A path there says nothing.
+    """
+    directory = tempfile.mkdtemp(prefix="lionagi-claude-mcp-")
+    try:
+        path = Path(directory) / "mcp.json"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"mcpServers": servers}, handle)
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    return directory, path
+
+
+def _mcp_server_secret_values(servers: Mapping[str, Any] | None) -> list[str]:
+    """The values of a server set that a log must not echo.
+
+    Every header value, and every ``env`` value under a name that reads as a credential.
+    A header such as ``Bearer <token>`` is declared whole and by its last word, since a
+    child can print either.
+    """
+    found: list[str] = []
+    for server in (servers or {}).values():
+        if not isinstance(server, Mapping):
+            continue
+        headers = server.get("headers")
+        for value in headers.values() if isinstance(headers, Mapping) else ():
+            if isinstance(value, str) and value.strip():
+                found.append(value)
+                last = value.split()[-1]
+                if last != value:
+                    found.append(last)
+        env = server.get("env")
+        for name, value in env.items() if isinstance(env, Mapping) else ():
+            if isinstance(name, str) and isinstance(value, str) and _name_reads_as_credential(name):
+                found.append(value)
+    return found
+
+
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
+    # A non-empty server set travels in a private file that lives as long as the child.
+    servers_dir: str | None = None
+    servers_file: Path | None = None
+    if request.mcp_servers and not request.mcp_config:
+        servers_dir, servers_file = _write_private_mcp_servers(request.mcp_servers)
+    try:
+        async with contextlib.aclosing(_ndjson_from_cmd(request, servers_file)) as stream:
+            async for obj in stream:
+                yield obj
+    finally:
+        if servers_dir is not None:
+            shutil.rmtree(servers_dir, ignore_errors=True)
+
+
+# TODO: migrate create_subprocess_exec + wait_for to anyio
+async def _ndjson_from_cmd(request: ClaudeCodeRequest, mcp_servers_file: Path | None):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
-    cmd = [resolve_claude_cli(), *request.as_cmd_args()]
+    cmd = [resolve_claude_cli(), *request.as_cmd_args(mcp_servers_file=mcp_servers_file)]
     flags = declarative_cli_flags(ClaudeCodeRequest) | {
         "-p",
         "--output-format",
@@ -866,6 +935,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 workload=request.workload,
                 secret_fill_skip=request.secret_fill_skip,
                 auth_env=claude_code_auth_env(request.env),
+                secret_values=_mcp_server_secret_values(request.mcp_servers),
             )
         ) as stream:
             async for obj in stream:
