@@ -49,11 +49,17 @@ def _toml_loads(text: str) -> dict:
 
 
 @pytest.fixture
-def sandbox_on(monkeypatch):
-    """The child sandbox on with the default policy (the suite switches it off by default)."""
+def sandbox_on(monkeypatch, tmp_path):
+    """The child sandbox on with the default policy (the suite switches it off by default),
+    plus one denied file outside the probe's scratch directory, so the real-path deny arm has a
+    real file to open on any host."""
     import lionhub.agent.child_sandbox as child_sandbox
 
-    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    planted = tmp_path / "planted-deny" / "credentials"
+    planted.parent.mkdir()
+    planted.write_text("not a real credential\n")
+    settings = {"child_sandbox": {"deny_read": [str(planted)]}}
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: settings)
 
 
 @pytest.fixture
@@ -373,7 +379,11 @@ def test_a_tilde_deny_entry_expands_against_the_home_the_probe_child_gets(tmp_pa
         assert denied.get(str(child_home / "vault")) == "deny"
 
 
-def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(tmp_path, sandbox_on):
+def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(
+    tmp_path, sandbox_on, monkeypatch
+):
+    # No cap, so the planted file is opened whatever the host's own denied files fill first.
+    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
     fake = FakeCodex()
     scratch = tmp_path / "scratch"
     probe_module.probe("codex", runner=fake, scratch=scratch)
@@ -388,6 +398,8 @@ def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(tmp_path, sa
             opens.append(words[4])
     # The first open is the control of a readable file the profile allows.
     assert opens and opens[0].startswith(str(scratch))
+    # The denied file the fixture planted outside the scratch directory is among the real opens.
+    assert str(tmp_path / "planted-deny" / "credentials") in opens[1:]
 
 
 def test_the_stand_in_answers_each_step_in_order_then_a_final_message():
@@ -612,6 +624,15 @@ def test_a_deny_arm_fails_when_its_same_run_control_open_fails(tmp_path, sandbox
     )
     assert not arms["deny_canary"]["passed"]
     assert "control open of a readable file succeeded: False" in arms["deny_canary"]["evidence"]
+
+
+def test_the_deny_arm_fails_when_no_real_denied_path_was_opened(tmp_path, sandbox_on, monkeypatch):
+    # A host with none of the denied files has nothing to open; an arm that tested nothing does
+    # not pass.
+    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 0)
+    arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
+    assert not arms["deny_canary"]["passed"]
+    assert "0 real denied path(s) opened for 0 bytes" in arms["deny_canary"]["evidence"]
 
 
 def test_the_control_open_is_the_same_command_on_a_readable_file(tmp_path, sandbox_on):

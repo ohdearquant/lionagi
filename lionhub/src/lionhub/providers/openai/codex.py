@@ -1481,6 +1481,11 @@ def _permission_profile_args(
         else:
             mode = plain.sandbox or inherited or "read-only"
     read_only = mode == "read-only"
+    if not read_only:
+        # Both `:workspace` modes, light and heavy, grant write over the working directory.
+        # Whether the deny entry on the probe record directory beats that grant is not
+        # measured, so a working directory over the record directory is refused outright.
+        refuse_write_roots_on_probe_record_dir([str(cwd)], what="the working directory")
     # Computed in every mode, read-only included, so a root on the probe record directory is
     # refused even where the table grants no write entry: the command line still carries each
     # `add_dir` directory as `--add-dir`.

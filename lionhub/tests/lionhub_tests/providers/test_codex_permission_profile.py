@@ -64,6 +64,13 @@ def _codex(cwd: Path, env: dict[str, str], **kw) -> list[str]:
     return CodexCodeRequest(prompt="hi", repo=cwd, env=env, **kw).as_cmd_args()
 
 
+def _project(tmp_path: Path) -> Path:
+    """A working directory beside the test's lionagi home, never above its probe records."""
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    return project
+
+
 def _default_roots() -> list[str]:
     return [os.path.expanduser(path) for path in default_allow_write()]
 
@@ -206,7 +213,7 @@ def test_with_the_child_sandbox_on_there_is_no_sandbox_mode_on_the_command_line(
 ):
     kw = _PROFILED[name]
     env = _home(tmp_path)
-    args = _codex(tmp_path, env, **kw)
+    args = _codex(_project(tmp_path), env, **kw)
     assert "--sandbox" not in args
     assert "-s" not in args
     overrides = _pairs(args, "-c")
@@ -427,12 +434,13 @@ def test_argv_is_rendered_against_the_environment_the_child_really_gets(
     for home in (declared, final):
         home.mkdir()
         (home / "config.toml").write_text("")
+    project = _project(tmp_path)
     request = CodexCodeRequest(
-        prompt="hi", repo=tmp_path, env={"CODEX_HOME": str(declared)}, sandbox="workspace-write"
+        prompt="hi", repo=project, env={"CODEX_HOME": str(declared)}, sandbox="workspace-write"
     )
     plain = codex_module._plain_request(request)
     # The renderer `prepare_argv` calls once the secret fill has built the child's environment.
-    args = codex_module._exclusive_cmd_args(request, plain, tmp_path, {"CODEX_HOME": str(final)})
+    args = codex_module._exclusive_cmd_args(request, plain, project, {"CODEX_HOME": str(final)})
     table = _profile_table(args)
     assert table == _expected_profile({"CODEX_HOME": str(final)}, write=_default_roots())
     assert table != _expected_profile({"CODEX_HOME": str(declared)}, write=_default_roots())
@@ -470,9 +478,10 @@ def test_the_probe_record_directory_is_a_deny_entry_of_the_profile(
 ):
     env = _home(tmp_path)
     assert str(record_dir) in deny_entries([], codex_home_for_env(env), env)
-    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env=env, sandbox="workspace-write")
+    project = _project(tmp_path)
+    request = CodexCodeRequest(prompt="hi", repo=project, env=env, sandbox="workspace-write")
     plain = codex_module._plain_request(request)
-    args = codex_module._exclusive_cmd_args(request, plain, tmp_path, env)
+    args = codex_module._exclusive_cmd_args(request, plain, project, env)
     row = [o for o in _pairs(args, "-c") if o.startswith(f"permissions.{PERMISSION_PROFILE}=")][0]
     assert str(record_dir) in row
 

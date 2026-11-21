@@ -523,7 +523,9 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     )
 
     outside_gone = not (dirs["outside"] / "w").exists()
-    real_refused = all(_refused(heavy.get(f"real_{i}")) for i in range(len(real)))
+    # No real denied path opened is no evidence: the arm fails closed rather than pass on an
+    # empty list.
+    real_refused = bool(real) and all(_refused(heavy.get(f"real_{i}")) for i in range(len(real)))
     control_open_ok = _ok(heavy["open_control"])
     slash_landed = tmp_slash.exists()
     env_landed = tmp_env is not None and tmp_env.exists()

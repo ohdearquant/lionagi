@@ -14,7 +14,8 @@ Three things are decided here:
 
 - ``permission_profile_table`` builds the profile: the child sandbox's ``deny_read`` list and the
   child's own ``CODEX_HOME`` denied, the writable roots the request is granted as ``write``
-  entries, and the network on for a heavy request and off for a light one.
+  entries, and the network as the user config's ``network_access`` sets it for a heavy request
+  (off when nothing sets it) and off for a light or read-only one.
 - ``refuse_a_second_sandbox_setting`` refuses a launch in which anything else could choose the
   child's sandbox: a ``config_overrides`` key that sets a mode or a permission profile, a user
   config that sets ``default_permissions`` or defines a table under the profile's name, and any
@@ -541,12 +542,14 @@ def probe_record(binary: str) -> tuple[Path, dict[str, Any] | None, str, str | N
     return path, data, resolved, version
 
 
-def refuse_write_roots_on_probe_record_dir(roots: Iterable[str]) -> None:
+def refuse_write_roots_on_probe_record_dir(
+    roots: Iterable[str], *, what: str = "the write root"
+) -> None:
     """Refuse a write root that contains the probe record directory or lies inside it.
 
     A child that can write under the record directory can forge the record a launch rests on,
     and a root above it grants that write. The written and the resolved spelling of each side
-    are compared, so a link does not hide the overlap.
+    are compared, so a link does not hide the overlap. ``what`` names the root in the refusal.
     """
     record = probe_record_dir()
     record_paths = {Path(os.path.abspath(record)), Path(os.path.realpath(record))}
@@ -559,7 +562,7 @@ def refuse_write_roots_on_probe_record_dir(roots: Iterable[str]) -> None:
                     or record_path in root_path.parents
                 ):
                     raise CLIInputRefusedError(
-                        f"the write root {str(root)!r} contains or lies inside the codex probe "
+                        f"{what} {str(root)!r} contains or lies inside the codex probe "
                         f"record directory {str(record)!r}; a child that can write there could "
                         "forge the record a profiled launch rests on. Name a directory outside "
                         "it."

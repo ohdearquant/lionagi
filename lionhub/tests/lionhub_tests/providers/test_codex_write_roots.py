@@ -363,6 +363,24 @@ def test_a_heavy_root_from_settings_that_overlaps_the_probe_record_directory_is_
         _codex(_project(tmp_path), env=_config_home(tmp_path), full_auto=True)
 
 
+@pytest.mark.parametrize("kw", [{"full_auto": True}, {"workload": "light"}])
+@pytest.mark.parametrize("where", ["above", "equal", "inside"])
+def test_a_working_directory_that_overlaps_the_probe_record_directory_is_refused(
+    tmp_path, lionagi_home, where, kw
+):
+    # Light and heavy both extend `:workspace`, which grants write over the working directory.
+    cwd = _record_overlaps(lionagi_home)[where]
+    cwd.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(CLIInputRefusedError, match="the working directory .* probe record"):
+        _codex(cwd, env=_config_home(tmp_path), **kw)
+
+
+def test_a_read_only_launch_may_start_over_the_probe_record_directory(tmp_path, lionagi_home):
+    # `:read-only` grants no write over the working directory, so there is nothing to forge with.
+    args = _codex(lionagi_home, env=_config_home(tmp_path), sandbox="read-only")
+    assert _table(args)["extends"] == ":read-only"
+
+
 def test_a_link_to_the_probe_record_directory_does_not_hide_it(tmp_path, lionagi_home):
     alias = tmp_path / "alias"
     alias.symlink_to(lionagi_home / "codex-sandbox-probes")
