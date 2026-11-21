@@ -232,13 +232,18 @@ def build_imodel_from_spec(
     workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
     tool_settings: dict[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+    secret_fill_skip: frozenset[str] | None = None,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
     effort is derived from that config either. ``tool_settings`` is a profile's tool set
     (``_profile_tool_settings``): it goes on a Claude Code request, and any other model is
-    refused.
+    refused. ``env`` is the whole environment the CLI child gets (a subscription account's,
+    ``resolve_leg_account``), and the codex config profile and default effort are read from
+    the codex home it names; ``secret_fill_skip`` names variables the secret lookup must not
+    fill into that child.
     """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
@@ -263,7 +268,7 @@ def build_imodel_from_spec(
         from lionhub.orchestration.console import progress
 
         profile_name = ms.model.split("/", 1)[1]
-        resolved_profile = resolve_codex_config_profile(profile_name)
+        resolved_profile = resolve_codex_config_profile(profile_name, env)
         if resolved_profile is not None:
             profile_model, codex_profile_overrides = resolved_profile
             if ignore_user_config:
@@ -285,7 +290,7 @@ def build_imodel_from_spec(
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
-        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides, env)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
@@ -306,6 +311,10 @@ def build_imodel_from_spec(
         merged = dict(codex_profile_overrides)
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
+    if env is not None:
+        extra["env"] = dict(env)
+    if secret_fill_skip:
+        extra["secret_fill_skip"] = frozenset(secret_fill_skip)
 
     model_instance = iModel(
         model=resolved_model,
@@ -380,7 +389,7 @@ def build_chat_model(
     if canonical == "codex":
         from lionhub.orchestration.console import progress
 
-        resolved_profile = resolve_codex_config_profile(model)
+        resolved_profile = resolve_codex_config_profile(model, env)
         if resolved_profile is not None:
             profile_name = model
             model, codex_profile_overrides = resolved_profile
@@ -400,6 +409,9 @@ def build_chat_model(
             mcp_servers,
             provider=provider,
             exclusive=mcp_exclusive or not mcp_servers,
+            # The codex config the child reads, and the home a generated profile goes in,
+            # are the ones its own environment names.
+            env=env,
         )
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(canonical, {}))
@@ -419,7 +431,7 @@ def build_chat_model(
         # The derived default exists to keep the user config's own effort under the
         # model's ceiling. A request that ignores the user config never loads that
         # value, so there is nothing to derive from it.
-        effort = codex_unset_effort_from_config(model, codex_profile_overrides)
+        effort = codex_unset_effort_from_config(model, codex_profile_overrides, env)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
         if kwarg is not None:
@@ -699,6 +711,10 @@ class AgentProfile:
     operator's hooks and permission rules do not gate it; see ``_contain_claude_worker``."""
     mcp: str | None = None
     """MCP policy for this profile; ``none`` disables inherited MCP configuration."""
+    account: str | None = None
+    """Named subscription account the leg runs on (``lionhub.agent.subscription_accounts``)."""
+    codex_home: str | None = None
+    """Codex home a codex leg of this role runs under, as an absolute path."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -802,6 +818,10 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["contain_user_settings"] = True
     if profile.mcp is not None:
         config["mcp"] = profile.mcp
+    if profile.account is not None:
+        config["account"] = profile.account
+    if profile.codex_home is not None:
+        config["codex_home"] = profile.codex_home
     return config
 
 
@@ -1004,6 +1024,37 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
         f"reading it as {DEFAULT_WORKLOAD}"
     )
     return DEFAULT_WORKLOAD
+
+
+def _parse_profile_account(name: str, frontmatter: dict) -> tuple[str | None, str | None]:
+    """The profile's ``account`` and ``codex_home``, refused when malformed or both set.
+
+    A malformed value is refused rather than read as unset: an unset account runs the leg on
+    this machine's own login, which is the wrong account rather than a smaller setting. Whether
+    the account exists, and whether the home is a directory, is checked when a leg is spawned.
+    """
+    from lionhub.agent.subscription_accounts import (
+        SubscriptionAccountError,
+        validate_account_name,
+    )
+
+    account = frontmatter.get("account")
+    codex_home = frontmatter.get("codex_home")
+    if account is not None and codex_home is not None:
+        raise SubscriptionAccountError(
+            f"agent profile {name!r}: account and codex_home name the same thing; set one."
+        )
+    if account is not None:
+        validate_account_name(account, where=f"agent profile {name!r}: account")
+    if codex_home is not None and (
+        not isinstance(codex_home, str)
+        or codex_home.startswith("~")
+        or not os.path.isabs(codex_home)
+    ):
+        raise SubscriptionAccountError(
+            f"agent profile {name!r}: codex_home {codex_home!r} is not an absolute path."
+        )
+    return account, codex_home
 
 
 def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
@@ -1694,6 +1745,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "its worker is not contained"
             )
 
+    account, codex_home = _parse_profile_account(name, frontmatter)
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion
     if lion_system:
@@ -1731,6 +1783,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
         contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
         mcp=_parse_profile_mcp(name, frontmatter),
+        account=account,
+        codex_home=codex_home,
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1752,6 +1806,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "workload",
                 "contain_user_settings",
                 "mcp",
+                "account",
+                "codex_home",
             )
         },
     )

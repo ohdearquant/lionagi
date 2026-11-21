@@ -519,26 +519,30 @@ async def test_a_worker_model_disables_the_servers_its_child_config_declares(
     assert not any(value.startswith("mcp_servers.ambient.") for value in config)
 
 
-def test_secret_fields_are_refused_for_a_child_under_another_codex_home(codex_home, tmp_path):
-    """The generated profile is written under this process's codex home; a child whose env
-    names another would be handed `-p` for a file it cannot find. Refused, with no profile
-    written and no value in the message. The control is a child env naming this home."""
+def test_secret_fields_go_to_the_profile_in_the_childs_codex_home(codex_home, tmp_path):
+    """Codex looks for `-p <name>` under the home its own environment names, so the generated
+    profile is written there, private to its owner, and none under this process's home. The
+    control is a child env naming this home, which gets the profile here."""
+    import stat
+
     codex_home.write_config({})
     child_home = tmp_path / "child-codex-home"
     child_home.mkdir()
     (child_home / "config.toml").write_text("")
     kwargs: dict = {}
 
-    with pytest.raises(ConfigurationError, match="names a different one") as refused:
-        apply_forwarded_mcp_servers(
-            kwargs,
-            SECRET_SERVERS,
-            provider="codex",
-            env={"CODEX_HOME": str(child_home), "PATH": "/usr/bin:/bin"},
-        )
+    assert apply_forwarded_mcp_servers(
+        kwargs,
+        SECRET_SERVERS,
+        provider="codex",
+        env={"CODEX_HOME": str(child_home), "PATH": "/usr/bin:/bin"},
+    )
 
-    assert SECRET not in str(refused.value)
     assert codex_home.profile_files() == []
+    written = child_home / f"{kwargs['profile']}.config.toml"
+    assert written.is_file()
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
+    assert SECRET in written.read_text()
     same: dict = {}
     assert apply_forwarded_mcp_servers(
         same,

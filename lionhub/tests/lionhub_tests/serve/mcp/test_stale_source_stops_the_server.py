@@ -275,7 +275,7 @@ async def test_run_detail_raises_when_reading_the_session_fails_to_import_its_ow
     import lionhub.serve.daemon.services as services
 
     stale = ImportError("cannot import name '_detect_status'", name=f"{services.__name__}.runs")
-    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(stale))
+    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(stale), raising=False)
 
     with pytest.raises(ImportError) as raised:
         await _run_detail.build_run_detail("run-1")
@@ -311,7 +311,7 @@ async def test_run_detail_reports_a_session_read_that_needs_a_missing_package_as
     import lionhub.serve.daemon.services as services
 
     missing = ModuleNotFoundError("No module named 'starlette'", name="starlette")
-    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(missing))
+    monkeypatch.setattr(services, "sessions", _SessionServiceRaising(missing), raising=False)
 
     assert await _run_detail.build_run_detail("run-1") == {
         "detail_unavailable": "session_detail_unreadable"
