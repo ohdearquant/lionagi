@@ -234,6 +234,25 @@ def test_a_tilde_in_a_denied_location_is_placed_against_the_child_home(tmp_path,
         assert str(parent / entry[2:]) not in rendered
 
 
+def test_a_tilde_in_a_denied_location_is_also_placed_against_the_account_home(tmp_path):
+    import pwd
+
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    account = pwd.getpwuid(os.getuid()).pw_dir
+    child = tmp_path / "child-home"
+    child.mkdir()
+    assert str(child) != account
+    entries = [e for e in resolve_child_sandbox(None).deny_read if e.startswith("~/")]
+    assert entries
+    env = {**_config_home(tmp_path), "HOME": str(child)}
+    denied = _table(_codex(_project(tmp_path), env=env))["filesystem"]
+    for entry in entries:
+        # A child given its own HOME still reaches the account's home by its absolute path.
+        assert denied.get(str(child / entry[2:])) == "deny", entry
+        assert denied.get(os.path.join(account, entry[2:])) == "deny", entry
+
+
 @pytest.mark.parametrize("roots", ["/opt/build", ["/opt/build"], ("/opt/build",)])
 def test_caller_writable_roots_of_every_shape_are_write_entries_not_pins(tmp_path, roots):
     env = _config_home(tmp_path)

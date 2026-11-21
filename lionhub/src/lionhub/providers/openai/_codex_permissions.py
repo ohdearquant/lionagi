@@ -137,12 +137,27 @@ def _child_home(env: Mapping[str, str] | None) -> str | None:
     home = env.get("HOME") if env is not None else None
     if isinstance(home, str) and os.path.isabs(home):
         return home
+    return _account_home()
+
+
+def _account_home() -> str | None:
+    """The account's home directory from the password database, or ``None`` when it has none."""
     try:
         import pwd
 
         return pwd.getpwuid(os.getuid()).pw_dir or None
     except (ImportError, KeyError, OSError, AttributeError):
         return None
+
+
+def _deny_homes(env: Mapping[str, str] | None) -> list[str | None]:
+    """The homes a home-relative deny entry is placed under: the child's (see ``_child_home``)
+    and the account's, both when they differ. A child given its own ``HOME`` still reads the
+    account's home through every other path, so an entry denied only under the child's would
+    leave the account's copy readable."""
+    homes = list(dict.fromkeys((_child_home(env), _account_home())))
+    present = [home for home in homes if home is not None]
+    return present or [None]
 
 
 def _expand_home(entry: str, home: str | None) -> str:
@@ -169,15 +184,15 @@ def deny_entries(
     the probe record directory the same way: a child that can read or write a record there
     could forge the proof a profiled launch rests on.
 
-    A ``~`` expands against the ``HOME`` of ``env``, the child's environment, and falls back to
-    the account's home directory; the parent's ``HOME`` plays no part.
+    A ``~`` expands against the ``HOME`` of ``env``, the child's environment, and against the
+    account's home directory, both when they differ; the parent's ``HOME`` plays no part.
 
     An entry holding a glob character is refused: codex reads such an entry as a pattern, and
     whether its profile denies a pattern has not been measured.
     """
     from lionhub.agent.child_sandbox import _written_and_resolved
 
-    home = _child_home(env)
+    homes = _deny_homes(env)
     entries: list[str] = []
     for entry in (*deny_read, str(codex_home), str(probe_record_dir())):
         if _GLOB_CHARS.search(entry):
@@ -185,11 +200,15 @@ def deny_entries(
                 f"child_sandbox: deny_read entry {entry!r} is a pattern, which a codex child's "
                 "permission profile cannot be shown to deny; name the paths it covers instead"
             )
-        written, *hops = _written_and_resolved(_expand_home(entry, home))
-        placed = os.path.join(os.path.realpath(os.path.dirname(written)), os.path.basename(written))
-        for path in (written, placed, *hops):
-            if os.path.isabs(path):
-                entries.append(path)
+        home_relative = entry == "~" or entry.startswith("~/")
+        for home in homes if home_relative else homes[:1]:
+            written, *hops = _written_and_resolved(_expand_home(entry, home))
+            placed = os.path.join(
+                os.path.realpath(os.path.dirname(written)), os.path.basename(written)
+            )
+            for path in (written, placed, *hops):
+                if os.path.isabs(path):
+                    entries.append(path)
     return list(dict.fromkeys(entries))
 
 
