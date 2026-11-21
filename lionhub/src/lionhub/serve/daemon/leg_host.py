@@ -324,14 +324,26 @@ def validate_launch(data: dict[str, Any]) -> LegLaunch:
     if account in (None, ""):
         account = None
     else:
-        from lionhub.agent.subscription_accounts import SubscriptionAccountError, resolve_account
+        from lionhub.agent.subscription_accounts import (
+            SubscriptionAccountError,
+            resolve_account,
+            validate_account_name,
+        )
 
-        # Checked here against the accounts directory the leg is handed, so a name the leg
-        # would refuse is refused before a worktree is made. The leg reads the credential.
+        # Checked against the accounts directory the leg is handed: a malformed name, or one
+        # with no entry for the profile's provider, is refused before a worktree is made. The
+        # credential itself is read only by the leg, so an entry whose token cannot be read
+        # fails the leg, not the launch. The refusal names no path on this host.
+        try:
+            validate_account_name(account, where="action_account")
+        except SubscriptionAccountError as exc:
+            raise ValueError(str(exc)) from None
         try:
             resolve_account(account, provider)
-        except SubscriptionAccountError as exc:
-            raise ValueError(f"action_account: {exc}") from None
+        except SubscriptionAccountError:
+            raise ValueError(
+                f"action_account: {account!r} is not an account this host has for {provider}"
+            ) from None
     return LegLaunch(repo=repo, head=head, agent=agent, account=account)
 
 

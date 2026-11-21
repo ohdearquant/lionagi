@@ -100,6 +100,7 @@ class _FakeLegHost(BaseHTTPRequestHandler):
     echo_head = True
     named_account = True
     echo_account = True
+    cancel_fails = False
     redirect = False
     statuses: list[str] = []
 
@@ -151,6 +152,8 @@ class _FakeLegHost(BaseHTTPRequestHandler):
             if self.echo_account and "action_account" in body:
                 reply["action_account"] = body["action_account"]
             self._send(202, reply)
+        elif self.cancel_fails:
+            self._send(500, {"detail": "cancel failed"})
         else:
             self._send(202, {"invocation_id": INV, "status": "cancelling"})
 
@@ -163,6 +166,7 @@ def fake_host(remotes):
     _FakeLegHost.seen, _FakeLegHost.statuses, _FakeLegHost.bodies = [], ["running"], []
     _FakeLegHost.leg_host, _FakeLegHost.echo_head, _FakeLegHost.redirect = True, True, False
     _FakeLegHost.named_account, _FakeLegHost.echo_account = True, True
+    _FakeLegHost.cancel_fails = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeLegHost)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -257,6 +261,56 @@ def test_a_launch_that_does_not_confirm_the_account_is_cancelled(
     assert remote_cli.run_remote(_run_args(account="alpha")) == 1
     assert "did not confirm account" in capsys.readouterr().err
     assert _FakeLegHost.seen[-1][:2] == ("POST", f"/api/invocations/{INV}/cancel")
+
+
+def test_a_failed_cancel_after_an_unconfirmed_account_says_the_leg_may_still_run(
+    fake_host, capsys, monkeypatch
+) -> None:
+    monkeypatch.setattr(remote_cli, "_refused_inside_an_agent", lambda: False)
+    _FakeLegHost.echo_account, _FakeLegHost.cancel_fails = False, True
+    assert remote_cli.run_remote(_run_args(account="alpha")) == 1
+    err = capsys.readouterr().err
+    assert "did not confirm account 'alpha'" in err
+    assert f"cancelling launch {INV} failed, it may still run" in err
+
+
+def test_an_empty_account_is_refused_before_anything_is_sent() -> None:
+    parser = argparse.ArgumentParser()
+    remote_cli.add_remote_subparser(parser.add_subparsers())
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "remote",
+                "run",
+                "legbox",
+                "-a",
+                "reviewer",
+                "--repo",
+                "lionagi",
+                "--head",
+                HEAD,
+                "--account",
+                "",
+                "review",
+            ]
+        )
+    args = parser.parse_args(
+        [
+            "remote",
+            "run",
+            "legbox",
+            "-a",
+            "reviewer",
+            "--repo",
+            "lionagi",
+            "--head",
+            HEAD,
+            "--account",
+            "alpha",
+            "review",
+        ]
+    )
+    assert args.account == "alpha"
 
 
 def test_a_redirect_is_not_followed(fake_host, capsys, monkeypatch) -> None:

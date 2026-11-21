@@ -116,17 +116,20 @@ def test_a_launch_may_name_an_account_in_the_hosts_accounts_directory(
 @pytest.mark.parametrize(
     ("account", "names"),
     [
-        ("beta", "no claude_code entry"),
+        ("beta", "not an account this host has for claude_code"),
         ("Alpha", "not an account name"),
         ("../alpha", "not an account name"),
     ],
 )
-def test_an_account_the_leg_would_refuse_is_refused_at_launch(
+def test_an_account_without_an_entry_or_a_valid_name_is_refused_at_launch(
     host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account: str, names: str
 ) -> None:
-    _logins(tmp_path, monkeypatch)
-    with pytest.raises(ValueError, match=f"action_account: .*{names}"):
+    logins = _logins(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match=f"action_account: .*{names}") as refused:
         leg_host.validate_launch(_request(action_account=account))
+    # The refusal goes back to the caller in a 422, so it names no path on this host.
+    assert str(logins) not in str(refused.value)
+    assert str(tmp_path) not in str(refused.value)
 
 
 def test_a_project_profile_cannot_replace_the_hosts_own(

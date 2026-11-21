@@ -190,6 +190,21 @@ def _head(value: str) -> str:
     return value
 
 
+def _account(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("--account must name an account")
+    return value
+
+
+def _cancel_after(remote: Remote, inv_id: str, reason: str) -> RemoteError:
+    """Cancel *inv_id* and return the error to raise, saying whether the cancel went through."""
+    try:
+        _call(remote, "POST", f"/api/invocations/{inv_id}/cancel")
+    except RemoteError as exc:
+        return RemoteError(f"{reason}; cancelling launch {inv_id} failed, it may still run: {exc}")
+    return RemoteError(f"{reason}; launch {inv_id} cancelled")
+
+
 def _launch(remote: Remote, args: argparse.Namespace) -> str:
     caps = _call(remote, "GET", "/api/launches/capabilities")
     if not (isinstance(caps, dict) and caps.get("leg_host") and caps.get("pinned_head")):
@@ -213,15 +228,12 @@ def _launch(remote: Remote, args: argparse.Namespace) -> str:
     if not isinstance(inv_id, str) or not _INVOCATION_ID.fullmatch(inv_id):
         raise RemoteError(f"remote {remote.name!r} returned no invocation id")
     if started.get("action_head") != args.head:
-        _call(remote, "POST", f"/api/invocations/{inv_id}/cancel")
-        raise RemoteError(
-            f"remote {remote.name!r} did not confirm head {args.head}; launch {inv_id} cancelled"
+        raise _cancel_after(
+            remote, inv_id, f"remote {remote.name!r} did not confirm head {args.head}"
         )
     if args.account is not None and started.get("action_account") != args.account:
-        _call(remote, "POST", f"/api/invocations/{inv_id}/cancel")
-        raise RemoteError(
-            f"remote {remote.name!r} did not confirm account {args.account!r}; "
-            f"launch {inv_id} cancelled"
+        raise _cancel_after(
+            remote, inv_id, f"remote {remote.name!r} did not confirm account {args.account!r}"
         )
     return inv_id
 
@@ -303,6 +315,7 @@ def add_remote_subparser(subparsers: argparse._SubParsersAction) -> argparse.Arg
     run.add_argument(
         "--account",
         default=None,
+        type=_account,
         help="Subscription account on the leg host to run on instead of the profile's.",
     )
     run.add_argument("--poll", type=float, default=5.0, help="Seconds between status reads.")

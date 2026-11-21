@@ -94,10 +94,12 @@ At start-up it also removes worktrees left behind by an earlier run.
 - an `action_head` that is not exactly 40 lowercase hex characters. Branch names, tags and
   short hashes are refused;
 - an `action_repo` the host does not serve;
-- an `action_account` that `li agent --account` would refuse on the host: a malformed name, or a
-  name with no entry for the profile's provider in the host's accounts directory (see
-  `docs/internals/subscription-accounts.md`). A launch that names no account runs on the account
-  its role names, if any.
+- an `action_account` that is not a valid account name, or that has no entry for the profile's
+  provider in the host's accounts directory (see `docs/internals/subscription-accounts.md`). The
+  refusal names no path on the host. The credential is read only by the leg, so an entry whose
+  token cannot be read fails the leg rather than the launch. A launch that names no account runs
+  on the account its role names, if any. Any caller holding the bearer may name any account in
+  the host's accounts directory, including one no profile names.
 
 **When the leg starts** (the invocation fails with the reason):
 

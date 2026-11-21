@@ -189,10 +189,11 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     if leg is not None:
         # The leg reaches no MCP server: none is configured on a leg host, and this
         # turns off the search for one from the worktree upward.
-        argv.insert(argv.index("--"), "--no-mcp-config")
+        flags = ["--no-mcp-config"]
         if leg.account is not None:
-            separator = argv.index("--")
-            argv[separator:separator] = ["--account", leg.account]
+            flags += ["--account", leg.account]
+        separator = argv.index("--")
+        argv[separator:separator] = flags
         # A worktree a crash or restart left behind goes before another is made.
         await leg_host.sweep_worktrees(leg.repo, live=_live_invocation_ids())
     inv_id = await launch_detached_argv(
