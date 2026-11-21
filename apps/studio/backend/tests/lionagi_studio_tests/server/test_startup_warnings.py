@@ -583,7 +583,11 @@ class TestCLIHostWiring:
     def test_backend_only_exports_resolved_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import lionhub.serve.cli.studio as studio_cli
 
-        monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
+        # The CLI writes os.environ itself, and monkeypatch undoes only what it recorded: a
+        # delenv of an unset variable records nothing, so the 0.0.0.0 written below would
+        # outlive this test. setenv first records the variable's original state.
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", "")
+        monkeypatch.delenv("LIONAGI_STUDIO_HOST")
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
 
         captured: dict[str, str] = {}
@@ -622,10 +626,12 @@ class TestCLIHostWiring:
 
         # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
-        # _start_local sets LIONAGI_STUDIO_FRONTEND_DIST raw in os.environ;
-        # registering the var with monkeypatch restores its absence on teardown
-        # so the path can't leak to other test files on this worker.
-        monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
+        # _start_local sets LIONAGI_STUDIO_FRONTEND_DIST raw in os.environ; setenv
+        # records the variable's original state (a delenv of an unset variable
+        # records nothing), so teardown restores it and the path can't leak to
+        # other test files on this worker.
+        monkeypatch.setenv("LIONAGI_STUDIO_FRONTEND_DIST", "")
+        monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST")
         monkeypatch.setattr(studio_cli.shutil, "which", lambda _name: "/usr/bin/node")
         monkeypatch.setattr(studio_cli, "_ensure_frontend_built", lambda *a, **k: True)
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
