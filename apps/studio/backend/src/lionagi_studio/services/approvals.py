@@ -25,6 +25,14 @@ from lionhub.orchestration.state_store import require_file_store, store_path
 from ..registry import studio_route
 
 APPROVAL_TTL_SECONDS = 5 * 60
+"""Lifetime of a proposed approval when the server and the request set none."""
+
+APPROVAL_MAX_TTL_SECONDS = 60 * 60
+"""Longest lifetime a request may ask for when the server sets no cap."""
+
+# Server settings, read at each proposal so a restart is not needed to change them.
+_TTL_ENV = "LIONAGI_STUDIO_APPROVAL_TTL_SECONDS"
+_MAX_TTL_ENV = "LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS"
 
 _STATUSES = frozenset({"pending", "granted", "consumed", "expired", "denied"})
 
@@ -139,6 +147,30 @@ def _require_human_principal(request: Request) -> None:
         raise HTTPException(
             status_code=403,
             detail="approvals may only be granted or denied by the human operator principal",
+        )
+
+
+def _require_daemon_credential(request: Request) -> None:
+    """Consume requires the caller to PRESENT the configured bearer token.
+
+    Without one, every local process reaches the daemon, so a granted approval could be
+    spent by a caller holding no credential at all; consuming is refused on an open daemon,
+    as granting is. Checked here as well as by the admission middleware, so the route does
+    not depend on the middleware's order or on the token mode it runs in.
+    """
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "consuming an approval requires a configured auth token "
+                "(set LIONAGI_STUDIO_AUTH_TOKEN); refusing on an open daemon"
+            ),
+        )
+    presented = (request.headers.get("authorization") or "").encode("utf-8", "surrogateescape")
+    if not hmac.compare_digest(presented, f"Bearer {token}".encode("utf-8", "surrogateescape")):
+        raise HTTPException(
+            status_code=403, detail="consuming an approval requires the daemon's bearer token"
         )
 
 
@@ -337,11 +369,72 @@ async def get_approval(approval_id: str) -> dict[str, Any] | None:
     return await _lazy_expire(approval_id, row, now=time.time())
 
 
+def _env_seconds(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{name} must be a positive whole number of seconds, got {raw!r}",
+        )
+    return value
+
+
+def approval_ttl_bounds() -> tuple[int, int]:
+    """The server's default approval lifetime and the cap on a requested one, in seconds.
+
+    ``LIONAGI_STUDIO_APPROVAL_TTL_SECONDS`` sets the default (five minutes when unset) and
+    ``LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS`` the cap (one hour when unset, or the default
+    when that is longer). A value that is not a positive whole number, or a default above an
+    explicit cap, is refused with a 500 rather than replaced, so a misconfigured server
+    proposes nothing instead of approvals that live longer or shorter than intended.
+    """
+    default = _env_seconds(_TTL_ENV, APPROVAL_TTL_SECONDS)
+    explicit_cap = os.getenv(_MAX_TTL_ENV)
+    if explicit_cap is None or not explicit_cap.strip():
+        return default, max(default, APPROVAL_MAX_TTL_SECONDS)
+    cap = _env_seconds(_MAX_TTL_ENV, APPROVAL_MAX_TTL_SECONDS)
+    if default > cap:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{_TTL_ENV} ({default}) is longer than {_MAX_TTL_ENV} ({cap})",
+        )
+    return default, cap
+
+
 async def create_approval(
-    *, action_kind: str, params: dict[str, Any], session_id: str | None = None
+    *,
+    action_kind: str,
+    params: dict[str, Any],
+    session_id: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
-    """Propose a mutating action; returns the pending approval row."""
+    """Propose a mutating action; returns the pending approval row.
+
+    *ttl_seconds* asks for a lifetime other than the server's default; a value above the
+    server's cap (see :func:`approval_ttl_bounds`) is refused with a 422, never shortened.
+    """
     require_file_store()
+    default_ttl, max_ttl = approval_ttl_bounds()
+    if ttl_seconds is None:
+        ttl = default_ttl
+    elif isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ttl_seconds must be a positive whole number, got {ttl_seconds!r}",
+        )
+    elif ttl_seconds > max_ttl:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ttl_seconds {ttl_seconds} exceeds this server's cap of {max_ttl} seconds",
+        )
+    else:
+        ttl = ttl_seconds
     now = time.time()
     approval_id = uuid.uuid4().hex
     params_hash = compute_params_hash(params)
@@ -353,7 +446,7 @@ async def create_approval(
             "INSERT INTO approvals "
             "(id, action_kind, params_hash, session_id, status, proposed_at, expires_at) "
             "VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            (approval_id, action_kind, params_hash, session_id, now, now + APPROVAL_TTL_SECONDS),
+            (approval_id, action_kind, params_hash, session_id, now, now + ttl),
         )
         await _write_evidence(
             db,
@@ -459,7 +552,7 @@ async def deny_approval(
 async def require_approval(
     approval_id: str, *, action_kind: str, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate a granted approval for exactly this action_kind/params and consume it atomically. Not wired into any route yet; consumed only when every check passes."""
+    """Validate a granted approval for exactly this action_kind/params and consume it atomically; consumed only when every check passes. Served over HTTP as ``POST /approvals/{id}/consume`` for an executor outside this process."""
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -523,6 +616,16 @@ class _CreateApprovalBody(BaseModel):
     action_kind: str = Field(..., min_length=1, max_length=128)
     params: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = None
+    # Strict so a string or a float is refused rather than coerced; the server's cap is
+    # checked in create_approval, which owns the configured bounds.
+    ttl_seconds: int | None = Field(default=None, gt=0, strict=True)
+
+
+class _ConsumeBody(BaseModel):
+    """The action an executor is about to run; it must match the granted approval exactly."""
+
+    action_kind: str = Field(..., min_length=1, max_length=128)
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class _DenyBody(BaseModel):
@@ -545,7 +648,10 @@ class _DenyBody(BaseModel):
 @studio_route("/approvals/", method="POST", area="approvals", name="create_approval")
 async def create_approval_route(body: _CreateApprovalBody) -> dict[str, Any]:
     return await create_approval(
-        action_kind=body.action_kind, params=body.params, session_id=body.session_id
+        action_kind=body.action_kind,
+        params=body.params,
+        session_id=body.session_id,
+        ttl_seconds=body.ttl_seconds,
     )
 
 
@@ -573,6 +679,23 @@ async def get_approval_route(approval_id: str) -> dict[str, Any]:
 async def grant_approval_route(approval_id: str, request: Request) -> dict[str, Any]:
     _require_human_principal(request)
     return await grant_approval(approval_id)
+
+
+@studio_route(
+    "/approvals/{approval_id}/consume", method="POST", area="approvals", name="consume_approval"
+)
+async def consume_approval_route(
+    approval_id: str, body: _ConsumeBody, request: Request
+) -> dict[str, Any]:
+    """Use a granted approval once, for exactly the action and params it was granted for.
+
+    Unlike grant and deny this takes no human principal: the executor that runs the
+    action consumes it, and the params hash, the single-use status move and the expiry
+    are what bind the consumption to the human's grant. It does take the daemon's bearer
+    token, and is refused on a daemon with none configured.
+    """
+    _require_daemon_credential(request)
+    return await require_approval(approval_id, action_kind=body.action_kind, params=body.params)
 
 
 @studio_route(
