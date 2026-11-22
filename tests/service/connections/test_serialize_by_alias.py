@@ -170,6 +170,66 @@ class TestFirecrawlCrawlPayloadParity:
         assert "max_depth" not in payload
 
 
+class TestOutcrawlScrapePayloadParity:
+    def test_basic_url(self):
+        from lionhub.providers.outcrawl.scrape import (
+            OutcrawlScrapeEndpoint,
+            OutcrawlScrapeRequest,
+        )
+
+        ep = OutcrawlScrapeEndpoint()
+        req = {"url": "https://example.com"}
+
+        expected = _old_override_payload(OutcrawlScrapeRequest, {}, req, {})
+        got = _new_flag_payload(ep, req)
+
+        assert got == expected
+
+    def test_alias_fields_present(self):
+        from lionhub.providers.outcrawl.scrape import OutcrawlScrapeEndpoint
+
+        ep = OutcrawlScrapeEndpoint()
+        req = {"url": "https://example.com", "only_main_content": False}
+        payload, _ = ep.create_payload(req)
+        assert payload["onlyMainContent"] is False
+        assert "only_main_content" not in payload
+
+    def test_none_fields_excluded(self):
+        from lionhub.providers.outcrawl.scrape import OutcrawlScrapeEndpoint
+
+        ep = OutcrawlScrapeEndpoint()
+        req = {"url": "https://example.com"}
+        payload, _ = ep.create_payload(req)
+        assert "formats" not in payload
+
+
+class TestOutcrawlSearchPayloadParity:
+    def test_basic_query(self):
+        from lionhub.providers.outcrawl.search import (
+            OutcrawlSearchEndpoint,
+            OutcrawlSearchRequest,
+        )
+
+        ep = OutcrawlSearchEndpoint()
+        req = {"query": "lionagi framework", "limit": 3}
+
+        expected = _old_override_payload(OutcrawlSearchRequest, {}, req, {})
+        got = _new_flag_payload(ep, req)
+
+        assert got == expected
+
+    def test_scrape_fields_sent_only_when_given(self):
+        from lionhub.providers.outcrawl.search import OutcrawlSearchEndpoint
+
+        ep = OutcrawlSearchEndpoint()
+        payload, _ = ep.create_payload({"query": "test"})
+        assert payload == {"query": "test", "limit": 5}
+
+        payload, _ = ep.create_payload({"query": "test", "scrape": True, "formats": ["markdown"]})
+        assert payload["scrape"] is True
+        assert payload["formats"] == ["markdown"]
+
+
 class TestSerializeByAliasDefault:
     def test_default_is_false(self):
         config = EndpointConfig(
@@ -209,6 +269,8 @@ class TestSerializeByAliasDefault:
         from lionhub.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
         from lionhub.providers.firecrawl.map import FirecrawlMapEndpoint
         from lionhub.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
+        from lionhub.providers.outcrawl.scrape import OutcrawlScrapeEndpoint
+        from lionhub.providers.outcrawl.search import OutcrawlSearchEndpoint
 
         for cls in (
             ExaSearchEndpoint,
@@ -217,6 +279,8 @@ class TestSerializeByAliasDefault:
             FirecrawlScrapeEndpoint,
             FirecrawlMapEndpoint,
             FirecrawlCrawlEndpoint,
+            OutcrawlScrapeEndpoint,
+            OutcrawlSearchEndpoint,
         ):
             ep = cls()
             assert ep.config.serialize_by_alias is True, (

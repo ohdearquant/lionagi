@@ -36,6 +36,7 @@ _CONFIG_PACKAGES = (
     "ollama",
     "openai",
     "openrouter",
+    "outcrawl",
     "perplexity",
     "pi",
     "tavily",
@@ -310,8 +311,8 @@ def test_manifest_import_and_call_load_no_implementation():
         }
     )
     # A shrinking population would make the absence checks below vacuous.
-    assert len(config_modules) == 15
-    assert len(implementation_modules) == 34
+    assert len(config_modules) == 16
+    assert len(implementation_modules) == 36
 
     result = _run_child(
         _PURITY_CHILD,
@@ -341,7 +342,7 @@ def test_manifest_matches_registry_registration():
         _describe(mismatch) for mismatch in mismatches
     )
     # A shrinking registry population would make the comparisons above vacuous.
-    assert result["counts"] == {"fragments": 18, "compared": 37}
+    assert result["counts"] == {"fragments": 19, "compared": 39}
 
 
 # The order in which an unhinted context-window lookup scans the providers' tables.

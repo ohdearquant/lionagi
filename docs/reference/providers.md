@@ -124,6 +124,7 @@ These providers integrate as callable tools via `branch.connect()` — not as ch
 |----------|---------|-------------------|------------|-----------|
 | Exa | Neural search | `"exa"` | `EXA_API_KEY` | `search`, `contents` (alias: `get_contents`), `findSimilar` (aliases: `similar`, `find_similar`) |
 | Firecrawl | Web scraping | `"firecrawl"` | `FIRECRAWL_API_KEY` | `v1/scrape` (alias: `scrape`), `v1/map` (alias: `map`), `v1/crawl` (alias: `crawl`) |
+| Outcrawl | Web scraping and search | `"outcrawl"` | `OUTCRAWL_API_KEY` | `v1/scrape` (alias: `scrape`), `v1/search` (alias: `search`) |
 | Tavily | Research search | `"tavily"` | `TAVILY_API_KEY` | `search`, `extract` |
 
 ```python
@@ -228,6 +229,10 @@ lionhub/src/lionhub/providers/
 │   ├── scrape.py
 │   ├── map.py
 │   └── crawl.py
+├── outcrawl/
+│   ├── _config.py
+│   ├── scrape.py
+│   └── search.py
 ├── tavily/
 │   ├── _config.py
 │   └── search.py
