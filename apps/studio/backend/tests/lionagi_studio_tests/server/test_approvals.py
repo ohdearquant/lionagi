@@ -977,3 +977,188 @@ def test_fallback_ensure_table_creates_status_and_session_indexes(tmp_path):
     names = _run(_indexes())
     assert "idx_approvals_status" in names
     assert "idx_approvals_session" in names
+
+
+# Consuming over HTTP and the configurable lifetime
+
+
+def _granted_over_http(client: TestClient, params: dict, **create) -> str:
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": params, **create},
+        headers=_auth("test-token"),
+    ).json()["id"]
+    resp = client.post(f"/api/approvals/{approval_id}/grant", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+    return approval_id
+
+
+def test_consume_route_uses_a_granted_approval_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = _granted_over_http(client, {"name": "demo"})
+    body = {"action_kind": "launch_playbook", "params": {"name": "demo"}}
+
+    first = client.post(
+        f"/api/approvals/{approval_id}/consume", json=body, headers=_auth("test-token")
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "consumed"
+    assert first.json()["consumed_at"] is not None
+
+    second = client.post(
+        f"/api/approvals/{approval_id}/consume", json=body, headers=_auth("test-token")
+    )
+    assert second.status_code == 409, second.text
+
+    rows = _evidence_rows(tmp_path / "state.db")
+    assert [r["event_type"] for r in rows] == ["proposed", "granted", "consumed"]
+    assert _run(_verify())["valid"] is True
+
+
+async def _verify():
+    from lionagi_studio.services import approvals as approvals_mod
+
+    return await approvals_mod.verify_evidence_chain()
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        ({"action_kind": "launch_playbook", "params": {"name": "other"}}, 422),
+        ({"action_kind": "delete_playbook", "params": {"name": "demo"}}, 422),
+    ],
+    ids=["other-params", "other-action"],
+)
+def test_consume_route_refuses_a_different_action_and_leaves_it_granted(
+    tmp_path, monkeypatch, body, status
+):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = _granted_over_http(client, {"name": "demo"})
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/consume", json=body, headers=_auth("test-token")
+    )
+    assert resp.status_code == status, resp.text
+    check = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token"))
+    assert check.json()["status"] == "granted"
+
+
+def test_consume_route_refuses_a_pending_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/consume",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    )
+    assert resp.status_code == 409, resp.text
+    check = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token"))
+    assert check.json()["status"] == "pending"
+
+
+def test_consume_route_404_for_unknown_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    resp = client.post(
+        "/api/approvals/does-not-exist/consume",
+        json={"action_kind": "launch_playbook", "params": {}},
+        headers=_auth("test-token"),
+    )
+    assert resp.status_code == 404, resp.text
+
+
+def _lifetime(row: dict) -> float:
+    return row["expires_at"] - row["proposed_at"]
+
+
+def test_server_setting_changes_the_default_lifetime(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_APPROVAL_TTL_SECONDS", "900")
+    monkeypatch.delenv("LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS", raising=False)
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params={}))
+    assert _lifetime(row) == pytest.approx(900, abs=1)
+
+
+def test_requested_lifetime_within_the_cap_is_used(tmp_path, monkeypatch):
+    monkeypatch.delenv("LIONAGI_STUDIO_APPROVAL_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS", raising=False)
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    resp = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {}, "ttl_seconds": 1800},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _lifetime(resp.json()) == pytest.approx(1800, abs=1)
+
+
+def test_requested_lifetime_over_the_cap_is_refused_not_shortened(tmp_path, monkeypatch):
+    monkeypatch.delenv("LIONAGI_STUDIO_APPROVAL_TTL_SECONDS", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS", "600")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    resp = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {}, "ttl_seconds": 601},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "600" in resp.json()["detail"]
+    assert _evidence_rows(tmp_path / "state.db") == []
+
+
+@pytest.mark.parametrize("ttl", [0, -5, "60", 1.5, True])
+def test_requested_lifetime_must_be_a_positive_whole_number(tmp_path, monkeypatch, ttl):
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    resp = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {}, "ttl_seconds": ttl},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize(
+    ("default", "cap"),
+    [("0", None), ("soon", None), ("900", "600"), (None, "-1")],
+    ids=["zero-default", "word-default", "default-over-cap", "negative-cap"],
+)
+def test_misconfigured_lifetime_settings_propose_nothing(tmp_path, monkeypatch, default, cap):
+    for name, value in (
+        ("LIONAGI_STUDIO_APPROVAL_TTL_SECONDS", default),
+        ("LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS", cap),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from fastapi import HTTPException
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run(approvals_mod.create_approval(action_kind="launch_playbook", params={}))
+    assert exc_info.value.status_code == 500
+    assert _evidence_rows(db_path) == []
+
+
+def test_default_longer_than_the_unset_cap_raises_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_APPROVAL_TTL_SECONDS", "7200")
+    monkeypatch.delenv("LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS", raising=False)
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    assert approvals_mod.approval_ttl_bounds() == (7200, 7200)
