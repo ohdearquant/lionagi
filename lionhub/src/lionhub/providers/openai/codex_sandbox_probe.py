@@ -417,11 +417,12 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     nonce = uuid.uuid4().hex[:12]
     deny_mark, open_mark = f"DENY-CANARY-{nonce}", f"OPEN-CANARY-{nonce}"
     dirs = {n: root / n for n in ("cwd", "entry", "outside", "deny", "open")}
-    homes = {n: root / f"home-{n}" for n in ("heavy", "light", "user")}
+    homes = {n: root / f"home-{n}" for n in ("heavy", "light", "user", "readonly")}
     for path in (*dirs.values(), *homes.values()):
         path.mkdir(parents=True)
     (dirs["deny"] / "secret.txt").write_text(deny_mark + "\n")
     (dirs["open"] / "f.txt").write_text(open_mark + "\n")
+    (dirs["open"] / "ro.txt").write_text(open_mark + "\n")
     for name, home in homes.items():
         (home / "auth.json").write_text(f'{{"key": "AUTH-CANARY-{name}-{nonce}"}}\n')
     (homes["user"] / "config.toml").write_text('sandbox_mode = "workspace-write"\n')
@@ -429,17 +430,18 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     policy_deny = list(resolve_child_sandbox(None).deny_read)
     deny_read = [str(dirs["deny"]), *policy_deny]
 
-    def table(home: Path, *, light: bool) -> dict[str, Any]:
+    def table(home: Path, *, light: bool, read_only: bool = False) -> dict[str, Any]:
         return permission_profile_table(
             # Expanded against the HOME the probe's child gets, as a launch expands its entries
             # against the child's HOME.
             deny=deny_entries(deny_read, home, _env(home)),
             write=[] if light else [str(dirs["entry"])],
             light=light,
-            read_only=False,
+            read_only=read_only,
             # The heavy runs set the network on, so the network arms test the profile's
-            # network key both ways: off refuses, on reaches the listener.
-            network=not light,
+            # network key both ways: off refuses, on reaches the listener. A read-only table has
+            # the network off, as a read-only launch's does.
+            network=not light and not read_only,
         )
 
     q = shlex.quote
@@ -482,6 +484,13 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         ("read_control", f"/bin/cat {opened}"),
         ("write_outside", f"echo w > {q(str(dirs['outside'] / 'w2'))}"),
     ]
+    # The read-only run starts from codex's `:read-only` built-in, as a read-only launch does: a
+    # write into its own working directory must be refused while a read in the same run works.
+    ro_read, ro_written = dirs["open"] / "ro.txt", dirs["cwd"] / "ro"
+    readonly_commands = [
+        ("read_control", f"/bin/cat {q(str(ro_read))}"),
+        ("write_cwd", f"echo w > {q(str(ro_written))}"),
+    ]
 
     # The network step targets each run's own stub, whose port is known only once it listens,
     # so ``_run_with_network`` appends it to the plan after the stub starts.
@@ -519,6 +528,14 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         commands=user_commands,
         table=table(homes["user"], light=False),
         home=homes["user"],
+        cwd=dirs["cwd"],
+    )
+    readonly = _run(
+        binary,
+        runner,
+        commands=readonly_commands,
+        table=table(homes["readonly"], light=False, read_only=True),
+        home=homes["readonly"],
         cwd=dirs["cwd"],
     )
 
@@ -604,6 +621,14 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             user["deny_canary"],
             user["own_codex_home"],
             user["write_outside"],
+        ),
+        "read_only_cwd_write_refused": _arm(
+            _ok(readonly["read_control"], open_mark)
+            and _refused(readonly["write_cwd"])
+            and not ro_written.exists(),
+            readonly["read_control"],
+            readonly["write_cwd"],
+            note="a :read-only table; the read of a readable file is the same run's control",
         ),
     }
     return {name: arms[name] for name in REQUIRED_ARMS}

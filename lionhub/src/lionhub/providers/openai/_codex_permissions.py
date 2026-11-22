@@ -61,8 +61,10 @@ PERMISSION_PROFILE = "lionagi_child"
 PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 
 #: The record format this module reads. A record of another format is no record. Format 2 adds
-#: the SHA-256 of the binary's bytes to the record's key and to the record itself.
-_RECORD_FORMAT = 2
+#: the SHA-256 of the binary's bytes to the record's key and to the record itself. Format 3 adds
+#: the ``read_only_cwd_write_refused`` arm, so a record made before that arm existed no longer
+#: satisfies a launch.
+_RECORD_FORMAT = 3
 
 #: Arms every passing record carries, each of which must have passed, except the arms named in
 #: ``CONDITIONAL_ARMS``.
@@ -79,6 +81,7 @@ REQUIRED_ARMS: tuple[str, ...] = (
     "light_network_off",
     "heavy_network_on",
     "user_layer_sandbox_mode",
+    "read_only_cwd_write_refused",
 )
 
 #: Arms of ``REQUIRED_ARMS`` that apply only when an environment variable is set: arm name to
