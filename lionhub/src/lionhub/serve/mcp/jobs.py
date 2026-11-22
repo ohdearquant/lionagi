@@ -3196,6 +3196,31 @@ def _notify_delivery_state(outcome: Any) -> str:
     return "failed"
 
 
+def job_run_ids() -> list[str]:
+    """Run ids that have a job record, newest first (run_id sorts by timestamp).
+
+    A directory without a job record is not a job: a submission reserves its directory
+    before `job.json` publishes it. A record that cannot even be stat'ed is kept, for
+    ``status`` to classify. A missing jobs directory is no jobs; an unreadable one raises.
+    """
+    try:
+        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
+    except FileNotFoundError:
+        return []
+    run_ids: list[str] = []
+    for d in entries:
+        if not d.is_dir():
+            continue
+        try:
+            (d / "job.json").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # let status() classify an inaccessible record
+        run_ids.append(d.name)
+    return run_ids
+
+
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
 
@@ -3213,21 +3238,9 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     field to say "could not be read" and reporting empty would falsely mean
     "no jobs at all".
     """
-    try:
-        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
-    except FileNotFoundError:
-        return []
     out: list[dict[str, Any]] = []
-    for d in entries:
-        if not d.is_dir():
-            continue
-        try:
-            (d / "job.json").stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            pass  # let status() classify an inaccessible record
-        st = status(d.name)
+    for run_id in job_run_ids():
+        st = status(run_id)
         if status_filter and st["status"] != status_filter:
             continue
         out.append(

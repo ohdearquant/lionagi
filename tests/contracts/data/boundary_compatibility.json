@@ -814,7 +814,7 @@
       "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
     ],
     "lionagi/service/_subagent_admission.py": [
-      "__all__ = (\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
+      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n)"
     ],
     "lionagi/service/accounts/__init__.py": [
       "__all__ = ()"
@@ -1120,7 +1120,7 @@
       "__all__ = (\"AgentSpec\", \"HooksMixin\")"
     ],
     "lionhub/src/lionhub/agent/subscription_accounts.py": [
-      "__all__ = (\n    \"ACCOUNTS_FILE\",\n    \"ACCOUNT_PROVIDERS\",\n    \"KEYCHAIN_TIMEOUT_S\",\n    \"LOGINS_DIR_ENV\",\n    \"LegAccount\",\n    \"SubscriptionAccount\",\n    \"SubscriptionAccountError\",\n    \"account_child_env\",\n    \"account_provider\",\n    \"codex_home_child_env\",\n    \"credential_paths\",\n    \"leg_account_reached\",\n    \"logins_dir\",\n    \"resolve_account\",\n    \"resolve_leg_account\",\n    \"validate_account_name\",\n    \"validate_codex_home\",\n)"
+      "__all__ = (\n    \"ACCOUNTS_FILE\",\n    \"ACCOUNT_PROVIDERS\",\n    \"KEYCHAIN_TIMEOUT_S\",\n    \"LOGINS_DIR_ENV\",\n    \"LegAccount\",\n    \"SubscriptionAccount\",\n    \"SubscriptionAccountError\",\n    \"account_child_env\",\n    \"account_provider\",\n    \"codex_home_child_env\",\n    \"credential_paths\",\n    \"leg_account_reached\",\n    \"list_accounts\",\n    \"logins_dir\",\n    \"resolve_account\",\n    \"resolve_leg_account\",\n    \"validate_account_name\",\n    \"validate_codex_home\",\n)"
     ],
     "lionhub/src/lionhub/hooks/external.py": [
       "__all__ = (\n    \"BLOCKING_EVENTS\",\n    \"PROFILE_VERSION\",\n    \"SUPPORTED_EVENTS\",\n    \"ExternalHookConfigError\",\n    \"HookVerdict\",\n    \"build_envelope\",\n    \"compute_command_hash\",\n    \"compute_executable_digest\",\n    \"compute_trust_record\",\n    \"external_hook_adapter\",\n    \"is_command_trusted\",\n    \"match_hook\",\n    \"resolve_hook_executable\",\n    \"validate_argv\",\n)"
@@ -1773,6 +1773,9 @@
     ],
     "lionhub/src/lionhub/tools/types.py": [
       "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/accounts.py": [
+      "__all__ = (\"COMPLETED_WINDOW_HOURS\", \"account_list\")"
     ]
   },
   "public_definitions": {
@@ -3142,6 +3145,7 @@
     ],
     "lionagi/service/_subagent_admission.py": [
       "SubagentLease",
+      "account_admission",
       "admit_subagent",
       "child_agent_depth",
       "engine_cap_env",
@@ -3844,6 +3848,7 @@
       "codex_home_child_env",
       "credential_paths",
       "leg_account_reached",
+      "list_accounts",
       "logins_dir",
       "resolve_account",
       "resolve_leg_account",
@@ -5297,6 +5302,7 @@
       "WriteResult",
       "begin_notify_delivery",
       "failure_cause_path",
+      "job_run_ids",
       "kill",
       "list_jobs",
       "mark_terminal",
@@ -5447,6 +5453,9 @@
       "require_passing_link_record",
       "volume_identity",
       "write_record"
+    ],
+    "lionhub/src/lionhub/serve/mcp/accounts.py": [
+      "account_list"
     ]
   },
   "settings_declarations": [

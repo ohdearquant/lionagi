@@ -58,6 +58,7 @@ __all__ = (
     "codex_home_child_env",
     "credential_paths",
     "leg_account_reached",
+    "list_accounts",
     "logins_dir",
     "resolve_account",
     "resolve_leg_account",
@@ -372,6 +373,40 @@ def resolve_account(
         + f"no [{kind}.{name}] in {ACCOUNTS_FILE}). The spawn does not fall back to another "
         "account or to this machine's own login."
     )
+
+
+def list_accounts(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[tuple[SubscriptionAccount, ...], tuple[tuple[str, str], ...]]:
+    """Every account the accounts directory declares, as ``(accounts, unresolved)``.
+
+    *accounts* holds each declared name as ``resolve_account`` resolves it; *unresolved* holds
+    ``(provider, name)`` for each declared name it refuses (defined twice, a malformed row, a
+    Codex home that is gone). Both are sorted by provider, then name. A token file or table
+    whose name is not an account name is no account ``resolve_account`` could reach, and is
+    in neither. No credential is read.
+
+    Raises:
+        SubscriptionAccountError: the directory setting or the accounts file cannot be read.
+    """
+    directory = logins_dir(environ)
+    data = _read_accounts_file(directory)
+    declared: set[tuple[str, str]] = set()
+    if directory.is_dir():
+        for path in directory.glob("claude-*"):
+            name = path.name[len("claude-") :]
+            if _NAME_RE.fullmatch(name):
+                declared.add(("claude_code", name))
+    for provider in ACCOUNT_PROVIDERS:
+        declared.update((provider, n) for n in data.get(provider, {}) if _NAME_RE.fullmatch(n))
+    accounts: list[SubscriptionAccount] = []
+    unresolved: list[tuple[str, str]] = []
+    for provider, name in sorted(declared):
+        try:
+            accounts.append(resolve_account(name, provider, environ=environ))
+        except SubscriptionAccountError:
+            unresolved.append((provider, name))
+    return tuple(accounts), tuple(unresolved)
 
 
 def _read_token(account: SubscriptionAccount) -> str:

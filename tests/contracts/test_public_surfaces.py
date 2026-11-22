@@ -359,7 +359,7 @@ def test_mcp_catalog_matches_baseline():
 def test_mcp_catalog_entry_shapes_are_locked_by_hand():
     """Second, independent lock on the shape of a catalog entry.
 
-    Every caller reads this listing, so a field added to or dropped from all 71
+    Every caller reads this listing, so a field added to or dropped from all 72
     entries changes what the whole surface says while leaving verb names and
     counts identical. Hand-typed rather than derived from the JSON, so the
     baseline and this test have to be wrong the same way to pass together.
@@ -376,7 +376,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
         # a runnable verb with required parameters names them and nothing else
         ("required", "summary", "verb"): 24,
         # a runnable verb with no required parameters carries neither key
-        ("summary", "verb"): 17,
+        ("summary", "verb"): 18,
         # spawn verbs additionally publish what their fingerprint covers
         ("required_unenforced", "schema_fingerprint", "summary", "verb"): 2,
         ("required", "required_unenforced", "schema_fingerprint_varies_with", "summary", "verb"): 1,
@@ -388,7 +388,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
             "verb",
         ): 1,
     }
-    assert sum(shapes.values()) == 71
+    assert sum(shapes.values()) == 72
     # No shape pairs cli_path with an inline reason. A verb whose schema failed
     # to build is the one entry that does carry a reason inline, and it has no
     # cli_path — that path reports a defect in this server and must stay

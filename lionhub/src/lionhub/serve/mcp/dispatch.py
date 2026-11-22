@@ -29,7 +29,7 @@ from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
-from . import config, jobs, projection, roster
+from . import accounts, config, jobs, projection, roster
 from .verbs import (
     ABSENT,
     MAX_OPS,
@@ -1184,7 +1184,18 @@ _JOB_EXECUTORS = {
     "job.kill": lambda a: jobs.kill(a["run_id"]),
     "job.list": lambda a: {"jobs": jobs.list_jobs(a.get("limit", 50), a.get("status"))},
     "server.info": lambda a: _server_info(),
+    "account.list": lambda a: _account_list(),
 }
+
+
+def _account_list() -> dict[str, Any]:
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    try:
+        return accounts.account_list()
+    except SubscriptionAccountError as exc:
+        # The machine's account configuration, which no change to the call corrects.
+        raise OpError("unavailable", str(exc)) from exc
 
 
 async def _run_job(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
