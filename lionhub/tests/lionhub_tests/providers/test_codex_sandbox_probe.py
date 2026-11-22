@@ -223,6 +223,10 @@ class FakeCodex:
             else [Path(p) for p, m in files.items() if m == "write"]
         )
         grants = [cwd, *map(Path, add_dirs), *table_writes]
+        read_only_leak = "read_only_cwd_write_refused" in self.leaks
+        if table.get("extends") == ":read-only" and not read_only_leak:
+            # codex's `:read-only` built-in grants no write, the working directory included.
+            grants = []
         scratch = cwd.parent
         leaks = self.leaks
         # A user-layer sandbox_mode that wins over the profile is a profile that is not applied.
@@ -253,6 +257,7 @@ class FakeCodex:
             refused &= not (ours and target.name == "secret.txt" and "deny_canary" in leaks)
             refused &= not (ours and target.name == "auth.json" and "own_codex_home" in leaks)
             refused |= ours and target.name == "f.txt" and "read_control" in leaks
+            refused |= ours and target.name == "ro.txt" and "read_only_read_fails" in leaks
             if refused:
                 return f"{words[0]}: {target}: Permission denied\nrc=1"
             text = target.read_text() if words[0] == "/bin/cat" and target.exists() else ""
@@ -329,10 +334,32 @@ def test_a_run_that_times_out_passes_no_arm(tmp_path, sandbox_on):
     assert not [name for name, arm in arms.items() if arm["passed"]]
 
 
+def test_the_read_only_arm_fails_when_its_same_run_read_fails(tmp_path, sandbox_on):
+    # A child that can open nothing also refuses the write; the read tells the two apart.
+    fake = FakeCodex(("read_only_read_fails",))
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert {name for name, arm in arms.items() if not arm["passed"]} == {
+        "read_only_cwd_write_refused"
+    }
+
+
+def test_the_read_only_run_starts_from_the_read_only_built_in(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    tables = []
+    for argv, _env, _cwd in fake.runs:
+        row = next(a for a in argv if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
+        tables.append(_toml_loads("table = " + row.split("=", 1)[1])["table"])
+    read_only = [t for t in tables if t["extends"] == ":read-only"]
+    assert len(read_only) == 1
+    assert read_only[0]["network"]["enabled"] is False
+    assert [p for p, mode in read_only[0]["filesystem"].items() if mode == "write"] == []
+
+
 def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbox_on):
     fake = FakeCodex()
     probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
-    assert len(fake.runs) == 3
+    assert len(fake.runs) == 4
     networks = []
     for argv, env, cwd in fake.runs:
         assert argv[0] == "/opt/codex"
@@ -345,7 +372,7 @@ def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbo
         assert table["filesystem"][env["CODEX_HOME"]] == "deny"
         assert Path(env["CODEX_HOME"]).parent == Path(cwd).parent
         networks.append(table["network"]["enabled"])
-    assert sorted(networks) == [False, True, True]
+    assert sorted(networks) == [False, False, True, True]
 
 
 def test_the_probe_carries_the_profile_overrides_a_launch_renders(tmp_path, sandbox_on):
@@ -471,7 +498,7 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 2
+    assert record["format"] == 3
     assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
@@ -508,11 +535,13 @@ def test_the_record_is_keyed_by_the_version(tmp_path, record_dir):
         require_passing_probe_record(str(binary))
 
 
-def test_a_record_of_another_format_is_no_record(tmp_path, record_dir):
+@pytest.mark.parametrize("earlier", [1, 2])
+def test_a_record_of_another_format_is_no_record(tmp_path, record_dir, earlier):
+    # Format 2 records predate the read-only arm, so they no longer admit a launch.
     binary = _fake_binary(tmp_path / "bin")
     path = probe_module.write_record(str(binary), _passing_arms())
     record = json.loads(path.read_text())
-    record["format"] = 1
+    record["format"] = earlier
     path.write_text(json.dumps(record))
     with pytest.raises(CLIInputRefusedError, match="is not for codex"):
         require_passing_probe_record(str(binary))
