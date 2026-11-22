@@ -158,8 +158,13 @@ arguments match that schema, retry the op once with the returned fingerprint.
 Spawn-verb help states the same rule in `help_usage`. When the verb's
 fingerprint depends on an argument help was not given (`play.submit` without a
 playbook), `help_usage` says to pass it first.
-`help={"verb": "<verb>", "playbook": "<name>"}` resolves that playbook's own
-declared arguments into the schema.
+`help={"verb": "<verb>", "playbook": "<name>", "cwd": "<dir>"}` resolves that
+playbook's own declared arguments into the schema. A named playbook is found the
+way the submitted run finds it: under the op's `cwd` (project `.lionagi/playbooks/`
+from the git root and that directory upward, then `~/.lionagi/playbooks/`), and
+under this server's own directory only when no `cwd` is given. Pass the same
+`cwd` to help that the op will carry, or the fingerprint may name a different
+file.
 
 ## The catalog
 

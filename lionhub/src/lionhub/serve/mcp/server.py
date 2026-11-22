@@ -40,8 +40,9 @@ _OPS_DESCRIPTION = (
 _HELP_DESCRIPTION = (
     "true returns the verb catalog with one-line signatures; a verb name returns "
     "that verb's full parameter schema, generated from the CLI parser at call time; "
-    "{'verb': '<verb>', 'playbook': '<name>'} additionally resolves that playbook's "
-    "own declared arguments into the schema."
+    "{'verb': '<verb>', 'playbook': '<name>', 'cwd': '<dir>'} additionally resolves "
+    "that playbook's own declared arguments into the schema, finding it under 'cwd' "
+    "as the submitted run will."
 )
 
 

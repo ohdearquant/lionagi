@@ -388,8 +388,10 @@ def catalog() -> dict[str, Any]:
         "help_usage": (
             "help='<verb>' returns that verb's full parameter schema, and for an "
             "unavailable one the reason it is not served here. "
-            "help={'verb': '<verb>', 'playbook': '<name>'} resolves a playbook's own "
-            "declared arguments into the schema. An entry omits 'available' and "
+            "help={'verb': '<verb>', 'playbook': '<name>', 'cwd': '<dir>'} resolves a "
+            "playbook's own declared arguments into the schema, finding the playbook "
+            "under 'cwd' as the submitted run will (this server's directory when "
+            "omitted). An entry omits 'available' and "
             "'required' when they are true and empty. A schema_fingerprint must be "
             "repeated on that verb's ops as a sibling of 'args': "
             "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from this entry>'}; "
@@ -459,6 +461,7 @@ def _require_fingerprint(
     supplied: Any,
     *,
     playbook: str | None = None,
+    cwd: str | None = None,
 ) -> None:
     """Spawn ops carry the current fingerprint from help or the refusal.
 
@@ -477,7 +480,11 @@ def _require_fingerprint(
     if supplied == current:
         return
     if playbook is not None:
+        # The playbook resolved under *cwd*, so the help call that reproduces this
+        # fingerprint has to name the same directory.
         source: Any = {"verb": name, "playbook": playbook}
+        if cwd is not None:
+            source["cwd"] = cwd
     elif verb.playbook_aware:
         source = {"verb": name}
     else:
@@ -999,6 +1006,18 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
     return str(resolved)
 
 
+def _playbook_cwd(args: dict[str, Any]) -> str | None:
+    """The directory a named playbook resolves under: the run's ``cwd`` when one is given.
+
+    The submitted run starts there and resolves the playbook there, so the schema and
+    fingerprint checked here must come from the same file. A ``cwd`` that is not a
+    string is left to schema validation, which reports it against the parameter.
+    """
+    if not isinstance(args.get("cwd"), str):
+        return None
+    return _resolve_cwd(args)
+
+
 def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
     path = schema.get("x-playbook-path")
     if path is None:
@@ -1352,14 +1371,28 @@ def _help(target: Any) -> dict[str, Any]:
     if target is True:
         return catalog()
     playbook: str | None = None
+    cwd: str | None = None
     if isinstance(target, dict):
         name = target.get("verb")
         playbook = target.get("playbook")
-        unknown = sorted(set(target) - {"verb", "playbook"})
+        unknown = sorted(set(target) - {"verb", "playbook", "cwd"})
         if unknown:
-            raise ValueError(f"help object takes 'verb' and 'playbook'; got {unknown}")
+            raise ValueError(f"help object takes 'verb', 'playbook' and 'cwd'; got {unknown}")
         if not isinstance(name, str):
             raise ValueError("help object needs a 'verb' string")
+        if "cwd" in target:
+            raw_cwd = target["cwd"]
+            if playbook is None:
+                raise ValueError(
+                    "help's 'cwd' names the directory a playbook resolves under; "
+                    "pass it together with 'playbook'"
+                )
+            if not isinstance(raw_cwd, str):
+                raise ValueError(f"help's 'cwd' is a directory path, got {raw_cwd!r}")
+            try:
+                cwd = _resolve_cwd({"cwd": raw_cwd})
+            except OpError as exc:
+                raise ValueError(str(exc)) from exc
     else:
         name = target
         if not isinstance(name, str):
@@ -1370,7 +1403,8 @@ def _help(target: Any) -> dict[str, Any]:
     if playbook is not None and not verb.playbook_aware:
         raise ValueError(f"{name!r} takes no playbook")
     try:
-        schema = verb_schema(verb, playbook=playbook)
+        with roster._resolving_under(cwd):
+            schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
         raise ValueError(f"{name!r} has no describable schema: {exc}") from exc
     answer: dict[str, Any] = {"verb": name, "schema": schema}
@@ -1501,14 +1535,20 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     schema: dict[str, Any] | None = None
     try:
         playbook = args.get("playbook") if verb.playbook_aware else None
-        schema = verb_schema(verb, playbook=playbook if isinstance(playbook, str) else None)
+        playbook = playbook if isinstance(playbook, str) else None
+        # A named playbook resolves where the run will, under the submitted cwd (the
+        # spawned child starts there), not under this server's own working directory.
+        playbook_cwd = _playbook_cwd(args) if playbook is not None else None
+        with roster._resolving_under(playbook_cwd):
+            schema = verb_schema(verb, playbook=playbook)
         if verb.executor == "spawn":
             _require_fingerprint(
                 name,
                 verb,
                 schema,
                 entry.get("schema_fingerprint"),
-                playbook=playbook if isinstance(playbook, str) else None,
+                playbook=playbook,
+                cwd=playbook_cwd,
             )
         _validate(schema, args, verb)
         if verb.executor == "spawn":

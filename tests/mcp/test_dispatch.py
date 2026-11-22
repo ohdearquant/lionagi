@@ -657,6 +657,119 @@ def test_a_stale_playbook_fingerprint_is_told_the_same_qualified_source(a_playbo
     assert submitted == {}
 
 
+def _write_playbook(directory: Path, name: str, arg: str) -> None:
+    playbooks = directory / ".lionagi" / "playbooks"
+    playbooks.mkdir(parents=True, exist_ok=True)
+    (playbooks / f"{name}.playbook.yaml").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "description": "fixture for resolving a playbook under the op's cwd",
+                "prompt": f"act on {{{arg}}}",
+                "args": {arg: {"type": "str", "default": ".", "help": "what to act on"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def project_playbook(tmp_path, monkeypatch):
+    """A playbook in a project directory, with this server started somewhere else."""
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    _write_playbook(project, "project-fixture", "subject")
+    monkeypatch.chdir(elsewhere)
+    return "project-fixture", project, elsewhere
+
+
+def test_a_project_playbook_resolves_under_the_ops_cwd(project_playbook, submitted):
+    name, project, _elsewhere = project_playbook
+    with pytest.raises(ValueError):
+        call(help={"verb": "play.submit", "playbook": name})
+
+    qualified = call(help={"verb": "play.submit", "playbook": name, "cwd": str(project)})
+    assert "subject" in qualified["schema"]["properties"]
+    assert Path(qualified["schema"]["x-playbook-path"]).parent.parent.parent == project.resolve()
+
+    reply = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": name, "cwd": str(project), "subject": "src"},
+                "schema_fingerprint": qualified["schema_fingerprint"],
+            }
+        ]
+    )["ops"][0]
+    assert reply["ok"] is True, reply
+    assert Path(submitted["cwd"]) == project.resolve()
+
+
+def test_a_playbook_refusal_names_the_cwd_its_fingerprint_came_from(project_playbook, submitted):
+    name, project, _elsewhere = project_playbook
+    answer = call(ops=[{"op": "play.submit", "args": {"playbook": name, "cwd": str(project)}}])
+    error = answer["ops"][0]["error"]
+    assert error["kind"] == "stale_schema"
+    assert error["detail"]["help"] == {
+        "verb": "play.submit",
+        "playbook": name,
+        "cwd": str(project.resolve()),
+    }
+    # Following the remedy exactly reproduces the fingerprint the refusal quoted.
+    qualified = call(help=error["detail"]["help"])
+    assert qualified["schema_fingerprint"] == error["detail"]["schema_fingerprint"]
+    assert submitted == {}
+
+
+def test_the_ops_cwd_wins_over_a_same_named_playbook_where_the_server_runs(
+    project_playbook, submitted
+):
+    """The schema checked must be the file the run reads, not a namesake beside the server."""
+    name, project, elsewhere = project_playbook
+    _write_playbook(elsewhere, name, "decoy")
+    beside_server = call(help={"verb": "play.submit", "playbook": name})
+    assert "decoy" in beside_server["schema"]["properties"]
+
+    qualified = call(help={"verb": "play.submit", "playbook": name, "cwd": str(project)})
+    assert "subject" in qualified["schema"]["properties"]
+    assert "decoy" not in qualified["schema"]["properties"]
+    assert qualified["schema_fingerprint"] != beside_server["schema_fingerprint"]
+
+    stale = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": name, "cwd": str(project), "subject": "src"},
+                "schema_fingerprint": beside_server["schema_fingerprint"],
+            }
+        ]
+    )["ops"][0]
+    assert stale["ok"] is False
+    assert stale["error"]["kind"] == "stale_schema"
+    assert submitted == {}
+
+
+def test_help_cwd_needs_a_playbook_and_an_existing_directory(project_playbook, tmp_path):
+    name, project, _elsewhere = project_playbook
+    with pytest.raises(ValueError, match="together with 'playbook'"):
+        call(help={"verb": "play.submit", "cwd": str(project)})
+    with pytest.raises(ValueError, match="not a directory"):
+        call(help={"verb": "play.submit", "playbook": name, "cwd": str(tmp_path / "absent")})
+    with pytest.raises(ValueError, match="directory path"):
+        call(help={"verb": "play.submit", "playbook": name, "cwd": 7})
+
+
+def test_a_missing_cwd_on_a_playbook_op_is_invalid_input_not_internal(project_playbook, tmp_path):
+    name, _project, _elsewhere = project_playbook
+    reply = call(
+        ops=[{"op": "play.submit", "args": {"playbook": name, "cwd": str(tmp_path / "absent")}}]
+    )["ops"][0]
+    assert reply["ok"] is False
+    assert reply["error"]["kind"] == "invalid_input"
+
+
 def test_targeted_help_withholds_a_fingerprint_no_successful_call_can_carry():
     """`play.submit` requires a playbook, so its argument-free fingerprint is dead.
 
