@@ -564,6 +564,31 @@ operator's own. The names are read from the child's environment after the secret
 There is no setting that turns the removal off. Removed values are still given to the log
 redactor.
 
+### A Claude child's MCP server set
+
+A request's `mcp_servers` can hold a bearer token in a server's `headers` or a key in its `env`.
+`_ndjson_from_cli()` writes a non-empty set to `mcp.json` in a fresh directory under the temporary
+directory (the directory `0700`, the file `0600`), passes that path after `--mcp-config`, and
+removes the directory once the child is gone, whether the stream ended, failed or was abandoned.
+The values are not in the child's argument list, which a process listing shows to every local
+user. An empty set (`{}`, the exclusive "no servers" form) holds nothing and stays inline, and a
+request that names its own `mcp_config` is passed through unchanged.
+
+Every header value (whole, and by each word after the first, as in the `Bearer <token>` form) and
+every `env` value under a name that reads as a credential is handed to the spawn as
+`secret_values`. Each of those is also handed over in the form it takes inside a JSON string, with
+and without `\uXXXX` escapes, when that differs from the value. `ndjson_from_cli()` adds them to
+the values it removes from the messages it logs and raises.
+
+The limits: matching is literal, so a value the child transforms in another way (encoded, split,
+truncated) is not removed. A credential inside a server's `url`, or in the `args` of a stdio
+server, is not declared by this rule; the existing URL rules still apply to what they match. An
+`env` value under a name the credential rule does not match is not declared. A value shorter than
+eight characters is not redacted, as for every other redacted value.
+
+The file keeps the set off the command line; the declared values are removed from the spawn's
+messages. The child still holds the set: the CLI reads the file to connect to its servers.
+
 ## CLI agent admission
 
 **`providers/_subagent_admission.py`** (design: ADR-0133)

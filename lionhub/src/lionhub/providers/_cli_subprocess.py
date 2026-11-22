@@ -1297,6 +1297,20 @@ def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
     return found
 
 
+def _declared_secret_values(values: Iterable[str] | None) -> dict[str, str]:
+    """Literal values a caller declares secret, keyed for the log redactor.
+
+    For a secret that reaches the child by neither its environment nor a named argument,
+    such as a token inside a file the child is handed. Same length floor as the guesses:
+    a shorter value could splice the marker through ordinary words.
+    """
+    return {
+        f"declared value {index}": value
+        for index, value in enumerate(values or (), start=1)
+        if isinstance(value, str) and len(value) >= _MIN_REDACTABLE_VALUE_LEN
+    }
+
+
 def _bounded_env_values(
     env: Mapping[str, str] | None, already_secret: Mapping[str, str]
 ) -> dict[str, str]:
@@ -1455,6 +1469,7 @@ async def ndjson_from_cli(
     workload: str = DEFAULT_WORKLOAD,
     secret_fill_skip: frozenset[str] = frozenset(),
     auth_env: Iterable[str] | Callable[[Mapping[str, str]], Iterable[str]] | None = frozenset(),
+    secret_values: Iterable[str] = (),
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1471,7 +1486,9 @@ async def ndjson_from_cli(
     login from; every other credential-named variable is removed from the child's environment,
     and so from every command the child runs. A callable ``auth_env`` is given the child's
     environment after the secret fill, for a provider whose login names depend on what that
-    environment holds. See
+    environment holds. ``secret_values`` are literal values the caller knows to be secret and
+    that no environment mapping or named argument holds; they are removed from every message
+    this function logs or raises. See
     docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
@@ -1516,9 +1533,11 @@ async def ndjson_from_cli(
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
     spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
+    declared_values = _declared_secret_values(secret_values)
     redaction_env: Mapping[str, str] = {
         **_secret_candidates({**spawn_env, **withheld}, declared),
         **_cmd_secret_values(cmd),
+        **declared_values,
     }
     # A withheld value is still one this process holds, so it stays redacted wherever it appears.
     opaque_env: Mapping[str, str] = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
@@ -1585,6 +1604,7 @@ async def ndjson_from_cli(
                 redaction_env = {
                     **_secret_candidates({**spawn_env, **withheld}, declared),
                     **_cmd_secret_values(cmd),
+                    **declared_values,
                 }
                 opaque_env = _opaque_env_values({**spawn_env, **withheld}, redaction_env)
                 bounded_env = _bounded_env_values({**spawn_env, **withheld}, redaction_env)
