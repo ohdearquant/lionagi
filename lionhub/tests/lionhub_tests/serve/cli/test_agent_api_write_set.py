@@ -971,6 +971,33 @@ def test_the_write_set_denies_reading_the_paths_the_settings_add(monkeypatch, tm
     assert {str(store), str(outside)} <= set(spec.seatbelt.deny_read)
 
 
+def test_the_write_set_denies_reading_every_credential_location_the_child_sandbox_lists(
+    monkeypatch, tmp_path
+):
+    """Every entry of the built-in credential list is in the write set's unreadable list."""
+    import lionhub.serve.cli.agent as agent_mod
+    from lionhub.agent.child_sandbox import credential_deny_read
+
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+    )
+
+    denied = set(spec.seatbelt.deny_read)
+    listed = credential_deny_read()
+    assert listed
+    for entry in listed:
+        written = os.path.expanduser(entry)
+        assert written in denied or os.path.realpath(written) in denied, entry
+
+
 def test_a_malformed_settings_block_refuses_the_write_set_without_an_opt_out(monkeypatch, tmp_path):
     import lionhub.serve.cli.agent as agent_mod
 

@@ -10,6 +10,7 @@ temporary directory in every test, so the state directory created here is never 
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import socket
 import subprocess
@@ -433,6 +434,28 @@ def test_the_cli_cannot_read_the_paths_the_settings_add(monkeypatch, tmp_path, _
 
     # enabled: false turns off the Claude Code sandbox only; this policy keeps every entry.
     assert {str(store), str(outside)} <= denied
+
+
+def test_the_cli_cannot_read_any_credential_location_the_child_sandbox_lists(
+    monkeypatch, tmp_path, _home
+):
+    """Every entry of the built-in credential list is unreadable to the gemini-cli process, as
+    written and resolved. An entry this lane must read to sign in would show up here first."""
+    from lionhub.agent.child_sandbox import credential_deny_read
+
+    monkeypatch.setattr(seatbelt, "seatbelt_available", lambda: True)
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
+    work = tmp_path / "work"
+    work.mkdir()
+
+    argv = _confined_agy_command(AGY, GeminiCodeRequest(prompt="hi", repo=work, yolo=True))
+    denied = {v for k, v in _params(argv).items() if k.startswith("DENY_READ_")}
+
+    listed = credential_deny_read()
+    assert listed
+    for entry in listed:
+        written = os.path.expanduser(entry)
+        assert written in denied or os.path.realpath(written) in denied, entry
 
 
 def test_a_malformed_settings_block_refuses_the_cli_without_an_opt_out(
