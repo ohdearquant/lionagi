@@ -1765,6 +1765,41 @@ def test_the_second_containment_pass_of_a_narrowed_worker_changes_nothing():
     assert kwargs["disallowed_tools"] == ["WebFetch", "Agent", "Task"]
 
 
+def test_a_contained_worker_whose_role_declares_no_builtin_tool_keeps_none():
+    """An empty tools value is the narrowest declaration; read as unset it would give the
+    worker the whole contained list, without prompting."""
+    model = _contained_tool_model(tools="", allowed_tools=["mcp__a__search"])
+    kwargs = model.endpoint.config.kwargs
+
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["a"], role="reader"
+    )
+    once = copy.deepcopy(kwargs)
+    orch_mod._isolate_worker_cli_config(
+        model, contain_user_settings=True, mcp_server_names=["a"], role="reader"
+    )
+
+    assert kwargs == once
+    assert kwargs["tools"] == ""
+    assert kwargs["allowed_tools"] == ["mcp__a__*", "mcp__a__search"]
+    assert kwargs["permission_mode"] == "dontAsk"
+    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+    args = payload["request"].as_cmd_args()
+    assert _flag_values(args, "--tools") == [""]
+
+
+def test_a_contained_worker_with_no_builtin_tool_is_refused_a_builtin_grant():
+    model = _contained_tool_model(tools="", allowed_tools=["Read"])
+    before = copy.deepcopy(model.endpoint.config.kwargs)
+
+    with pytest.raises(ConfigurationError, match=r"worker's tools \(none\)"):
+        orch_mod._isolate_worker_cli_config(
+            model, contain_user_settings=True, mcp_server_names=["a"], role="reader"
+        )
+
+    assert model.endpoint.config.kwargs == before
+
+
 def test_a_refusal_without_a_known_role_names_the_workers_tool_settings_not_a_profile():
     """A worker copied from another worker's branch has no role of its own to cite: the
     tools came from the settings that branch carries, and the message says so."""

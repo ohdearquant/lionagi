@@ -150,6 +150,8 @@ def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
 # The tool-set fields a profile may declare for a Claude Code agent.
 _PROFILE_TOOL_FIELDS = ("tools", "allowed_tools", "disallowed_tools")
 _HYPHENATED_TOOL_FIELDS = {"allowed-tools": "allowed_tools", "disallowed-tools": "disallowed_tools"}
+# What a profile writes as its whole ``tools`` value to declare an agent with no built-in tool.
+_NO_BUILTIN_TOOLS = "none"
 
 
 def _profile_tool_settings(profile: Any) -> dict[str, Any]:
@@ -159,8 +161,12 @@ def _profile_tool_settings(profile: Any) -> dict[str, Any]:
     comma-separated value ``--tools`` takes; ``allowed_tools`` and ``disallowed_tools`` stay
     lists. Each declared field must be a list of non-empty tool names, and ``tools`` must
     name at least one: an empty list there is refused rather than read as either "no tools"
-    or "no restriction". A value of any other shape is refused naming the field. A field the
-    profile does not declare is left out, so a profile with none yields ``{}``.
+    or "no restriction". The one other value ``tools`` takes is the word ``none``, which
+    declares an agent with no built-in tool and becomes the empty ``--tools`` value: the
+    agent is left with the MCP servers it is handed and nothing else. A list that names
+    ``none`` as a tool is refused, so the declaration has one spelling. A value of any other
+    shape is refused naming the field. A field the profile does not declare is left out, so
+    a profile with none yields ``{}``.
     """
     extra = getattr(profile, "extra", None) or {}
     name = getattr(profile, "name", "<unknown>")
@@ -169,20 +175,32 @@ def _profile_tool_settings(profile: Any) -> dict[str, Any]:
         if key not in extra:
             continue
         raw = extra[key]
+        if key == "tools" and isinstance(raw, str) and raw == _NO_BUILTIN_TOOLS:
+            settings[key] = ""
+            continue
         if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+            shape = "a list of non-empty tool names"
+            if key == "tools":
+                shape += f", or {_NO_BUILTIN_TOOLS} for an agent with no built-in tool"
             raise ConfigurationError(
-                f"agent profile {name!r} sets {key} to {raw!r}; it must be a list of "
-                "non-empty tool names."
+                f"agent profile {name!r} sets {key} to {raw!r}; it must be {shape}."
             )
         names = [t.strip() for t in raw]
         if key != "tools":
             settings[key] = names
+        elif _NO_BUILTIN_TOOLS in names:
+            raise ConfigurationError(
+                f"agent profile {name!r} sets {key} to {raw!r}, a list that names "
+                f"{_NO_BUILTIN_TOOLS} as a tool; for an agent with no built-in tool, write "
+                f"{key}: {_NO_BUILTIN_TOOLS} with no list around it."
+            )
         elif names:
             settings[key] = ",".join(names)
         else:
             raise ConfigurationError(
                 f"agent profile {name!r} sets {key} to an empty list; name at least one tool, "
-                "or leave the field out to keep every tool available."
+                f"write {key}: {_NO_BUILTIN_TOOLS} for an agent with no built-in tool, or leave "
+                "the field out to keep every tool available."
             )
     return settings
 
