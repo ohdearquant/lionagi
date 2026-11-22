@@ -228,6 +228,7 @@ _EXPECTED_PROVIDER_MODULES = frozenset(
         "lionhub.providers.ollama.generate",
         "lionhub.providers.openai",
         "lionhub.providers.openai._audio_schemas",
+        "lionhub.providers.openai._codex_permissions",
         "lionhub.providers.openai._codex_profile",
         "lionhub.providers.openai._codex_project_layers",
         "lionhub.providers.openai._config",

@@ -154,6 +154,15 @@
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "os.environ.get:'PATH'"
     ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "os.environ.get:\"HOME\"",
+      "os.environ.get:\"PATH\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\""
+    ],
     "lionhub/src/lionhub/serve/cli/_agent_depth.py": [
       "os.environ.get:SEAT_PROFILES_ENV"
     ],
@@ -242,6 +251,10 @@
     ],
     "lionhub/src/lionhub/tools/sandbox_backend.py": [
       "os.environ:k"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\""
     ]
   },
   "extras": {
@@ -1077,7 +1090,7 @@
       "__all__ = (\"Profile\",)"
     ],
     "lionhub/src/lionhub/agent/child_sandbox.py": [
-      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_EDIT\",\n    \"DEFAULT_DENY_READ\",\n    \"PROJECT_CONFIG_NAMES\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"credential_deny_read\",\n    \"default_allow_write\",\n    \"effective_policy\",\n    \"lionagi_home_config_paths\",\n    \"policy_from_dict\",\n    \"resolve_child_sandbox\",\n    \"run_state_paths\",\n    \"warn_project_child_sandbox\",\n)"
+      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_EDIT\",\n    \"DEFAULT_DENY_READ\",\n    \"PROJECT_CONFIG_NAMES\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"configured_deny_read\",\n    \"credential_deny_read\",\n    \"default_allow_write\",\n    \"effective_policy\",\n    \"lionagi_home_config_paths\",\n    \"policy_from_dict\",\n    \"resolve_child_sandbox\",\n    \"run_state_paths\",\n    \"warn_project_child_sandbox\",\n)"
     ],
     "lionhub/src/lionhub/agent/context_fold.py": [
       "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
@@ -1462,6 +1475,9 @@
     "lionhub/src/lionhub/providers/openai/_audio_schemas.py": [
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
+      "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n    \"user_layer_tables\",\n)"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "__all__ = (\n    \"CODEX_MCP_PROFILE_PREFIX\",\n    \"codex_config_defining_profile\",\n    \"codex_config_setting_default_permissions\",\n    \"codex_home_for_env\",\n    \"configured_codex_profile\",\n    \"global_codex_reasoning_effort\",\n    \"is_generated_codex_profile\",\n    \"project_codex_profile\",\n    \"refuse_codex_profile_run_settings\",\n    \"refuse_non_absolute_codex_home\",\n    \"resolve_codex_config_profile\",\n)"
     ],
@@ -1479,6 +1495,9 @@
     ],
     "lionhub/src/lionhub/providers/openai/codex.py": [
       "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
+    ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "__all__ = (\n    \"ScratchRootError\",\n    \"StubProvider\",\n    \"UnixListener\",\n    \"main\",\n    \"probe\",\n    \"run_codex\",\n    \"tool_outputs\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
@@ -1748,6 +1767,9 @@
     ],
     "lionhub/src/lionhub/tools/sandbox_backend.py": [
       "__all__ = (\n    \"ExecutionLimits\",\n    \"ExecutionTarget\",\n    \"SubstrateStreamEvent\",\n    \"BackendName\",\n    \"CellKind\",\n    \"ColdStartClass\",\n    \"Capabilities\",\n    \"ProvisionSpec\",\n    \"Handle\",\n    \"Cell\",\n    \"CellResult\",\n    \"SandboxBackend\",\n    \"DIFF_ARTIFACT\",\n    \"LocalWorktreeBackend\",\n    \"DaytonaBackend\",\n    \"get_backend\",\n    \"select_backend_for_cell\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"VolumeIdentityError\",\n    \"link_record_dir\",\n    \"probe\",\n    \"require_passing_link_record\",\n    \"volume_identity\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/tools/types.py": [
       "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
@@ -3756,6 +3778,7 @@
       "check_sandbox_backend",
       "claude_settings_argument",
       "claude_settings_for",
+      "configured_deny_read",
       "credential_deny_read",
       "default_allow_write",
       "effective_policy",
@@ -4346,6 +4369,7 @@
       "refuse_oversized_argument",
       "refuse_oversized_command",
       "refuse_text_strict_utf8_cannot_encode",
+      "resolve_cli_program",
       "resolve_cli_workspace",
       "reveal_redacted",
       "spawned_create_time",
@@ -4536,6 +4560,20 @@
       "AudioSpeechRequest",
       "AudioTranscriptionRequest"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
+      "binary_sha256",
+      "codex_binary_version",
+      "deny_entries",
+      "permission_profile_table",
+      "probe_record",
+      "probe_record_dir",
+      "probe_record_path",
+      "refuse_a_second_sandbox_setting",
+      "refuse_write_roots_on_denied_paths",
+      "refuse_write_roots_on_probe_record_dir",
+      "require_passing_probe_record",
+      "user_layer_tables"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_profile.py": [
       "codex_config_defining_profile",
       "codex_config_setting_default_permissions",
@@ -4583,6 +4621,16 @@
       "stream_codex_cli",
       "stream_codex_cli_events",
       "toml_override_value"
+    ],
+    "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
+      "ScratchRootError",
+      "StubProvider",
+      "UnixListener",
+      "main",
+      "probe",
+      "run_codex",
+      "tool_outputs",
+      "write_record"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "OpenAIEmbeddingRequest",
@@ -5389,6 +5437,16 @@
       "SubstrateStreamEvent",
       "get_backend",
       "select_backend_for_cell"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "VolumeIdentityError",
+      "link_record_dir",
+      "main",
+      "policy_digest",
+      "probe",
+      "require_passing_link_record",
+      "volume_identity",
+      "write_record"
     ]
   },
   "settings_declarations": [

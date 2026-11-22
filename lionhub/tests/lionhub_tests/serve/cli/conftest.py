@@ -46,3 +46,19 @@ def codex_home(monkeypatch, tmp_path) -> CodexHome:
     home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(home))
     return CodexHome(home)
+
+
+@pytest.fixture(autouse=True)
+def link_record_check(monkeypatch) -> list:
+    """The policies a write-capable API launch asked the link probe record about.
+
+    The real check reads the volume of every writable root with ``df`` and ``diskutil`` and a
+    record under the lionagi home, which a test's temporary workspace does not have; it is
+    exercised on its own in ``tools/test_seatbelt_link_probe.py``. Here it records each call, so
+    a test can assert the launch asked, and a test can make it refuse with ``monkeypatch``.
+    """
+    from lionhub.tools import seatbelt_link_probe
+
+    calls: list = []
+    monkeypatch.setattr(seatbelt_link_probe, "require_passing_link_record", calls.append)
+    return calls

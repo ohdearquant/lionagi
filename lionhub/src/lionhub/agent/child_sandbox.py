@@ -5,7 +5,8 @@
 
 One list names the credential locations a child must not read, the toolchain caches it may
 write, and the configuration a child must not edit. It is resolved from the global lionagi
-settings file only and rendered into the settings Claude Code understands. Any malformed value
+settings file only and rendered into the settings Claude Code understands and into the permission
+profile a Codex child runs under. Any malformed value
 raises ``ConfigurationError`` so a child never starts unconfined because of a configuration
 mistake. Every refusal raised here ends with the same sentence naming the opt-out,
 ``CHILD_SANDBOX_OPT_OUT``.
@@ -41,6 +42,7 @@ __all__ = (
     "check_sandbox_backend",
     "claude_settings_argument",
     "claude_settings_for",
+    "configured_deny_read",
     "credential_deny_read",
     "default_allow_write",
     "effective_policy",
@@ -470,8 +472,8 @@ def credential_deny_read() -> tuple[str, ...]:
     ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, every sign-in the
     subscription accounts directory keeps or names, and the directory of the Studio daemon's
     reconnect socket. The Claude Code policy starts from it, and the Seatbelt policies lionagi
-    builds itself (the API write set, the gemini-cli process) take it whole, so no list can drop
-    an entry the others deny.
+    builds itself (the API write set, the gemini-cli process) take it whole through
+    ``configured_deny_read``, so no list can drop an entry the others deny.
 
     Raises:
         ConfigurationError: the directory setting, the accounts file or one of its rows cannot
@@ -489,6 +491,31 @@ def credential_deny_read() -> tuple[str, ...]:
             )
         )
     )
+
+
+def configured_deny_read() -> tuple[str, ...]:
+    """The unreadable list for the Seatbelt policies lionagi builds itself.
+
+    ``credential_deny_read()`` plus every ``deny_read`` entry of the global ``child_sandbox``
+    block and of its ``extends`` files, with no profile's ``allow_read`` exemption applied: the
+    list a Claude Code child launched without a profile is denied. The API write set and the
+    gemini-cli process take it whole, so an entry the user adds to the settings reaches them as it
+    reaches a Claude Code child. ``enabled: false`` turns off the Claude Code sandbox only and does
+    not shorten this list.
+
+    Raises:
+        ConfigurationError: the global settings, an ``extends`` file, the accounts file or one of
+            its rows cannot be read, or the block is malformed; the launch is refused. The text
+            carries no opt-out, since turning the Claude Code child sandbox off does not lift
+            this refusal for these policies.
+    """
+    try:
+        return resolve_child_sandbox(None).deny_read
+    except ConfigurationError as exc:
+        text = str(exc)
+        if text.endswith(CHILD_SANDBOX_OPT_OUT):
+            text = text[: -len(CHILD_SANDBOX_OPT_OUT)].rstrip()
+        raise ConfigurationError(text) from None
 
 
 def _lies_under(path: str, entry: str) -> bool:
@@ -711,9 +738,42 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
         deny_read=tuple(p for p in deny if p not in exempt),
         allow_write=tuple(dict.fromkeys(allow)),
         # A read exemption never lifts the edit denial, so the whole read list is kept here.
-        deny_edit=tuple(dict.fromkeys([*DEFAULT_DENY_EDIT, *edit, *deny])),
+        # DEFAULT_DENY_EDIT stays the constant it is documented to be. The codex probe record
+        # directory follows LIONAGI_HOME, so it is added here, where the policy is assembled: a
+        # child that could write a record there could forge the proof a codex launch rests on.
+        deny_edit=tuple(
+            dict.fromkeys([*DEFAULT_DENY_EDIT, *_probe_record_dir_entries(), *edit, *deny])
+        ),
         profile=profile or None,
     )
+
+
+def _home_relative(path: str) -> str:
+    """``path`` written with ``~`` when it lies under the home directory, as the deny entries
+    are, and as given otherwise."""
+    try:
+        return "~/" + Path(path).relative_to(Path.home()).as_posix()
+    except ValueError:
+        return path
+
+
+def _probe_record_dir_entries() -> tuple[str, ...]:
+    """The codex probe record directory as ``deny_edit`` entries: the directory as written, then
+    every link its path passes through and where it resolves, the way every other deny entry
+    is placed, each written with ``~`` under the home directory."""
+    from lionhub.providers.openai._codex_permissions import probe_record_dir
+
+    return tuple(
+        dict.fromkeys(
+            _home_relative(path) for path in _written_and_resolved(str(probe_record_dir()))
+        )
+    )
+
+
+def _probe_record_dir_entry() -> str:
+    """The codex probe record directory as written, as a ``deny_edit`` entry; the links on its
+    path and where they resolve follow it in ``_probe_record_dir_entries``."""
+    return _probe_record_dir_entries()[0]
 
 
 def policy_from_dict(data: dict) -> ChildSandboxPolicy:

@@ -5,8 +5,9 @@
 workspace-write sandbox with no network and no extra writable roots, agy under
 ``--sandbox``, Claude Code without its file-writing tools. A setting that would undo
 that is refused, and Pi, which has no sandbox to pin, refuses ``light`` outright. A
-``heavy`` codex agent keeps its network and temporary directories, but its extra writable
-roots are the child sandbox's ``allow_write`` list, not whatever the user config lists."""
+``heavy`` codex agent keeps the network setting its user config gives and its temporary
+directories, but its extra writable roots are the child sandbox's ``allow_write`` list, not
+whatever the user config lists."""
 
 from __future__ import annotations
 
@@ -71,6 +72,22 @@ def sandbox_on(monkeypatch):
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
 
 
+@pytest.fixture(autouse=True)
+def _no_host_probe_record(monkeypatch):
+    """These tests cover argv, roots and config refusals, not the probe record.
+
+    The launch gate runs on every render under the permission profile, and an unpatched record
+    lookup would run the host's codex binary to read its version.
+    """
+    import lionhub.providers.openai.codex as codex_module
+
+    monkeypatch.setattr(
+        codex_module,
+        "require_passing_probe_record",
+        lambda binary, env=None, cwd=None: "probe-record",
+    )
+
+
 def _default_roots():
     import os
 
@@ -79,16 +96,67 @@ def _default_roots():
     return [os.path.expanduser(path) for path in default_allow_write()]
 
 
+def _profile_table(args: list[str]) -> dict:
+    """The permission profile table a codex command line carries, parsed back from its override."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: the declared `tomli` reads the same TOML
+        import tomli as tomllib
+
+    rows = [o for o in _pairs(args, "-c") if o.startswith("permissions.lionagi_child=")]
+    assert len(rows) == 1
+    return tomllib.loads("table = " + rows[0].split("=", 1)[1])["table"]
+
+
+def _expected_profile(env, *, write, light=False, read_only=False, network=False) -> dict:
+    """The table a launch builds for these inputs, rendered and parsed as a command line carries it."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: the declared `tomli` reads the same TOML
+        import tomli as tomllib
+
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+    from lionhub.providers.openai._codex_permissions import (
+        deny_entries,
+        permission_profile_table,
+    )
+    from lionhub.providers.openai._codex_profile import codex_home_for_env
+    from lionhub.providers.openai.codex import toml_override_value
+
+    policy = resolve_child_sandbox(None)
+    table = permission_profile_table(
+        deny=deny_entries(policy.deny_read, codex_home_for_env(env), env),
+        write=write,
+        light=light,
+        read_only=read_only,
+        network=network,
+    )
+    return tomllib.loads("table = " + toml_override_value(table))["table"]
+
+
 @pytest.mark.parametrize(
-    "kw", [{}, {"full_auto": True}, {"sandbox": "workspace-write"}, {"workload": "heavy"}]
+    "kw",
+    [
+        {"full_auto": True},
+        {"sandbox": "workspace-write"},
+        {"workload": "heavy", "sandbox": "workspace-write"},
+        {"workload": "heavy", "full_auto": True},
+    ],
 )
 def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
     tmp_path, kw, sandbox_on
 ):
-    overrides = _pairs(_codex(tmp_path, **kw), "-c")
-    sandbox = [o for o in overrides if o.startswith("sandbox_workspace_write.")]
-    assert sandbox == [_heavy_roots_pin(_default_roots())]
-    assert overrides[-1] == sandbox[0]
+    env = _home_with_config(tmp_path, "")
+    args = _codex(tmp_path, env=env, **kw)
+    # Under the permission profile there is no sandbox mode and no legacy pin: the toolchain
+    # caches are the profile's write entries, and the profile is the last override.
+    assert "--sandbox" not in args
+    assert "-s" not in args
+    overrides = _pairs(args, "-c")
+    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+    assert overrides[-1].startswith("permissions.lionagi_child=")
+    assert overrides[-2].startswith("default_permissions=")
+    assert _profile_table(args) == _expected_profile(env, write=_default_roots())
     assert all(root.startswith("/") for root in _default_roots())
 
 
@@ -102,18 +170,20 @@ def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path):
     assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
 
 
-def test_the_heavy_pin_beats_the_user_configs_writable_roots(tmp_path, sandbox_on):
+def test_the_heavy_profile_beats_the_user_configs_writable_roots(tmp_path, sandbox_on):
     env = _home_with_config(
         tmp_path,
         "[sandbox_workspace_write]\nnetwork_access = true\n"
         f"writable_roots = [{str(tmp_path / 'everything')!r}]\n",
     )
     args = _codex(tmp_path, full_auto=True, ignore_user_config=True, env=env)
-    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write.")]
-    # The user config's roots are carried, and the pin, after them, has the last word.
-    assert any("everything" in o for o in sandbox[:-1])
-    assert "sandbox_workspace_write.network_access=true" in sandbox
-    assert sandbox[-1] == _heavy_roots_pin(_default_roots())
+    # Codex ignores `sandbox_workspace_write.*` under a profile, so the profile's write entries
+    # are the child sandbox's roots and never the roots the user config lists.
+    table = _profile_table(args)
+    # The ignored config's `network_access = true` carries into the profile's network key.
+    assert table == _expected_profile(env, write=_default_roots(), network=True)
+    assert "everything" not in str(table)
+    assert _pairs(args, "-c")[-1].startswith("permissions.lionagi_child=")
 
 
 @pytest.mark.parametrize(
@@ -123,11 +193,13 @@ def test_the_heavy_pin_beats_the_user_configs_writable_roots(tmp_path, sandbox_o
         {"sandbox_workspace_write": {"writable_roots": ["/opt/build"]}},
     ],
 )
-def test_writable_roots_the_caller_sets_are_kept(tmp_path, overrides, sandbox_on):
-    args = _codex(tmp_path, full_auto=True, config_overrides=overrides)
-    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
-    assert len(sandbox) == 1
-    assert "/opt/build" in sandbox[0]
+def test_writable_roots_the_caller_sets_are_in_the_profile(tmp_path, overrides, sandbox_on):
+    env = _home_with_config(tmp_path, "")
+    args = _codex(tmp_path, env=env, full_auto=True, config_overrides=overrides)
+    # Codex ignores `sandbox_workspace_write.*` under a profile, so the roots are not emitted that
+    # way: the profile's write entries carry them, in place of the child sandbox's own list.
+    assert not [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write")]
+    assert _profile_table(args) == _expected_profile(env, write=["/opt/build"])
 
 
 def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch):
@@ -136,13 +208,17 @@ def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch
     monkeypatch.setattr(
         child_sandbox, "_global_settings", lambda: {"child_sandbox": {"allow_write": ["/opt/c"]}}
     )
-    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
-    assert overrides[-1] == _heavy_roots_pin([*_default_roots(), "/opt/c"])
+    env = _home_with_config(tmp_path, "")
+    args = _codex(tmp_path, env=env, full_auto=True)
+    assert _profile_table(args) == _expected_profile(env, write=[*_default_roots(), "/opt/c"])
     monkeypatch.setattr(
         child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
     )
-    overrides = _pairs(_codex(tmp_path, full_auto=True), "-c")
-    assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
+    args = _codex(tmp_path, env=env, full_auto=True)
+    # With the child sandbox off the command line is the sandbox-mode one: no profile, no pin.
+    overrides = _pairs(args, "-c")
+    assert not [o for o in overrides if o.startswith(("sandbox_workspace_write.", "permissions."))]
+    assert _pairs(args, "--sandbox") == ["workspace-write"]
 
 
 @pytest.mark.parametrize("kw", [{}, {"enable_features": ["apps", "plugins"]}])
@@ -251,7 +327,8 @@ def test_a_light_codex_agent_refuses_a_profile_lionagi_did_not_write(tmp_path):
 
 
 def _home_with_config(tmp_path, text: str) -> dict[str, str]:
-    home = tmp_path / "codex-home"
+    # Beside the working directory, not inside it: a write root over CODEX_HOME is refused.
+    home = tmp_path.parent / f"{tmp_path.name}-codex-home"
     home.mkdir()
     (home / "config.toml").write_text(text)
     return {"CODEX_HOME": str(home)}
@@ -526,10 +603,24 @@ def test_a_named_profile_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox
     assert _codex(tmp_path, env=env, profile="q")[:2] == ["exec", "--json"]
 
 
-def test_a_request_that_sets_its_own_mode_is_not_judged_by_the_configs_mode(tmp_path, sandbox_on):
+@pytest.mark.parametrize("request_kw", [{"full_auto": True}, {"sandbox": "workspace-write"}])
+def test_a_request_mode_does_not_shield_a_config_that_turns_the_sandbox_off(
+    tmp_path, sandbox_on, request_kw
+):
+    # Under the permission profile no `--sandbox` flag is emitted, so the request's own mode
+    # displaces nothing: the config still decides, and a config that turns the sandbox off is refused.
     env = _home_with_config(tmp_path, 'sandbox_mode = "danger-full-access"\n')
+    with pytest.raises(CLIInputRefusedError, match="danger-full-access"):
+        _codex(tmp_path, env=env, **request_kw)
+
+
+def test_a_request_mode_with_a_harmless_config_mode_renders_the_profile_only(tmp_path, sandbox_on):
+    env = _home_with_config(tmp_path, 'sandbox_mode = "workspace-write"\n')
     args = _codex(tmp_path, env=env, full_auto=True)
-    assert _pairs(args, "--sandbox") == ["workspace-write"]
+    # The profile governs, so the request's own mode is not rendered as a sandbox flag at all.
+    assert "--sandbox" not in args
+    assert "-s" not in args
+    assert _profile_table(args) == _expected_profile(env, write=_default_roots())
 
 
 def test_a_project_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):

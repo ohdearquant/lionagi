@@ -291,6 +291,25 @@ class SeatbeltPolicy:
             ]
         if self.pty:
             parts.append(_PTY_POLICY)
+        # A hard link gives a file outside the roots, or in a read-only or unreadable path, a
+        # second name inside a root, where it can then be written. On a volume mounted with
+        # ownership ignored (`noowners`, an external disk's default) Seatbelt does not judge the
+        # source of link(2) by the write rules above, though it does judge the file-link
+        # operation, so the link is refused by that operation here. These rules come last, so no
+        # later rule can allow what they deny. Whether a volume honours them is measured per
+        # volume by `lionhub.tools.seatbelt_link_probe`.
+        if self.writable_roots:
+            inside = " ".join(
+                f'(subpath (param "WRITABLE_ROOT_{i}"))' for i in range(len(self.writable_roots))
+            )
+            parts.append(f"(deny file-link (require-not (require-any {inside})))\n")
+        else:
+            parts.append("(deny file-link)\n")
+        parts += [
+            f'(deny file-link (subpath (param "{kind}_{i}")))\n'
+            for kind, paths in (("READ_ONLY", self.read_only), ("DENY_READ", self.deny_read))
+            for i in range(len(paths))
+        ]
         return "".join(parts)
 
     def wrap(self, argv: Sequence[str]) -> list[str]:
