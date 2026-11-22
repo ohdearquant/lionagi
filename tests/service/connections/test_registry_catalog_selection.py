@@ -13,6 +13,8 @@ to the generic endpoint, a supplied catalog refuses it.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import warnings
 
 import pytest
@@ -172,6 +174,36 @@ def _broken_catalog():
     )
 
 
+@contextlib.contextmanager
+def _collection_held():
+    """Collect pending garbage with its warnings discarded, then keep automatic collection off.
+
+    Collecting garbage runs the finalizers of objects earlier tests left behind; a coroutine
+    that was never awaited warns as it is collected. While collection is off nothing is
+    collected automatically, so nothing of that kind warns until the block ends. Inside a
+    block that already holds collection off there is nothing to drain again.
+    """
+    if not gc.isenabled():
+        yield
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gc.collect()
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+@contextlib.contextmanager
+def _recorded_warnings():
+    """Record every warning raised inside the block, and none a garbage collection emits."""
+    with _collection_held(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        yield caught
+
+
 def _outcome(provider, endpoint="", **kwargs):
     """What one ``EndpointRegistry.match`` call yields, as a comparable tuple.
 
@@ -180,8 +212,7 @@ def _outcome(provider, endpoint="", **kwargs):
     None, categories)`` records a raised exception. ``categories`` is the tuple of warning
     categories the call emitted.
     """
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with _recorded_warnings() as caught:
         try:
             selected = EndpointRegistry.match(provider, endpoint, **kwargs)
         except Exception as error:
@@ -219,13 +250,17 @@ def _combinations(catalog):
 
 def test_explicit_selection_matches_the_automatic_path(manifest_catalog, no_plugin_providers):
     combos = _combinations(manifest_catalog)
-    automatic = {combo: _outcome(*combo) for combo in combos}
+    # One drain for the whole sweep: with collection held off between the calls, draining
+    # again before each call would find nothing new to collect.
+    with _collection_held():
+        automatic = {combo: _outcome(*combo) for combo in combos}
     assert any(outcome[0] == "selected" for outcome in automatic.values())
 
     # From here the process registry is empty: the explicit path must not read it.
     EndpointRegistry._entries = []
     EndpointRegistry._alias_owners = {}
-    explicit = {combo: _outcome(*combo, provider_catalog=manifest_catalog) for combo in combos}
+    with _collection_held():
+        explicit = {combo: _outcome(*combo, provider_catalog=manifest_catalog) for combo in combos}
 
     # A declared provider asked for an endpoint it does not declare is the one place the two
     # paths part: the automatic path builds the generic endpoint, the catalog refuses.
@@ -252,6 +287,38 @@ def test_explicit_selection_matches_the_automatic_path(manifest_catalog, no_plug
         f"{len(differing)} of {len(automatic)} selections differ; "
         f"first: {next(iter(differing.items()))}"
     )
+
+
+def test_a_recorded_call_keeps_its_own_warnings_and_none_from_collected_garbage(
+    monkeypatch, no_plugin_providers
+):
+    """A collection inside the call adds no warning from another test's garbage.
+
+    The garbage is a reference cycle holding a coroutine that was never awaited; collecting it
+    emits a RuntimeWarning. The wrapped ``match`` collects before it selects, which is what an
+    automatic collection triggered by the call's own allocations does. The DeprecationWarning
+    is the call's own and must still be recorded.
+    """
+    match = EndpointRegistry.match
+
+    def collecting_match(cls, *args, **kwargs):
+        gc.collect()
+        return match(*args, **kwargs)
+
+    monkeypatch.setattr(EndpointRegistry, "match", classmethod(collecting_match))
+
+    async def never_awaited():
+        pass
+
+    cycle = {"coroutine": never_awaited()}
+    cycle["self"] = cycle
+    del cycle
+
+    outcome = _outcome("no-such-provider", "chat", base_url="http://localhost:9")
+
+    assert outcome[:2] == ("selected", Endpoint)
+    assert DeprecationWarning in outcome[4]
+    assert RuntimeWarning not in outcome[4], outcome[4]
 
 
 @pytest.mark.parametrize(
@@ -350,8 +417,7 @@ _FLAG_OPTIONS = pytest.mark.parametrize(
 
 def _match_recording_warnings(*args, **kwargs):
     """``EndpointRegistry.match`` and the warning categories it emitted; an error propagates."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with _recorded_warnings() as caught:
         selected = EndpointRegistry.match(*args, **kwargs)
     return selected, [warning.category for warning in caught]
 
