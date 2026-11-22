@@ -1,7 +1,7 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27 and 2026-11-20 (see Amendments
-  1 to 4); Amendment 5 (2026-11-21) is Proposed
+- **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
+  Amendments 1 to 5)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
@@ -9,7 +9,7 @@
 
 ## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
 
-**Status: Proposed.**
+**Status: Accepted.**
 
 This amendment replaces the sentence of Amendment 2's Limits that reads "Making a hard link to a
 file outside the roots, or to a file in `.git`, is refused." It was measured on the internal disk
