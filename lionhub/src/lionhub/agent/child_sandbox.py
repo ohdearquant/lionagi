@@ -41,6 +41,7 @@ __all__ = (
     "check_sandbox_backend",
     "claude_settings_argument",
     "claude_settings_for",
+    "configured_deny_read",
     "credential_deny_read",
     "default_allow_write",
     "effective_policy",
@@ -470,8 +471,8 @@ def credential_deny_read() -> tuple[str, ...]:
     ``DEFAULT_DENY_READ``, lionagi's own ``.env`` under ``LIONAGI_HOME``, every sign-in the
     subscription accounts directory keeps or names, and the directory of the Studio daemon's
     reconnect socket. The Claude Code policy starts from it, and the Seatbelt policies lionagi
-    builds itself (the API write set, the gemini-cli process) take it whole, so no list can drop
-    an entry the others deny.
+    builds itself (the API write set, the gemini-cli process) take it whole through
+    ``configured_deny_read``, so no list can drop an entry the others deny.
 
     Raises:
         ConfigurationError: the directory setting, the accounts file or one of its rows cannot
@@ -489,6 +490,31 @@ def credential_deny_read() -> tuple[str, ...]:
             )
         )
     )
+
+
+def configured_deny_read() -> tuple[str, ...]:
+    """The unreadable list for the Seatbelt policies lionagi builds itself.
+
+    ``credential_deny_read()`` plus every ``deny_read`` entry of the global ``child_sandbox``
+    block and of its ``extends`` files, with no profile's ``allow_read`` exemption applied: the
+    list a Claude Code child launched without a profile is denied. The API write set and the
+    gemini-cli process take it whole, so an entry the user adds to the settings reaches them as it
+    reaches a Claude Code child. ``enabled: false`` turns off the Claude Code sandbox only and does
+    not shorten this list.
+
+    Raises:
+        ConfigurationError: the global settings, an ``extends`` file, the accounts file or one of
+            its rows cannot be read, or the block is malformed; the launch is refused. The text
+            carries no opt-out, since turning the Claude Code child sandbox off does not lift
+            this refusal for these policies.
+    """
+    try:
+        return resolve_child_sandbox(None).deny_read
+    except ConfigurationError as exc:
+        text = str(exc)
+        if text.endswith(CHILD_SANDBOX_OPT_OUT):
+            text = text[: -len(CHILD_SANDBOX_OPT_OUT)].rstrip()
+        raise ConfigurationError(text) from None
 
 
 def _lies_under(path: str, entry: str) -> bool:
