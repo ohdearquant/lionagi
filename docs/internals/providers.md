@@ -574,13 +574,20 @@ The values are not in the child's argument list, which a process listing shows t
 user. An empty set (`{}`, the exclusive "no servers" form) holds nothing and stays inline, and a
 request that names its own `mcp_config` is passed through unchanged.
 
-Every header value (whole, and by its last word for the `Bearer <token>` form) and every `env`
-value under a name that reads as a credential is handed to the spawn as `secret_values`.
-`ndjson_from_cli()` adds those to the values it removes from the messages it logs and raises;
-a value shorter than eight characters is left out, as for every other redacted value.
+Every header value (whole, and by each word after the first, as in the `Bearer <token>` form) and
+every `env` value under a name that reads as a credential is handed to the spawn as
+`secret_values`. Each of those is also handed over in the form it takes inside a JSON string, with
+and without `\uXXXX` escapes, when that differs from the value. `ndjson_from_cli()` adds them to
+the values it removes from the messages it logs and raises.
 
-The file keeps the set off the command line and out of logs. The child still holds it: the CLI
-reads the file to connect to its servers.
+The limits: matching is literal, so a value the child transforms in another way (encoded, split,
+truncated) is not removed. A credential inside a server's `url`, or in the `args` of a stdio
+server, is not declared by this rule; the existing URL rules still apply to what they match. An
+`env` value under a name the credential rule does not match is not declared. A value shorter than
+eight characters is not redacted, as for every other redacted value.
+
+The file keeps the set off the command line; the declared values are removed from the spawn's
+messages. The child still holds the set: the CLI reads the file to connect to its servers.
 
 ## CLI agent admission
 

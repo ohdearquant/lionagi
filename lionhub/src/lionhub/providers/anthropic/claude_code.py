@@ -851,25 +851,35 @@ def _mcp_server_secret_values(servers: Mapping[str, Any] | None) -> list[str]:
     """The values of a server set that a log must not echo.
 
     Every header value, and every ``env`` value under a name that reads as a credential.
-    A header such as ``Bearer <token>`` is declared whole and by its last word, since a
-    child can print either.
+    A header such as ``Bearer <token>`` is declared whole and by each word after the first,
+    since a child can print any of them. Each declared value is also declared in the form it
+    takes inside a JSON string (with and without ``\\uXXXX`` escapes of non-ASCII text), when
+    that differs, since a child can print its configuration as JSON. The order is stable and
+    no value is declared twice.
     """
-    found: list[str] = []
+    found: dict[str, None] = {}
+
+    def declare(value: str) -> None:
+        found.setdefault(value)
+        for as_json in (json.dumps(value), json.dumps(value, ensure_ascii=False)):
+            inside = as_json[1:-1]
+            if inside != value:
+                found.setdefault(inside)
+
     for server in (servers or {}).values():
         if not isinstance(server, Mapping):
             continue
         headers = server.get("headers")
         for value in headers.values() if isinstance(headers, Mapping) else ():
             if isinstance(value, str) and value.strip():
-                found.append(value)
-                last = value.split()[-1]
-                if last != value:
-                    found.append(last)
+                declare(value)
+                for word in value.split()[1:]:
+                    declare(word)
         env = server.get("env")
         for name, value in env.items() if isinstance(env, Mapping) else ():
             if isinstance(name, str) and isinstance(value, str) and _name_reads_as_credential(name):
-                found.append(value)
-    return found
+                declare(value)
+    return list(found)
 
 
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
