@@ -684,6 +684,12 @@ def _make_api_agent_spec(
             per_leg_uv_cache=True,
             _command_env_names=_command_env_names,
         )
+        from lionhub.tools import seatbelt_link_probe
+
+        # On a volume where Seatbelt does not judge a hard link's source, a link out of the roots
+        # lets the editor and bash write a file outside them; the launch needs a passing link
+        # probe record for every writable root's volume.
+        seatbelt_link_probe.require_passing_link_record(spec.seatbelt)
     _wire_secure_guards(spec, cwd)
     return spec
 

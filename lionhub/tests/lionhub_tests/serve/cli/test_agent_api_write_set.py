@@ -1016,3 +1016,41 @@ def test_a_malformed_settings_block_refuses_the_write_set_without_an_opt_out(mon
             cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
         )
     assert CHILD_SANDBOX_OPT_OUT not in str(refused.value)
+
+
+def test_the_write_set_asks_for_a_passing_link_record_and_the_read_set_does_not(
+    monkeypatch, tmp_path, link_record_check
+):
+    import lionhub.serve.cli.agent as agent_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+
+    read = agent_mod._make_api_agent_spec(
+        cwd=str(workspace), effort=None, system_prompt=None, role="reviewer", tools="read"
+    )
+    assert read.seatbelt is None and link_record_check == []
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+    )
+    assert link_record_check == [spec.seatbelt]
+
+
+def test_the_write_set_is_refused_when_the_link_record_check_refuses(monkeypatch, tmp_path):
+    import lionhub.serve.cli.agent as agent_mod
+    from lionhub.tools import seatbelt_link_probe
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_seatbelt, "_uv_cache_dir", lambda **kwargs: tmp_path / "uv-cache")
+
+    def refuse(policy):
+        raise ConfigurationError("the volume has no link probe record")
+
+    monkeypatch.setattr(seatbelt_link_probe, "require_passing_link_record", refuse)
+    with pytest.raises(ConfigurationError, match="no link probe record"):
+        agent_mod._make_api_agent_spec(
+            cwd=str(workspace), effort=None, system_prompt=None, role="implementer", tools="write"
+        )

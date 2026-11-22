@@ -251,6 +251,10 @@
     ],
     "lionhub/src/lionhub/tools/sandbox_backend.py": [
       "os.environ:k"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "os.environ.get:\"TMPDIR\"",
+      "os.environ:\"TMPDIR\""
     ]
   },
   "extras": {
@@ -1763,6 +1767,9 @@
     ],
     "lionhub/src/lionhub/tools/sandbox_backend.py": [
       "__all__ = (\n    \"ExecutionLimits\",\n    \"ExecutionTarget\",\n    \"SubstrateStreamEvent\",\n    \"BackendName\",\n    \"CellKind\",\n    \"ColdStartClass\",\n    \"Capabilities\",\n    \"ProvisionSpec\",\n    \"Handle\",\n    \"Cell\",\n    \"CellResult\",\n    \"SandboxBackend\",\n    \"DIFF_ARTIFACT\",\n    \"LocalWorktreeBackend\",\n    \"DaytonaBackend\",\n    \"get_backend\",\n    \"select_backend_for_cell\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"VolumeIdentityError\",\n    \"link_record_dir\",\n    \"probe\",\n    \"require_passing_link_record\",\n    \"volume_identity\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/tools/types.py": [
       "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
@@ -5430,6 +5437,16 @@
       "SubstrateStreamEvent",
       "get_backend",
       "select_backend_for_cell"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
+      "VolumeIdentityError",
+      "link_record_dir",
+      "main",
+      "policy_digest",
+      "probe",
+      "require_passing_link_record",
+      "volume_identity",
+      "write_record"
     ]
   },
   "settings_declarations": [
