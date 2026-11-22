@@ -1035,6 +1035,38 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
     )
 
 
+def _requested_account(
+    verb: Verb, args: dict[str, Any], profile: Any, prompt: str | None
+) -> tuple[str | None, str | None]:
+    """The subscription account an agent submission asks for, as ``(name, provider)``.
+
+    Read the way ``li agent`` reads it: the ``account`` argument wins over the profile's
+    ``account``, and a profile ``codex_home`` with neither names no account on a codex run.
+    The provider is the account table the model's provider uses (``claude_code`` or
+    ``codex``), or None when no model is named here (a resumed run's model comes from its
+    branch) or its provider takes no account. Nothing is resolved or read: the run resolves
+    the account itself, and refuses one it cannot use. Other job kinds pick accounts per
+    worker while they run, so they ask for none here.
+    """
+    if verb.job_kind != "agent":
+        return None, None
+    name = args.get("account") or getattr(profile, "account", None)
+    if name is None and getattr(profile, "codex_home", None) is None:
+        return None, None
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+    provider = None
+    if isinstance(model, str) and model:
+        from lionhub.agent.subscription_accounts import account_provider
+
+        provider = account_provider(model.split("/", 1)[0])
+    if name is None:
+        # A Codex home with no name: a codex run, on no named account.
+        return None, "codex"
+    return str(name), provider
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     resumes = bool(args.get("resume") or args.get("continue_last"))
@@ -1074,6 +1106,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             default_name = selected
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
     write_capable = _write_capable(verb, args, profile)
+    account, account_provider = _requested_account(verb, args, profile, prompt)
     assert verb.job_kind is not None
     resume_id = None
     try:
@@ -1094,6 +1127,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
             profile=profile,
+            account=account,
+            account_provider=account_provider,
             **({"replay_mcp_choice": True} if resumes else {}),
         )
     except NestedAgentRefusedError as exc:
