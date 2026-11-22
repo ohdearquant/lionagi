@@ -1075,6 +1075,65 @@ def test_consume_route_404_for_unknown_id(tmp_path, monkeypatch):
     assert resp.status_code == 404, resp.text
 
 
+async def _grant_directly(approval_id: str):
+    from lionagi_studio.services import approvals as approvals_mod
+
+    return await approvals_mod.grant_approval(approval_id)
+
+
+def test_consume_route_403_on_an_open_daemon_and_leaves_it_granted(tmp_path, monkeypatch):
+    """With no token configured any local process reaches the daemon, so a granted
+    approval is not spendable over HTTP there: consuming fails closed, as granting does."""
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    body = {"action_kind": "launch_playbook", "params": {"name": "demo"}}
+    approval_id = client.post("/api/approvals/", json=body).json()["id"]
+    assert _run(_grant_directly(approval_id))["status"] == "granted"
+
+    resp = client.post(f"/api/approvals/{approval_id}/consume", json=body)
+    assert resp.status_code == 403, resp.text
+    assert "LIONAGI_STUDIO_AUTH_TOKEN" in resp.json()["detail"]
+    assert client.get(f"/api/approvals/{approval_id}").json()["status"] == "granted"
+
+
+@pytest.mark.parametrize("headers", [{}, _auth("wrong-token")], ids=["no-bearer", "wrong-bearer"])
+def test_consume_route_refuses_a_caller_without_the_bearer_and_leaves_it_granted(
+    tmp_path, monkeypatch, headers
+):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = _granted_over_http(client, {"name": "demo"})
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/consume",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=headers,
+    )
+    assert resp.status_code in (401, 403), resp.text
+    check = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token"))
+    assert check.json()["status"] == "granted"
+
+
+def test_the_consume_guard_refuses_without_the_bearer_whatever_the_middleware_did():
+    """The route's own check, apart from the admission middleware in front of it."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    def request(authorization: str | None) -> Request:
+        headers = [] if authorization is None else [(b"authorization", authorization.encode())]
+        return Request({"type": "http", "method": "POST", "path": "/", "headers": headers})
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+        for presented in (None, "Bearer wrong-token", "test-token", "Bearer test-token "):
+            with pytest.raises(HTTPException) as refused:
+                approvals_mod._require_daemon_credential(request(presented))
+            assert refused.value.status_code == 403
+        approvals_mod._require_daemon_credential(request("Bearer test-token"))
+
+
 def _lifetime(row: dict) -> float:
     return row["expires_at"] - row["proposed_at"]
 

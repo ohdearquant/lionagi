@@ -150,6 +150,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/agents/{name}"),
     ("POST", "/api/agents/{name}/validate"),
     ("POST", "/api/approvals/"),
+    ("POST", "/api/approvals/{approval_id}/consume"),
     ("POST", "/api/approvals/{approval_id}/deny"),
     ("POST", "/api/approvals/{approval_id}/grant"),
     ("POST", "/api/definitions/snapshot"),
@@ -286,7 +287,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 147
+    assert len(_GOLDEN_ROUTES) == 148
 
 
 def _compiled_match_shape(path_template: str) -> str:

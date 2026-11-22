@@ -150,6 +150,30 @@ def _require_human_principal(request: Request) -> None:
         )
 
 
+def _require_daemon_credential(request: Request) -> None:
+    """Consume requires the caller to PRESENT the configured bearer token.
+
+    Without one, every local process reaches the daemon, so a granted approval could be
+    spent by a caller holding no credential at all; consuming is refused on an open daemon,
+    as granting is. Checked here as well as by the admission middleware, so the route does
+    not depend on the middleware's order or on the token mode it runs in.
+    """
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "consuming an approval requires a configured auth token "
+                "(set LIONAGI_STUDIO_AUTH_TOKEN); refusing on an open daemon"
+            ),
+        )
+    presented = (request.headers.get("authorization") or "").encode("utf-8", "surrogateescape")
+    if not hmac.compare_digest(presented, f"Bearer {token}".encode("utf-8", "surrogateescape")):
+        raise HTTPException(
+            status_code=403, detail="consuming an approval requires the daemon's bearer token"
+        )
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -660,13 +684,17 @@ async def grant_approval_route(approval_id: str, request: Request) -> dict[str, 
 @studio_route(
     "/approvals/{approval_id}/consume", method="POST", area="approvals", name="consume_approval"
 )
-async def consume_approval_route(approval_id: str, body: _ConsumeBody) -> dict[str, Any]:
+async def consume_approval_route(
+    approval_id: str, body: _ConsumeBody, request: Request
+) -> dict[str, Any]:
     """Use a granted approval once, for exactly the action and params it was granted for.
 
     Unlike grant and deny this takes no human principal: the executor that runs the
     action consumes it, and the params hash, the single-use status move and the expiry
-    are what bind the consumption to the human's grant.
+    are what bind the consumption to the human's grant. It does take the daemon's bearer
+    token, and is refused on a daemon with none configured.
     """
+    _require_daemon_credential(request)
     return await require_approval(approval_id, action_kind=body.action_kind, params=body.params)
 
 
