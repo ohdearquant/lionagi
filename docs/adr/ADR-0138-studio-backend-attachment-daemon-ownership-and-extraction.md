@@ -1,14 +1,20 @@
 # ADR-0138: Studio backend attachment, daemon ownership, and extraction from the wheels
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: partial — F5's scheduler state, maintenance, lifecycle reaper, schedule
-  declaration, shared command parsing, project resolution, and mirror and diagnostics rows are
-  implemented in `lionhub`; F1's attachment seam (the daemon factory in `lionhub.serve.daemon.app`
-  and `attach_studio`) and its trust boundary, F2's unwinding of a failed start, and F7's
-  compatibility manifest and its check at the old application location
-  (`lionhub.serve.daemon.compatibility`) are implemented; the rest of F1, F2 to F4, F6, F7, and
-  F5's configuration, detached-launch, and execution-inspection rows remain
+- **Implementation-status**: implemented: F1 to F7. The code each decision names is present at the
+  path the decision gives it. The tests below show each item and can be run on their own: F1
+  `lionhub/tests/lionhub_tests/serve/daemon/test_app_factory.py` and
+  `apps/studio/backend/tests/lionagi_studio_tests/studio/test_attachment_trust_boundary.py`; F2
+  `apps/studio/backend/tests/lionagi_studio_tests/server/test_lifespan_startup_unwind.py`; F3
+  `apps/studio/backend/tests/lionagi_studio_tests/server/test_route_inventory.py`; F4
+  `apps/studio/backend/tests/lionagi_studio_tests/studio/test_operator_decision_capability.py` and
+  `apps/studio/backend/tests/lionagi_studio_tests/studio/test_pairing_token_source.py`; F5
+  `tests/test_moved_modules.py` and
+  `lionhub/tests/lionhub_tests/serve/daemon/services/test_extracted_helpers.py`; F6
+  `tests/contracts/test_auto_registry.py`; F7
+  `apps/studio/backend/tests/lionagi_studio_tests/server/test_studio_compatibility_manifest.py` and
+  `tests/packaging/test_studio_import_boundary.py`
 - **Area**: studio
 - **Date**: 2026-10-25
 - **Relations**: decides the Studio backend form that ADR-0136 D7 deferred and that ADR-0136 Amendment 1

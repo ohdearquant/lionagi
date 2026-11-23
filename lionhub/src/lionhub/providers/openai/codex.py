@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import unicodedata
 import warnings
@@ -731,6 +732,7 @@ class _PlainRequest:
     env: dict[str, str] | None
     workload: str
     profile_deny_read: tuple[str, ...] = ()
+    scratch_dir: str | None = None
 
     def contains_account_integrations(self) -> bool:
         # A light request is contained whatever it set: its sandbox keeps the network out,
@@ -855,6 +857,7 @@ def _plain_request(
         env=None if env is None else env_as_the_spawn_encodes_it(env),
         workload=text("workload") or DEFAULT_WORKLOAD,
         profile_deny_read=tuple(texts("profile_deny_read")),
+        scratch_dir=text("scratch_dir"),
     )
 
 
@@ -1464,17 +1467,126 @@ def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     return write_roots
 
 
+#: The variables the commands a codex child runs read for their temporary directory, each set
+#: to the run's scratch directory when it has one.
+_SCRATCH_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
+
+#: The directory a profile's ``:slash_tmp`` entry names, compared against a scratch directory
+#: and never written.
+_SLASH_TMP = "/tmp"  # noqa: S108
+
+
+def _scratch_root(plain: _PlainRequest) -> str | None:
+    """The run's scratch directory as a resolved path, or None when there is none to add.
+
+    A scratch path that is a symbolic link, or not a directory, is refused: the profile would
+    grant writes wherever it points. A path that is gone is skipped with a warning, so a command
+    line built for a run that has ended grants no name another process could take.
+    """
+    if not plain.scratch_dir:
+        return None
+    path = os.path.abspath(os.path.expanduser(plain.scratch_dir))
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        log.warning("scratch directory %s is gone; the codex child gets no scratch directory", path)
+        return None
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise ConfigurationError(
+            f"scratch directory {path} is a symbolic link or not a directory; "
+            "the codex child is not started"
+        )
+    return os.path.realpath(path)
+
+
+def _profiled_scratch(plain: _PlainRequest, policy: ChildSandboxPolicy | None) -> str | None:
+    """The scratch directory a codex launch adds to its permission profile, or None.
+
+    A request that names one where no permission profile would hold it is refused:
+    ``bypass_approvals`` turns codex's sandbox off, and with the child sandbox switched off
+    there is no profile to add the entry to.
+    """
+    if not plain.scratch_dir:
+        return None
+    if plain.bypass_approvals:
+        raise ConfigurationError(
+            "bypass_approvals turns codex's sandbox off, so the run's scratch directory would not "
+            "be the one place the child writes beyond its profile; run without bypass_approvals "
+            "or remove scratch from the agent profile"
+        )
+    if policy is None:
+        raise ConfigurationError(
+            "the child sandbox is switched off, so a codex child has no permission profile to "
+            "add the run's scratch directory to; enable child_sandbox in "
+            "~/.lionagi/settings.yaml or remove scratch from the agent profile"
+        )
+    return _scratch_root(plain)
+
+
+def _scratch_env_overrides(scratch: str) -> list[str]:
+    """The ``-c`` overrides that set ``TMPDIR``, ``TMP`` and ``TEMP`` to ``scratch`` for the
+    commands a codex child runs.
+
+    The one rendering of that setting: a launch and the sandbox probe both emit it through
+    here, so a probe record vouches for the overrides a launch really carries. Each is a dotted
+    key under ``shell_environment_policy.set`` that names one variable and leaves any other
+    entry of a ``set`` table alone. Codex's own process keeps its environment, so the
+    ``:tmpdir`` entry of a profile still means the directory codex was started with.
+    """
+    rendered = _rendered_override_value(scratch, "The scratch directory")
+    args: list[str] = []
+    for name in _SCRATCH_ENV_NAMES:
+        args.extend(["-c", f"shell_environment_policy.set.{name}={rendered}"])
+    return args
+
+
+def _refuse_scratch_under_read_only_temp(
+    table: Mapping[str, Any], scratch: str, env: Mapping[str, str] | None
+) -> None:
+    """Refuse a scratch directory inside ``/tmp`` or ``$TMPDIR`` where ``table`` makes that
+    directory read-only.
+
+    A light table, and a heavy one under ``exclude_slash_tmp`` or ``exclude_tmpdir``, sets
+    ``:slash_tmp`` or ``:tmpdir`` to read. A scratch directory inside one would put a write
+    entry and a read entry on the same path, and which one holds is not measured. ``$TMPDIR``
+    is the one codex itself starts with: from ``env``, the child's environment, or from this
+    process's when ``env`` is None. The written and the resolved spelling of each are compared.
+    """
+    files = table.get("filesystem")
+    if not isinstance(files, Mapping):
+        return
+    temps: list[tuple[str, str]] = []
+    if files.get(":slash_tmp") == "read":
+        temps.append(("/tmp", _SLASH_TMP))  # noqa: S108 -- the name in the refusal
+    tmpdir = (os.environ if env is None else env).get("TMPDIR")
+    if files.get(":tmpdir") == "read" and tmpdir:
+        temps.append(("$TMPDIR", tmpdir))
+    roots = dict.fromkeys((Path(os.path.abspath(scratch)), Path(os.path.realpath(scratch))))
+    for name, temp in temps:
+        spellings = dict.fromkeys((Path(os.path.abspath(temp)), Path(os.path.realpath(temp))))
+        for temp_path in spellings:
+            for root in roots:
+                if root == temp_path or temp_path in root.parents:
+                    raise CLIInputRefusedError(
+                        f"the scratch directory {scratch!r} lies inside {name} ({temp!r}), which "
+                        "this launch's permission profile makes read-only; the profile would "
+                        "grant writes where it sets reads, and which one holds is not measured. "
+                        "Keep the run directory outside /tmp and $TMPDIR."
+                    )
+
+
 def _permission_profile_args(
     plain: _PlainRequest,
     cwd: Path,
     env: Mapping[str, str] | None,
     policy: ChildSandboxPolicy,
     carried: Any,
+    scratch: str | None = None,
 ) -> list[str]:
     """The two ``-c`` overrides that put a codex child under the permission profile
     ``_permission_profile_launch_table`` renders."""
     return _permission_profile_overrides(
-        _permission_profile_launch_table(plain, cwd, env, policy, carried)
+        _permission_profile_launch_table(plain, cwd, env, policy, carried, scratch)
     )
 
 
@@ -1484,6 +1596,7 @@ def _permission_profile_launch_table(
     env: Mapping[str, str] | None,
     policy: ChildSandboxPolicy,
     carried: Any,
+    scratch: str | None = None,
 ) -> dict[str, Any]:
     """The permission profile table a codex child runs under.
 
@@ -1497,6 +1610,12 @@ def _permission_profile_launch_table(
     profile honours the user config's ``exclude_slash_tmp``, ``exclude_tmpdir_env_var`` and
     ``network_access``; the network is off for a light request and for a read-only profile, as
     the read-only sandbox mode left it.
+
+    ``scratch`` is the run's resolved scratch directory, or None. It is one more write entry in
+    every mode, a read-only profile's included (ADR-0041 Amendment 6), and it is refused as
+    every other root is when it holds or lies inside the probe record directory or a denied
+    location, and when it lies inside ``/tmp`` or ``$TMPDIR`` where the table makes that
+    directory read-only.
     """
     light = plain.workload == "light"
     exclude_slash_tmp = exclude_tmpdir = network = False
@@ -1527,15 +1646,23 @@ def _permission_profile_launch_table(
     if not read_only:
         refuse_write_roots_on_denied_paths([str(cwd)], deny, what="the working directory")
     refuse_write_roots_on_denied_paths(write_roots, deny)
-    return permission_profile_table(
+    scratch_entries = [] if scratch is None else [scratch]
+    if scratch is not None:
+        refuse_write_roots_on_probe_record_dir(scratch_entries, what="the scratch directory")
+        refuse_write_roots_on_denied_paths(scratch_entries, deny, what="the scratch directory")
+    table = permission_profile_table(
         deny=deny,
-        write=[] if read_only else write_roots,
+        write=[] if read_only else [*write_roots, *scratch_entries],
         light=light,
         read_only=read_only,
         network=network and not read_only,
         exclude_slash_tmp=exclude_slash_tmp and not read_only,
         exclude_tmpdir=exclude_tmpdir and not read_only,
+        read_only_write=scratch_entries,
     )
+    if scratch is not None:
+        _refuse_scratch_under_read_only_temp(table, scratch, env)
+    return table
 
 
 def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
@@ -1554,13 +1681,20 @@ def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, str] | None) -> None:
+def _gate_a_profiled_launch(
+    plain: _PlainRequest,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    scratch: str | None = None,
+) -> None:
     """Refuse, before spawn, a profiled launch that another layer could weaken or that runs on
     a codex binary not shown to enforce the profile.
 
-    ``env`` is the child's final environment. The probe record is read against the table the
-    launch renders, so the socket arm asked for is the one of the launch's own network state
-    (ADR-0133, "the socket arm per network state"). When the user config sets a root
+    ``env`` is the child's final environment and ``scratch`` the run's resolved scratch
+    directory, or None. The probe record is read against the table the launch renders, so the
+    socket arm asked for is the one of the launch's own network state (ADR-0133, "the socket
+    arm per network state"), and a launch with a scratch directory needs the arm that measured
+    its delivery (ADR-0041 Amendment 6). When the user config sets a root
     ``sandbox_mode`` the profile governs over it; one line in the log says so, naming the config
     and the probe record the binary's check rests on.
     """
@@ -1576,9 +1710,11 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
     table = None
     if policy is not None:
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
-        table = _permission_profile_launch_table(plain, cwd, env, policy, carried)
+        table = _permission_profile_launch_table(plain, cwd, env, policy, carried, scratch)
     # With no policy there is no table, and the record is then asked for every arm.
-    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd, table=table)
+    record = require_passing_probe_record(
+        CODEX_CLI, env=env, cwd=cwd, table=table, scratch=scratch is not None
+    )
     if governed is not None:
         log.warning(
             "the command-line permission profile governs over the sandbox_mode set in %s, as the "
@@ -1685,6 +1821,16 @@ class CodexCodeRequest(BaseModel):
             "fill into this CLI process, in addition to the routed account key "
             "names. Names only, never values. Empty leaves the lookup's fill "
             "exactly as it is."
+        ),
+    )
+    scratch_dir: SkipJsonSchema[str | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "This run's scratch directory (an `li agent` run whose profile declares "
+            "`scratch`): one write entry in the permission profile, and TMPDIR, TMP and TEMP "
+            "for the commands the child runs. None adds nothing."
         ),
     )
 
@@ -2366,9 +2512,12 @@ class CodexCodeRequest(BaseModel):
         # With the child sandbox on (and no bypass, which is refused in that state) the child
         # runs under a permission profile instead of a sandbox mode.
         policy = _permission_profile_policy(plain)
+        # Read once here, so a gone directory warns once and the table and the environment
+        # keys below name one path.
+        scratch = _profiled_scratch(plain, policy)
         if policy is not None:
             # ``as_cmd_args`` reaches the same refusals as a spawn does.
-            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env)
+            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env, scratch)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
@@ -2510,9 +2659,13 @@ class CodexCodeRequest(BaseModel):
             # codex, which keeps the last `-c` of a key, reads it whatever came before.
             args.extend(
                 _permission_profile_args(
-                    plain, cwd, plain.env if env is None else env, policy, carried
+                    plain, cwd, plain.env if env is None else env, policy, carried, scratch
                 )
             )
+            if scratch is not None:
+                # After every caller override and the profile, so codex, which keeps the last
+                # `-c` of a key, reads these three whatever came before.
+                args.extend(_scratch_env_overrides(scratch))
         elif light:
             # Pinned against the user's config, read by codex or carried above, which may
             # grant extra writable roots or the network to every workspace-write session, or
@@ -4403,7 +4556,7 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CODEX_HANDLER_PARAMS
     _handler_kwarg = "codex_handlers"
     _request_model = CodexCodeRequest
-    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip", "scratch_dir")
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True

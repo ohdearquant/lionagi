@@ -634,8 +634,7 @@ bullets there stand.
   readable. The arm passes only when the entry write lands, the working-directory write is refused
   and no file lands there, and the read succeeds. It is what a codex scratch directory
   (ADR-0041 Amendment 6) needs. It is required only for a launch whose table is read-only with a
-  write entry; no launch renders such a table until that amendment's codex change, so this arm
-  gates nothing yet and is recorded so the binary is probed once.
+  write entry, which a read-only codex launch with a scratch directory renders.
 - **The record is of format 4.** It carries the three arms above in place of
   `unix_socket_refused`. A record of format 3 or earlier is no record, so it has no socket arm for
   either network state and admits no launch: nothing passes on a stale record, and the probe is
@@ -722,8 +721,8 @@ record to format 5. The rest of the amendment above stands.
   the run. The record names the case for each run.
 - **The record is of format 5.** Each socket arm keeps, for each of its runs, the token each
   connect printed (the child's two and the probe's four outside ones) and each listener's count for
-  the run. A record of format 4 or earlier is no record and admits no launch. The refusal of a
-  codex scratch run (ADR-0041 Amendment 6) names format 5 in place of format 4.
+  the run. A record of format 4 or earlier is no record and admits no launch. ADR-0041
+  Amendment 6 moves the record to format 6 with its `scratch_env` arm.
 - **The refusal** keeps the wording of the amendment above, with its first sentence saying the
   probe did not show the child refused by the sandbox, since the arm now also fails when a count
   could not be read.

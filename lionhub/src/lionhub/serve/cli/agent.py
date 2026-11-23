@@ -1888,9 +1888,13 @@ _SCRATCH_REFUSAL_API = (
     "an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch "
     "root yet"
 )
-_SCRATCH_REFUSAL_CODEX = (
-    "a codex run needs a sandbox probe record of format 5, which measures a read-only policy "
-    "with one write root, and no such record exists yet"
+_SCRATCH_REFUSAL_CODEX_BYPASS = (
+    "bypass_approvals turns codex's sandbox off, so the scratch directory would not be the one "
+    "place the child writes beyond its permission profile"
+)
+_SCRATCH_REFUSAL_CODEX_NO_SANDBOX = (
+    "the child sandbox is switched off, so a codex child has no permission profile to add the "
+    "scratch directory to"
 )
 _SCRATCH_REFUSAL_GEMINI = (
     "the Gemini CLI's sandbox does not bound reads and grants no single writable directory this "
@@ -1898,14 +1902,33 @@ _SCRATCH_REFUSAL_GEMINI = (
 )
 
 
-def _scratch_refusal(provider: str, *, api_launch: bool, is_cli: bool) -> str | None:
-    """Why a run on *provider* cannot have a scratch directory, or None when it can."""
+def _scratch_refusal(
+    provider: str,
+    *,
+    api_launch: bool,
+    is_cli: bool,
+    endpoint_kwargs: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Why a run on *provider* cannot have a scratch directory, or None when it can.
+
+    For codex this is what can be known before the run exists: ``bypass_approvals`` in the
+    endpoint's settings, or the child sandbox switched off. What depends on the scratch path
+    itself (a denied path or the probe record directory over it, a read-only temp directory
+    holding it, a link in its place) and the probe record's ``scratch_env`` arm are refused when
+    the codex command line is built, after the run directory exists.
+    """
     if api_launch or not is_cli:
         return _SCRATCH_REFUSAL_API
     if provider == "claude_code":
         return None
     if provider == "codex":
-        return _SCRATCH_REFUSAL_CODEX
+        if (endpoint_kwargs or {}).get("bypass_approvals") is True:
+            return _SCRATCH_REFUSAL_CODEX_BYPASS
+        from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+        if not resolve_child_sandbox(None).enabled:
+            return _SCRATCH_REFUSAL_CODEX_NO_SANDBOX
+        return None
     if provider == "gemini_code":
         return _SCRATCH_REFUSAL_GEMINI
     return f"the {provider or 'unknown'} provider has no scratch directory support"
@@ -3050,12 +3073,13 @@ async def _run_agent(
                 _canonical_provider(branch.chat_model.endpoint.config.provider),
                 api_launch=api_launch is not None,
                 is_cli=branch.chat_model.is_cli,
+                endpoint_kwargs=getattr(branch.chat_model.endpoint.config, "kwargs", None),
             )
             if _scratch_reason is not None:
                 raise ConfigurationError(
                     f"agent profile {agent_name!r} declares scratch, which this run cannot "
-                    f"give it: {_scratch_reason}. Run the profile on a claude_code model, or "
-                    "remove scratch from it."
+                    f"give it: {_scratch_reason}. Run the profile on a claude_code model or a "
+                    "sandboxed codex model, or remove scratch from it."
                 )
         # The same for the profile's deny_read: refused before the run exists on a route with
         # nothing to hold it (ADR-0041 Amendment 7), and handed to every CLI model otherwise.

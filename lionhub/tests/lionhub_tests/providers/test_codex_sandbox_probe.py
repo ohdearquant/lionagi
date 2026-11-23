@@ -235,6 +235,17 @@ class FakeCodex:
         row = next(a for a in argv if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
         table = _toml_loads("table = " + row.split("=", 1)[1])["table"]
         add_dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+        # What the commands see: the run's own TMPDIR, unless shell_environment_policy.set names
+        # the variable, as codex sets it for the commands it runs.
+        child_env = {"TMPDIR": env.get("TMPDIR", ""), "TMP": "", "TEMP": ""}
+        for arg in argv:
+            found = re.match(r"shell_environment_policy\.set\.(\w+)=(.*)\Z", arg, re.DOTALL)
+            if found and "scratch_env" not in self.leaks:
+                if found.group(1) == "TEMP" and "scratch_env_partial" in self.leaks:
+                    continue
+                child_env[found.group(1)] = _toml_loads("v = " + found.group(2))["v"]
+        if "scratch_env_other" in self.leaks and child_env["TMP"]:
+            child_env["TMP"] += "-other"
         items: list[dict] = []
         for _ in range(40):
             item = _ask(base, items)
@@ -242,14 +253,21 @@ class FakeCodex:
                 break
             cmd = json.loads(item["arguments"])["cmd"]
             self.commands.append(cmd)
-            output = self._answer(cmd, table, Path(cwd), add_dirs, Path(env["CODEX_HOME"]))
+            output = self._answer(
+                cmd, table, Path(cwd), add_dirs, Path(env["CODEX_HOME"]), child_env
+            )
             items.append(
                 {"type": "function_call_output", "call_id": item["call_id"], "output": output}
             )
         return 0
 
-    def _answer(self, cmd, table, cwd: Path, add_dirs, home: Path) -> str:
-        words = shlex.split(cmd.rsplit("; echo rc=", 1)[0])
+    def _answer(self, cmd, table, cwd: Path, add_dirs, home: Path, child_env) -> str:
+        if cmd.startswith('echo "TMPDIR=$TMPDIR"'):
+            return "".join(f"{n}={child_env[n]}\n" for n in ("TMPDIR", "TMP", "TEMP")) + "rc=0"
+        words = [
+            w.replace("$TMPDIR", child_env["TMPDIR"])
+            for w in shlex.split(cmd.rsplit("; echo rc=", 1)[0])
+        ]
         files = table["filesystem"]
         deny = [Path(p) for p, mode in files.items() if mode == "deny"]
         table_writes = (
@@ -316,6 +334,11 @@ class FakeCodex:
             return f"{text}rc=0"
         if words[0] == "echo":
             target = Path(words[-1])
+            if target.name.startswith("scratch-env-") and "scratch_env_write_elsewhere" in leaks:
+                # The variables read right, but the write lands in the run's own TMPDIR.
+                elsewhere = Path(os.environ["TMPDIR"]) / target.name
+                elsewhere.write_text("w\n")
+                return "rc=0"
             where = target.parent.name
             if "lionagi-probe-" in target.name:
                 which = (
@@ -420,7 +443,7 @@ def test_the_read_only_run_starts_from_the_read_only_built_in(tmp_path, sandbox_
 def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbox_on):
     fake = FakeCodex()
     probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
-    assert len(fake.runs) == 5
+    assert len(fake.runs) == 6
     networks = []
     for argv, env, cwd in fake.runs:
         assert argv[0] == "/opt/codex"
@@ -433,7 +456,8 @@ def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbo
         assert table["filesystem"][env["CODEX_HOME"]] == "deny"
         assert Path(env["CODEX_HOME"]).parent == Path(cwd).parent
         networks.append(table["network"]["enabled"])
-    assert sorted(networks) == [False, False, False, True, True]
+    # The scratch run is light, so its network is off.
+    assert sorted(networks) == [False, False, False, False, True, True]
 
 
 def test_the_probe_carries_the_profile_overrides_a_launch_renders(tmp_path, sandbox_on):
@@ -559,7 +583,7 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 5
+    assert record["format"] == 6
     assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
@@ -751,8 +775,47 @@ def test_the_write_entry_arm_fails_when_only_add_dir_would_grant_it(tmp_path, sa
     arms = probe_module.probe(
         "codex", runner=FakeCodex(("table_write_ignored",)), scratch=tmp_path / "scratch"
     )
-    # The write-root run's entry is granted by its table alone too.
-    assert _failed_arm_names(arms) == {"write_entry", "read_only_write_root"}
+    # The write-root run's entry and the scratch run's are granted by their tables alone too.
+    assert _failed_arm_names(arms) == {"write_entry", "read_only_write_root", "scratch_env"}
+
+
+def test_the_scratch_env_arm_fails_when_one_variable_is_not_set(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("scratch_env_partial",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"scratch_env"}
+    assert "TEMP=''" in arms["scratch_env"]["evidence"]
+
+
+def test_the_scratch_env_arm_fails_when_one_variable_names_another_directory(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("scratch_env_other",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"scratch_env"}
+    assert "-other'" in arms["scratch_env"]["evidence"]
+
+
+def test_the_scratch_env_arm_fails_when_the_file_lands_elsewhere(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("scratch_env_write_elsewhere",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {"scratch_env"}
+    assert "did not land" in arms["scratch_env"]["evidence"]
+
+
+def test_only_the_scratch_run_sets_the_three_variables_after_its_profile(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert arms["scratch_env"]["passed"]
+    keyed = [argv for argv, _, _ in fake.runs if any("shell_environment_policy" in a for a in argv)]
+    assert len(keyed) == 1 and len(fake.runs) == 6
+    argv = keyed[0]
+    sets = [a for a in argv if a.startswith("shell_environment_policy.set.")]
+    assert [a.split("=", 1)[0].rsplit(".", 1)[1] for a in sets] == ["TMPDIR", "TMP", "TEMP"]
+    values = {_toml_loads("v = " + a.split("=", 1)[1])["v"] for a in sets}
+    assert len(values) == 1 and Path(values.pop()).name == "envscratch"
+    row = next(i for i, a in enumerate(argv) if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
+    assert row < argv.index(sets[0]) < argv.index("-C")
 
 
 def test_the_scratch_root_defaults_under_the_lionagi_state_directory(tmp_path, monkeypatch):
@@ -1093,7 +1156,7 @@ def test_a_network_off_refusal_says_no_setting_admits_it_and_names_the_probe(tmp
         assert f"{PROBE_COMMAND} --binary" in text
 
 
-@pytest.mark.parametrize("earlier", [3, 4])
+@pytest.mark.parametrize("earlier", [3, 4, 5])
 def test_an_earlier_format_record_admits_no_launch(tmp_path, record_dir, earlier):
     binary = _record_with(tmp_path)
     path, record, _resolved, _version = probe_record(str(binary))
@@ -1107,9 +1170,28 @@ def test_an_earlier_format_record_admits_no_launch(tmp_path, record_dir, earlier
 def test_without_a_table_every_arm_is_needed(tmp_path, record_dir):
     assert launch_arms(None) == REQUIRED_ARMS
     assert launch_arms({"network": {"enabled": "yes"}}) == REQUIRED_ARMS
-    for arm in (_ON, _OFF, "read_only_write_root"):
+    for arm in (_ON, _OFF, "read_only_write_root", "scratch_env"):
         binary = _record_with(tmp_path / arm, **{arm: True})
         assert not _admitted(binary, None)
+
+
+def test_a_scratch_launch_needs_the_scratch_env_arm_and_one_without_scratch_does_not(
+    tmp_path, record_dir
+):
+    binary = _record_with(tmp_path, scratch_env=True)
+    for name, table in _LAUNCHES.items():
+        # The control: the same launch without a scratch directory starts on this record.
+        require_passing_probe_record(str(binary), env={"PATH": ""}, table=table)
+        with pytest.raises(CLIInputRefusedError, match="scratch_env"):
+            require_passing_probe_record(str(binary), env={"PATH": ""}, table=table, scratch=True)
+    assert "scratch_env" not in launch_arms(_LAUNCHES["light"])
+    assert "scratch_env" in launch_arms(_LAUNCHES["light"], scratch=True)
+
+
+def test_a_record_whose_scratch_env_arm_passed_admits_a_scratch_launch(tmp_path, record_dir):
+    binary = _record_with(tmp_path)
+    for table in _LAUNCHES.values():
+        require_passing_probe_record(str(binary), env={"PATH": ""}, table=table, scratch=True)
 
 
 def test_the_write_root_arm_is_needed_only_by_a_read_only_table_with_a_write_entry(

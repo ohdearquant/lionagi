@@ -10,7 +10,7 @@ passing record, and this module writes it::
     python -m lionhub.providers.openai.codex_sandbox_probe
 
 It builds the profile with the same ``permission_profile_table`` and ``deny_entries`` a launch
-uses, runs the codex binary on PATH five times against a loopback stand-in for a model
+uses, runs the codex binary on PATH six times against a loopback stand-in for a model
 provider, in a scratch working directory and a scratch ``CODEX_HOME``, and has the model ask the
 child to read, write and fetch. Acceptance is what the tool outputs the stand-in receives show
 (a denied canary that was not read, a write that did not land), never codex's own report. A
@@ -555,8 +555,18 @@ def run_codex(argv: list[str], env: dict[str, str], cwd: Path) -> int:
         return -1
 
 
-def _argv(binary: str, url: str, table: Mapping[str, Any], cwd: Path, add_dirs: Sequence[Path]):
-    from lionhub.providers.openai.codex import _permission_profile_overrides
+def _argv(
+    binary: str,
+    url: str,
+    table: Mapping[str, Any],
+    cwd: Path,
+    add_dirs: Sequence[Path],
+    scratch: str | None = None,
+):
+    from lionhub.providers.openai.codex import (
+        _permission_profile_overrides,
+        _scratch_env_overrides,
+    )
 
     provider = f'model_providers.stub={{name="stub",base_url="{url}/v1",wire_api="responses"}}'
     argv = [
@@ -572,7 +582,11 @@ def _argv(binary: str, url: str, table: Mapping[str, Any], cwd: Path, add_dirs: 
     ]
     for path in add_dirs:
         argv += ["--add-dir", str(path)]
-    argv += [*_permission_profile_overrides(table), "-C", str(cwd), "probe"]
+    argv += _permission_profile_overrides(table)
+    if scratch is not None:
+        # The same keys, in the same place, as a launch with a scratch directory passes them.
+        argv += _scratch_env_overrides(scratch)
+    argv += ["-C", str(cwd), "probe"]
     return argv
 
 
@@ -597,12 +611,14 @@ def _run(
     home: Path,
     cwd: Path,
     add_dirs: Sequence[Path] = (),
+    scratch: str | None = None,
 ) -> dict[str, str | None]:
-    """One codex run: step name to the tool output the child sent back (None when it never did)."""
+    """One codex run: step name to the tool output the child sent back (None when it never did).
+    ``scratch`` sets TMPDIR, TMP and TEMP for the child's commands as a launch does."""
     provider = StubProvider([_step(cmd) for _, cmd in commands])
     provider.start()
     try:
-        runner(_argv(binary, provider.base_url, table, cwd, add_dirs), _env(home), cwd)
+        runner(_argv(binary, provider.base_url, table, cwd, add_dirs, scratch), _env(home), cwd)
     finally:
         provider.stop()
     outputs = tool_outputs(provider.requests)
@@ -649,13 +665,41 @@ def _arm(passed: bool, *texts: str | None, note: str = "") -> dict[str, Any]:
     return {"passed": bool(passed), "evidence": evidence}
 
 
+_SCRATCH_VAR = re.compile(r"^(TMPDIR|TMP|TEMP)=(.*)$", re.MULTILINE)
+
+
+def _scratch_env_verdict(
+    outputs: Mapping[str, str | None], scratch: Path, written: Path
+) -> tuple[bool, str]:
+    """Whether the scratch run's child saw TMPDIR, TMP and TEMP each equal to ``scratch`` and
+    the file it wrote under ``$TMPDIR`` landed at ``written``; and a note saying what it saw."""
+    from lionhub.providers.openai.codex import _SCRATCH_ENV_NAMES
+
+    seen = dict(_SCRATCH_VAR.findall(outputs.get("scratch_vars") or ""))
+    equal = _ok(outputs.get("scratch_vars")) and all(
+        seen.get(name) == str(scratch) for name in _SCRATCH_ENV_NAMES
+    )
+    landed = written.is_file()
+    shown = ", ".join(f"{name}={seen.get(name)!r}" for name in _SCRATCH_ENV_NAMES)
+    note = (
+        f"the child saw {shown}; the scratch directory is {str(scratch)!r}; the file written "
+        f"under $TMPDIR {'landed' if landed else 'did not land'} in it"
+    )
+    return bool(equal and _ok(outputs.get("scratch_write")) and landed), note
+
+
 def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]:
     from lionhub.agent.child_sandbox import resolve_child_sandbox
 
     nonce = uuid.uuid4().hex[:12]
     deny_mark, open_mark = f"DENY-CANARY-{nonce}", f"OPEN-CANARY-{nonce}"
-    dirs = {n: root / n for n in ("cwd", "entry", "outside", "deny", "open", "scratch")}
-    homes = {n: root / f"home-{n}" for n in ("heavy", "light", "user", "readonly", "rowrite")}
+    dirs = {
+        n: root / n for n in ("cwd", "entry", "outside", "deny", "open", "scratch", "envscratch")
+    }
+    homes = {
+        n: root / f"home-{n}"
+        for n in ("heavy", "light", "user", "readonly", "rowrite", "scratchenv")
+    }
     for path in (*dirs.values(), *homes.values()):
         path.mkdir(parents=True)
     (dirs["deny"] / "secret.txt").write_text(deny_mark + "\n")
@@ -670,13 +714,18 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     deny_read = [str(dirs["deny"]), *policy_deny]
 
     def table(
-        home: Path, *, light: bool, read_only: bool = False, read_only_write: Sequence[str] = ()
+        home: Path,
+        *,
+        light: bool,
+        read_only: bool = False,
+        read_only_write: Sequence[str] = (),
+        extra_write: Sequence[str] = (),
     ) -> dict[str, Any]:
         return permission_profile_table(
             # Expanded against the HOME the probe's child gets, as a launch expands its entries
             # against the child's HOME.
             deny=deny_entries(deny_read, home, _env(home)),
-            write=[] if light else [str(dirs["entry"])],
+            write=([] if light else [str(dirs["entry"])]) + list(extra_write),
             light=light,
             read_only=read_only,
             # The heavy runs set the network on, so the network arms test the profile's
@@ -748,6 +797,16 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         ("write_cwd", f"echo w > {q(str(rw_cwd))}"),
         ("read_control", f"/bin/cat {q(str(dirs['open'] / 'rw.txt'))}"),
     ]
+    # A light table granting one scratch directory, with TMPDIR, TMP and TEMP set to it the way
+    # a launch with a scratch directory sets them, while the child's own environment carries the
+    # probe's TMPDIR: the commands must see all three equal to the scratch directory, and a file
+    # written under $TMPDIR must land in it.
+    env_scratch = dirs["envscratch"]
+    env_written = env_scratch / f"scratch-env-{nonce}"
+    scratchenv_commands = [
+        ("scratch_vars", 'echo "TMPDIR=$TMPDIR"; echo "TMP=$TMP"; echo "TEMP=$TEMP"'),
+        ("scratch_write", f'echo w > "$TMPDIR"/{q(env_written.name)}'),
+    ]
 
     # The network step targets each run's own stub, whose port is known only once it listens,
     # so ``_run_with_network`` appends it to the plan after the stub starts.
@@ -810,6 +869,16 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         home=homes["rowrite"],
         cwd=dirs["cwd"],
     )
+    scratchenv = _run(
+        binary,
+        runner,
+        commands=scratchenv_commands,
+        table=table(homes["scratchenv"], light=True, extra_write=[str(env_scratch)]),
+        home=homes["scratchenv"],
+        cwd=dirs["cwd"],
+        scratch=str(env_scratch),
+    )
+    scratch_env_ok, scratch_env_note = _scratch_env_verdict(scratchenv, env_scratch, env_written)
 
     outside_gone = not (dirs["outside"] / "w").exists()
     # No real denied path opened is no evidence: the arm fails closed rather than pass on an
@@ -918,7 +987,14 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             rowrite["write_entry"],
             rowrite["write_cwd"],
             rowrite["read_control"],
-            note="a :read-only table granting one write entry, which no launch renders yet",
+            note="a :read-only table granting one write entry, as a read-only launch with a "
+            "scratch directory renders it",
+        ),
+        "scratch_env": _arm(
+            scratch_env_ok,
+            scratchenv["scratch_vars"],
+            scratchenv["scratch_write"],
+            note=scratch_env_note,
         ),
     }
     return {name: arms[name] for name in REQUIRED_ARMS}
