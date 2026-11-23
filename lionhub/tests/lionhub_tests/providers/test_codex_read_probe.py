@@ -275,15 +275,21 @@ def test_a_refusal_counts_only_when_it_is_the_sandbox_s(tmp_path):
 
 
 def test_a_codex_that_ignores_the_denial_of_slash_fails_every_refusal(tmp_path):
-    """The control: a table whose ``/`` entry has no effect leaves every outside read open."""
+    """The control: a table whose denials have no effect leaves every outside read open.
+
+    The temp-root rows are ignored with ``/``. Where ``tmp_path`` lies under ``/tmp``, as on a
+    Linux runner, the ``:slash_tmp`` row alone still refuses the outside file, and the control
+    would then show nothing about the arms.
+    """
     fake = FakeCodex()
     original = fake._access
+    ignored = {"/", ":tmpdir", ":slash_tmp"}
 
-    def ignore_slash(path, table, cwd, env):
-        files = {k: v for k, v in table["filesystem"].items() if k != "/"}
+    def ignore_denials(path, table, cwd, env):
+        files = {k: v for k, v in table["filesystem"].items() if k not in ignored}
         return original(path, {**table, "filesystem": files}, cwd, env)
 
-    fake._access = ignore_slash
+    fake._access = ignore_denials
     arms, _, _ = read_probe.probe("codex", runner=fake, scratch=tmp_path / "s")
 
     assert {"read_outside_refused", "stat_outside_refused", "list_parent_refused"} <= _failed(arms)
