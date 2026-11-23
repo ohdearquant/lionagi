@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -303,3 +304,66 @@ def test_the_repository_fragments_fold(tmp_path):
 
     assert fold.main(tmp_path) == 0
     assert fragment_names(tmp_path) == ["README.md"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "code"),
+    [
+        pytest.param(["--help"], 0, id="help"),
+        pytest.param(["-h"], 0, id="short-help"),
+        pytest.param(["--frobnicate"], 2, id="unknown-option"),
+        pytest.param(["extra"], 2, id="unknown-argument"),
+    ],
+)
+def test_help_and_an_unknown_argument_change_nothing(tmp_path, capsys, argv, code):
+    fragments = {"1.md": GOOD_FRAGMENT}
+    before_bytes = lay_out(tmp_path, changelog(*ADDED_AND_CHANGED), fragments)
+
+    assert fold.main(tmp_path, argv) == code
+
+    out = capsys.readouterr()
+    assert "usage:" in (out.out if code == 0 else out.err)
+    assert (tmp_path / "CHANGELOG.md").read_bytes() == before_bytes
+    assert fragment_names(tmp_path) == sorted(fragments)
+
+
+@pytest.mark.parametrize(("argv", "code"), [(["--help"], 0), (["--frobnicate"], 2)])
+def test_the_script_run_with_an_argument_reads_it(tmp_path, argv, code):
+    """The command line reaches the parser when the file runs as a script."""
+    fragments = {"1.md": GOOD_FRAGMENT}
+    before_bytes = lay_out(tmp_path, changelog(*ADDED_AND_CHANGED), fragments)
+
+    done = subprocess.run(
+        [sys.executable, _SPEC.origin, *argv],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert done.returncode == code, done.stderr
+    assert (tmp_path / "CHANGELOG.md").read_bytes() == before_bytes
+    assert fragment_names(tmp_path) == sorted(fragments)
+
+
+def test_check_validates_the_fold_and_writes_nothing(tmp_path, capsys):
+    fragments = {"1.md": GOOD_FRAGMENT, "2.md": GOOD_FRAGMENT}
+    before_bytes = lay_out(tmp_path, changelog(*ADDED_AND_CHANGED), fragments)
+
+    assert fold.main(tmp_path, ["--check"]) == 0
+
+    assert "2 changelog fragment(s) would fold" in capsys.readouterr().out
+    assert (tmp_path / "CHANGELOG.md").read_bytes() == before_bytes
+    assert fragment_names(tmp_path) == sorted(fragments)
+
+
+def test_check_refuses_a_bad_fragment_and_writes_nothing(tmp_path, capsys):
+    fragments = {"1.md": GOOD_FRAGMENT, "2.md": text("### Notes", "", "- A bullet.")}
+    before_bytes = lay_out(tmp_path, changelog(*ADDED_AND_CHANGED), fragments)
+
+    assert fold.main(tmp_path, ["--check"]) == 1
+
+    assert "2.md" in capsys.readouterr().err
+    assert (tmp_path / "CHANGELOG.md").read_bytes() == before_bytes
+    assert fragment_names(tmp_path) == sorted(fragments)
