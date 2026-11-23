@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import re
 import select
@@ -38,31 +39,36 @@ def _wait_for_exit(proc: subprocess.Popen, timeout: float) -> bool:
     and the process group it leads, stay reserved until the caller decides whether to end the
     group. That is what lets a group whose members cannot show their spawn marker (a protected
     system binary on macOS) still be ended after its leader has exited. Elsewhere this waits
-    with ``Popen.wait``, which collects the child; a member's marker is readable there.
+    with ``Popen.wait``, which collects the child; a member's marker is readable there. It also
+    waits that way when kqueue refuses the watch for a reason other than the process having
+    exited.
     """
     kqueue = getattr(select, "kqueue", None)
-    if kqueue is None or not isinstance(proc, _POPEN):
+    if kqueue is not None and isinstance(proc, _POPEN):
+        queue = kqueue()
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            exit_event = select.kevent(
+                proc.pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            events = queue.control([exit_event], 1, timeout)
+        finally:
+            queue.close()
+        if not events:
             return False
-        return True
-    queue = kqueue()
-    try:
-        exit_event = select.kevent(
-            proc.pid,
-            filter=select.KQ_FILTER_PROC,
-            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
-            fflags=select.KQ_NOTE_EXIT,
-        )
-        try:
-            return bool(queue.control([exit_event], 1, timeout))
-        except ProcessLookupError:
-            # No such process: it has already been collected, so it has exited.
-            _collect(proc)
+        # A refused watch comes back as an event with EV_ERROR set and the errno in ``data``.
+        # ESRCH means the kernel no longer lists the process as running: it has exited.
+        # Any other errno says nothing about the child.
+        event = events[0]
+        if not event.flags & select.KQ_EV_ERROR or event.data == errno.ESRCH:
             return True
-    finally:
-        queue.close()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
 
 
 def _collect(proc: subprocess.Popen) -> None:
