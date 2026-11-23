@@ -48,16 +48,17 @@ async def test_reconnect_notice_is_not_terminal_and_stream_continues():
     """The notice yields a non-error chunk and later events still arrive."""
     events = [
         {"type": "error", "error": {"message": RECONNECT_MSG}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
         {"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 7}},
     ]
     chunks = await _chunks_from_events(events)
 
-    assert len(chunks) == 2, f"expected notice + result, got {[c.type for c in chunks]}"
     notice = chunks[0]
     assert notice.type == "error"
     assert notice.is_error is False
     assert notice.metadata.get("reconnect_notice") is True
-    assert chunks[1].type == "result", "stream must keep consuming past the notice"
+    assert [c for c in chunks if c.is_error] == [], f"a failure was reported: {chunks}"
+    assert chunks[-1].type == "result", "stream must keep consuming past the notice"
 
 
 @pytest.mark.asyncio
@@ -68,9 +69,13 @@ async def test_last_attempt_notice_is_still_a_notice():
     events = [{"type": "error", "error": {"message": msg}}]
     chunks = await _chunks_from_events(events)
 
-    assert len(chunks) == 1
-    assert chunks[0].is_error is False
-    assert chunks[0].metadata.get("reconnect_notice") is True
+    notices = [c for c in chunks if c.metadata.get("reconnect_notice")]
+    assert len(notices) == 1
+    assert notices[0].is_error is False
+    # Nothing followed the notice, so the turn wrote nothing: the stream's end reports that,
+    # and it is the only failure.
+    failures = [c for c in chunks if c.is_error]
+    assert [c.metadata.get("empty_turn") for c in failures] == [True]
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,11 @@ from lionhub.providers.openai.codex import CodexCLIEndpoint, CodexCodeRequest, s
 # clock through asyncio.get_running_loop().
 
 
+# The turn's text. A turn that writes none fails as an empty turn, so the benign and the
+# healthy arms carry it to keep testing what they name.
+_TEXT = {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}}
+
+
 def _request() -> CodexCodeRequest:
     return CodexCodeRequest(prompt="test", verbose_output=False)
 
@@ -118,7 +123,7 @@ async def test_a_benign_end_of_stream_still_reads_as_success():
     failure, the classification says so in the metadata, and the flag must
     agree with the classification rather than with the type.
     """
-    chunks = await _endpoint_chunks([{"type": "error", "error": {}}])
+    chunks = await _endpoint_chunks([_TEXT, {"type": "error", "error": {}}])
     errors = [c for c in chunks if c.type == "error"]
 
     assert len(errors) == 1, f"the benign sentinel moved; this test describes nothing: {chunks}"
@@ -173,7 +178,7 @@ async def test_a_terminal_result_that_names_its_failure_is_reported_once():
 async def test_a_healthy_session_yields_no_error_chunk_at_all():
     """The must-not-match arm: the guard must not be satisfiable by a version
     that stops emitting, and a healthy session is where that would show."""
-    chunks = await _endpoint_chunks([{"type": "turn.completed"}])
+    chunks = await _endpoint_chunks([_TEXT, {"type": "turn.completed"}])
 
     assert [c for c in chunks if c.type == "error"] == [], (
         f"a healthy session reported a failure: {chunks}"

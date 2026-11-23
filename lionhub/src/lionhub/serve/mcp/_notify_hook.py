@@ -695,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         command=args.command,
         sender=args.sender,
         reason_code=(terminal.record or {}).get("reason_code") or reason_code,
-        reason_detail=(terminal.record or {}).get("reason_detail"),
+        reason_detail=(terminal.record or {}).get("reason_detail") or (cause or {}).get("detail"),
         timeout=_supervised_delivery_timeout(),
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)

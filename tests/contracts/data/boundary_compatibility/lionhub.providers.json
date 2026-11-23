@@ -17,6 +17,9 @@
     "lionhub/src/lionhub/providers/_agentic_handlers.py": [
       "__all__ = (\"RUNTIME_STATE_NAMES\", \"AgenticHandlersMixin\")"
     ],
+    "lionhub/src/lionhub/providers/_empty_turn.py": [
+      "__all__ = (\n    \"EMPTY_TURN_KEY\",\n    \"STDERR_TAIL_CHARS\",\n    \"empty_turn_chunk\",\n    \"empty_turn_error\",\n    \"is_empty_turn\",\n)"
+    ],
     "lionhub/src/lionhub/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
     ],
@@ -69,7 +72,7 @@
       "__all__ = (\"DeepseekChatCompletionsRequest\", \"DeepseekChatEndpoint\")"
     ],
     "lionhub/src/lionhub/providers/errors.py": [
-      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
+      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"ProviderEmptyTurnError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
     ],
     "lionhub/src/lionhub/providers/exa/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
@@ -200,6 +203,9 @@
     "lionhub/src/lionhub/providers/openai/_audio_schemas.py": [
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_hook_trust.py": [
+      "__all__ = (\n    \"DISABLED\",\n    \"EVENT_LABELS\",\n    \"HASH_CONFIRMED\",\n    \"MODIFIED\",\n    \"REFUSED_STATUSES\",\n    \"TRUSTED\",\n    \"UNCONFIRMED\",\n    \"UNREADABLE\",\n    \"UNTRUSTED\",\n    \"DeclaredHook\",\n    \"HookTrust\",\n    \"HookTrustReport\",\n    \"hook_hash\",\n    \"hook_identity\",\n    \"hook_trust_for_env\",\n    \"hook_trust_report\",\n)"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
       "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n    \"user_layer_tables\",\n)"
     ],
@@ -312,6 +318,11 @@
       "spawned_pgid",
       "unencodable_env_entry",
       "validate_message_prompt"
+    ],
+    "lionhub/src/lionhub/providers/_empty_turn.py": [
+      "empty_turn_chunk",
+      "empty_turn_error",
+      "is_empty_turn"
     ],
     "lionhub/src/lionhub/providers/ag2/_config.py": [
       "AG2Configs"
@@ -496,10 +507,20 @@
       "AudioSpeechRequest",
       "AudioTranscriptionRequest"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_hook_trust.py": [
+      "DeclaredHook",
+      "HookTrust",
+      "HookTrustReport",
+      "hook_hash",
+      "hook_identity",
+      "hook_trust_for_env",
+      "hook_trust_report"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
       "binary_sha256",
       "codex_binary_version",
       "deny_entries",
+      "launch_arms",
       "permission_profile_table",
       "probe_record",
       "probe_record_dir",

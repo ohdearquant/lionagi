@@ -138,6 +138,7 @@ _PRELOAD_MODULES = (
     "lionhub.orchestration.spawn",
     "lionhub.providers.anthropic.claude_code",
     "lionhub.providers.google.gemini_code",
+    "lionhub.providers.openai._codex_hook_trust",
     "lionhub.providers.openai._codex_profile",
     "lionhub.providers.openai._codex_project_layers",
     "lionhub.providers.openai.codex",

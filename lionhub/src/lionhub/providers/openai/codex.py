@@ -73,6 +73,7 @@ from lionhub.providers._cli_subprocess import (
     reveal_redacted,
     validate_message_prompt,
 )
+from lionhub.providers._empty_turn import empty_turn_chunk, empty_turn_error, is_empty_turn
 
 from ._codex_permissions import (
     PERMISSION_PROFILE,
@@ -720,6 +721,7 @@ class _PlainRequest:
     fast_mode: bool
     contain_account_integrations: bool
     ignore_user_config: bool
+    require_hooks: bool
     exclusive_mcp_names: list[str] | None
     account_connectors: list[str]
     output_schema: str | None
@@ -840,6 +842,7 @@ def _plain_request(
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
         ignore_user_config=flag("ignore_user_config"),
+        require_hooks=flag("require_hooks"),
         exclusive_mcp_names=(
             None if request.exclusive_mcp_names is None else texts("exclusive_mcp_names")
         ),
@@ -1826,6 +1829,19 @@ class CodexCodeRequest(BaseModel):
         ),
         json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
     )
+    require_hooks: bool = Field(
+        default=False,
+        description=(
+            "Refuse to start when a hook declared in CODEX_HOME/hooks.json, or in the "
+            "`[hooks]` table of CODEX_HOME/config.toml, will not run: codex runs a hook only "
+            "once its `[hooks.state]` entry records the hook's current hash, and the entry is "
+            "named for the declaring file's path, so a hook trusted under one codex home is "
+            "untrusted under another. The home read is the one the child's environment names. "
+            "A hook whose recorded hash differs from the one computed here is refused too, and "
+            "so is a hooks file codex cannot read; a hook the state disables is not. Hooks in "
+            "project layers, plugins and managed configuration are not checked. Off by default."
+        ),
+    )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
@@ -2335,6 +2351,8 @@ class CodexCodeRequest(BaseModel):
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
+        if plain.require_hooks:
+            _refuse_hooks_that_will_not_run(plain, plain.env if env is None else env)
 
         # A light agent writes only its working directory, so a linked worktree's git
         # directory is not made writable for it.
@@ -2891,6 +2909,42 @@ def _workspace_write_value(name: str, value: Any, config_path: Path) -> Any:
     return roots or None
 
 
+def _refuse_hooks_that_will_not_run(plain: _PlainRequest, env: Mapping[str, str] | None) -> None:
+    """Refuse a ``require_hooks`` run when a hook its codex home declares will not run.
+
+    The home is the one the child's environment names (ours when the request carries none).
+    The hook state is the user config's, then the `hooks.state` the run's overrides write. A
+    run that ignores the user config does not load the hooks of its `[hooks]` table, and is
+    refused before here when that table declares any.
+    """
+    from ._codex_hook_trust import UNCONFIRMED, hook_trust_for_env
+
+    hooks = _command_line_layer(plain).get("hooks")
+    report = hook_trust_for_env(
+        os.environ if env is None else env,
+        override_state=hooks.get("state") if isinstance(hooks, Mapping) else None,
+        include_config_hooks=not plain.ignore_user_config,
+    )
+    refused = report.refused()
+    if not refused and not report.problems:
+        return
+    reasons = [f"{hook.hook.name} ({hook.status})" for hook in refused]
+    reasons.extend(report.problems)
+    unconfirmed = (
+        " An unconfirmed hook has a recorded hash that differs from the one computed here, "
+        "which has not yet been checked against a hash codex wrote."
+        if any(hook.status == UNCONFIRMED for hook in refused)
+        else ""
+    )
+    raise ConfigurationError(
+        f"Codex is not started: require_hooks is set and the hooks of the codex home "
+        f"{str(report.codex_home)!r} cannot all run: {'; '.join(reasons)}. Codex runs a hook "
+        "only once it is trusted under the home that declares it, and a hook trusted under "
+        "another home does not count. Trust each one in codex under this home, or start "
+        f"without require_hooks.{unconfirmed}"
+    )
+
+
 def _hook_trust_records(state: Any) -> dict[str, dict[str, Any]]:
     """The `[hooks.state]` entries codex would read from the user config.
 
@@ -3352,7 +3406,11 @@ def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[s
 
 
 # TODO: migrate create_subprocess_exec + wait_for to anyio
-async def _ndjson_from_cli(request: CodexCodeRequest):
+async def _ndjson_from_cli(
+    request: CodexCodeRequest,
+    *,
+    on_clean_exit: Callable[[str, str | None], None] | None = None,
+):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so the request is reduced again here, where
@@ -3402,6 +3460,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             secret_fill_skip=request.secret_fill_skip,
             workload=plain.workload,
             auth_env=functools.partial(_codex_auth_env, plain),
+            on_clean_exit=on_clean_exit,
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:
@@ -3413,13 +3472,28 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
 
 
 async def stream_codex_cli_events(request: CodexCodeRequest):
-    """Stream events from Codex CLI."""
+    """Stream events from Codex CLI.
+
+    The closing ``done`` event is this module's own, never the CLI's. After a clean exit it
+    carries the CLI's ``stderr`` (credentials removed) and ``stderr_unread``, why that stderr may
+    be incomplete, so the parser can quote it when the turn turns out empty.
+    """
     if not CODEX_CLI:
         raise RuntimeError("Codex CLI not found (npm i -g @openai/codex)")
-    async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+    exits: list[tuple[str, str | None]] = []
+
+    def on_clean_exit(stderr: str, unread: str | None) -> None:
+        exits.append((stderr, unread))
+
+    async with contextlib.aclosing(
+        _ndjson_from_cli(request, on_clean_exit=on_clean_exit)
+    ) as stream:
         async for obj in stream:
             yield obj
-    yield {"type": "done"}
+    done: dict[str, Any] = {"type": "done"}
+    if exits:
+        done["stderr"], done["stderr_unread"] = exits[-1]
+    yield done
 
 
 #: The most of one tool result this provider keeps, and of a command, a file change or a
@@ -3802,6 +3876,14 @@ async def stream_codex_cli(
     # call-markup check reads only the last one, when a turn completes or the
     # stream ends. Code regions of that text are removed before matching.
     _last_agent_text: str | None = None
+    # Whether a completed item was a call or a call's result, of any type in
+    # `_CALL_ITEM_TYPES`: some (an MCP tool call, a web search) are not kept as tool uses,
+    # and a turn that made one is not an empty turn.
+    _made_call = False
+    # The CLI's stderr after a clean exit, as the closing ``done`` event carries it; None when
+    # the stream ended without one.
+    _stderr: str | None = None
+    _stderr_unread: str | None = None
 
     stream = stream_codex_cli_events(request)
     try:
@@ -3831,6 +3913,7 @@ async def stream_codex_cli(
                 # must not fail the turn. Other items leave the text as it was.
                 if item_type in _CALL_ITEM_TYPES:
                     _last_agent_text = None
+                    _made_call = True
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
@@ -4100,6 +4183,11 @@ async def stream_codex_cli(
                     if _has_tool_call_markup(_last_agent_text or ""):
                         yield _call_markup_error_chunk(session, obj)
                     _last_agent_text = None
+                    # A turn that is empty at the sentinel is not ended by it: the
+                    # stream runs on to its end, where the empty turn fails with the
+                    # CLI's stderr, which is read only once the CLI has exited.
+                    if is_empty_turn(session, made_call=_made_call):
+                        continue
                     sc = StreamChunk(
                         type="error",
                         content=_err_message,
@@ -4240,6 +4328,10 @@ async def stream_codex_cli(
                     yield rsc
 
             elif typ == "done":
+                _stderr = obj.get("stderr") if isinstance(obj.get("stderr"), str) else None
+                _stderr_unread = (
+                    obj.get("stderr_unread") if isinstance(obj.get("stderr_unread"), str) else None
+                )
                 break
     finally:
         await stream.aclose()
@@ -4251,6 +4343,11 @@ async def stream_codex_cli(
     if _has_tool_call_markup(_last_agent_text or ""):
         yield _call_markup_error_chunk(session, {})
         _last_agent_text = None
+
+    # A turn that ended with no text, no tool call and no failure fails here, quoting the CLI's
+    # stderr. Nothing retries it.
+    if is_empty_turn(session, made_call=_made_call):
+        yield empty_turn_chunk(session, _stderr, _stderr_unread)
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
@@ -4413,6 +4510,9 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             named = [t for t in failures if not t.startswith(_EMPTY_ERROR_PAYLOAD)]
             if session.session_id:
                 self.session_id = session.session_id
+            empty = empty_turn_error(session)
+            if empty is not None:
+                raise empty
             raise classify_provider_error(
                 "\n".join(named or failures) or "Codex session failed",
                 status=session.error_status,

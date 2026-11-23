@@ -7,9 +7,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 
@@ -286,6 +290,67 @@ def _check_code_identity() -> dict[str, str]:
     return _result("ok", where)
 
 
+def _hook_trust_result(report: Any) -> dict[str, str]:
+    """One codex home's hooks as a check result: a hook codex will not run warns, and a
+    hooks file codex cannot read leaves the check unknown."""
+    home = report.codex_home
+    if report.problems:
+        return _result("unknown", f"{home}: " + "; ".join(report.problems))
+    if not report.hooks:
+        return _result("ok", f"{home}: no hooks declared in hooks.json or config.toml")
+    counts = Counter(hook.status for hook in report.hooks)
+    summary = (
+        f"{len(report.hooks)} hooks declared ("
+        + ", ".join(f"{count} {status}" for status, count in sorted(counts.items()))
+        + ")"
+    )
+    refused = report.refused()
+    if not refused:
+        return _result("ok", f"{home}: {summary}")
+    return _result(
+        "warn",
+        f"{home}: {summary}; codex will not run, or this check cannot show it will run: "
+        + "; ".join(f"{hook.hook.name} ({hook.status})" for hook in refused),
+    )
+
+
+def _check_codex_hooks(environ: Mapping[str, str] | None = None) -> dict[str, dict[str, str]]:
+    """Whether codex will run the hooks each codex home declares: the home this process's
+    environment names, and each codex subscription account's home.
+
+    Codex trusts a hook per home (its trust record names the declaring file's path), so a hook
+    trusted for one home is skipped without a word under another.
+    """
+    from lionagi._errors import ConfigurationError
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError, list_accounts
+    from lionhub.providers.openai._codex_hook_trust import hook_trust_for_env, hook_trust_report
+
+    environ = os.environ if environ is None else environ
+    results: dict[str, dict[str, str]] = {}
+    try:
+        results["codex_hooks"] = _hook_trust_result(hook_trust_for_env(environ))
+    except ConfigurationError as exc:
+        results["codex_hooks"] = _result("unknown", str(exc))
+    try:
+        accounts, unresolved = list_accounts(environ)
+    except SubscriptionAccountError as exc:
+        results["codex_hooks:accounts"] = _result(
+            "unknown",
+            f"the subscription accounts cannot be read, so their hooks are unchecked: {exc}",
+        )
+        return results
+    for account in accounts:
+        if account.provider == "codex":
+            report = hook_trust_report(Path(account.location[0]))
+            results[f"codex_hooks:account:{account.name}"] = _hook_trust_result(report)
+    for provider, name in unresolved:
+        if provider == "codex":
+            results[f"codex_hooks:account:{name}"] = _result(
+                "warn", f"the codex account {name!r} does not resolve, so its hooks are unchecked"
+            )
+    return results
+
+
 def collect_checks() -> dict[str, dict[str, str]]:
     """Run every check and return a flat name -> {status, detail} mapping."""
     checks: dict[str, dict[str, str]] = {}
@@ -299,6 +364,7 @@ def collect_checks() -> dict[str, dict[str, str]]:
     checks["extra:mcp"] = _check_mcp_extra()
     checks["studio_daemon"] = _check_studio_daemon()
     checks["lionagi_home"] = _check_lionagi_home()
+    checks.update(_check_codex_hooks())
     return checks
 
 
