@@ -1249,7 +1249,7 @@ approvals = Table(
     Column("granted_at", Float),
     Column("consumed_at", Float),
     Column("expires_at", Float, nullable=False),
-    # Who granted or denied it, when the request carried a verified decision capability.
+    # Who granted or denied it: a verified decision capability's principal or the credential.
     Column("decision_principal_id", Text),
     Column("decision_epoch", Text),
     Column("decision_method", Text),

@@ -14,6 +14,7 @@ import os
 import sqlite3
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request
@@ -25,6 +26,7 @@ from lionhub.orchestration.state_store import require_file_store, store_path
 from lionhub.serve.daemon.launch_access import (
     DECISION_TOKEN_HEADER,
     DecisionPrincipal,
+    daemon_epoch,
     resolve_decision_capability,
 )
 
@@ -46,9 +48,10 @@ _STATUSES = frozenset({"pending", "granted", "consumed", "expired", "denied"})
 # disqualifies the caller from grant/deny -- there is no "correct" value that passes.
 _SERVICE_PRINCIPAL_HEADER = "x-lionagi-operator-principal"
 
-# Who decided an approval, when the grant or deny request carried a verified decision
-# capability: the five fields the Operator records on its proposals. NULL means the request
-# carried none, and rows written before these columns existed stay NULL.
+# Who decided an approval: the five fields the Operator records on its proposals, taken from a
+# verified decision capability or, for a grant or deny the bearer token admitted without one,
+# from the credential (``_CredentialPrincipal``). NULL means an in-process decision that named
+# no principal, and rows written before these columns existed stay NULL.
 _PRINCIPAL_COLUMNS = (
     "decision_principal_id",
     "decision_epoch",
@@ -56,6 +59,24 @@ _PRINCIPAL_COLUMNS = (
     "decision_origin",
     "decision_scope",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _CredentialPrincipal:
+    """Who decided a grant or deny that the configured bearer token admitted and that carried
+    no decision capability this daemon verifies: the credential, by its role.
+
+    It names the credential, never its text or any digest of it, so everyone holding the one
+    configured token is this one principal. ``epoch`` is the daemon start that admitted it.
+    Its method is not ``pairing``, so a reader tells it from a paired page's decision.
+    """
+
+    id: str = "studio-credential"
+    epoch: str = field(default_factory=daemon_epoch)
+    method: str = "credential"
+    origin: str | None = None
+    scope: str | None = None
+
 
 # Mirrors the approvals table in schema.sql -- a defensive fallback so direct
 # callers of this module (outside the studio app's lifespan, which applies
@@ -224,8 +245,9 @@ def _decision_principal(request: Request) -> DecisionPrincipal | None:
     Resolved as the Operator's decision routes resolve it: the ``X-Studio-Decision-Token``
     capability ``li studio`` paired the page with, presented from exactly one ``Origin``.
     None covers a request without one and a capability this daemon cannot verify (unknown,
-    expired, revoked, from another start, origin or scope). It admits and refuses nothing:
-    the bearer check in :func:`_require_human_principal` is what admits a grant or deny.
+    expired, revoked, from another start, origin or scope); the route then records the
+    credential (:func:`_route_principal`). It admits and refuses nothing: the bearer check in
+    :func:`_require_human_principal` is what admits a grant or deny.
     """
     presented = request.headers.get(DECISION_TOKEN_HEADER)
     if not presented:
@@ -236,7 +258,15 @@ def _decision_principal(request: Request) -> DecisionPrincipal | None:
     return resolve_decision_capability(presented, origin=origins[0])
 
 
-def _principal_values(principal: DecisionPrincipal | None) -> tuple[str | None, ...]:
+def _route_principal(request: Request) -> DecisionPrincipal | _CredentialPrincipal:
+    """Who decided a grant or deny the bearer check admitted: the verified decision
+    capability's principal, else the configured credential."""
+    return _decision_principal(request) or _CredentialPrincipal()
+
+
+def _principal_values(
+    principal: DecisionPrincipal | _CredentialPrincipal | None,
+) -> tuple[str | None, ...]:
     """The decision principal columns for *principal*, all None for an unattributed decision."""
     if principal is None:
         return (None,) * len(_PRINCIPAL_COLUMNS)
@@ -298,9 +328,9 @@ async def _write_evidence(
     params_hash: str,
     justification_class: str | None = None,
     justification_reason: str | None = None,
-    principal: DecisionPrincipal | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> None:
-    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free. *principal* is who decided a grant or deny, when the request carried a verified decision capability."""
+    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free. *principal* is who decided a grant or deny: a verified decision capability's principal or the admitting credential, None for an in-process decision that named none."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
     )
@@ -562,7 +592,7 @@ async def create_approval(
 
 
 async def grant_approval(
-    approval_id: str, *, principal: DecisionPrincipal | None = None
+    approval_id: str, *, principal: DecisionPrincipal | _CredentialPrincipal | None = None
 ) -> dict[str, Any]:
     """CAS pending -> granted. Raises HTTPException on any non-pending state.
 
@@ -616,7 +646,7 @@ async def deny_approval(
     *,
     justification_class: str | None = None,
     justification_reason: str | None = None,
-    principal: DecisionPrincipal | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> dict[str, Any]:
     """CAS pending -> denied. Raises HTTPException on any non-pending state.
 
@@ -794,9 +824,10 @@ async def get_approval_route(approval_id: str) -> dict[str, Any]:
     "/approvals/{approval_id}/grant", method="POST", area="approvals", name="grant_approval"
 )
 async def grant_approval_route(approval_id: str, request: Request) -> dict[str, Any]:
-    """Grant a pending approval; a verified ``X-Studio-Decision-Token`` records who did."""
+    """Grant a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
-    return await grant_approval(approval_id, principal=_decision_principal(request))
+    return await grant_approval(approval_id, principal=_route_principal(request))
 
 
 @studio_route(
@@ -822,7 +853,8 @@ async def consume_approval_route(
 async def deny_approval_route(
     approval_id: str, request: Request, body: _DenyBody | None = None
 ) -> dict[str, Any]:
-    """Deny a pending approval; a verified ``X-Studio-Decision-Token`` records who did."""
+    """Deny a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
     justification_class = body.reason_class if body is not None else None
     justification_reason = body.reason if body is not None else None
@@ -830,5 +862,5 @@ async def deny_approval_route(
         approval_id,
         justification_class=justification_class,
         justification_reason=justification_reason,
-        principal=_decision_principal(request),
+        principal=_route_principal(request),
     )

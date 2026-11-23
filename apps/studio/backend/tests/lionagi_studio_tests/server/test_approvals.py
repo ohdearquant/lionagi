@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -1325,6 +1326,18 @@ def test_deny_with_a_decision_capability_records_who_denied(tmp_path, monkeypatc
     assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
 
 
+def _assert_credential_principal(row: dict) -> None:
+    from lionhub.serve.daemon.launch_access import daemon_epoch
+
+    assert {name: row[name] for name in _PRINCIPAL_COLUMNS} == {
+        "decision_principal_id": "studio-credential",
+        "decision_epoch": daemon_epoch(),
+        "decision_method": "credential",
+        "decision_origin": None,
+        "decision_scope": None,
+    }
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -1336,9 +1349,10 @@ def test_deny_with_a_decision_capability_records_who_denied(tmp_path, monkeypatc
         pytest.param(lambda cap: _decision_headers("not-a-capability"), id="unknown-capability"),
     ],
 )
-def test_a_grant_without_a_verified_capability_is_accepted_and_unattributed(
+def test_a_grant_without_a_verified_capability_records_the_credential(
     tmp_path, monkeypatch, capability, headers
 ):
+    """The bearer token admitted it and no capability verified, so the credential decided."""
     from lionagi_studio.services import approvals as approvals_mod
 
     db_path = tmp_path / "state.db"
@@ -1349,13 +1363,45 @@ def test_a_grant_without_a_verified_capability_is_accepted_and_unattributed(
     )
 
     assert granted["status"] == "granted"
-    assert all(granted[name] is None for name in _PRINCIPAL_COLUMNS)
-    assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
+    _assert_credential_principal(granted)
+    _assert_credential_principal(_evidence_rows(db_path)[-1])
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
 
 
-def test_a_grant_presenting_more_than_one_origin_is_unattributed(tmp_path, monkeypatch, capability):
+@pytest.mark.parametrize("decision", ["grant", "deny"])
+def test_a_decision_over_http_with_only_the_bearer_records_the_credential(
+    tmp_path, monkeypatch, decision
+):
+    """The caller the feedback describes: create and decide over HTTP with the configured
+    token and nothing else. The record names the credential, never the token."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    db_path = tmp_path / "state.db"
+    client = _make_client(db_path, monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"n": 1}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/{decision}", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+
+    row = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token")).json()
+    assert row["decision_method"] == "credential"
+    _assert_credential_principal(row)
+    evidence = _evidence_rows(db_path)[-1]
+    _assert_credential_principal(evidence)
+    assert "test-token" not in json.dumps({**row, **evidence})
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
+
+
+def test_a_grant_presenting_more_than_one_origin_records_the_credential(
+    tmp_path, monkeypatch, capability
+):
     """A capability is bound to one origin, so a request naming two, even the paired origin
-    twice, is recorded unattributed rather than attributed to either."""
+    twice, is not attributed to the capability's principal; the credential decided."""
     from starlette.requests import Request as StarletteRequest
 
     from lionagi_studio.services import approvals as approvals_mod
@@ -1372,8 +1418,8 @@ def test_a_grant_presenting_more_than_one_origin_is_unattributed(tmp_path, monke
     )
 
     assert granted["status"] == "granted"
-    assert all(granted[name] is None for name in _PRINCIPAL_COLUMNS)
-    assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
+    _assert_credential_principal(granted)
+    _assert_credential_principal(_evidence_rows(db_path)[-1])
 
 
 def test_an_unattributed_row_hashes_exactly_as_rows_did_before_principals(tmp_path, monkeypatch):
@@ -1407,11 +1453,16 @@ def test_changing_the_recorded_principal_breaks_the_chain(
 
     db_path = tmp_path / "state.db"
     approval_id = _pending(db_path, monkeypatch)
-    _run(
-        approvals_mod.grant_approval_route(
-            approval_id, _fake_request(_decision_headers(capability if attributed else None))
+    if attributed:
+        _run(
+            approvals_mod.grant_approval_route(
+                approval_id, _fake_request(_decision_headers(capability))
+            )
         )
-    )
+    else:
+        # An in-process grant that names no principal stays unattributed.
+        _run(approvals_mod.grant_approval(approval_id))
+        assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
     assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
 
     async def _tamper():

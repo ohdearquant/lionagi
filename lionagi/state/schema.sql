@@ -1025,9 +1025,10 @@ CREATE TABLE IF NOT EXISTS approvals (
   granted_at    REAL,
   consumed_at   REAL,
   expires_at    REAL    NOT NULL,
-  -- Who granted or denied it, when that request carried a verified Studio
-  -- decision capability (the fields studio_operator_proposals records). NULL
-  -- for an unattributed decision and on rows written before these columns.
+  -- Who granted or denied it: a verified Studio decision capability's principal
+  -- (the fields studio_operator_proposals records), or method 'credential' for
+  -- a request the bearer token admitted without one. NULL for an in-process
+  -- decision that named no principal and on rows written before these columns.
   decision_principal_id TEXT,
   decision_epoch        TEXT,
   decision_method       TEXT,
