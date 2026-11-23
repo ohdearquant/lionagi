@@ -71,8 +71,11 @@ PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 #: connects from outside the sandbox, and passes a network-off run whose control connect the
 #: sandbox refused as well as one whose control connect reached its listener, naming which
 #: (ADR-0133, "the network-off socket rule"): a format 4 record measured no such case, so it
-#: admits no launch.
-_RECORD_FORMAT = 5
+#: admits no launch. Format 6 adds the ``scratch_env`` arm (ADR-0041 Amendment 6): a run whose
+#: command line hands the child a scratch directory through ``shell_environment_policy.set``, as
+#: a launch with a scratch directory does. A format 5 record measured no such run, so it admits
+#: no launch.
+_RECORD_FORMAT = 6
 
 #: The socket arm a launch needs, by its table's ``network.enabled``.
 SOCKET_ARMS: Mapping[bool, str] = {
@@ -83,9 +86,14 @@ SOCKET_ARMS: Mapping[bool, str] = {
 #: The arm a read-only table that grants a write entry needs.
 READ_ONLY_WRITE_ROOT_ARM = "read_only_write_root"
 
+#: The arm a launch with a scratch directory needs: the child's commands saw ``TMPDIR``, ``TMP``
+#: and ``TEMP`` name the directory and wrote a file there.
+SCRATCH_ENV_ARM = "scratch_env"
+
 #: Arms every record carries. A launch needs each to have passed, except the socket arm of the
 #: other network state, ``READ_ONLY_WRITE_ROOT_ARM`` unless its table is read-only with a write
-#: entry (``launch_arms``), and the arms named in ``CONDITIONAL_ARMS``.
+#: entry, ``SCRATCH_ENV_ARM`` unless it has a scratch directory (``launch_arms``), and the arms
+#: named in ``CONDITIONAL_ARMS``.
 REQUIRED_ARMS: tuple[str, ...] = (
     "deny_canary",
     "unix_socket_refused_network_on",
@@ -102,6 +110,7 @@ REQUIRED_ARMS: tuple[str, ...] = (
     "user_layer_sandbox_mode",
     "read_only_cwd_write_refused",
     "read_only_write_root",
+    "scratch_env",
 )
 
 #: Arms of ``REQUIRED_ARMS`` that apply only when an environment variable is set: arm name to
@@ -138,9 +147,9 @@ def permission_profile_table(
     directory included. ``exclude_slash_tmp`` and ``exclude_tmpdir`` make ``/tmp`` and
     ``$TMPDIR`` read-only for a heavy request, as the legacy workspace-write settings
     ``exclude_slash_tmp`` and ``exclude_tmpdir_env_var`` did; a light request has both anyway.
-    ``read_only_write`` are write entries a read-only table grants all the same, such as a per-run
-    scratch directory; a launch needs ``READ_ONLY_WRITE_ROOT_ARM`` for such a table. No launch
-    passes them yet; the probe does, to measure that arm.
+    ``read_only_write`` are write entries a read-only table grants all the same: a read-only
+    launch's scratch directory, and the probe's run for that arm; a launch needs
+    ``READ_ONLY_WRITE_ROOT_ARM`` for such a table.
     """
     filesystem: dict[str, str] = {}
     for path in write if not read_only else read_only_write:
@@ -624,13 +633,14 @@ def refuse_write_roots_on_denied_paths(
                     )
 
 
-def launch_arms(table: Mapping[str, Any] | None) -> tuple[str, ...]:
+def launch_arms(table: Mapping[str, Any] | None, *, scratch: bool = False) -> tuple[str, ...]:
     """The arms of ``REQUIRED_ARMS`` a launch rendering ``table`` needs to have passed.
 
-    Every arm except the socket arm of the network state the table does not have, and
+    Every arm except the socket arm of the network state the table does not have,
     ``READ_ONLY_WRITE_ROOT_ARM`` unless the table extends ``:read-only`` and grants a write
-    entry. A table whose ``network.enabled`` is not a bool, or no table at all, needs every arm,
-    so leaving the table out can only refuse more.
+    entry, and ``SCRATCH_ENV_ARM`` unless ``scratch`` says the launch hands its child a scratch
+    directory. A table whose ``network.enabled`` is not a bool, or no table at all, needs every
+    arm, so leaving the table out can only refuse more.
     """
     if not isinstance(table, Mapping):
         return REQUIRED_ARMS
@@ -643,6 +653,8 @@ def launch_arms(table: Mapping[str, Any] | None) -> tuple[str, ...]:
     grants_write = isinstance(files, Mapping) and "write" in files.values()
     if not (table.get("extends") == ":read-only" and grants_write):
         skip.add(READ_ONLY_WRITE_ROOT_ARM)
+    if not scratch:
+        skip.add(SCRATCH_ENV_ARM)
     return tuple(name for name in REQUIRED_ARMS if name not in skip)
 
 
@@ -650,14 +662,16 @@ def _failed_arms(
     record: Mapping[str, Any],
     env: Mapping[str, str],
     table: Mapping[str, Any] | None = None,
+    *,
+    scratch: bool = False,
 ) -> list[str]:
-    """The arms of ``launch_arms(table)`` that did not pass for a launch with environment
-    ``env``.
+    """The arms of ``launch_arms(table, scratch=scratch)`` that did not pass for a launch with
+    environment ``env``.
 
     A conditional arm recorded as skipped counts as satisfied only when ``env`` leaves its
     variable unset or empty; a launch that sets it needs the arm to have passed.
     """
-    needed = launch_arms(table)
+    needed = launch_arms(table, scratch=scratch)
     arms = record.get("arms")
     if not isinstance(arms, Mapping):
         return list(needed)
@@ -726,16 +740,18 @@ def require_passing_probe_record(
     cwd: str | os.PathLike[str] | None = None,
     *,
     table: Mapping[str, Any] | None = None,
+    scratch: bool = False,
 ) -> Path:
     """Refuse a profiled launch on a codex binary without a passing probe record.
 
     ``binary`` is resolved against the ``PATH`` in ``env`` (the child's final environment, the
     process environment when None) with the lookup the spawn uses, and ``cwd`` is the child's
-    working directory. ``table`` is the permission profile table the launch renders. The record
-    must name the resolved binary's path, its version and the SHA-256 of its bytes, be of the
-    current format, and hold every arm of ``launch_arms(table)`` as passed, a conditional arm
-    being allowed to be skipped as ``CONDITIONAL_ARMS`` says. Nothing but the record and the
-    table decides the answer. Returns the record's path.
+    working directory. ``table`` is the permission profile table the launch renders, and
+    ``scratch`` says whether the launch hands its child a scratch directory. The record must
+    name the resolved binary's path, its version and the SHA-256 of its bytes, be of the
+    current format, and hold every arm of ``launch_arms(table, scratch=scratch)`` as passed, a
+    conditional arm being allowed to be skipped as ``CONDITIONAL_ARMS`` says. Nothing but the
+    record, the table and ``scratch`` decides the answer. Returns the record's path.
     """
     launch_env = os.environ if env is None else env
     binary = _launch_binary(binary, launch_env, cwd)
@@ -757,7 +773,7 @@ def require_passing_probe_record(
     ):
         problem = f"the probe record {str(path)!r} is not for codex {version} at {resolved!r}"
     else:
-        failed = _failed_arms(record, launch_env, table)
+        failed = _failed_arms(record, launch_env, table, scratch=scratch)
         sockets = [name for name in failed if name in SOCKET_ARMS.values()]
         if failed and len(sockets) == len(failed) == 1:
             # The one arm a setting may answer: its own remedies, and no others. The record also

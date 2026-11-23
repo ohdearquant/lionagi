@@ -102,7 +102,7 @@ Limits:
 - The entries are checked when the profile is loaded for a launch. A link made at an entry's path
   after that is not seen by the check; the sandbox then denies the spelling the entry names.
 
-## Amendment 6 (2026-11-22) — a per-run scratch directory for a read-only agent
+## Amendment 6 (2026-11-22) — a per-run writable scratch directory for an agent
 
 **Status: Proposed.**
 
@@ -111,6 +111,10 @@ temporary folder, so a reviewer agent cannot run the project's tests to check a 
 wants: "A per-run scratch folder that is writable inside an otherwise read-only sandbox, declared
 in the profile and removed or kept per run."
 
+The directory is made whatever the role's workload or sandbox mode, a read-only one being only
+the case the request names: a light codex child has `/tmp` and `$TMPDIR` read-only as well, so a
+light reviewer has no temporary directory either.
+
 Decision:
 
 - **The profile key.** `scratch: true` or `scratch: keep` asks for one; `false` or no key asks
@@ -118,14 +122,44 @@ Decision:
 - **One directory per run.** An `li agent` run of such a role makes `<run state
   directory>/scratch`, mode 0700, once its run directory exists and before its first turn, and
   records `scratch: {path, keep}` in run.json. A name already there refuses the run. The path
-  reaches the Claude Code request as the endpoint's runtime state, never its config, and
+  reaches the Claude Code or codex request as the endpoint's runtime state, never its config, and
   `scratch_dir` is one of `RUNTIME_STATE_NAMES`: no saved branch or stored config carries it into
   a later run, and a run without scratch clears one left on its endpoint.
-- **The child.** The path is the one write root the run adds to the child sandbox's policy, in
-  `sandbox.filesystem.allowWrite` and in the roots of the file-tool hook, added after a stored
-  policy is resolved again so the settings' own write list cannot drop it. It is also the child's
-  `TMPDIR`, `TMP` and `TEMP`. A scratch path that is a symbolic link, or not a directory, refuses
-  the launch; one that is gone adds nothing and warns.
+- **The Claude Code child.** The path is the one write root the run adds to the child sandbox's
+  policy, in `sandbox.filesystem.allowWrite` and in the roots of the file-tool hook, added after a
+  stored policy is resolved again so the settings' own write list cannot drop it. It is also the
+  child's `TMPDIR`, `TMP` and `TEMP`. A scratch path that is a symbolic link, or not a directory,
+  refuses the launch; one that is gone adds nothing and warns.
+- **The codex child.** Under the child sandbox a codex child runs under the `lionagi_child`
+  permission profile (ADR-0133), and the resolved path is one write entry in that table in every
+  workload and mode: beside the other write entries of a light or heavy table, and as the only
+  write entry of a read-only one. The commands the child runs get `TMPDIR`, `TMP` and `TEMP` from
+  three `-c shell_environment_policy.set.<NAME>=<path>` overrides, dotted keys so that a `set`
+  table of the user's is merged and not replaced, placed after every caller override and the
+  profile because codex keeps the last `-c` of a key. Codex's own process keeps its environment,
+  so a light table's `:tmpdir = read` still names the directory codex started with, never the
+  scratch directory. A link or a non-directory refuses the launch and a gone path adds nothing
+  and warns, as for Claude Code. `scratch_dir` is runtime state of the codex request as well, in
+  no dump, schema or stored config of it.
+- **The codex gate.** A codex launch with a scratch directory needs the probe record's
+  `scratch_env` arm, beside the arms its table already needs: a read-only table with the entry
+  needs `read_only_write_root`, and a light or heavy one rests on `write_entry`. The probe's
+  `scratch_env` run starts from a light table with one write entry and carries the three
+  overrides. Its child prints `TMPDIR`, `TMP` and `TEMP` and writes one file under `"$TMPDIR"`.
+  The arm passes when all three equal the directory and the file is in it, and otherwise fails
+  with a note naming the values the child printed and whether the file landed in the directory.
+  The record moves to format 6, and a record of format 5 or earlier admits no launch. A record
+  whose `scratch_env` arm did not pass refuses a scratch launch with that arm named; the same
+  launch without a scratch directory still starts on that record.
+- **Codex refusals.** Each names its reason. Before the run directory exists: `bypass_approvals`,
+  which turns codex's sandbox off, and the child sandbox switched off, which leaves no permission
+  table to hold the entry. When the command is built, after the run directory and its scratch
+  exist: a scratch path that is, holds or lies inside a denied location or the probe record
+  directory; for a light table, or a heavy one under `exclude_slash_tmp` or
+  `exclude_tmpdir_env_var`, a scratch path inside `/tmp` or `$TMPDIR`, as written or resolved,
+  which that table makes read-only; and a record without a passed `scratch_env` arm. The run
+  state directory is under the lionagi home by default, so the `/tmp` and `$TMPDIR` case does not
+  arise in a default setup.
 - **Removal.** In the run's shielded teardown, after the child's process group has ended, `true`
   removes the directory by its recorded path. It is refused, and left exactly as it is, when it is
   a symbolic link, is not a directory, is not named `scratch`, or is not directly in the run
@@ -146,7 +180,7 @@ Decision:
 | Launch surface | Provider | Scratch | Reason given when refused |
 | --- | --- | --- | --- |
 | `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI | made, as above | |
-| the same | codex | refused at launch | a codex run needs a sandbox probe record of format 4, which measures a read-only policy with one write root, and no such record exists yet |
+| the same | codex | made: one write entry in the permission profile table, with `TMPDIR`, `TMP` and `TEMP` set for the child's commands through `shell_environment_policy.set`, on a record whose `scratch_env` arm passed; removed or kept by the removal above, unchanged, which already covers a directory the sandboxed child could write while the teardown runs outside the sandbox | under `bypass_approvals` or with the child sandbox off, refused at launch: no permission profile would hold the entry; a path over a denied location, the probe record directory, or a `/tmp` or `$TMPDIR` the table makes read-only, or a record without a passed `scratch_env` arm, refused when the command is built |
 | the same | Gemini CLI | refused at launch | the Gemini CLI's sandbox does not bound reads and grants no single writable directory this launcher can verify |
 | the same | an API model | refused at launch | an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch root yet |
 | the same | any other CLI | refused at launch | the named provider has no scratch directory support |
@@ -173,19 +207,36 @@ Required checks:
   temporary-directory variables name it, with an inherited and a given environment, and a run
   without scratch leaves the environment as it was. The path is in no dump of the request or the
   endpoint and reaches the rebuilt request.
-- A codex and a Gemini CLI run are refused with their reasons and no run directory; the reason
-  for an API model is the one in the table. An orchestrator role is refused with no run
-  directory, and a worker role when it is resolved.
+- A Gemini CLI run is refused with its reason and no run directory; the reason for an API model
+  is the one in the table. A codex run under `bypass_approvals`, and one with the child sandbox
+  off, is refused with its reason and no run directory. An orchestrator role is refused with no
+  run directory, and a worker role when it is resolved.
+- A codex launch's table holds the resolved scratch path as a write entry, and nothing else
+  changes, for a light, a heavy workspace-write, a heavy read-only and a heavy launch that names
+  no mode; a launch without scratch carries no entry. Only the read-only tables need
+  `read_only_write_root`, and only a scratch launch needs `scratch_env`.
+- The three `shell_environment_policy.set` overrides name the resolved path, after a caller's
+  override of the same key and after the profile; a launch without scratch carries none of them.
+- Each codex refusal above, with a control: a scratch path beside a denied location is granted,
+  and a heavy workspace-write table, which leaves `/tmp` writable, grants a path that a light one
+  refuses. A link or a file as the scratch path is refused; a gone one adds nothing.
+- The `scratch_env` verdict passes when the three variables equal the directory and the file is
+  in it, fails when any one variable differs, and fails when the file lands elsewhere. A record
+  of format 5 admits no launch.
+- A scratch launch on a record whose `scratch_env` arm did not pass is refused naming the arm,
+  and the same launch without scratch starts on that record; a passing record admits it.
 
 Limits:
 
-- Codex and the seatbelt policy that API models and the Gemini CLI run under get the scratch root
-  in a later change to this same amendment: codex once a probe record of format 4 measures a
-  read-only policy with one write root, the seatbelt policy with Amendment 5's file-link rules
-  covering the new root and a probe arm proving that a hard link from scratch to a file outside
-  the roots is refused. Until then both are refused as the table says.
-- Claude Code's own sandbox handling of a hard link from the scratch directory to a file outside
-  the writable roots has not been measured, as it has not been for the working directory.
+- The seatbelt policy that API models and the Gemini CLI run under gets the scratch root in a
+  later change to this same amendment, with Amendment 5's file-link rules covering the new root
+  and a probe arm proving that a hard link from scratch to a file outside the roots is refused.
+  Until then it is refused as the table says.
+- The handling of a hard link from the scratch directory to a file outside the writable roots has
+  not been measured, by Claude Code's own sandbox or by codex's, as it has not been for the
+  working directory.
+- `scratch_env` is measured on a light table. A heavy or read-only launch rests on it for the
+  variables and on `write_entry` or `read_only_write_root` for the write.
 - An automatic resume runs in a run directory of its own and makes its own scratch; the first
   run's directory goes at that run's end unless kept.
 - A process the child left running after the run can still write into the directory while it is
