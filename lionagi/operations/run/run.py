@@ -17,6 +17,7 @@ import anyio
 from pydantic import JsonValue
 
 from lionagi._provider_errors import (
+    ProviderEmptyTurnError,
     ProviderError,
     WorkerLivenessError,
     classify_provider_error,
@@ -886,6 +887,12 @@ async def run(
                             if res := await _flush_response():
                                 yield res
                             content = chunk.content or "(empty error)"
+                            # A turn the provider found empty is typed by the chunk's own marker,
+                            # never by matching its text.
+                            if chunk.metadata.get("empty_turn"):
+                                raise ProviderEmptyTurnError(
+                                    content, stderr_tail=chunk.metadata.get("stderr_tail") or ""
+                                )
                             raise classify_provider_error(
                                 content, status=chunk.metadata.get("error_status")
                             )

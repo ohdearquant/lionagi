@@ -247,7 +247,7 @@
       "__all__ = (\"build_run_detail\",)"
     ],
     "lionhub/src/lionhub/serve/mcp/_terminal_cause.py": [
-      "__all__ = [\n    \"STATUS_SOURCES\",\n    \"allowed_cause_classes\",\n    \"provider_status\",\n    \"read_terminal_cause\",\n    \"write_terminal_cause\",\n]"
+      "__all__ = [\n    \"DETAIL_CHARS\",\n    \"STATUS_SOURCES\",\n    \"allowed_cause_classes\",\n    \"provider_status\",\n    \"read_terminal_cause\",\n    \"write_terminal_cause\",\n]"
     ],
     "lionhub/src/lionhub/serve/mcp/accounts.py": [
       "__all__ = (\"COMPLETED_WINDOW_HOURS\", \"account_list\")"

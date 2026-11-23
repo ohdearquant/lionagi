@@ -54,6 +54,8 @@ class RunReasons:
     # split by classify_provider_error's retryable classification -- see docs/internals/runtime.md
     FAILED_PROVIDER_RETRYABLE = "run.failed.provider_retryable"
     FAILED_PROVIDER_NONRETRYABLE = "run.failed.provider_nonretryable"
+    # the CLI ended the turn cleanly with no assistant text, no tool call and no error event
+    FAILED_EMPTY_TURN = "run.failed.empty_turn"
     FAILED_MISSING_ARTIFACT = "run.failed.missing_artifact"  # ADR-0029
     FAILED_MISSING_CWD = (
         "run.failed.missing_cwd"  # legacy; superseded by FAILED_CWD_INHERIT_REFUSED
