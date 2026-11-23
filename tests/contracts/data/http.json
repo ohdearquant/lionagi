@@ -5968,7 +5968,7 @@
         "approvals"
       ],
       "summary": null,
-      "description": null,
+      "description": "Grant a pending approval; a verified ``X-Studio-Decision-Token`` records who did.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi_studio.services.approvals",
@@ -6064,7 +6064,7 @@
         "approvals"
       ],
       "summary": null,
-      "description": null,
+      "description": "Deny a pending approval; a verified ``X-Studio-Decision-Token`` records who did.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi_studio.services.approvals",
@@ -7748,6 +7748,7 @@
             "approvals"
           ],
           "summary": "Deny Approval",
+          "description": "Deny a pending approval; a verified ``X-Studio-Decision-Token`` records who did.",
           "parameters": [
             {
               "name": "approval_id",
@@ -7808,6 +7809,7 @@
             "approvals"
           ],
           "summary": "Grant Approval",
+          "description": "Grant a pending approval; a verified ``X-Studio-Decision-Token`` records who did.",
           "parameters": [
             {
               "name": "approval_id",
