@@ -24,6 +24,10 @@ Cases (``--case NAME``, repeatable; by default the first two):
 - ``hook_blocked`` (with ``--case hook_blocked`` or ``--hook-case``): a run in a scratch codex
   home whose one ``UserPromptSubmit`` hook refuses every prompt. The hook's trust record is
   computed by this package's own hash, so a wrong hash shows as a run that was not blocked.
+- ``scratch_no_hook`` (with ``--case scratch_no_hook`` or ``--hook-case``): the control for
+  ``hook_blocked``, the same prompt in a scratch home written the same way with no hook. The
+  scratch homes hold no sign-in, so a stream that only ``hook_blocked`` shows is the hook's, and
+  one both show comes from the missing sign-in.
 
 The first two run under the operator's codex home, passed to the child by path and never
 opened here, with ``--ephemeral`` so codex persists no session file there, and with
@@ -43,10 +47,11 @@ fresh home and start processes there that outlive the run; this module stops not
 manifest lists the entries the run added to the scratch home.
 
 The manifest keeps, per case, the command line, the exit status and the ``type`` of each line
-of the JSON stream, never the text of an event. The captured output is written with the values
-of environment variables removed, chosen by name only (names holding KEY, TOKEN, SECRET,
-PASSWORD or CREDENTIAL), plus the shapes the CLI log redaction removes; read it before
-committing it anywhere.
+of the JSON stream, never the text of an event. The captured output is written one line at a
+time, newlines kept, with the values of environment variables removed, chosen by name only
+(names holding KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL), plus the shapes the CLI log
+redaction removes. Paths are not replaced: a run under the operator's home can name files of
+that home (its hooks file, for one) by absolute path. Read it before committing it anywhere.
 """
 
 from __future__ import annotations
@@ -79,6 +84,7 @@ from lionhub.providers.openai._codex_project_layers import (
 __all__ = (
     "CASES",
     "DEFAULT_CASES",
+    "HOOK_CASES",
     "Case",
     "CaptureRefusedError",
     "capture",
@@ -102,12 +108,14 @@ _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
 @dataclass(frozen=True)
 class Case:
-    """One capture: its prompt, the codex home it runs under, and its extra arguments."""
+    """One capture: its prompt, the codex home it runs under, whether that home holds the
+    blocking hook, and its extra arguments."""
 
     name: str
     prompt: str
     scratch_home: bool
     extra_args: tuple[str, ...] = ()
+    hook: bool = False
 
 
 CASES: tuple[Case, ...] = (
@@ -129,10 +137,18 @@ CASES: tuple[Case, ...] = (
         name="hook_blocked",
         prompt="Reply with the single word: ok.",
         scratch_home=True,
+        hook=True,
+    ),
+    Case(
+        name="scratch_no_hook",
+        prompt="Reply with the single word: ok.",
+        scratch_home=True,
     ),
 )
 #: The cases run when none is named.
 DEFAULT_CASES: tuple[str, ...] = ("no_output", "unknown_model")
+#: The cases ``--hook-case`` adds: the hook case and its control.
+HOOK_CASES: tuple[str, ...] = ("hook_blocked", "scratch_no_hook")
 
 
 class CaptureRefusedError(Exception):
@@ -236,6 +252,22 @@ def _refuse_system_hooks() -> None:
         )
 
 
+def _write_control_home(home: Path) -> None:
+    """Write the control's scratch home: an empty ``config.toml`` and no hook."""
+    home.mkdir()
+    (home / "config.toml").write_text("")
+    report = hook_trust_report(Path(os.path.realpath(home)))
+    if report.hooks or report.problems:
+        raise CaptureRefusedError(
+            f"the control's scratch home declares hooks: {report.hooks!r} {report.problems!r}"
+        )
+
+
+def _redact_lines(text: str, secrets: Mapping[str, str]) -> str:
+    """``text`` with secrets removed one line at a time, so every newline stays a newline."""
+    return "\n".join(_redact_secrets_for_log(line, secrets) for line in text.split("\n"))
+
+
 def _write_hook_home(home: Path) -> str:
     """Write the scratch home's blocking hook and its trust record; return the entry name."""
     home.mkdir()
@@ -326,11 +358,11 @@ def capture(
     """Run the cases into ``out`` and return the manifest also written there.
 
     ``cases`` names the cases to run, ``DEFAULT_CASES`` when empty; ``hook_case`` adds
-    ``hook_blocked``. Cases run in the order of ``CASES``. Every refusal comes before the first
+    ``HOOK_CASES``. Cases run in the order of ``CASES``. Every refusal comes before the first
     run, so a refused capture runs nothing.
     """
     known = {case.name: case for case in CASES}
-    wanted = set(cases or DEFAULT_CASES) | ({"hook_blocked"} if hook_case else set())
+    wanted = set(cases or DEFAULT_CASES) | (set(HOOK_CASES) if hook_case else set())
     unknown = sorted(wanted - known.keys())
     if unknown:
         raise CaptureRefusedError(f"no such case {unknown!r}; the cases are {sorted(known)!r}")
@@ -348,7 +380,10 @@ def capture(
         child_env = dict(base_env)
         if case.scratch_home:
             home = out / case.name / "codex-home"
-            _write_hook_home(home)
+            if case.hook:
+                _write_hook_home(home)
+            else:
+                _write_control_home(home)
             child_env["CODEX_HOME"] = str(home)
         else:
             child_env["CODEX_HOME"] = str(operator_home)
@@ -372,8 +407,8 @@ def capture(
         except OSError as exc:
             status, stdout, stderr = -1, "", f"could not start: {exc}"
         where = out / case.name
-        (where / "stdout.jsonl").write_text(_redact_secrets_for_log(stdout, secrets))
-        (where / "stderr.txt").write_text(_redact_secrets_for_log(stderr, secrets))
+        (where / "stdout.jsonl").write_text(_redact_lines(stdout, secrets))
+        (where / "stderr.txt").write_text(_redact_lines(stderr, secrets))
         (where / "exit_status.txt").write_text(f"{status}\n")
         record: dict[str, object] = {
             "argv": argv,
@@ -406,7 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--hook-case",
         action="store_true",
-        help="also run the hook-blocked case in a scratch codex home",
+        help="also run the hook-blocked case and its no-hook control, each in a scratch codex home",
     )
     args = parser.parse_args(argv)
     try:
