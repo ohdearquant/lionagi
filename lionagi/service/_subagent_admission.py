@@ -107,6 +107,7 @@ __all__ = (
     "refuse_nested_agent",
     "set_child_agent_depth",
     "subagent_admission_status",
+    "without_account_names",
 )
 
 TOTAL_CAP_ENV = "LIONAGI_MAX_SUBAGENTS"
@@ -349,6 +350,17 @@ def _read_wait(environ: Mapping[str, str]) -> float:
             "seconds (0 refuses without waiting)"
         )
     return value
+
+
+def without_account_names(env: Mapping[str, str]) -> dict[str, str]:
+    """A copy of *env* without ``ACCOUNT_ENV`` and ``ACCOUNT_CAP_ENV``.
+
+    Every child environment built by copying a process environment, or by laying an overlay
+    over one, passes through here, so names the launching process inherited, or an overlay
+    set, never reach the spawn as an account. Only a named subscription account's own child
+    environment sets them, after this.
+    """
+    return {k: v for k, v in env.items() if k not in (ACCOUNT_ENV, ACCOUNT_CAP_ENV)}
 
 
 def account_admission(env: Mapping[str, str] | None) -> tuple[str | None, int]:

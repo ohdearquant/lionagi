@@ -3360,6 +3360,7 @@ async def _run_agent(
                     # reference, read before the branch's model is replaced.
                     from lionagi._command_env import scrub_command_env
                     from lionagi._command_env_metadata import configured_command_env_names
+                    from lionagi.service._subagent_admission import without_account_names
 
                     # A settings file that cannot be read leaves the names to remove unknown, so
                     # the run does not move; it fails with the routing error.
@@ -3367,14 +3368,17 @@ async def _run_agent(
                     try:
                         api_key_reference = branch.chat_model.endpoint.config.api_key_env
                         parent_env = dict(os.environ)
-                        child_env = scrub_command_env(
-                            parent_env,
-                            declared_names=configured_command_env_names(
-                                active_reference_names=(api_key_reference,)
-                                if api_key_reference is not None
-                                else (),
-                            ),
-                            command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                        # An account name this process inherited is no account of the child's.
+                        child_env = without_account_names(
+                            scrub_command_env(
+                                parent_env,
+                                declared_names=configured_command_env_names(
+                                    active_reference_names=(api_key_reference,)
+                                    if api_key_reference is not None
+                                    else (),
+                                ),
+                                command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                            )
                         )
                         # Names only, never values.
                         env_removed = sorted(set(parent_env) - set(child_env))

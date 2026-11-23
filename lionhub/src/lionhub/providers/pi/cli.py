@@ -23,7 +23,11 @@ from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
+from lionagi.service._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    SubagentWorkload,
+    without_account_names,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -336,7 +340,8 @@ async def _ndjson_from_cli(request: PiCodeRequest):
             "pin; declare the agent's workload 'heavy'"
         )
     _refuse_while_the_child_sandbox_is_enabled()
-    env = {**os.environ, **request.env()} if request.env() else None
+    # An account name the launching process inherited is no account of this agent's.
+    env = without_account_names({**os.environ, **request.env()}) if request.env() else None
     cmd = [PI_CLI, *request.as_cmd_args()]
     # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
     async with contextlib.aclosing(

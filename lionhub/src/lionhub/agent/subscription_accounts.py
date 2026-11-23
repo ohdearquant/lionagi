@@ -38,7 +38,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError
-from lionagi.service._subagent_admission import ACCOUNT_CAP_ENV, ACCOUNT_ENV
+from lionagi.service._subagent_admission import (
+    ACCOUNT_CAP_ENV,
+    ACCOUNT_ENV,
+    without_account_names,
+)
 
 try:
     import tomllib as _tomllib
@@ -522,7 +526,7 @@ def account_child_env(
     held are dropped, so a child counts against no account but its own.
     """
     source = os.environ if parent_env is None else parent_env
-    source = {k: v for k, v in source.items() if k not in (ACCOUNT_ENV, ACCOUNT_CAP_ENV)}
+    source = without_account_names(source)
     if account.provider == "codex":
         home = validate_codex_home(account.location[0], where=f"account {account.name!r} home")
         env = codex_home_child_env(home, source)

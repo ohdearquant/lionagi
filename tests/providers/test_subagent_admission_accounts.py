@@ -22,6 +22,7 @@ from lionagi.service._subagent_admission import (
     account_admission,
     admit_subagent,
     subagent_admission_status,
+    without_account_names,
 )
 from lionhub.providers._cli_subprocess import ndjson_from_cli
 
@@ -229,6 +230,52 @@ async def test_account_names_this_process_inherited_take_no_pool_and_reach_no_ch
     monkeypatch.setenv(ACCOUNT_CAP_ENV, "1")
     streams = [
         ndjson_from_cli([sys.executable, "-c", _REPORT_AND_SLEEP], engine="claude")
+        for _ in range(2)
+    ]
+    async with contextlib.aclosing(streams[0]), contextlib.aclosing(streams[1]):
+        for stream in streams:
+            assert (await stream.__anext__()) == {"seen": []}
+        assert "account.claude_code.alpha" not in subagent_admission_status()["pools"]
+
+
+def test_without_account_names_drops_both_names_and_keeps_the_rest():
+    env = {ACCOUNT_ENV: ALPHA, ACCOUNT_CAP_ENV: "1", "PATH": "/bin"}
+    assert without_account_names(env) == {"PATH": "/bin"}
+    assert env[ACCOUNT_ENV] == ALPHA
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["process", "overlay"])
+async def test_an_agent_env_profile_takes_no_account_pool_its_launcher_named(
+    home, monkeypatch, named_by
+):
+    """A profile's agent_env is laid over this process's environment, and the spawn trusts
+    an environment its caller built. Names the process exported, or the overlay set, are
+    no account of the agent's: the child environment holds neither, and two agents on it
+    take no slot of a pool capped at 1."""
+    from lionhub.agent.factory import create_agent
+    from lionhub.agent.spec import AgentSpec
+    from lionhub.providers._cli_subprocess import reveal_redacted
+
+    names = {ACCOUNT_ENV: ALPHA, ACCOUNT_CAP_ENV: "1"}
+    overlay = {"LEG_ID": "leg-7"}
+    if named_by == "process":
+        for name, value in names.items():
+            monkeypatch.setenv(name, value)
+    else:
+        overlay.update(names)
+    branch = await create_agent(
+        AgentSpec.compose("reviewer", model="codex/gpt-5.5"),
+        load_settings=False,
+        agent_env=overlay,
+    )
+    payload, _ = branch.chat_model.endpoint.create_payload({"prompt": "hi"})
+    env = reveal_redacted(payload["request"].env)
+    assert env["LEG_ID"] == "leg-7"
+    assert not set(names) & set(env)
+
+    streams = [
+        ndjson_from_cli([sys.executable, "-c", _REPORT_AND_SLEEP], engine="claude", env=env)
         for _ in range(2)
     ]
     async with contextlib.aclosing(streams[0]), contextlib.aclosing(streams[1]):

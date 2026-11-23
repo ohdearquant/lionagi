@@ -481,7 +481,12 @@ async def create_agent(
                 extra[repo_kwarg] = spec.cwd
 
         if agent_env:
-            extra["env"] = {**os.environ, **agent_env}
+            from lionagi.service._subagent_admission import without_account_names
+
+            # The spawn reads an account and its cap from the environment it is handed; only a
+            # named account's own environment may name one, so neither an inherited value nor
+            # the overlay can put this agent into an account's pool.
+            extra["env"] = without_account_names({**os.environ, **agent_env})
 
         chat_model = iModel(
             provider=provider,
