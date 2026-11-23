@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import importlib
 import threading
-from collections.abc import Mapping
 
 from lionagi._feature_errors import MissingFeatureError
 from lionagi._provider_errors import ProviderActivationError, ProviderContractVersionError
@@ -52,27 +51,6 @@ _REPAIR_HINT = (
 
 _lock = threading.Lock()
 _outcome: ProviderCatalog | Exception | None = None
-
-
-def codex_unset_effort_1x(
-    model: str,
-    profile_overrides: dict | None = None,
-    env: Mapping[str, str] | None = None,
-) -> str | None:
-    """Temporary 1.x Codex effort lookup for callers without a selected adapter.
-
-    This cold compatibility path is scheduled for removal in 2.0.
-    """
-    from lionagi.service.providers import _codex_unset_effort_from_reader
-
-    def read_global_effort(child_env: Mapping[str, str] | None) -> str | None:
-        from lionhub.providers.openai._codex_profile import global_codex_reasoning_effort
-
-        return global_codex_reasoning_effort(child_env)
-
-    return _codex_unset_effort_from_reader(
-        model, profile_overrides, env, read_global_effort=read_global_effort
-    )
 
 
 def _activation_failure(cause: Exception) -> ProviderActivationError:

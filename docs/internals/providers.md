@@ -219,7 +219,8 @@ process's; an environment naming neither falls back to the OS account's home.
 
 When the caller sets no effort, the request emits the global config's
 `model_reasoning_effort` clamped to the resolved model
-(`codex_unset_effort_default`). Otherwise codex would apply the global value
+(`codex_unset_effort_default`; the codex endpoint class supplies that policy
+through the provider catalog). Otherwise codex would apply the global value
 unclamped, and a value above the model's ceiling is rejected by the API. A
 profile that pins `model_reasoning_effort` keeps its pin, and a model the
 ceiling tables don't know gets nothing emitted.

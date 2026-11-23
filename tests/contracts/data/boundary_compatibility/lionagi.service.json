@@ -283,7 +283,6 @@
       "uses_developer_messages"
     ],
     "lionagi/service/connections/_provider_compat.py": [
-      "codex_unset_effort_1x",
       "default_provider_catalog"
     ],
     "lionagi/service/connections/agentic_endpoint.py": [
