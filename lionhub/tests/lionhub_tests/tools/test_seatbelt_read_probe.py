@@ -15,7 +15,7 @@ import pytest
 
 from lionagi import _paths
 from lionagi._errors import ConfigurationError
-from lionhub.tools import _seatbelt, seatbelt_read_probe
+from lionhub.tools import _seatbelt, seatbelt_link_probe, seatbelt_read_probe
 from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 from lionhub.tools.seatbelt_read_probe import REQUIRED_ARMS, policy_digest, write_record
 
@@ -37,6 +37,15 @@ def home(monkeypatch, tmp_path) -> Path:
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.setattr(
         _seatbelt, "_uv_cache_dir", lambda *, _command_env_names=None: base / "uv-cache"
+    )
+    # Where the host's temp directory holds the base (/tmp on Linux), that root would refuse
+    # every scratch directory under the base; it is dropped, and the base's own tmp stays the
+    # temp directory the probe refuses.
+    temp_roots = seatbelt_link_probe._temp_roots
+    monkeypatch.setattr(
+        seatbelt_link_probe,
+        "_temp_roots",
+        lambda: [root for root in temp_roots() if root != base and root not in base.parents],
     )
     return base
 
