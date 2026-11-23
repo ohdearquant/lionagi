@@ -134,6 +134,7 @@ def permission_profile_table(
     exclude_slash_tmp: bool = False,
     exclude_tmpdir: bool = False,
     read_only_write: Iterable[str] = (),
+    read_roots: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """The ``[permissions.PERMISSION_PROFILE]`` table for one launch.
 
@@ -150,16 +151,30 @@ def permission_profile_table(
     ``read_only_write`` are write entries a read-only table grants all the same: a read-only
     launch's scratch directory, and the probe's run for that arm; a launch needs
     ``READ_ONLY_WRITE_ROOT_ARM`` for such a table.
+
+    ``read_roots``, when given (an empty sequence included), denies reads by default: ``/`` is
+    denied, each read root is granted for reading, and ``/tmp`` and ``$TMPDIR`` are denied
+    whatever ``light`` and the exclusions say. Write and deny entries keep their own access.
+    Whether a codex binary lets the narrower entries win over the denial of ``/`` is what
+    ``codex_read_probe`` measures; no launch passes ``read_roots`` yet.
     """
     filesystem: dict[str, str] = {}
+    if read_roots is not None:
+        filesystem["/"] = "deny"
+        for path in read_roots:
+            filesystem[path] = "read"
     for path in write if not read_only else read_only_write:
         filesystem[path] = "write"
     for path in deny:
         filesystem[path] = "deny"
-    if light or exclude_tmpdir:
-        filesystem[":tmpdir"] = "read"
-    if light or exclude_slash_tmp:
-        filesystem[":slash_tmp"] = "read"
+    if read_roots is not None:
+        filesystem[":tmpdir"] = "deny"
+        filesystem[":slash_tmp"] = "deny"
+    else:
+        if light or exclude_tmpdir:
+            filesystem[":tmpdir"] = "read"
+        if light or exclude_slash_tmp:
+            filesystem[":slash_tmp"] = "read"
     return {
         "extends": ":read-only" if read_only else ":workspace",
         "filesystem": filesystem,
