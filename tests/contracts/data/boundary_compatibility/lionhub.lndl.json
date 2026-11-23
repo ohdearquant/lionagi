@@ -1,0 +1,132 @@
+{
+  "package_exports": {
+    "lionhub/src/lionhub/lndl/__init__.py": [
+      "from .assembler import (\n    NOTE_NAMESPACE,\n    assemble,\n    assemble_spec_value,\n    build_action_call,\n    collect_actions,\n    collect_notes,\n    replace_actions,\n)",
+      "from .ast import Identifier, Lact, Literal, Lvar, OutBlock, Program, RLvar",
+      "from .diagnostics import (\n    LndlChunkHealth,\n    LndlRoundRecord,\n    LndlTrace,\n    classify_chunk,\n    classify_result,\n    extract_lndl_chunks,\n)",
+      "from .errors import (\n    InvalidConstructorError,\n    LNDLError,\n    MissingFieldError,\n    MissingLvarError,\n    TypeMismatchError,\n)",
+      "from .extract import extract_lndl_blocks",
+      "from .lexer import Lexer, Token, TokenType",
+      "from .normalize import normalize_lndl_text",
+      "from .parser import ParseError, Parser",
+      "from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt",
+      "from .round_outcome import Continue, Retry, RoundOutcome, Success",
+      "from .types import (\n    ActionCall,\n    LactMetadata,\n    LNDLOutput,\n    LvarMetadata,\n    ParsedConstructor,\n    RLvarMetadata,\n    Scalar,\n    ensure_no_action_calls,\n    has_action_calls,\n    revalidate_with_action_results,\n)",
+      "__all__ = (\n    \"LNDL_SYSTEM_PROMPT\",\n    \"NOTE_NAMESPACE\",\n    \"ActionCall\",\n    \"Continue\",\n    \"Identifier\",\n    \"InvalidConstructorError\",\n    \"LNDLError\",\n    \"LNDLOutput\",\n    \"Lact\",\n    \"LactMetadata\",\n    \"Lexer\",\n    \"Literal\",\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"Lvar\",\n    \"LvarMetadata\",\n    \"MissingFieldError\",\n    \"MissingLvarError\",\n    \"OutBlock\",\n    \"ParseError\",\n    \"ParsedConstructor\",\n    \"Parser\",\n    \"Program\",\n    \"RLvar\",\n    \"RLvarMetadata\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Scalar\",\n    \"Success\",\n    \"Token\",\n    \"TokenType\",\n    \"TypeMismatchError\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"ensure_no_action_calls\",\n    \"extract_lndl_blocks\",\n    \"extract_lndl_chunks\",\n    \"get_lndl_system_prompt\",\n    \"has_action_calls\",\n    \"normalize_lndl_text\",\n    \"replace_actions\",\n    \"revalidate_with_action_results\",\n)"
+    ],
+    "lionhub/src/lionhub/lndl/_parse_function_call.py": [
+      "__all__ = (\n    \"parse_batch_function_calls\",\n    \"parse_function_call\",\n    \"qualified_name\",\n)"
+    ],
+    "lionhub/src/lionhub/lndl/assembler.py": [
+      "__all__ = (\n    \"NOTE_NAMESPACE\",\n    \"assemble\",\n    \"assemble_spec_value\",\n    \"build_action_call\",\n    \"collect_actions\",\n    \"collect_notes\",\n    \"replace_actions\",\n)"
+    ],
+    "lionhub/src/lionhub/lndl/ast.py": [
+      "__all__ = (\n    \"ASTNode\",\n    \"Expr\",\n    \"Identifier\",\n    \"Lact\",\n    \"Literal\",\n    \"Lvar\",\n    \"OutBlock\",\n    \"Program\",\n    \"RLvar\",\n    \"Stmt\",\n)"
+    ],
+    "lionhub/src/lionhub/lndl/diagnostics.py": [
+      "__all__ = (\n    \"LndlChunkHealth\",\n    \"LndlRoundRecord\",\n    \"LndlTrace\",\n    \"classify_chunk\",\n    \"classify_result\",\n    \"extract_lndl_chunks\",\n)"
+    ],
+    "lionhub/src/lionhub/lndl/extract.py": [
+      "__all__ = (\"extract_lndl_blocks\",)"
+    ],
+    "lionhub/src/lionhub/lndl/lexer.py": [
+      "__all__ = (\"Lexer\", \"Token\", \"TokenType\")"
+    ],
+    "lionhub/src/lionhub/lndl/middle/__init__.py": [
+      "from .lndl_middle import DEFAULT_ROUND_BUDGET, build_lndl_middle, lndl_middle",
+      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
+    ],
+    "lionhub/src/lionhub/lndl/middle/lndl_middle.py": [
+      "__all__ = (\"DEFAULT_ROUND_BUDGET\", \"build_lndl_middle\", \"lndl_middle\")"
+    ],
+    "lionhub/src/lionhub/lndl/normalize.py": [
+      "__all__ = (\"normalize_lndl_text\",)"
+    ],
+    "lionhub/src/lionhub/lndl/parser.py": [
+      "__all__ = (\"ParseError\", \"Parser\")"
+    ],
+    "lionhub/src/lionhub/lndl/round_outcome.py": [
+      "__all__ = (\n    \"Continue\",\n    \"Retry\",\n    \"RoundOutcome\",\n    \"Success\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionhub/src/lionhub/lndl/_parse_function_call.py": [
+      "parse_batch_function_calls",
+      "parse_function_call",
+      "qualified_name"
+    ],
+    "lionhub/src/lionhub/lndl/assembler.py": [
+      "assemble",
+      "assemble_spec_value",
+      "build_action_call",
+      "collect_actions",
+      "collect_notes",
+      "replace_actions"
+    ],
+    "lionhub/src/lionhub/lndl/ast.py": [
+      "ASTNode",
+      "Expr",
+      "Identifier",
+      "Lact",
+      "Literal",
+      "Lvar",
+      "OutBlock",
+      "Program",
+      "RLvar",
+      "Stmt"
+    ],
+    "lionhub/src/lionhub/lndl/diagnostics.py": [
+      "LndlChunkHealth",
+      "LndlRoundRecord",
+      "LndlTrace",
+      "classify_chunk",
+      "classify_result",
+      "extract_lndl_chunks"
+    ],
+    "lionhub/src/lionhub/lndl/errors.py": [
+      "InvalidConstructorError",
+      "LNDLError",
+      "MissingFieldError",
+      "MissingLvarError",
+      "TypeMismatchError"
+    ],
+    "lionhub/src/lionhub/lndl/extract.py": [
+      "extract_lndl_blocks"
+    ],
+    "lionhub/src/lionhub/lndl/lexer.py": [
+      "Lexer",
+      "Token",
+      "TokenType"
+    ],
+    "lionhub/src/lionhub/lndl/middle/lndl_middle.py": [
+      "build_lndl_middle"
+    ],
+    "lionhub/src/lionhub/lndl/normalize.py": [
+      "normalize_lndl_text"
+    ],
+    "lionhub/src/lionhub/lndl/parser.py": [
+      "ParseError",
+      "Parser",
+      "parse_value"
+    ],
+    "lionhub/src/lionhub/lndl/prompt.py": [
+      "get_lndl_system_prompt"
+    ],
+    "lionhub/src/lionhub/lndl/round_outcome.py": [
+      "Continue",
+      "Retry",
+      "Success"
+    ],
+    "lionhub/src/lionhub/lndl/types.py": [
+      "ActionCall",
+      "LNDLOutput",
+      "LactMetadata",
+      "LvarMetadata",
+      "ParsedConstructor",
+      "RLvarMetadata",
+      "ensure_no_action_calls",
+      "has_action_calls",
+      "revalidate_with_action_results"
+    ]
+  }
+}

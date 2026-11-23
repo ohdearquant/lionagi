@@ -1,0 +1,53 @@
+{
+  "environment_lookups": {
+    "lionagi/models/field_model.py": [
+      "os.environ.get:\"LIONAGI_FIELD_META_LIMIT\""
+    ]
+  },
+  "package_exports": {
+    "lionagi/models/__init__.py": [
+      "from .field_model import FieldModel",
+      "from .hashable_model import HashableModel",
+      "from .note import Note",
+      "from .operable_model import OperableModel",
+      "from .schema_model import SchemaModel",
+      "__all__ = (\n    \"FieldModel\",\n    \"HashableModel\",\n    \"Note\",\n    \"OperableModel\",\n    \"SchemaModel\",\n)"
+    ],
+    "lionagi/models/_build_model.py": [
+      "__all__ = (\"build_model_type\",)"
+    ],
+    "lionagi/models/field_model.py": [
+      "_lazy_field_params = LazyInit()",
+      "__all__ = (\"FieldModel\",)"
+    ],
+    "lionagi/models/hashable_model.py": [
+      "__all__ = (\n    \"HashableModel\",\n    \"ConversionMode\",\n)"
+    ],
+    "lionagi/models/operable_model.py": [
+      "__all__ = (\"OperableModel\",)"
+    ],
+    "lionagi/models/schema_model.py": [
+      "__all__ = (\"SchemaModel\",)"
+    ]
+  },
+  "public_definitions": {
+    "lionagi/models/_build_model.py": [
+      "build_model_type"
+    ],
+    "lionagi/models/field_model.py": [
+      "FieldModel"
+    ],
+    "lionagi/models/hashable_model.py": [
+      "HashableModel"
+    ],
+    "lionagi/models/note.py": [
+      "Note"
+    ],
+    "lionagi/models/operable_model.py": [
+      "OperableModel"
+    ],
+    "lionagi/models/schema_model.py": [
+      "SchemaModel"
+    ]
+  }
+}

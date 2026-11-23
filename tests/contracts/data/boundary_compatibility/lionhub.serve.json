@@ -1,0 +1,924 @@
+{
+  "environment_lookups": {
+    "lionhub/src/lionhub/serve/cli/_agent_depth.py": [
+      "os.environ.get:SEAT_PROFILES_ENV"
+    ],
+    "lionhub/src/lionhub/serve/cli/agent.py": [
+      "os.environ.get:_API_ACCOUNT_ENV",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR",
+      "os.environ.get:_MCP_JOB_RUN_ID_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/serve/cli/engine.py": [
+      "os.getenv:\"LIONAGI_INVOCATION_ID\""
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
+      "os.environ.get:\"LIONAGI_SESSION_ID\""
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV",
+      "os.environ.get:token_env"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"STUDIO_API_URL\"",
+      "os.environ.get:\"XDG_CONFIG_HOME\"",
+      "os.environ:\"LIONAGI_STUDIO_FRONTEND_DIST\"",
+      "os.environ:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "os.environ.get:STUDIO_TOKEN_ENV"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
+      "os.environ.get:_ENV_INTERVAL",
+      "os.environ.get:_ENV_PATH"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\"",
+      "os.getenv:\"LIONAGI_STUDIO_HOST\""
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "os.environ.get:_MAX_LAUNCHES_ENV",
+      "os.environ.get:_TOKEN_ENV"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/identity.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/pairing.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\""
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "os.environ.get:\"CORS_ORIGINS\"",
+      "os.environ.get:\"LIONAGI_HOME\"",
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_SOURCE\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:env_var"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_notify_hook.py": [
+      "os.environ.get:\"LIONAGI_MCP_NOTIFY_COMMAND\"",
+      "os.environ.get:\"LIONAGI_MCP_NOTIFY_CWD\"",
+      "os.environ.get:\"LIONAGI_MCP_NOTIFY_SENDER\"",
+      "os.environ.get:\"LIONAGI_MCP_NOTIFY_TARGET\"",
+      "os.environ.get:\"LIONAGI_NOTIFY_PAYLOAD\""
+    ],
+    "lionhub/src/lionhub/serve/mcp/_terminal_cause.py": [
+      "os.environ.get:config.CAUSE_FILE_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/serve/mcp/config.py": [
+      "os.environ.get:CHILD_ACTOR_SUFFIX_ENV_VAR",
+      "os.environ.get:LI_BIN_ENV_VAR",
+      "os.environ.get:SENDER_ROOTS_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/serve/mcp/jobs.py": [
+      "os.environ.get:\"LIONAGI_MCP_NOTIFY_COMMAND\""
+    ],
+    "lionhub/src/lionhub/serve/mirror_settings.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS\""
+    ]
+  },
+  "package_exports": {
+    "lionhub/src/lionhub/serve/cli/__init__.py": [
+      "from lionagi.ln import lazy_import",
+      "__all__ = (\"main\",)",
+      "def __getattr__(name: str):\n    # Keep the composition root lazy when importing the CLI package itself.\n    if name == \"main\":\n        return lazy_import(name, {\"main\": (\"main\", \"main\")}, __name__, globals())\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionhub/src/lionhub/serve/cli/catalog.py": [
+      "__all__ = (\n    \"build_cli_parser\",\n    \"command_exists\",\n    \"iter_cli_seeds\",\n    \"load_cli_command\",\n    \"seed_for\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/dispatch.py": [
+      "__all__ = (\n    \"add_dispatch_subparser\",\n    \"run_dispatch\",\n    \"machine_result\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/doctor.py": [
+      "__all__ = (\n    \"add_doctor_subparser\",\n    \"run_doctor\",\n    \"collect_checks\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/hooks.py": [
+      "__all__ = (\"add_hooks_subparser\", \"run_hooks\")"
+    ],
+    "lionhub/src/lionhub/serve/cli/machine.py": [
+      "__all__ = (\n    \"CONTRACT_VERSION\",\n    \"MIN_SUPPORTED_CONTRACT_VERSION\",\n    \"ERROR_KINDS\",\n    \"MachineError\",\n    \"ok\",\n    \"failure\",\n    \"validate_envelope\",\n    \"available\",\n    \"unavailable\",\n    \"read_json_file\",\n    \"list_directory\",\n    \"machine_parser\",\n    \"parse_machine_argv\",\n    \"machine_subcommand\",\n    \"readonly_state_db\",\n    \"state_db_absent\",\n    \"store_unreachable\",\n    \"reserve_stdout\",\n    \"dispatch_machine\",\n    \"handshake_data\",\n    \"add_handshake_subparser\",\n    \"run_handshake\",\n    \"add_runs_subparser\",\n    \"run_runs\",\n    \"lifecycle_data\",\n    \"add_lifecycle_subparser\",\n    \"run_lifecycle\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/machine_schedule.py": [
+      "__all__ = (\"dispatch_schedule\",)"
+    ],
+    "lionhub/src/lionhub/serve/cli/mcp.py": [
+      "__all__ = (\"add_mcp_subparser\", \"run_mcp\")"
+    ],
+    "lionhub/src/lionhub/serve/cli/monitor.py": [
+      "__all__ = (\n    \"add_monitor_subparser\",\n    \"run_monitor\",\n    \"run_monitor_wait\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/__init__.py": [
+      "from __future__ import annotations",
+      "import argparse",
+      "import sys",
+      "from pathlib import Path",
+      "from lionagi._auto import CliDeclaration, auto_register",
+      "from lionagi._errors import TimeoutError as LionTimeoutError",
+      "from lionagi._flow_spec import (\n    FLOW_SPEC_FIELDS,\n    load_flow_spec,\n    validate_flow_args_schema,\n    validate_flow_spec_fields,\n)",
+      "from lionagi._provider_errors import NestedAgentRefusedError",
+      "from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS",
+      "from lionagi.libs.path_safety import validate_path_component as validate_path_component",
+      "from lionagi.ln.concurrency import is_cancelled, run_async",
+      "from lionagi.service._subagent_admission import refuse_nested_agent",
+      "from lionhub.orchestration.console import hint, log_error",
+      "from lionhub.orchestration.flow.checkpoint import FlowResumeError",
+      "from lionhub.orchestration.flow.parsing import _add_mcp_config_args as _add_mcp_config_args",
+      "from lionhub.orchestration.flow.parsing import (\n    add_orchestrate_subparser as add_orchestrate_subparser,\n)",
+      "from lionhub.orchestration.job import EXIT_CODE_BY_STATUS",
+      "from .fanout import FanoutPlanError, _run_fanout",
+      "from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_control.py": [
+      "__all__ = (\n    \"run_ctl_pause\",\n    \"run_ctl_resume\",\n    \"run_ctl_msg\",\n    \"run_ctl_resolve\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_finalize.py": [
+      "__all__ = (\n    \"CLAIM_ROLE_RUNNER\",\n    \"CLAIM_ROLE_KILL_REAPER\",\n    \"CLAIM_ROLE_ORPHAN_REAPER\",\n    \"NOTHING_OWED\",\n    \"TERMINAL_WRITE_ONLY\",\n    \"LATE_FACTS\",\n    \"FULL_PATH\",\n    \"FinalizeClaim\",\n    \"claim_path\",\n    \"claim_finalization\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_harvest.py": [
+      "__all__ = (\n    \"MAX_FILES_PER_LEG\",\n    \"MAX_BYTES_PER_LEG\",\n    \"COPY_CHUNK_BYTES\",\n    \"STATE_ABSENT\",\n    \"STATE_EMPTY\",\n    \"STATE_FAILED\",\n    \"SKIP_SYMLINK\",\n    \"SKIP_HARDLINK\",\n    \"SKIP_SWAPPED\",\n    \"SKIP_SPECIAL\",\n    \"SKIP_UNREADABLE\",\n    \"HarvestResult\",\n    \"harvest_leg_artifacts\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_manifest.py": [
+      "__all__ = (\n    \"MANIFEST_VERSION\",\n    \"MIN_LEGS\",\n    \"MAX_LEGS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"LABEL_PATTERN\",\n    \"ENV_KEY_PATTERN\",\n    \"RESERVED_ENV_KEYS\",\n    \"ManifestError\",\n    \"Leg\",\n    \"Manifest\",\n    \"load_manifest\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_notify.py": [
+      "__all__ = (\n    \"deliver_flow_notify_now\",\n    \"register_flow_notify_scope\",\n    \"unregister_flow_notify_scope\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
+      "__all__ = (\n    \"OrchestrationEnv\",\n    \"resolve_worker_spec\",\n    \"setup_orchestration\",\n    \"build_worker_branch\",\n    \"WorkerBuildError\",\n    \"attribute_worker_build_failure\",\n    \"make_help_coordinator\",\n    \"TeamLifecycleCoordinator\",\n    \"make_team_lifecycle_coordinator\",\n    \"finalize_orchestration\",\n    \"start_live_persist\",\n    \"stop_live_persist\",\n    \"EFFORT_GUIDANCE\",\n    \"EFFORT_MAP\",\n    \"team_guidance\",\n    \"team_worker_system\",\n    \"team_history_context\",\n    \"worker_is_cli\",\n    \"available_roles\",\n    \"role_roster\",\n    \"mode_roster\",\n    \"casts_role_system\",\n    \"role_config\",\n    \"resolve_modes\",\n    \"parse_orchestrator_provider\",\n    \"DEFAULT_ORCHESTRATOR_AGENT\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_quiescence.py": [
+      "__all__ = (\n    \"QUIET\",\n    \"BUSY\",\n    \"UNPROVEN\",\n    \"NO_DOMAIN\",\n    \"GroupObservation\",\n    \"Quiescence\",\n    \"QuietEnforcement\",\n    \"sweep_quiet\",\n    \"enforce_quiet\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_round_records.py": [
+      "__all__ = (\n    \"ROUND_VERSION\",\n    \"ROUND_STATE_PENDING\",\n    \"ROUND_STATE_COMPLETE\",\n    \"RESULT_COMPLETED\",\n    \"RESULT_PARTIAL\",\n    \"RESULT_FAILED\",\n    \"LEG_SUCCEEDED\",\n    \"LEG_FAILED\",\n    \"LEG_TIMED_OUT\",\n    \"LEG_CANCELLED\",\n    \"LEG_KILLED\",\n    \"RECORDED_BY_RUNNER\",\n    \"RECORDED_BY_KILL_REAPER\",\n    \"RECORDED_BY_ORPHAN_REAPER\",\n    \"LegDispatch\",\n    \"legs_dir\",\n    \"round_path\",\n    \"write_leg_dispatch\",\n    \"complete_leg_record\",\n    \"read_leg_records\",\n    \"ControlGroupDomain\",\n    \"control_group_domain\",\n    \"recorded_control_groups\",\n    \"write_round_summary\",\n    \"read_round_summary\",\n    \"flip_round_complete\",\n    \"round_result\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "__all__ = (\n    \"RemoteError\",\n    \"add_remote_subparser\",\n    \"load_remote\",\n    \"run_remote\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/state.py": [
+      "__all__ = [\n    # import helpers\n    \"RUNS_ROOT\",\n    \"_mtime_as_float\",\n    \"_msg_from_collection_entry\",\n    \"_import_runs\",\n    \"_STATUS_MAP\",\n    \"_EXIT_CODE_STATUS_MAP\",\n    \"_derive_import_status\",\n    \"_derive_timestamps\",\n    \"_import_one_run\",\n    \"_import_teams\",\n    # ops helpers\n    \"_format_bytes\",\n    \"_list_sessions\",\n    \"_print_stats\",\n    \"_collect_message_breakdown\",\n    \"_checkpoint\",\n    \"_vacuum\",\n    \"_prune\",\n    \"_prune_candidates\",\n    \"_null_content\",\n    \"_null_content_candidates\",\n    \"_null_content_targets\",\n    \"_doctor\",\n    # CLI entrypoints\n    \"add_state_subparser\",\n    \"run_state\",\n    \"machine_result\",\n]"
+    ],
+    "lionhub/src/lionhub/serve/cli/stats.py": [
+      "__all__ = (\n    \"GROUP_BY_COLUMNS\",\n    \"add_stats_subparser\",\n    \"run_stats\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/status.py": [
+      "__all__ = (\n    \"run_agent_status\",\n    \"run_play_status\",\n    \"run_ctl_status\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "__all__ = (\n    \"STUDIO_TOKEN_ENV\",\n    \"STUDIO_UNAUTHORIZED_HINT\",\n    \"studio_request\",\n    \"with_unauthorized_hint\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/cli/wait.py": [
+      "__all__ = (\n    \"wait_for_terminal\",\n    \"run_wait\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_host.py": [
+      "__all__ = (\"admitted_host_names\", \"is_unspecified_host\", \"normalize_host\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "__all__ = (\"Attach\", \"Attachment\", \"DaemonServices\", \"create_daemon_app\", \"lifespan\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "__all__ = (\n    \"ATTACHMENT_PROTOCOL\",\n    \"MANIFEST_NAME\",\n    \"IncompatibleApplicationError\",\n    \"check_attachment_compatibility\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
+      "__all__ = (\"DAEMON_LOG_FORMAT\", \"SCHEDULER_LOGGER\", \"daemon_log_handler\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/launch_access.py": [
+      "__all__ = (\n    \"DECISION_CAPABILITY_TTL_S\",\n    \"DECISION_SCOPE\",\n    \"DECISION_TOKEN_HEADER\",\n    \"DecisionPrincipal\",\n    \"PAIRING_CODE_TTL_S\",\n    \"PAIRING_REDEEM_PATH\",\n    \"begin_serving\",\n    \"daemon_epoch\",\n    \"is_launch_origin\",\n    \"launch_bearer\",\n    \"mint_decision_capability\",\n    \"mint_pairing_code\",\n    \"redeem_pairing_code\",\n    \"redeem_pairing_grant\",\n    \"reset_launch_access\",\n    \"resolve_decision_capability\",\n    \"revoke_decision_capability\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "__all__ = (\n    \"LEG_HOST_ENV\",\n    \"LegLaunch\",\n    \"LegSetupError\",\n    \"LegRepo\",\n    \"capabilities\",\n    \"enabled\",\n    \"leg_env\",\n    \"load_repos\",\n    \"make_worktree\",\n    \"max_launches\",\n    \"read_result\",\n    \"remove_worktree\",\n    \"result_path\",\n    \"startup_refusals\",\n    \"sweep_worktrees\",\n    \"validate_launch\",\n    \"worktree_refusal\",\n    \"write_result\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/reconnect.py": [
+      "__all__ = (\n    \"ReconnectChannel\",\n    \"current_uid\",\n    \"default_socket_path\",\n    \"peer_uid\",\n    \"port_proof\",\n    \"read_reconnect_reply\",\n    \"state_dir\",\n    \"unix_sockets_supported\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "__all__ = (\n    \"DAEMON_ROUTE_MODULES\",\n    \"HttpMethod\",\n    \"RouteModule\",\n    \"StudioRoute\",\n    \"iter_studio_routes\",\n    \"load_route_modules\",\n    \"studio_route\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_session_tail.py": [
+      "__all__ = (\"SessionTailRegistry\", \"StreamResyncError\", \"capture_frontiers\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
+      "__all__ = (\"provisional_artifact_verification\", \"resolve_artifact_verification\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "__all__ = (\"session_has_control_consumer\",)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "__all__ = (\n    \"get_engine_def\",\n    \"get_engine_def_by_name\",\n    \"is_registered_engine_kind\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/redact.py": [
+      "__all__ = (\n    \"MAX_CANDIDATES\",\n    \"PER_KIND_ITEM_CAP\",\n    \"PER_ITEM_TEXT_CAP\",\n    \"MESSAGE_BYTE_CAP\",\n    \"ARTIFACT_BYTE_CAP\",\n    \"public_project\",\n    \"scrub_text\",\n    \"fold_field_name\",\n    \"is_secret_field_name\",\n    \"known_secret_values\",\n    \"redact_scalar\",\n    \"redact_arguments\",\n    \"cap_by_bytes\",\n    \"cap_payload_by_bytes\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "__all__ = (\"add_tag\", \"remove_tag\", \"session_ids_with_tags\", \"tags_for_sessions\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
+      "__all__ = (\n    \"build_outcome\",\n    \"build_run_view\",\n    \"build_run_view_for\",\n    \"exit_code_for_view\",\n    \"get_run_view\",\n    \"get_schedule_status_view\",\n    \"list_run_views\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/signals.py": [
+      "__all__ = (\"get_signals_after\",)"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/task_applications.py": [
+      "__all__ = (\"AdmissionRejectedError\", \"TaskApplication\", \"cancel_task\", \"submit_task\")"
+    ],
+    "lionhub/src/lionhub/serve/daemon/settings.py": [
+      "__all__ = (\n    \"CORS_ORIGINS\",\n    \"HOST\",\n    \"MIRROR_CLAUDE_ENABLED\",\n    \"MIRROR_CLAUDE_INTERVAL\",\n    \"MIRROR_CLAUDE_ROOT\",\n    \"MIRROR_CLAUDE_SINCE\",\n    \"MIRROR_CODEX_ROOT\",\n    \"MIRROR_IMPORT_AMBIENT\",\n    \"MIRROR_SOURCE\",\n    \"STUDIO_PORT\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/diagnostics.py": [
+      "__all__ = (\n    \"code_identity\",\n    \"git_identity\",\n    \"snapshot_git_position\",\n    \"GIT_TIMEOUT_SECONDS\",\n    \"IDENTITY_BUDGET_SECONDS\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/__init__.py": [
+      "from __future__ import annotations",
+      "__all__ = (\"serve\",)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_child_actor.py": [
+      "__all__ = [\n    \"ChildActorError\",\n    \"MintedChildActor\",\n    \"SubmittingActorError\",\n    \"child_actor_for\",\n    \"mint_child_actor_config\",\n]"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_errors.py": [
+      "__all__ = (\"SubmitInputError\",)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_run_detail.py": [
+      "__all__ = (\"build_run_detail\",)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_terminal_cause.py": [
+      "__all__ = [\n    \"DETAIL_CHARS\",\n    \"STATUS_SOURCES\",\n    \"allowed_cause_classes\",\n    \"provider_status\",\n    \"read_terminal_cause\",\n    \"write_terminal_cause\",\n]"
+    ],
+    "lionhub/src/lionhub/serve/mcp/accounts.py": [
+      "__all__ = (\"COMPLETED_WINDOW_HOURS\", \"account_list\")"
+    ],
+    "lionhub/src/lionhub/serve/mcp/dispatch.py": [
+      "__all__ = (\n    \"MACHINE_TIMEOUT_SECONDS\",\n    \"MACHINE_OUTPUT_LIMIT\",\n    \"OpError\",\n    \"catalog\",\n    \"verb_schema\",\n    \"render_argv\",\n    \"request\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/projection.py": [
+      "__all__ = (\n    \"SchemaProjectionError\",\n    \"PlaybookResolutionError\",\n    \"VerbProjection\",\n    \"available_paths\",\n    \"build_parser_for\",\n    \"playbook_fingerprint\",\n    \"project\",\n    \"project_parser\",\n)"
+    ],
+    "lionhub/src/lionhub/serve/mcp/roster.py": [
+      "__all__ = (\"profile_list\", \"profile_show\")"
+    ],
+    "lionhub/src/lionhub/serve/mcp/verbs.py": [
+      "__all__ = (\n    \"Verb\",\n    \"AbsentVerb\",\n    \"VERBS\",\n    \"ABSENT\",\n    \"FENCED_PATHS\",\n    \"MAX_OPS\",\n    \"catalog_names\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionhub/src/lionhub/serve/cli/_agent_depth.py": [
+      "stamp_agent_depth",
+      "stamp_worker_depth"
+    ],
+    "lionhub/src/lionhub/serve/cli/_api_usage.py": [
+      "APIUsageCollector"
+    ],
+    "lionhub/src/lionhub/serve/cli/_context_from.py": [
+      "AmbiguousContextRefError",
+      "ContextCandidate",
+      "ContextFromError",
+      "build_context_block",
+      "resolve_and_build_context_block",
+      "resolve_context_refs"
+    ],
+    "lionhub/src/lionhub/serve/cli/_notify_outcomes.py": [
+      "DurableRunRecorder"
+    ],
+    "lionhub/src/lionhub/serve/cli/_pid_quarantine.py": [
+      "quarantine_identity"
+    ],
+    "lionhub/src/lionhub/serve/cli/agent.py": [
+      "add_agent_subparser",
+      "run_agent"
+    ],
+    "lionhub/src/lionhub/serve/cli/catalog.py": [
+      "build_cli_parser",
+      "command_exists",
+      "iter_cli_seeds",
+      "load_cli_command",
+      "seed_for"
+    ],
+    "lionhub/src/lionhub/serve/cli/dispatch.py": [
+      "add_dispatch_subparser",
+      "machine_result",
+      "run_dispatch"
+    ],
+    "lionhub/src/lionhub/serve/cli/doctor.py": [
+      "add_doctor_subparser",
+      "collect_checks",
+      "run_doctor"
+    ],
+    "lionhub/src/lionhub/serve/cli/engine.py": [
+      "add_engine_subparser",
+      "run_engine"
+    ],
+    "lionhub/src/lionhub/serve/cli/hooks.py": [
+      "add_hooks_subparser",
+      "run_hooks"
+    ],
+    "lionhub/src/lionhub/serve/cli/invoke.py": [
+      "InvocationEnd",
+      "add_invoke_subparser",
+      "machine_result",
+      "run_invoke"
+    ],
+    "lionhub/src/lionhub/serve/cli/kill.py": [
+      "add_kill_subparser",
+      "run_kill"
+    ],
+    "lionhub/src/lionhub/serve/cli/machine.py": [
+      "MachineChannel",
+      "MachineError",
+      "add_handshake_subparser",
+      "add_lifecycle_subparser",
+      "add_runs_subparser",
+      "available",
+      "dispatch_machine",
+      "doctor_data",
+      "failure",
+      "handshake_data",
+      "has_machine_flag",
+      "lifecycle_data",
+      "list_directory",
+      "machine_parser",
+      "machine_subcommand",
+      "ok",
+      "optional_flag",
+      "parse_machine_argv",
+      "read_json_file",
+      "readonly_state_db",
+      "reserve_stdout",
+      "run_handshake",
+      "run_lifecycle",
+      "run_runs",
+      "runs_data",
+      "state_db_absent",
+      "store_unreachable",
+      "strip_machine_flag",
+      "unavailable",
+      "validate_envelope"
+    ],
+    "lionhub/src/lionhub/serve/cli/machine_schedule.py": [
+      "dispatch_schedule"
+    ],
+    "lionhub/src/lionhub/serve/cli/main.py": [
+      "main",
+      "run_skill"
+    ],
+    "lionhub/src/lionhub/serve/cli/mcp.py": [
+      "add_mcp_subparser",
+      "run_mcp"
+    ],
+    "lionhub/src/lionhub/serve/cli/mirror.py": [
+      "add_mirror_subparser",
+      "run_mirror"
+    ],
+    "lionhub/src/lionhub/serve/cli/monitor.py": [
+      "add_monitor_subparser",
+      "machine_result",
+      "run_monitor",
+      "run_monitor_wait"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/__init__.py": [
+      "inject_playbook_schema_into_parser",
+      "list_playbooks",
+      "run_orchestrate"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_common.py": [
+      "bare_worker_system",
+      "retarget_artifact_section",
+      "worker_artifact_section"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_control.py": [
+      "run_ctl_msg",
+      "run_ctl_pause",
+      "run_ctl_resolve",
+      "run_ctl_resume"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_finalize.py": [
+      "FinalizeClaim",
+      "claim_finalization",
+      "claim_path"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_harvest.py": [
+      "HarvestResult",
+      "harvest_leg_artifacts"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_manifest.py": [
+      "Leg",
+      "Manifest",
+      "ManifestError",
+      "load_manifest"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_notify.py": [
+      "deliver_flow_notify_now",
+      "notice_context_for_run",
+      "register_flow_notify_scope",
+      "unregister_flow_notify_scope"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py": [
+      "OrchestrationEnv",
+      "TeamLifecycleCoordinator",
+      "WorkerBuildError",
+      "attribute_worker_build_failure",
+      "available_roles",
+      "build_worker_branch",
+      "casts_role_system",
+      "collect_worker_artifacts",
+      "finalize_orchestration",
+      "make_help_coordinator",
+      "make_team_lifecycle_coordinator",
+      "mode_roster",
+      "parse_orchestrator_provider",
+      "resolve_modes",
+      "resolve_worker_spec",
+      "role_config",
+      "role_roster",
+      "setup_orchestration",
+      "setup_orchestration_persist",
+      "start_live_persist",
+      "stop_live_persist",
+      "team_guidance",
+      "team_history_context",
+      "team_worker_system",
+      "worker_is_cli"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_quiescence.py": [
+      "GroupObservation",
+      "Quiescence",
+      "QuietEnforcement",
+      "enforce_quiet",
+      "sweep_quiet"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_round_records.py": [
+      "ControlGroupDomain",
+      "LegDispatch",
+      "complete_leg_record",
+      "control_group_domain",
+      "flip_round_complete",
+      "legs_dir",
+      "read_leg_records",
+      "read_round_summary",
+      "recorded_control_groups",
+      "round_path",
+      "round_result",
+      "write_leg_dispatch",
+      "write_round_summary"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/fanout.py": [
+      "FanoutPlanError"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/flow.py": [
+      "FlowPlanError",
+      "critical_path_depth",
+      "max_sequential_depth",
+      "op_budget_share"
+    ],
+    "lionhub/src/lionhub/serve/cli/plugin.py": [
+      "add_plugin_subparser",
+      "machine_result",
+      "run_plugin"
+    ],
+    "lionhub/src/lionhub/serve/cli/remote.py": [
+      "Remote",
+      "RemoteError",
+      "add_remote_subparser",
+      "load_remote",
+      "run_remote"
+    ],
+    "lionhub/src/lionhub/serve/cli/schedule.py": [
+      "run_schedule",
+      "run_schedule_quick_create"
+    ],
+    "lionhub/src/lionhub/serve/cli/skill.py": [
+      "list_skill_names",
+      "read_skill_body",
+      "resolve_skill_path",
+      "run_skill",
+      "strip_frontmatter"
+    ],
+    "lionhub/src/lionhub/serve/cli/state.py": [
+      "ImportMessageConflictError",
+      "add_state_subparser",
+      "machine_result",
+      "run_state"
+    ],
+    "lionhub/src/lionhub/serve/cli/stats.py": [
+      "add_stats_subparser",
+      "machine_result",
+      "run_stats"
+    ],
+    "lionhub/src/lionhub/serve/cli/status.py": [
+      "run_agent_status",
+      "run_ctl_status",
+      "run_play_status"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio.py": [
+      "add_studio_subparser",
+      "run_studio"
+    ],
+    "lionhub/src/lionhub/serve/cli/studio_client.py": [
+      "studio_request",
+      "with_unauthorized_hint"
+    ],
+    "lionhub/src/lionhub/serve/cli/team.py": [
+      "QuiescenceState",
+      "add_team_subparser",
+      "cmd_create",
+      "cmd_list",
+      "cmd_receive",
+      "cmd_send",
+      "cmd_show",
+      "compute_quiescence",
+      "machine_result",
+      "pop_unread_messages",
+      "post_done_signal",
+      "post_finished_signal",
+      "post_wakeup_signal",
+      "run_team"
+    ],
+    "lionhub/src/lionhub/serve/cli/wait.py": [
+      "format_wait_line",
+      "run_wait",
+      "wait_for_terminal"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_host.py": [
+      "admitted_host_names",
+      "is_unspecified_host"
+    ],
+    "lionhub/src/lionhub/serve/daemon/_traceback_dump.py": [
+      "arm_traceback_dump",
+      "disarm_traceback_dump"
+    ],
+    "lionhub/src/lionhub/serve/daemon/app.py": [
+      "Attachment",
+      "DaemonServices",
+      "create_daemon_app",
+      "lifespan",
+      "validate_host_header"
+    ],
+    "lionhub/src/lionhub/serve/daemon/compatibility.py": [
+      "IncompatibleApplicationError",
+      "check_attachment_compatibility"
+    ],
+    "lionhub/src/lionhub/serve/daemon/daemon_log.py": [
+      "daemon_log_handler"
+    ],
+    "lionhub/src/lionhub/serve/daemon/launch_access.py": [
+      "DecisionPrincipal",
+      "PairingGrant",
+      "begin_serving",
+      "daemon_epoch",
+      "is_launch_origin",
+      "launch_bearer",
+      "mint_decision_capability",
+      "mint_pairing_code",
+      "redeem_pairing_code",
+      "redeem_pairing_grant",
+      "reset_launch_access",
+      "resolve_decision_capability",
+      "revoke_decision_capability"
+    ],
+    "lionhub/src/lionhub/serve/daemon/leg_host.py": [
+      "LegLaunch",
+      "LegRepo",
+      "LegSetupError",
+      "capabilities",
+      "enabled",
+      "leg_env",
+      "load_repos",
+      "make_worktree",
+      "max_launches",
+      "read_result",
+      "remove_worktree",
+      "result_path",
+      "startup_refusals",
+      "sweep_worktrees",
+      "validate_launch",
+      "worktree_refusal",
+      "write_result"
+    ],
+    "lionhub/src/lionhub/serve/daemon/reconnect.py": [
+      "ReconnectChannel",
+      "current_uid",
+      "default_socket_path",
+      "peer_uid",
+      "port_proof",
+      "read_reconnect_reply",
+      "state_dir",
+      "unix_sockets_supported"
+    ],
+    "lionhub/src/lionhub/serve/daemon/routes.py": [
+      "RouteModule",
+      "StudioRoute",
+      "iter_studio_routes",
+      "load_route_modules",
+      "studio_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_io.py": [
+      "JsonRead",
+      "parse_json_col",
+      "read_json_file_checked"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_path_safety.py": [
+      "public_path",
+      "safe_path_join",
+      "validate_name_component"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_session_tail.py": [
+      "SessionTailRegistry",
+      "StreamResyncError",
+      "capture_frontiers"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/_sse.py": [
+      "sse_response"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/admin.py": [
+      "MaintenanceBody",
+      "PruneBody",
+      "PruneOldDataBody",
+      "TransitionBody",
+      "admin_events_route",
+      "db_health",
+      "doctor",
+      "doctor_route",
+      "health_report",
+      "health_route",
+      "list_admin_events",
+      "prune_old_data_route",
+      "prune_phantom_sessions",
+      "prune_route",
+      "prune_sessions",
+      "readiness_route",
+      "run_maintenance_route",
+      "store_probe",
+      "transition_route",
+      "transition_sessions"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/artifact_verification.py": [
+      "provisional_artifact_verification",
+      "resolve_artifact_verification"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/control_consumers.py": [
+      "session_has_control_consumer"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_lookup.py": [
+      "get_engine_def",
+      "get_engine_def_by_name"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/engine_runs.py": [
+      "get_engine_run",
+      "get_engine_run_route",
+      "list_engine_run_page",
+      "list_engine_runs",
+      "list_engine_runs_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/identity.py": [
+      "get_identity_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/invocations.py": [
+      "count_invocations",
+      "get_artifact",
+      "get_artifact_route",
+      "get_invocation",
+      "get_invocation_route",
+      "list_artifacts_for_session",
+      "list_for_session",
+      "list_invocations",
+      "list_invocations_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/launches.py": [
+      "LaunchRequest",
+      "LiExecutableUnavailableError",
+      "TooManyLaunchesError",
+      "cancel_launch",
+      "launch",
+      "launch_capabilities",
+      "launch_detached_argv",
+      "launch_result",
+      "launch_run",
+      "shutdown_launches"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/pairing.py": [
+      "PairRequest",
+      "create_pairing_code_route",
+      "disconnect_decision_capability_route",
+      "redeem_pairing_code_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/redact.py": [
+      "cap_by_bytes",
+      "cap_payload_by_bytes",
+      "known_secret_values",
+      "public_project",
+      "redact_arguments",
+      "redact_scalar",
+      "scrub_text"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_resume.py": [
+      "RunBranchConflictError",
+      "RunBranchMembershipError",
+      "RunNotFoundError",
+      "RunResumeCheckpointError",
+      "RunResumeInProgressError",
+      "RunResumeRequest",
+      "RunResumeUnavailableError",
+      "RunResumeUnsupportedKindError",
+      "resume_availability",
+      "resume_availability_route",
+      "resume_run",
+      "resume_run_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_resume_worker.py": [
+      "main",
+      "run_worker"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_tags_store.py": [
+      "add_tag",
+      "remove_tag",
+      "session_ids_with_tags",
+      "tags_for_sessions"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/run_view.py": [
+      "build_outcome",
+      "build_run_view",
+      "build_run_view_for",
+      "exit_code_for_view",
+      "get_run_view",
+      "get_schedule_status_view",
+      "list_run_views"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/runs.py": [
+      "get_run",
+      "get_run_file",
+      "get_run_file_route",
+      "get_run_route",
+      "list_run_projects_route",
+      "list_runs",
+      "list_runs_route",
+      "paginate_runs"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/schedules.py": [
+      "CreateScheduleRequest",
+      "DisableScheduleRequest",
+      "NameConflictError",
+      "UpdateScheduleRequest",
+      "compute_schedule_health",
+      "create_schedule",
+      "create_schedule_route",
+      "delete_schedule",
+      "delete_schedule_route",
+      "disable_schedule",
+      "disable_schedule_route",
+      "enable_schedule",
+      "enable_schedule_route",
+      "get_schedule",
+      "get_schedule_by_name",
+      "get_schedule_route",
+      "get_schedule_run",
+      "get_schedule_run_route",
+      "get_schedule_status",
+      "get_schedule_status_route",
+      "list_schedule_run_views",
+      "list_schedule_runs",
+      "list_schedule_runs_route",
+      "list_schedules",
+      "list_schedules_route",
+      "schedule_limits_route",
+      "trigger_schedule_route",
+      "update_schedule",
+      "update_schedule_route"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/sessions.py": [
+      "MessageCursorError",
+      "SessionFilter",
+      "SessionLabelBody",
+      "SessionStreamCursorError",
+      "count_sessions",
+      "display_cost",
+      "display_model",
+      "get_session",
+      "get_session_by_cc_id",
+      "get_session_messages_after",
+      "get_session_route",
+      "get_session_stream_state",
+      "is_session_stream_done",
+      "label_session_route",
+      "list_project_counts",
+      "list_sessions",
+      "list_sessions_route",
+      "session_exists",
+      "session_signals_page",
+      "stream_session_route",
+      "stream_signals"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/signals.py": [
+      "get_signals_after"
+    ],
+    "lionhub/src/lionhub/serve/daemon/services/task_applications.py": [
+      "AdmissionRejectedError",
+      "TaskApplication",
+      "cancel_task",
+      "submit_task"
+    ],
+    "lionhub/src/lionhub/serve/diagnostics.py": [
+      "code_identity",
+      "git_identity",
+      "loaded_package_path",
+      "snapshot_git_position"
+    ],
+    "lionhub/src/lionhub/serve/mcp/__init__.py": [
+      "serve"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_child_actor.py": [
+      "ChildActorError",
+      "MintedChildActor",
+      "SubmittingActorError",
+      "child_actor_for",
+      "mint_child_actor_config"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_errors.py": [
+      "SubmitInputError"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_notify_hook.py": [
+      "deliver_terminal_notice",
+      "main"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_run_detail.py": [
+      "build_run_detail"
+    ],
+    "lionhub/src/lionhub/serve/mcp/_terminal_cause.py": [
+      "allowed_cause_classes",
+      "provider_status",
+      "read_terminal_cause",
+      "write_terminal_cause"
+    ],
+    "lionhub/src/lionhub/serve/mcp/accounts.py": [
+      "account_list"
+    ],
+    "lionhub/src/lionhub/serve/mcp/config.py": [
+      "child_actor_suffix",
+      "job_dir",
+      "li_command",
+      "run_dir",
+      "run_manifest",
+      "sender_roots"
+    ],
+    "lionhub/src/lionhub/serve/mcp/dispatch.py": [
+      "OpError",
+      "catalog",
+      "preload",
+      "render_argv",
+      "request",
+      "schema_fingerprint",
+      "verb_schema"
+    ],
+    "lionhub/src/lionhub/serve/mcp/jobs.py": [
+      "NotifySenderMismatchError",
+      "NotifySenderResolutionError",
+      "ProcessLiveness",
+      "ReapResult",
+      "SpawnError",
+      "WriteResult",
+      "begin_notify_delivery",
+      "failure_cause_path",
+      "job_run_ids",
+      "kill",
+      "list_jobs",
+      "mark_terminal",
+      "new_run_id",
+      "output",
+      "reap_orphan",
+      "record_failure_cause",
+      "record_notify_delivery",
+      "status",
+      "submit",
+      "wait"
+    ],
+    "lionhub/src/lionhub/serve/mcp/projection.py": [
+      "PlaybookResolutionError",
+      "SchemaProjectionError",
+      "VerbProjection",
+      "available_paths",
+      "build_parser_for",
+      "playbook_fingerprint",
+      "project",
+      "project_parser"
+    ],
+    "lionhub/src/lionhub/serve/mcp/roster.py": [
+      "profile_list",
+      "profile_show"
+    ],
+    "lionhub/src/lionhub/serve/mcp/server.py": [
+      "main",
+      "request"
+    ],
+    "lionhub/src/lionhub/serve/mcp/verbs.py": [
+      "AbsentVerb",
+      "Verb",
+      "catalog_names"
+    ],
+    "lionhub/src/lionhub/serve/mirror.py": [
+      "mirror_forever"
+    ]
+  }
+}

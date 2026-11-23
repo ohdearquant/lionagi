@@ -1,0 +1,69 @@
+{
+  "package_exports": {
+    "lionagi/plugins/__init__.py": [
+      "from __future__ import annotations",
+      "from .discovery import DiscoveredPlugin, discover_plugins",
+      "from .manifest import Capabilities, ManifestError, PluginManifest, parse_manifest",
+      "from .registry import (\n    PluginActivationError,\n    PluginRecord,\n    PluginRegistry,\n    PluginState,\n    PluginToolCollisionError,\n    ToolTarget,\n)",
+      "from .trust import TrustState, build_trust_disclosure, gc_trust_records, trust_plugin, trust_state",
+      "__all__ = (\n    \"Capabilities\",\n    \"DiscoveredPlugin\",\n    \"ManifestError\",\n    \"PluginActivationError\",\n    \"PluginManifest\",\n    \"PluginRecord\",\n    \"PluginRegistry\",\n    \"PluginState\",\n    \"PluginToolCollisionError\",\n    \"ToolTarget\",\n    \"TrustState\",\n    \"build_trust_disclosure\",\n    \"discover_plugins\",\n    \"gc_trust_records\",\n    \"parse_manifest\",\n    \"trust_plugin\",\n    \"trust_state\",\n)"
+    ],
+    "lionagi/plugins/_user_settings.py": [
+      "__all__ = (\n    \"locked_user_settings\",\n    \"read_user_settings\",\n    \"user_settings_revision\",\n    \"user_settings_path\",\n    \"write_user_settings\",\n)"
+    ],
+    "lionagi/plugins/discovery.py": [
+      "__all__ = (\n    \"DiscoveredPlugin\",\n    \"discover_plugins\",\n)"
+    ],
+    "lionagi/plugins/manifest.py": [
+      "__all__ = (\n    \"Capabilities\",\n    \"HookCommand\",\n    \"HookMatcher\",\n    \"ManifestError\",\n    \"PluginManifest\",\n    \"ProviderCapability\",\n    \"ToolCapability\",\n    \"parse_manifest\",\n    \"parse_tool_target\",\n)"
+    ],
+    "lionagi/plugins/registry.py": [
+      "__all__ = (\n    \"PluginActivationError\",\n    \"PluginRecord\",\n    \"PluginRegistry\",\n    \"PluginState\",\n    \"PluginToolCollisionError\",\n    \"ToolTarget\",\n)"
+    ],
+    "lionagi/plugins/trust.py": [
+      "__all__ = (\n    \"TrustState\",\n    \"build_trust_disclosure\",\n    \"compute_trust_hashes\",\n    \"gc_trust_records\",\n    \"read_trusted_plugins\",\n    \"trust_plugin\",\n    \"trust_state\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionagi/plugins/_user_settings.py": [
+      "locked_user_settings",
+      "read_user_settings",
+      "user_settings_path",
+      "user_settings_revision",
+      "write_user_settings"
+    ],
+    "lionagi/plugins/discovery.py": [
+      "DiscoveredPlugin",
+      "discover_plugins"
+    ],
+    "lionagi/plugins/manifest.py": [
+      "Capabilities",
+      "HookCommand",
+      "HookMatcher",
+      "ManifestError",
+      "PluginManifest",
+      "ProviderCapability",
+      "ToolCapability",
+      "parse_manifest",
+      "parse_tool_target"
+    ],
+    "lionagi/plugins/registry.py": [
+      "PluginActivationError",
+      "PluginRecord",
+      "PluginRegistry",
+      "PluginState",
+      "PluginToolCollisionError",
+      "ToolTarget"
+    ],
+    "lionagi/plugins/trust.py": [
+      "TrustState",
+      "build_trust_disclosure",
+      "compute_manifest_hash",
+      "compute_trust_hashes",
+      "gc_trust_records",
+      "read_trusted_plugins",
+      "trust_plugin",
+      "trust_state"
+    ]
+  }
+}

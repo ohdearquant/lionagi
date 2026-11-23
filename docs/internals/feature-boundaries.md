@@ -45,8 +45,12 @@ A Core destination without a manifest owner fails the check.
 `tests/contracts/test_boundary_compatibility.py` records package declarations,
 public definitions, moved-module mappings, settings fields, direct environment
 lookups, extras and console-script wiring; the existing CLI surface tests
-exercise selected command behavior. Update the fixture deliberately when an
-intended compatibility surface changes. Computed environment names and dynamic
+exercise selected command behavior. The record is the directory
+`tests/contracts/data/boundary_compatibility/`: one JSON file per package and
+first-level subpackage, plus `project.json`, so that no file nears the data-file
+size limit as exports are added. Update it deliberately when an intended
+compatibility surface changes, with
+`python tests/contracts/test_boundary_compatibility.py`. Computed environment names and dynamic
 exports still need their own behavior tests.
 
 `scripts/probe_import_effects.py` observes one listed module per fresh process.

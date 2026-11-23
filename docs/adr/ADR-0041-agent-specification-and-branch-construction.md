@@ -1,11 +1,105 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
-  Amendments 1 to 5)
+  Amendments 1 to 5); Amendment 6 (2026-11-22) Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 6 (2026-11-22) — a per-run scratch directory for a read-only agent
+
+**Status: Proposed.**
+
+The ask, in the words of the feature request: "A reviewer profile's sandbox has no writable
+temporary folder, so a reviewer agent cannot run the project's tests to check a claim." What it
+wants: "A per-run scratch folder that is writable inside an otherwise read-only sandbox, declared
+in the profile and removed or kept per run."
+
+Decision:
+
+- **The profile key.** `scratch: true` or `scratch: keep` asks for one; `false` or no key asks
+  for none. Any other value refuses the profile, so a request is never read as absent.
+- **One directory per run.** An `li agent` run of such a role makes `<run state
+  directory>/scratch`, mode 0700, once its run directory exists and before its first turn, and
+  records `scratch: {path, keep}` in run.json. A name already there refuses the run. The path
+  reaches the Claude Code request as the endpoint's runtime state, never its config, and
+  `scratch_dir` is one of `RUNTIME_STATE_NAMES`: no saved branch or stored config carries it into
+  a later run, and a run without scratch clears one left on its endpoint.
+- **The child.** The path is the one write root the run adds to the child sandbox's policy, in
+  `sandbox.filesystem.allowWrite` and in the roots of the file-tool hook, added after a stored
+  policy is resolved again so the settings' own write list cannot drop it. It is also the child's
+  `TMPDIR`, `TMP` and `TEMP`. A scratch path that is a symbolic link, or not a directory, refuses
+  the launch; one that is gone adds nothing and warns.
+- **Removal.** In the run's shielded teardown, after the child's process group has ended, `true`
+  removes the directory by its recorded path. It is refused, and left exactly as it is, when it is
+  a symbolic link, is not a directory, is not named `scratch`, or is not directly in the run
+  directory. A link inside is removed as a link and what it points to is left alone. When the
+  first removal leaves something, a directory inside being read-only for one, every directory
+  under scratch is opened with `O_DIRECTORY` and `O_NOFOLLOW` and given owner access through that
+  descriptor, so no link is followed on Linux or macOS, and removal runs once more. What is
+  inside a directory its owner cannot open for reading is left and named. Anything the
+  removal raises is recorded as its error, and the teardown after it still runs. run.json's
+  `scratch` then reads `removed` and `removal_error`; the error names what was refused or left.
+  `keep` leaves the directory and reads `removed: false` with no error.
+- **Sockets.** macOS limits a unix socket path to 104 bytes, and a tool that makes a socket under
+  `TMPDIR` in a deep run directory can pass it. The docs say so; no shorter directory is made in
+  its place.
+- **Where it applies.** One row per launch surface and provider. A refusal names the reason
+  shown here; a refusal "at launch" happens before the run directory exists.
+
+| Launch surface | Provider | Scratch | Reason given when refused |
+| --- | --- | --- | --- |
+| `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI | made, as above | |
+| the same | codex | refused at launch | a codex run needs a sandbox probe record of format 4, which measures a read-only policy with one write root, and no such record exists yet |
+| the same | Gemini CLI | refused at launch | the Gemini CLI's sandbox does not bound reads and grants no single writable directory this launcher can verify |
+| the same | an API model | refused at launch | an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch root yet |
+| the same | any other CLI | refused at launch | the named provider has no scratch directory support |
+| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | any | refused at launch | a flow, fan-out or play does not give its orchestrator or workers a scratch directory yet |
+| a worker's role in a flow, fan-out or play | any | refused when the worker's role is resolved, after the orchestrator's run directory exists | the same |
+| an orchestration engine stage | any | does not apply: a stage takes only the model and effort of a role's profile | |
+
+Required checks:
+
+- The key reads `true`, `keep`, `false` and no key, and refuses every other value it is tested
+  with; the roster reports it only when set.
+- A Claude Code run has the directory during its turn and records it; at run end `true` removed
+  it and `keep` kept it, and run.json says which.
+- A symbolic link inside scratch, to a file and to a directory outside, is removed and both
+  targets survive. A symbolic link put in place of scratch is left, its target survives, and
+  run.json carries the named error, both from the removal itself and from a run.
+- A path that is a file, is named otherwise, or is outside the run directory is refused and left.
+  A read-only directory inside is removed, a directory its owner cannot open is left and named,
+  and opening up a directory changes nothing a link inside it points to. A removal that raises
+  something other than an `OSError` is recorded in run.json, and the teardown after it still
+  runs.
+- The child's settings gain exactly the scratch path as a write root and in the hook's roots; a
+  scratch path that is a link refuses the launch; a gone one adds nothing. The child's three
+  temporary-directory variables name it, with an inherited and a given environment, and a run
+  without scratch leaves the environment as it was. The path is in no dump of the request or the
+  endpoint and reaches the rebuilt request.
+- A codex and a Gemini CLI run are refused with their reasons and no run directory; the reason
+  for an API model is the one in the table. An orchestrator role is refused with no run
+  directory, and a worker role when it is resolved.
+
+Limits:
+
+- Codex and the seatbelt policy that API models and the Gemini CLI run under get the scratch root
+  in a later change to this same amendment: codex once a probe record of format 4 measures a
+  read-only policy with one write root, the seatbelt policy with Amendment 5's file-link rules
+  covering the new root and a probe arm proving that a hard link from scratch to a file outside
+  the roots is refused. Until then both are refused as the table says.
+- Claude Code's own sandbox handling of a hard link from the scratch directory to a file outside
+  the writable roots has not been measured, as it has not been for the working directory.
+- An automatic resume runs in a run directory of its own and makes its own scratch; the first
+  run's directory goes at that run's end unless kept.
+- A process the child left running after the run can still write into the directory while it is
+  removed. Removal reports what it could not remove, and nothing retries it.
+- Before Python 3.13, removal descends recursively and holds a descriptor per level, so a tree
+  deeper than the open-file limit (256 by default on macOS) is left and named.
+- A directory its owner cannot open for reading, mode 0300 for one, is not opened up, so what is
+  inside it is left and named.
+- A kept directory stays until its run directory is removed; nothing sweeps kept directories.
 
 ## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
 

@@ -1,0 +1,7 @@
+{
+  "package_exports": {
+    "lionhub/src/lionhub/__init__.py": [
+      "__all__ = ()"
+    ]
+  }
+}

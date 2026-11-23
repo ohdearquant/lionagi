@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -70,6 +72,9 @@ except ImportError:
     _claude_tail_repair = None
 
 HAS_CLAUDE_CODE_CLI, CLAUDE_CLI = discover_cli("claude")
+
+#: The variables a child reads its temporary directory from, pointed at a run's scratch directory.
+_SCRATCH_TEMP_VARIABLES: tuple[str, ...] = ("TMPDIR", "TMP", "TEMP")
 
 
 def resolve_claude_cli() -> str | None:
@@ -470,6 +475,16 @@ class ClaudeCodeRequest(BaseModel):
             "None resolves the default policy when the command line is built."
         ),
     )
+    scratch_dir: SkipJsonSchema[str | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "This run's scratch directory (an `li agent` run whose profile declares "
+            "`scratch`): the one write root added to the child sandbox's policy, and the "
+            "child's TMPDIR, TMP and TEMP. None adds nothing."
+        ),
+    )
 
     # Legacy fields (kept for backward compat, unused in CLI args)
     mcp_tools: list[str] = Field(default_factory=list, exclude=True)
@@ -800,6 +815,11 @@ class ClaudeCodeRequest(BaseModel):
                 )
         if not policy.enabled:
             return None
+        scratch = self._scratch_root()
+        if scratch is not None:
+            # Added here, after the stored policy is resolved again: ``effective_policy`` keeps
+            # only the write roots the settings allow, and this one belongs to the run alone.
+            policy = dataclasses.replace(policy, allow_write=(*policy.allow_write, scratch))
         _refuse_a_home_workspace(self.cwd(), self.env, enabled=True)
         check_sandbox_backend()
         binary = resolve_claude_cli()
@@ -814,6 +834,30 @@ class ClaudeCodeRequest(BaseModel):
             if not text.lstrip().startswith("{"):
                 base_dir = self.cwd()
         return claude_settings_argument(policy, existing, base_dir, self.cwd())
+
+    def _scratch_root(self) -> str | None:
+        """The run's scratch directory as a resolved path, or None when there is none to add.
+
+        A scratch path that is a symbolic link, or not a directory, is refused: the sandbox would
+        grant writes wherever it points. A path that is gone is skipped with a warning, so a
+        request built for a run that has ended grants no name another process could take.
+        """
+        if not self.scratch_dir:
+            return None
+        path = os.path.abspath(os.path.expanduser(self.scratch_dir))
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            log.warning("scratch directory %s is gone; the child gets no scratch directory", path)
+            return None
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            from lionagi._errors import ConfigurationError
+
+            raise ConfigurationError(
+                f"scratch directory {path} is a symbolic link or not a directory; "
+                "the child is not started"
+            )
+        return os.path.realpath(path)
 
     def _build_declarative_args(self) -> list[str]:
         return build_declarative_cli_args(self)
@@ -931,13 +975,20 @@ async def _ndjson_from_cmd(request: ClaudeCodeRequest, mcp_servers_file: Path | 
     # nonzero with nothing on stderr; the exit alone would read as a crash, so the result it gave
     # rides the raised error, classified.
     refusal: dict | None = None
+    child_env = request.env
+    scratch = request._scratch_root()
+    if scratch is not None:
+        # Temporary files go to the run's scratch directory, the one place a read-only child
+        # may write besides its toolchain caches.
+        base = dict(os.environ) if child_env is None else dict(child_env)
+        child_env = {**base, **dict.fromkeys(_SCRATCH_TEMP_VARIABLES, scratch)}
     try:
         # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
         async with contextlib.aclosing(
             ndjson_from_cli(
                 cmd,
                 cwd=workspace,
-                env=request.env,
+                env=child_env,
                 stdin_data=stdin_data,
                 tail_repair=_claude_tail_repair,
                 on_spawn=request.on_spawn,
@@ -1331,7 +1382,7 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
-    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip", "scratch_dir")
     # Claude Code streams a "system" event as soon as the CLI session starts,
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True
