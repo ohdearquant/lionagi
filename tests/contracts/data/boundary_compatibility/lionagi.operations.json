@@ -1,0 +1,188 @@
+{
+  "environment_lookups": {
+    "lionagi/operations/flow.py": [
+      "os.environ.get:\"LIONAGI_MAX_CONCURRENCY\""
+    ]
+  },
+  "package_exports": {
+    "lionagi/operations/__init__.py": [
+      "from .builder import ExpansionStrategy, OperationGraphBuilder",
+      "from .flow import (\n    DependencyAwareExecutor,\n    FlowEvent,\n    ReactiveExecutor,\n    flow,\n    flow_stream,\n)",
+      "from .node import BranchOperations, Operation",
+      "__all__ = (\n    \"ExpansionStrategy\",\n    \"OperationGraphBuilder\",\n    \"flow\",\n    \"flow_stream\",\n    \"FlowEvent\",\n    \"DependencyAwareExecutor\",\n    \"ReactiveExecutor\",\n    \"BranchOperations\",\n    \"Operation\",\n    \"Builder\",\n)"
+    ],
+    "lionagi/operations/_api_hooks.py": [
+      "__all__ = (\"emit_api_pre_call\", \"emit_api_post_call\", \"emit_api_stream_chunk\")"
+    ],
+    "lionagi/operations/_turn_origin.py": [
+      "__all__ = (\"TurnOrigin\", \"resolve_turn_origin\", \"consume_turn_origin\")"
+    ],
+    "lionagi/operations/builder.py": [
+      "__all__ = (\n    \"OperationGraphBuilder\",\n    \"ExpansionStrategy\",\n)"
+    ],
+    "lionagi/operations/fields.py": [
+      "def __getattr__(name: str):\n    if name in _FIELD_CONSTANTS:\n        with _FIELD_CONSTANTS_LOCK:\n            if name not in globals():\n                field_name, kwargs = _FIELD_CONSTANTS[name]\n                globals()[name] = get_default_field(field_name, **kwargs)\n            return globals()[name]\n    raise AttributeError(f\"module '{__name__}' has no attribute '{name}'\")",
+      "__all__ = (\n    \"ACTION_REQUESTS_FIELD\",\n    \"ACTION_RESPONSES_FIELD\",\n    \"ACTION_REQUIRED_FIELD\",\n    \"INSTRUCT_FIELD\",\n    \"LIST_INSTRUCT_FIELD_MODEL\",\n    \"REASON_FIELD\",\n    \"ActionRequestModel\",\n    \"ActionResponseModel\",\n    \"Instruct\",\n    \"Reason\",\n    \"get_default_field\",\n)"
+    ],
+    "lionagi/operations/operate/operative.py": [
+      "__all__ = (\"Operative\",)"
+    ],
+    "lionagi/operations/operate/step.py": [
+      "__all__ = (\"Step\",)"
+    ],
+    "lionagi/operations/parse/__init__.py": [
+      "from ..types import (\n    ExtractionError,\n    ParseError,\n    ParseFailureKind,\n    SchemaRejectedError,\n    UnparsedResponse,\n)",
+      "__all__ = (\n    \"ExtractionError\",\n    \"ParseError\",\n    \"ParseFailureKind\",\n    \"SchemaRejectedError\",\n    \"UnparsedResponse\",\n)"
+    ],
+    "lionagi/operations/schema/__init__.py": [
+      "from .json_structure import JsonStructure",
+      "from .structure import Structure",
+      "__all__ = (\"JsonStructure\", \"Structure\")"
+    ],
+    "lionagi/operations/schema/json_structure.py": [
+      "__all__ = (\"JsonStructure\",)"
+    ],
+    "lionagi/operations/schema/structure.py": [
+      "__all__ = (\"Structure\",)"
+    ]
+  },
+  "public_definitions": {
+    "lionagi/operations/ReAct/ReAct.py": [
+      "ReAct",
+      "ReActStream",
+      "ReAct_v1",
+      "handle_field_models",
+      "prepare_react_kw"
+    ],
+    "lionagi/operations/ReAct/utils.py": [
+      "Analysis",
+      "ReActAnalysis"
+    ],
+    "lionagi/operations/_api_hooks.py": [
+      "emit_api_post_call",
+      "emit_api_pre_call",
+      "emit_api_stream_chunk"
+    ],
+    "lionagi/operations/_defaults.py": [
+      "get_default_action_call",
+      "get_default_parse_call",
+      "make_parse_param"
+    ],
+    "lionagi/operations/_guards.py": [
+      "reject_removed_kwargs"
+    ],
+    "lionagi/operations/_observe.py": [
+      "StopStream",
+      "attempt_extract",
+      "check_control",
+      "emit_message"
+    ],
+    "lionagi/operations/_turn_origin.py": [
+      "TurnOrigin",
+      "consume_turn_origin",
+      "resolve_turn_origin"
+    ],
+    "lionagi/operations/_visualize_graph.py": [
+      "visualize_graph"
+    ],
+    "lionagi/operations/act/_gate_arguments.py": [
+      "gate_arguments"
+    ],
+    "lionagi/operations/act/act.py": [
+      "act",
+      "prepare_act_kw"
+    ],
+    "lionagi/operations/builder.py": [
+      "ExpansionStrategy",
+      "OperationGraphBuilder"
+    ],
+    "lionagi/operations/chat/_prepare.py": [
+      "first_round",
+      "is_note"
+    ],
+    "lionagi/operations/chat/chat.py": [
+      "chat"
+    ],
+    "lionagi/operations/communicate/communicate.py": [
+      "communicate",
+      "prepare_communicate_kw"
+    ],
+    "lionagi/operations/fields.py": [
+      "ActionRequestModel",
+      "ActionResponseModel",
+      "Instruct",
+      "Reason",
+      "get_default_field"
+    ],
+    "lionagi/operations/flow.py": [
+      "DependencyAwareExecutor",
+      "FlowEvent",
+      "ReactiveExecutor",
+      "cleanup_flow_results",
+      "flow",
+      "flow_stream"
+    ],
+    "lionagi/operations/interpret/interpret.py": [
+      "interpret",
+      "prepare_interpret_kw"
+    ],
+    "lionagi/operations/manager.py": [
+      "OperationManager"
+    ],
+    "lionagi/operations/node.py": [
+      "Operation",
+      "create_operation"
+    ],
+    "lionagi/operations/operate/operate.py": [
+      "operate",
+      "prepare_operate_kw"
+    ],
+    "lionagi/operations/operate/operative.py": [
+      "Operative"
+    ],
+    "lionagi/operations/operate/step.py": [
+      "Step"
+    ],
+    "lionagi/operations/parse/parse.py": [
+      "parse",
+      "prepare_parse_kws"
+    ],
+    "lionagi/operations/run/run.py": [
+      "run",
+      "run_and_collect"
+    ],
+    "lionagi/operations/run/stream_buffer.py": [
+      "legacy_fallback_text",
+      "legacy_stream_text"
+    ],
+    "lionagi/operations/schema/json_structure.py": [
+      "JsonStructure"
+    ],
+    "lionagi/operations/schema/structure.py": [
+      "Structure"
+    ],
+    "lionagi/operations/select/select.py": [
+      "select",
+      "select_v1"
+    ],
+    "lionagi/operations/select/utils.py": [
+      "SelectionModel",
+      "get_choice_representation",
+      "parse_selection",
+      "parse_to_representation"
+    ],
+    "lionagi/operations/types.py": [
+      "ActionParam",
+      "ChatParam",
+      "ExtractionError",
+      "InterpretParam",
+      "Middle",
+      "MorphParam",
+      "ParseError",
+      "ParseParam",
+      "RunParam",
+      "SchemaRejectedError",
+      "UnparsedResponse"
+    ]
+  }
+}

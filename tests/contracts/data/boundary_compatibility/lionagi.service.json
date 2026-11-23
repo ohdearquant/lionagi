@@ -1,0 +1,401 @@
+{
+  "environment_lookups": {
+    "lionagi/service/_subagent_admission.py": [
+      "os.environ.get:AGENT_DEPTH_ENV",
+      "os.environ:AGENT_DEPTH_ENV"
+    ],
+    "lionagi/service/accounts/_credentials.py": [
+      "os.environ:key_env"
+    ],
+    "lionagi/service/connections/endpoint_config.py": [
+      "os.getenv:name",
+      "os.getenv:self.api_key",
+      "os.getenv:self.api_key"
+    ],
+    "lionagi/service/connections/mcp_wrapper.py": [
+      "os.environ.get:\"MCP_DEBUG\""
+    ]
+  },
+  "package_exports": {
+    "lionagi/service/__init__.py": [
+      "from typing import TYPE_CHECKING",
+      "from lionagi.ln._lazy_init import lazy_import",
+      "from .hooks import (\n    AssociatedEventInfo,\n    HookDict,\n    HookedEvent,\n    HookEvent,\n    HookEventTypes,\n    HookRegistry,\n    global_hook_logger,\n)",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"RateLimitedAPIExecutor\": (\n        \"rate_limited_processor\",\n        \"RateLimitedAPIExecutor\",\n    ),\n    \"Endpoint\": (\"connections.endpoint\", \"Endpoint\"),\n    \"EndpointConfig\": (\"connections.endpoint\", \"EndpointConfig\"),\n    \"iModelManager\": (\"manager\", \"iModelManager\"),\n    \"iModel\": (\"imodel\", \"iModel\"),\n    \"APICalling\": (\"connections.api_calling\", \"APICalling\"),\n    \"TokenCalculator\": (\"token_calculator\", \"TokenCalculator\"),\n    \"Broadcaster\": (\"broadcaster\", \"Broadcaster\"),\n    \"cache_intent\": (\"_prompt_cache\", \"cache_intent\"),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"APICalling\",\n    \"AssociatedEventInfo\",\n    \"Broadcaster\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HookDict\",\n    \"HookEvent\",\n    \"HookEventTypes\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"RateLimitedAPIExecutor\",\n    \"TokenCalculator\",\n    \"cache_intent\",\n    \"global_hook_logger\",\n    \"iModel\",\n    \"iModelManager\",\n)"
+    ],
+    "lionagi/service/_output_limit.py": [
+      "__all__ = (\"read_output_limit_stop\",)"
+    ],
+    "lionagi/service/_prompt_cache.py": [
+      "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
+    ],
+    "lionagi/service/accounts/__init__.py": [
+      "__all__ = ()"
+    ],
+    "lionagi/service/accounts/_credentials.py": [
+      "__all__ = (\"CredentialSources\", \"resolve_account_key\")"
+    ],
+    "lionagi/service/accounts/_ledger.py": [
+      "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
+    ],
+    "lionagi/service/accounts/_pricing.py": [
+      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"stream_usage_estimate\",\n    \"usage_outcome\",\n)"
+    ],
+    "lionagi/service/accounts/_router.py": [
+      "__all__ = (\"AccountRouter\",)"
+    ],
+    "lionagi/service/accounts/_scope.py": [
+      "__all__ = (\"current_scope\", \"routing_scope\")"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "__all__ = (\n    \"OneNameLookup\",\n    \"ResolvedSecretLookup\",\n    \"SecretLookupResolution\",\n    \"fill_declared_secrets\",\n    \"fill_declared_secrets_and_names\",\n    \"lookup_one_name\",\n    \"resolve_secret_lookup_config\",\n)"
+    ],
+    "lionagi/service/accounts/_types.py": [
+      "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"Rate\",\n    \"PricingInputs\",\n    \"UsageCounts\",\n    \"UsageRates\",\n    \"RejectionZero\",\n    \"StreamUsageEstimate\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
+    ],
+    "lionagi/service/broadcaster.py": [
+      "__all__ = (\"Broadcaster\",)"
+    ],
+    "lionagi/service/connections/__init__.py": [
+      "import warnings",
+      "from .agentic_endpoint import AgenticEndpoint",
+      "from .api_calling import APICalling",
+      "from .endpoint import Endpoint",
+      "from .endpoint_config import EndpointConfig",
+      "from .header_factory import HeaderFactory",
+      "from .match_endpoint import match_endpoint",
+      "from .mcp_wrapper import MCPConnectionPool, MCPSecurityConfig, create_mcp_tool",
+      "from .provider_config import LazyType, ProviderConfig",
+      "from .registry import (\n    EndpointMeta,\n    EndpointRegistry,\n    EndpointType,\n    ProviderAliasCollisionError,\n    ProviderNotFoundError,\n    register_endpoint,\n)",
+      "__all__ = (\n    \"AgenticEndpoint\",\n    \"APICalling\",\n    \"CLIEndpoint\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HeaderFactory\",\n    \"match_endpoint\",\n    \"MCPConnectionPool\",\n    \"MCPSecurityConfig\",\n    \"create_mcp_tool\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"EndpointType\",\n    \"LazyType\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderConfig\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)",
+      "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        # Cache to prevent double-fire from importlib _handle_fromlist.\n        import sys\n\n        sys.modules[__name__].__dict__[\"CLIEndpoint\"] = AgenticEndpoint\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "__all__ = (\"OpenAIChatCompletionsRequest\", \"uses_developer_messages\")"
+    ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "__all__ = (\"default_provider_catalog\",)"
+    ],
+    "lionagi/service/connections/agentic_endpoint.py": [
+      "__all__ = (\"AgenticEndpoint\",)"
+    ],
+    "lionagi/service/connections/api_calling.py": [
+      "__all__ = (\"APICalling\", \"estimate_payload_input_tokens\")"
+    ],
+    "lionagi/service/connections/cli_endpoint.py": [
+      "def __getattr__(name: str):\n    if name == \"CLIEndpoint\":\n        warnings.warn(\n            \"CLIEndpoint is deprecated and will be removed in a future release. \"\n            \"Use AgenticEndpoint from lionagi.service.connections instead.\",\n            DeprecationWarning,\n            stacklevel=2,\n        )\n        return AgenticEndpoint\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
+    ],
+    "lionagi/service/connections/endpoint.py": [
+      "__all__ = (\"Endpoint\",)"
+    ],
+    "lionagi/service/connections/endpoint_config.py": [
+      "__all__ = (\"AUTHORIZATION_KWARG_NAMES\", \"RUNTIME_STATE_NAMES\", \"EndpointConfig\")"
+    ],
+    "lionagi/service/connections/header_factory.py": [
+      "__all__ = (\"HeaderFactory\",)"
+    ],
+    "lionagi/service/connections/match_endpoint.py": [
+      "__all__ = (\"match_endpoint\",)"
+    ],
+    "lionagi/service/connections/mcp_wrapper.py": [
+      "__all__ = (\n    \"MCPSecurityConfig\",\n    \"MCPConnectionPool\",\n    \"create_mcp_tool\",\n    \"is_synthetic_mcp_wrapper_schema\",\n    \"validate_mcp_tool_admission\",\n)"
+    ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "__all__ = (\n    \"SUPPORTED_CONTRACT_VERSIONS\",\n    \"DependencyRequirement\",\n    \"EndpointDeclaration\",\n    \"ProviderCatalog\",\n    \"ProviderFragment\",\n    \"ProviderManifest\",\n    \"compose_provider_catalog\",\n)"
+    ],
+    "lionagi/service/connections/registry.py": [
+      "__all__ = (\n    \"EndpointType\",\n    \"EndpointMeta\",\n    \"EndpointRegistry\",\n    \"ProviderAliasCollisionError\",\n    \"ProviderNotFoundError\",\n    \"register_endpoint\",\n)"
+    ],
+    "lionagi/service/hooks/__init__.py": [
+      "from ._types import (\n    AssociatedEventInfo,\n    HookDict,\n    HookEventTypes,\n    StreamTerminalState,\n)",
+      "from .hook_event import HookEvent",
+      "from .hook_registry import HookRegistry",
+      "from .hooked_event import HookedEvent, global_hook_logger",
+      "__all__ = (\n    \"HookEventTypes\",\n    \"HookDict\",\n    \"AssociatedEventInfo\",\n    \"HookEvent\",\n    \"HookRegistry\",\n    \"global_hook_logger\",\n    \"HookedEvent\",\n    \"StreamTerminalState\",\n)"
+    ],
+    "lionagi/service/hooks/_types.py": [
+      "__all__ = (\n    \"HookEventTypes\",\n    \"ALLOWED_HOOKS_TYPES\",\n    \"HookDict\",\n    \"StreamHandlers\",\n    \"AssociatedEventInfo\",\n    \"StreamTerminalState\",\n)"
+    ],
+    "lionagi/service/hooks/_utils.py": [
+      "__all__ = (\n    \"get_handler\",\n    \"validate_hooks\",\n    \"validate_stream_handlers\",\n)"
+    ],
+    "lionagi/service/providers.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"normalize_effort\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n    \"split_effort_suffix\",\n)"
+    ],
+    "lionagi/service/rate_limited_processor.py": [
+      "__all__ = (\n    \"RateLimitedAPIProcessor\",\n    \"RateLimitedAPIExecutor\",\n)"
+    ],
+    "lionagi/service/types/__init__.py": [
+      "from .cli_session import CLISession",
+      "from .stream_chunk import StreamChunk",
+      "__all__ = (\"CLISession\", \"StreamChunk\")"
+    ]
+  },
+  "public_definitions": {
+    "lionagi/service/_api_telemetry.py": [
+      "APIUsageSink",
+      "InputDecision",
+      "RequestFrame",
+      "activate_request",
+      "capture_request",
+      "claim_cache_source",
+      "collect_api_turn",
+      "is_collecting",
+      "mark_dispatch",
+      "mark_uncached_response",
+      "observe_cache_source",
+      "record_cache_usage",
+      "record_guard_refusal",
+      "record_selected_attempt",
+      "record_served_model"
+    ],
+    "lionagi/service/_output_limit.py": [
+      "read_output_limit_stop"
+    ],
+    "lionagi/service/_prompt_cache.py": [
+      "PromptCacheCall",
+      "activate_call",
+      "cache_anchors",
+      "cache_intent",
+      "clone_ledger",
+      "conversation_call",
+      "current_call",
+      "current_intent",
+      "decide_protection",
+      "established",
+      "expires_at",
+      "ledger_for",
+      "note_attempt",
+      "placement_routes",
+      "prompt_cache_call",
+      "protection",
+      "settle"
+    ],
+    "lionagi/service/_subagent_admission.py": [
+      "SubagentLease",
+      "account_admission",
+      "admit_subagent",
+      "child_agent_depth",
+      "engine_cap_env",
+      "refuse_nested_agent",
+      "set_child_agent_depth",
+      "subagent_admission_status",
+      "without_account_names"
+    ],
+    "lionagi/service/accounts/_credentials.py": [
+      "CredentialSources",
+      "resolve_account_key"
+    ],
+    "lionagi/service/accounts/_ledger.py": [
+      "AccountStatus",
+      "CredentialLedger",
+      "default_ledger_path"
+    ],
+    "lionagi/service/accounts/_pricing.py": [
+      "ModelPrice",
+      "PriceRevision",
+      "PriceTier",
+      "cache_write_split",
+      "freeze_request",
+      "price_usage",
+      "quote_ceiling",
+      "registered_revisions",
+      "request_ttls",
+      "revision_by_id",
+      "stream_usage_estimate",
+      "usage_outcome"
+    ],
+    "lionagi/service/accounts/_router.py": [
+      "AccountRouter",
+      "RoutedCacheEvidence",
+      "RouterAttempt",
+      "StreamTextRedactor",
+      "StreamingSecretRedactor",
+      "get_router",
+      "header_pairs",
+      "mask_joined_key_runs",
+      "mask_key_runs",
+      "provider_request_id",
+      "redact_value",
+      "routed_client_kwargs",
+      "validate_routed_request"
+    ],
+    "lionagi/service/accounts/_scope.py": [
+      "current_scope",
+      "routing_scope"
+    ],
+    "lionagi/service/accounts/_secret_resolution.py": [
+      "OneNameLookup",
+      "ResolvedSecretLookup",
+      "SecretLookupResolution",
+      "fill_declared_secrets",
+      "fill_declared_secrets_and_names",
+      "lookup_one_name",
+      "resolve_secret_lookup_config"
+    ],
+    "lionagi/service/accounts/_types.py": [
+      "AccountRoutingError",
+      "AccountSpec",
+      "CompleteUsage",
+      "PricingInputs",
+      "ProvenNotSent",
+      "Quote",
+      "Rate",
+      "RejectionZero",
+      "Reservation",
+      "RouterErrorCode",
+      "Scope",
+      "StreamUsageEstimate",
+      "UnknownOutcome",
+      "UsageCounts",
+      "UsageRates"
+    ],
+    "lionagi/service/broadcaster.py": [
+      "Broadcaster"
+    ],
+    "lionagi/service/connections/_chat_schemas.py": [
+      "AssistantMessage",
+      "ChatRole",
+      "DeveloperMessage",
+      "FunctionCall",
+      "FunctionDef",
+      "FunctionTool",
+      "ImageURLObject",
+      "ImageURLPart",
+      "JSONSchemaFormat",
+      "OpenAIChatCompletionsRequest",
+      "ResponseFormatJSONObject",
+      "ResponseFormatJSONSchema",
+      "ResponseFormatText",
+      "StreamOptions",
+      "SystemMessage",
+      "TextPart",
+      "ToolCall",
+      "ToolCallFunction",
+      "ToolChoiceFunction",
+      "ToolMessage",
+      "UserMessage",
+      "uses_developer_messages"
+    ],
+    "lionagi/service/connections/_provider_compat.py": [
+      "codex_unset_effort_1x",
+      "default_provider_catalog"
+    ],
+    "lionagi/service/connections/agentic_endpoint.py": [
+      "AgenticEndpoint"
+    ],
+    "lionagi/service/connections/api_calling.py": [
+      "APICalling",
+      "estimate_payload_input_tokens"
+    ],
+    "lionagi/service/connections/endpoint.py": [
+      "Endpoint"
+    ],
+    "lionagi/service/connections/endpoint_config.py": [
+      "EndpointConfig"
+    ],
+    "lionagi/service/connections/header_factory.py": [
+      "HeaderFactory"
+    ],
+    "lionagi/service/connections/match_endpoint.py": [
+      "match_endpoint"
+    ],
+    "lionagi/service/connections/mcp_wrapper.py": [
+      "MCPConnectionPool",
+      "MCPSecurityConfig",
+      "create_mcp_tool",
+      "is_synthetic_mcp_wrapper_schema",
+      "validate_mcp_tool_admission"
+    ],
+    "lionagi/service/connections/provider_catalog.py": [
+      "DependencyRequirement",
+      "EndpointDeclaration",
+      "ProviderCatalog",
+      "ProviderFragment",
+      "ProviderManifest",
+      "compose_provider_catalog"
+    ],
+    "lionagi/service/connections/provider_config.py": [
+      "LazyType",
+      "ProviderConfig"
+    ],
+    "lionagi/service/connections/registry.py": [
+      "EndpointMeta",
+      "EndpointRegistry",
+      "EndpointType",
+      "ProviderAliasCollisionError",
+      "ProviderNotFoundError",
+      "register_endpoint"
+    ],
+    "lionagi/service/hooks/_types.py": [
+      "AssociatedEventInfo",
+      "HookDict",
+      "HookEventTypes",
+      "StreamTerminalState"
+    ],
+    "lionagi/service/hooks/_utils.py": [
+      "get_handler",
+      "validate_hooks",
+      "validate_stream_handlers"
+    ],
+    "lionagi/service/hooks/hook_event.py": [
+      "HookEvent"
+    ],
+    "lionagi/service/hooks/hook_registry.py": [
+      "HookRegistry"
+    ],
+    "lionagi/service/hooks/hooked_event.py": [
+      "HookedEvent"
+    ],
+    "lionagi/service/imodel.py": [
+      "iModel",
+      "reported_input_tokens"
+    ],
+    "lionagi/service/manager.py": [
+      "iModelManager"
+    ],
+    "lionagi/service/providers.py": [
+      "ModelSpec",
+      "codex_unset_effort_default",
+      "normalize_effort",
+      "parse_model_spec",
+      "reclamp_effort_for_model",
+      "split_effort_suffix"
+    ],
+    "lionagi/service/rate_limited_processor.py": [
+      "RateLimitedAPIExecutor",
+      "RateLimitedAPIProcessor"
+    ],
+    "lionagi/service/resilience.py": [
+      "APIClientError",
+      "CircuitBreaker",
+      "CircuitBreakerOpenError",
+      "CircuitState",
+      "RetryConfig",
+      "circuit_breaker",
+      "retry_with_backoff",
+      "with_retry"
+    ],
+    "lionagi/service/token_budget.py": [
+      "TokenBudget",
+      "get_context_window",
+      "get_token_budget",
+      "lookup_context_window"
+    ],
+    "lionagi/service/token_calculator.py": [
+      "TokenCalculator",
+      "get_encoding_name"
+    ],
+    "lionagi/service/types/cli_session.py": [
+      "CLISession"
+    ],
+    "lionagi/service/types/stream_chunk.py": [
+      "StreamChunk"
+    ]
+  }
+}

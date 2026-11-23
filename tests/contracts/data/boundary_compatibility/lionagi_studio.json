@@ -1,0 +1,28 @@
+{
+  "environment_lookups": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_FRONTEND_DIST\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/config.py": [
+      "os.environ.get:OPERATOR_CWD_ENV_VAR"
+    ]
+  },
+  "package_exports": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "__all__ = (\"app\", \"attach_studio\", \"create_app\")"
+    ]
+  },
+  "public_definitions": {
+    "apps/studio/backend/src/lionagi_studio/app.py": [
+      "attach_studio",
+      "create_app"
+    ],
+    "apps/studio/backend/src/lionagi_studio/config.py": [
+      "OperatorExecutionRootResolution",
+      "resolve_operator_execution_root_config"
+    ],
+    "apps/studio/backend/src/lionagi_studio/registry.py": [
+      "load_studio_route_modules"
+    ]
+  }
+}

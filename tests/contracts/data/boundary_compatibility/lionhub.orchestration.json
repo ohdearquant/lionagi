@@ -1,0 +1,567 @@
+{
+  "environment_lookups": {
+    "lionhub/src/lionhub/orchestration/runs.py": [
+      "os.environ.get:_RUN_ID_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/action_validation.py": [
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV",
+      "os.environ.get:_COMMAND_ALLOWLIST_ENV"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/execution_root.py": [
+      "os.environ.get:\"LIONAGI_SCHEDULER_CWD\""
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/parsing.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_HOST\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PORT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_URL\""
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/timing.py": [
+      "os.environ.get:\"TZ\"",
+      "os.environ.get:SCHEDULER_TZ_ENV_VAR"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/github.py": [
+      "os.environ.get:\"GITHUB_TOKEN\""
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
+      "os.environ.get:\"LIONAGI_SHOWS_ROOT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_LAUNCHES\"",
+      "os.environ.get:\"LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PHANTOM_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PLAY_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_CHUNK_ROWS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_PRUNE_KEEP_DAYS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_SHOW_STALE_HOURS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_TERMINAL_RECONCILE_BUDGET_SECONDS\"",
+      "os.environ.get:\"LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS\"",
+      "os.environ.get:env_key",
+      "os.environ.get:env_var"
+    ],
+    "lionhub/src/lionhub/orchestration/spawn.py": [
+      "os.getenv:\"LIONAGI_INVOCATION_ID\""
+    ]
+  },
+  "package_exports": {
+    "lionhub/src/lionhub/orchestration/__init__.py": [
+      "from __future__ import annotations",
+      "from typing import TYPE_CHECKING as _TYPE_CHECKING",
+      "__all__ = (\n    \"spawn_roles\",\n    \"plan\",\n    \"fanout\",\n    \"build_fanout_graph\",\n    \"build_dag_graph\",\n    \"role_node_builder\",\n    \"grant_spawn\",\n    \"normalize_dep_indices\",\n)",
+      "def __getattr__(name: str) -> object:\n    if name not in __all__ and name not in {\"patterns\", \"prompts\"}:\n        raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")\n\n    from importlib import import_module\n\n    if name == \"prompts\":\n        module = import_module(\".prompts\", __name__)\n        globals()[name] = module\n        return module\n\n    module = import_module(\".patterns\", __name__)\n    # Take one snapshot, retaining any explicit replacements on the parent.\n    exports = {export: getattr(module, export) for export in __all__}\n    namespace = globals()\n    for export, value in exports.items():\n        namespace.setdefault(export, value)\n    namespace[\"patterns\"] = module\n    return module if name == \"patterns\" else namespace[name]"
+    ],
+    "lionhub/src/lionhub/orchestration/arguments.py": [
+      "__all__ = (\"BoundedInt\", \"JsonArgument\")"
+    ],
+    "lionhub/src/lionhub/orchestration/console.py": [
+      "__all__ = (\n    \"configure_cli_logging\",\n    \"progress\",\n    \"hint\",\n    \"warn\",\n    \"log_error\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/dispatch/__init__.py": [
+      "from __future__ import annotations",
+      "from .outbox import (\n    DEFAULT_MAX_ATTEMPTS,\n    ack_dispatch,\n    backoff_seconds,\n    deliver_due_dispatches,\n    enqueue_dispatch,\n    get_dispatch,\n    list_dispatches,\n    purge_dispatch,\n    purge_dispatches,\n    resolve_notify_template,\n    retry_dispatch,\n)",
+      "__all__ = (\n    \"DEFAULT_MAX_ATTEMPTS\",\n    \"ack_dispatch\",\n    \"backoff_seconds\",\n    \"deliver_due_dispatches\",\n    \"enqueue_dispatch\",\n    \"get_dispatch\",\n    \"list_dispatches\",\n    \"purge_dispatch\",\n    \"purge_dispatches\",\n    \"resolve_notify_template\",\n    \"retry_dispatch\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/dispatch/outbox.py": [
+      "__all__ = (\n    \"DEFAULT_MAX_ATTEMPTS\",\n    \"NOTIFY_TIMEOUT_SECONDS\",\n    \"ack_dispatch\",\n    \"backoff_seconds\",\n    \"deliver_due_dispatches\",\n    \"enqueue_dispatch\",\n    \"get_dispatch\",\n    \"list_dispatches\",\n    \"purge_dispatch\",\n    \"purge_dispatches\",\n    \"resolve_notify_template\",\n    \"retry_dispatch\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/dispatch/revival.py": [
+      "__all__ = (\"enqueue_revival_heartbeat\",)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/__init__.py": [
+      "from __future__ import annotations",
+      "from .coding import (\n    ChangeProposed,\n    CodeResultRecorded,\n    CodingChainEvent,\n    CodingEngine,\n    CodingRun,\n    TestsRan,\n    WorkPlanned,\n)",
+      "from .coding import (\n    VerifyResult as CodeVerifyResult,\n)",
+      "from .engine import (\n    CancellationRecord,\n    ChainRun,\n    Engine,\n    EngineBudgetError,\n    EngineEvent,\n    EngineResult,\n    EngineRun,\n    JudgeVerdict,\n)",
+      "from .hypothesis import (\n    ApplicationMapped,\n    ChainEvent,\n    ConclusionDrawn,\n    EvidenceCollected,\n    ExperimentDesigned,\n    FindingPosted,\n    HypothesisEngine,\n    HypothesisFormed,\n    HypothesisRun,\n    QuestionRaised,\n    ResultRecorded,\n    render_evidence,\n    trace_chains,\n)",
+      "from .planning import PlanError, PlanningEngine",
+      "from .research import (\n    ContradictionFound,\n    DepthRequested,\n    FindingEmitted,\n    ResearchEngine,\n)",
+      "from .review import (\n    DEFAULT_DIMENSIONS,\n    DimensionClean,\n    IssueFound,\n    ReviewEngine,\n    ReviewVerdict,\n    VerifyResult,\n)",
+      "__all__ = (\n    \"Engine\",\n    \"EngineRun\",\n    \"CancellationRecord\",\n    \"ChainRun\",\n    \"EngineEvent\",\n    \"EngineBudgetError\",\n    \"EngineResult\",\n    \"JudgeVerdict\",\n    # planning (Planned-DAG shape \u2014 li o flow as an engine)\n    \"PlanningEngine\",\n    \"PlanError\",\n    # research (Tree shape)\n    \"ResearchEngine\",\n    \"FindingEmitted\",\n    \"DepthRequested\",\n    \"ContradictionFound\",\n    # review (Dimensional shape)\n    \"ReviewEngine\",\n    \"IssueFound\",\n    \"DimensionClean\",\n    \"VerifyResult\",\n    \"ReviewVerdict\",\n    \"DEFAULT_DIMENSIONS\",\n    # hypothesis (Chain shape \u2014 evidence chains for decisions)\n    \"HypothesisEngine\",\n    \"HypothesisRun\",\n    \"ChainEvent\",\n    \"FindingPosted\",\n    \"QuestionRaised\",\n    \"EvidenceCollected\",\n    \"HypothesisFormed\",\n    \"ExperimentDesigned\",\n    \"ResultRecorded\",\n    \"ConclusionDrawn\",\n    \"ApplicationMapped\",\n    \"trace_chains\",\n    \"render_evidence\",\n    # coding (Gated-Loop shape); CodeVerifyResult disambiguates the review\n    # engine's VerifyResult at the package level\n    \"CodingEngine\",\n    \"CodingRun\",\n    \"CodingChainEvent\",\n    \"WorkPlanned\",\n    \"ChangeProposed\",\n    \"TestsRan\",\n    \"CodeVerifyResult\",\n    \"CodeResultRecorded\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/coding.py": [
+      "__all__ = (\n    \"CodingChainEvent\",\n    \"WorkPlanned\",\n    \"ChangeProposed\",\n    \"TestsRan\",\n    \"VerifyResult\",\n    \"CodeResultRecorded\",\n    \"AutoRepairApplied\",\n    \"WorkAborted\",\n    \"WorkerHeartbeat\",\n    \"WorkerActivity\",\n    \"CodingRun\",\n    \"CodingEngine\",\n    \"_lint_spec\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/flow_signals.py": [
+      "__all__ = (\"flow_progress_signals\",)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/hypothesis.py": [
+      "__all__ = (\n    \"ChainEvent\",\n    \"FindingPosted\",\n    \"DedupChecked\",\n    \"QuestionRaised\",\n    \"EvidenceCollected\",\n    \"HypothesisFormed\",\n    \"ExperimentDesigned\",\n    \"ResultRecorded\",\n    \"ConclusionDrawn\",\n    \"ApplicationMapped\",\n    \"HypothesisRun\",\n    \"HypothesisEngine\",\n    \"trace_chains\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/planning.py": [
+      "__all__ = (\"PlanningEngine\", \"PlanError\")"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/research.py": [
+      "__all__ = (\n    \"FindingEmitted\",\n    \"DepthRequested\",\n    \"ContradictionFound\",\n    \"ResearchEngine\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/review.py": [
+      "__all__ = (\n    \"IssueFound\",\n    \"DimensionClean\",\n    \"VerifyResult\",\n    \"ProposedVerdict\",\n    \"StageServed\",\n    \"ReviewVerdict\",\n    \"ReviewEngine\",\n    \"ReviewRun\",\n    \"DEFAULT_DIMENSIONS\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint.py": [
+      "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"CheckpointWriter\",\n    \"FlowResumeError\",\n    \"UnsupportedFlowCheckpointVersionError\",\n    \"load_checkpoint\",\n    \"resolve_checkpoint_target\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/mcp_config.py": [
+      "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/patterns.py": [
+      "__all__ = (\n    \"grant_spawn\",\n    \"normalize_dep_indices\",\n    \"role_node_builder\",\n    \"spawn_roles\",\n    \"plan\",\n    \"build_fanout_graph\",\n    \"build_dag_graph\",\n    \"fanout\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/prompts.py": [
+      "__all__ = (\n    \"DECOMPOSE_INSTRUCTION\",\n    \"DECOMPOSE_DAG_INSTRUCTION\",\n    \"DECOMPOSE_DISCIPLINE\",\n    \"SPAWN_GUIDANCE\",\n    \"SYNTHESIS_INSTRUCTION\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/run_scratch.py": [
+      "__all__ = (\"SCRATCH_DIRNAME\", \"SCRATCH_MODES\", \"RunScratch\", \"remove_scratch\")"
+    ],
+    "lionhub/src/lionhub/orchestration/runs.py": [
+      "__all__ = (\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"RunDir\",\n    \"allocate_run\",\n    \"find_branch\",\n    \"load_last_branch\",\n    \"save_last_branch_pointer\",\n    \"list_runs\",\n    \"current_run_id\",\n    \"active_run_id\",\n    \"resolve_run_reason\",\n    \"setup_agent_persist\",\n    \"find_incomplete_session_for_run\",\n    \"teardown_persist\",\n    \"teardown_agent_persist\",\n    \"teardown_orchestration_persist\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/_timezone_rules.py": [
+      "__all__ = ()"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/validation.py": [
+      "__all__ = (\n    \"_GITHUB_OWNER_MAX\",\n    \"_GITHUB_OWNER_RE\",\n    \"_GITHUB_REPO_MAX\",\n    \"_GITHUB_REPO_NAME_RE\",\n    \"_GITHUB_REPO_TRAVERSAL\",\n    \"_GITHUB_FILTER_ALLOWED_EVENTS\",\n    \"_GITHUB_FILTER_ALLOWED_KEYS\",\n    \"_MERGED_MODE_MAX_PAGES\",\n    \"_validate_github_repo\",\n    \"_svc_validate_budget_tokens\",\n    \"_svc_validate_budget_usd\",\n    \"_svc_validate_command_args\",\n    \"_svc_validate_github_filter\",\n    \"_svc_validate_github_repo\",\n    \"_validate_flow_yaml_spec\",\n    \"merged_page_limit\",\n    \"validate_rate_limit\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/admit.py": [
+      "__all__ = (\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"AdmissionDecision\",\n    \"WorkerCaps\",\n    \"admit\",\n    \"allows_deferred_over_cap\",\n    \"declared_max_duration_seconds\",\n    \"holder_is_running\",\n    \"normalize_action_args\",\n    \"notify_request\",\n    \"validate_rate_limit\",\n    \"waiter_ahead_count\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/capabilities.py": [
+      "__all__ = (\n    \"CAPABILITY_CLASSES\",\n    \"DEFAULT_CAPABILITY_CLASS\",\n    \"affinity_score\",\n    \"affinity_tokens\",\n    \"capability_class\",\n    \"host_scoped_concurrency_key\",\n    \"matching_tokens\",\n    \"serialization_tokens\",\n    \"worker_can_serve\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/coordination.py": [
+      "__all__ = (\"compute_files_overlap\",)"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/signals.py": [
+      "__all__ = (\n    \"ScheduleRunSucceeded\",\n    \"ScheduleRunFailed\",\n    \"ScheduleRunCancelled\",\n    \"SchedulerHandlerCancelled\",\n    \"SchedulerSignalBus\",\n    \"Handler\",\n    \"Predicate\",\n    \"build_schedule_run_signal\",\n    \"register_default_handlers\",\n    \"record_handler_failure\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/worker.py": [
+      "__all__ = (\n    \"DEFAULT_HEARTBEAT_TTL_SECONDS\",\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_LEASE_TTL_SECONDS\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"MAX_LEASE_ATTEMPTS\",\n    \"TASK_WORKER_ENABLED\",\n    \"claim_and_execute\",\n    \"default_execute\",\n    \"reap_expired_leases\",\n    \"register_heartbeat\",\n    \"worker_tick\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/spawn.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"normalize_effort\",\n    \"add_common_cli_args\",\n    \"build_chat_model\",\n    \"build_imodel_from_spec\",\n    \"parse_model_spec\",\n    \"resolve_account_integrations\",\n    \"resolve_codex_config_profile\",\n    \"resolve_persisted_effort\",\n    \"strip_connector_grant\",\n    \"AgentProfile\",\n    \"AgentProfileNotFoundError\",\n    \"AmbiguousProfileNameError\",\n    \"build_agent_profile_catalog\",\n    \"build_deadline_preamble\",\n    \"list_agents\",\n    \"load_agent_profile\",\n    \"profile_config\",\n    \"_parse_profile\",\n    \"_resolve_profile_path\",\n    \"_validate_bare_name\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/work/__init__.py": [
+      "from .form import (\n    VALID_TRANSITIONS,\n    FieldSpec,\n    FieldType,\n    FormStatus,\n    WorkForm,\n    fill_form,\n    validate_form,\n)",
+      "from .rules import (\n    REGEX_MAX_INPUT_LENGTH,\n    CheckKind,\n    Rule,\n    RuleSet,\n)",
+      "__all__ = (\n    # form\n    \"FieldSpec\",\n    \"FieldType\",\n    \"FormStatus\",\n    \"VALID_TRANSITIONS\",\n    \"WorkForm\",\n    \"fill_form\",\n    \"validate_form\",\n    # rules\n    \"Rule\",\n    \"RuleSet\",\n    \"CheckKind\",\n    \"REGEX_MAX_INPUT_LENGTH\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/work/form.py": [
+      "__all__ = (\n    \"FieldSpec\",\n    \"FieldType\",\n    \"FormStatus\",\n    \"VALID_TRANSITIONS\",\n    \"WorkForm\",\n    \"fill_form\",\n    \"validate_form\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/work/rules.py": [
+      "__all__ = (\n    \"Rule\",\n    \"RuleSet\",\n    \"CheckKind\",\n    \"REGEX_MAX_INPUT_LENGTH\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionhub/src/lionhub/orchestration/arguments.py": [
+      "BoundedInt",
+      "JsonArgument"
+    ],
+    "lionhub/src/lionhub/orchestration/console.py": [
+      "configure_cli_logging"
+    ],
+    "lionhub/src/lionhub/orchestration/dispatch/outbox.py": [
+      "ack_dispatch",
+      "backoff_seconds",
+      "deliver_due_dispatches",
+      "enqueue_dispatch",
+      "get_dispatch",
+      "list_dispatches",
+      "purge_dispatch",
+      "purge_dispatches",
+      "resolve_notify_template",
+      "retry_dispatch"
+    ],
+    "lionhub/src/lionhub/orchestration/dispatch/revival.py": [
+      "enqueue_revival_heartbeat"
+    ],
+    "lionhub/src/lionhub/orchestration/engine_definitions.py": [
+      "import_engine_class"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/coding.py": [
+      "AutoRepairApplied",
+      "ChangeProposed",
+      "CodeResultRecorded",
+      "CodingEngine",
+      "CodingRun",
+      "TestsRan",
+      "VerifyResult",
+      "WorkAborted",
+      "WorkPlanned",
+      "WorkerActivity",
+      "WorkerHeartbeat"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/engine.py": [
+      "CancellationRecord",
+      "ChainEvent",
+      "ChainRun",
+      "Engine",
+      "EngineBudgetError",
+      "EngineEvent",
+      "EngineResult",
+      "EngineRun",
+      "JudgeVerdict",
+      "check_max_tokens",
+      "emission_keys",
+      "role_profile_injection",
+      "role_profile_route"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/flow_signals.py": [
+      "flow_progress_signals"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/hypothesis.py": [
+      "ApplicationMapped",
+      "ConclusionDrawn",
+      "DedupChecked",
+      "EvidenceCollected",
+      "ExperimentDesigned",
+      "FindingPosted",
+      "HypothesisEngine",
+      "HypothesisFormed",
+      "HypothesisRun",
+      "QuestionRaised",
+      "ResultRecorded",
+      "filing_queue",
+      "render_evidence",
+      "trace_chains"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/planning.py": [
+      "PlanError",
+      "PlanningEngine"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/research.py": [
+      "ContradictionFound",
+      "DepthRequested",
+      "FindingEmitted",
+      "ResearchEngine"
+    ],
+    "lionhub/src/lionhub/orchestration/engines/review.py": [
+      "DimensionClean",
+      "IssueFound",
+      "ProposedVerdict",
+      "ReviewEngine",
+      "ReviewRun",
+      "ReviewVerdict",
+      "StageServed",
+      "VerifyResult"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint.py": [
+      "CheckpointWriter",
+      "FlowResumeError",
+      "UnsupportedFlowCheckpointVersionError",
+      "load_checkpoint",
+      "resolve_checkpoint_target"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/parsing.py": [
+      "add_orchestrate_subparser"
+    ],
+    "lionhub/src/lionhub/orchestration/inspection.py": [
+      "fetch_by_id",
+      "resolve_agent_target",
+      "resolve_any_target",
+      "resolve_play_target",
+      "resolve_primary_session",
+      "run_id_candidates"
+    ],
+    "lionhub/src/lionhub/orchestration/job.py": [
+      "AmbiguousIdError",
+      "begin_invocation",
+      "classify_exception",
+      "clear_run_allocation",
+      "end_invocation",
+      "fetch_unique_row",
+      "mark_run_allocated",
+      "pid_alive",
+      "recorded_identity_mode",
+      "recorded_pid_is_foreign",
+      "resolve_entity",
+      "run_was_allocated",
+      "validate_cwd_exists"
+    ],
+    "lionhub/src/lionhub/orchestration/kill.py": [
+      "CancelPersistenceError",
+      "CancelTargetResult",
+      "cancel_targets",
+      "check_pid_identity",
+      "imported_degraded_process_is_live",
+      "kill_one",
+      "list_running_children",
+      "read_pid_from_entity",
+      "unaddressable_pid_reason"
+    ],
+    "lionhub/src/lionhub/orchestration/mcp_config.py": [
+      "LegacyMcpReplayError",
+      "McpConfigError",
+      "McpResolution",
+      "discover_mcp_config",
+      "explicit_mcp_config_path",
+      "resolve_spawn_mcp_servers"
+    ],
+    "lionhub/src/lionhub/orchestration/patterns.py": [
+      "build_dag_graph",
+      "build_fanout_graph",
+      "fanout",
+      "grant_spawn",
+      "normalize_dep_indices",
+      "plan",
+      "role_node_builder",
+      "spawn_roles"
+    ],
+    "lionhub/src/lionhub/orchestration/project.py": [
+      "detect_project"
+    ],
+    "lionhub/src/lionhub/orchestration/project_store.py": [
+      "get_project"
+    ],
+    "lionhub/src/lionhub/orchestration/run_scratch.py": [
+      "RunScratch",
+      "remove_scratch"
+    ],
+    "lionhub/src/lionhub/orchestration/runs.py": [
+      "RunDir",
+      "active_run_id",
+      "allocate_run",
+      "current_run_id",
+      "find_branch",
+      "find_incomplete_session_for_run",
+      "list_runs",
+      "load_last_branch",
+      "lost_terminal_write",
+      "register_branch_hook",
+      "resolve_run_reason",
+      "save_last_branch_pointer",
+      "setup_agent_persist",
+      "teardown_orchestration_persist",
+      "teardown_persist"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/_timezone_rules.py": [
+      "read_tzif",
+      "rules_equal",
+      "tzif_rules"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/action_validation.py": [
+      "validate_launch_fields"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/declaration.py": [
+      "AgentTarget",
+      "ApplyResult",
+      "Budget",
+      "CommandTarget",
+      "CronTrigger",
+      "Execution",
+      "FlowTarget",
+      "GithubTriggerSpec",
+      "Notify",
+      "PlanEntry",
+      "PlaybookTarget",
+      "Policies",
+      "ResolvedMember",
+      "ScheduleMember",
+      "ScheduleSetDocument",
+      "ScheduleSetError",
+      "ScheduleSetMetadata",
+      "Trigger",
+      "apply_schedule_set",
+      "build_plan",
+      "create_quick_schedule",
+      "parse_schedule_set",
+      "resolve_member",
+      "resolve_schedule_set",
+      "row_cron_timezone"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/execution_root.py": [
+      "SchedulerCwdInheritRefusedError"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/export.py": [
+      "ExportReportLine",
+      "build_managed_export_document",
+      "convert_legacy_rows",
+      "dump_schedule_set_yaml",
+      "format_report",
+      "is_legacy_row",
+      "is_managed_row"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/parsing.py": [
+      "add_schedule_subparser",
+      "build_create_body",
+      "build_quick_create_parser",
+      "normalize_host",
+      "suggest_schedule_flag"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/timing.py": [
+      "ScheduleTimezone",
+      "SystemTimezoneUnreadableError",
+      "TimezoneResolution",
+      "resolve_github_poll_cadence_seconds",
+      "resolve_merged_poll_page_limit",
+      "resolve_schedule_cadence_seconds",
+      "resolve_schedule_timezone",
+      "scheduler_timezone_report"
+    ],
+    "lionhub/src/lionhub/orchestration/schedule/validation.py": [
+      "merged_page_limit",
+      "validate_rate_limit"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/admit.py": [
+      "AdmissionDecision",
+      "WorkerCaps",
+      "admit",
+      "allows_deferred_over_cap",
+      "declared_max_duration_seconds",
+      "holder_is_running",
+      "normalize_action_args",
+      "notify_request",
+      "waiter_ahead_count"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/capabilities.py": [
+      "affinity_score",
+      "affinity_tokens",
+      "capability_class",
+      "host_scoped_concurrency_key",
+      "matching_tokens",
+      "serialization_tokens",
+      "worker_can_serve"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/coordination.py": [
+      "compute_files_overlap"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py": [
+      "PruneRaceError",
+      "checkpoint_state_db",
+      "get_db_size_alert",
+      "get_last_checkpoint_at",
+      "get_last_prune_at",
+      "prune_old_data",
+      "prune_terminal_sessions_by_id",
+      "vacuum_state_db"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/engine.py": [
+      "SchedulerEngine"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/github.py": [
+      "GithubPollItem",
+      "GithubPollResult",
+      "github_poll"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/lifecycle.py": [
+      "get_phantom_count",
+      "reap_null_status_sessions",
+      "reap_phantom_sessions",
+      "reap_phantom_sessions_detailed",
+      "reap_stale_invocations",
+      "reap_stale_plays",
+      "reap_stale_schedule_runs",
+      "reap_stale_shows",
+      "run_periodic_reapers",
+      "run_startup_reconciliation"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/liveness.py": [
+      "cached_ps_snapshot",
+      "list_phantom_sessions",
+      "process_identity_is_foreign",
+      "process_liveness",
+      "process_snapshot_diagnostics",
+      "resolve_process_liveness",
+      "resolve_process_liveness_probe"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/retention_archive.py": [
+      "ArchiveVerificationError",
+      "ArchiveWriteError",
+      "archive_chunk_id",
+      "read_archive_chunk",
+      "verify_archive_chunk",
+      "write_archive_chunk"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py": [
+      "SchedulerStateService",
+      "create_skipped_run",
+      "flush_run_telemetry",
+      "resolve_invocation_terminal"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
+      "invocation_deadline_seconds"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/show_artifacts.py": [
+      "read_json_file"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/signals.py": [
+      "ScheduleRunCancelled",
+      "ScheduleRunFailed",
+      "ScheduleRunSucceeded",
+      "SchedulerHandlerCancelled",
+      "SchedulerSignalBus",
+      "build_schedule_run_signal",
+      "record_handler_failure",
+      "register_default_handlers"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/subprocess.py": [
+      "SubprocessDeadlineExceededError",
+      "build_argv",
+      "render_action_prompt",
+      "resolve_li_executable",
+      "spawn_and_wait",
+      "unfilled_template_vars"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py": [
+      "observe_global_context_after_ack",
+      "prepare_global_settings_delivery",
+      "run_terminal_reconciliation"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/threshold.py": [
+      "compare",
+      "validate_threshold_config"
+    ],
+    "lionhub/src/lionhub/orchestration/scheduler/worker.py": [
+      "claim_and_execute",
+      "default_execute",
+      "reap_expired_leases",
+      "register_heartbeat",
+      "worker_tick"
+    ],
+    "lionhub/src/lionhub/orchestration/spawn.py": [
+      "AgentProfile",
+      "AgentProfileNotFoundError",
+      "add_common_cli_args",
+      "build_agent_profile_catalog",
+      "build_chat_model",
+      "build_deadline_preamble",
+      "build_imodel_from_spec",
+      "global_profile_codex_homes",
+      "list_agents",
+      "load_agent_profile",
+      "profile_config",
+      "resolve_account_integrations",
+      "resolve_persisted_effort",
+      "strip_connector_grant"
+    ],
+    "lionhub/src/lionhub/orchestration/state_store.py": [
+      "StoreNotAddressableError",
+      "get_active_connection_count",
+      "open_db",
+      "require_file_store",
+      "store_exists",
+      "store_path",
+      "table_columns"
+    ],
+    "lionhub/src/lionhub/orchestration/team.py": [
+      "read_team_json"
+    ],
+    "lionhub/src/lionhub/orchestration/work/form.py": [
+      "FieldSpec",
+      "WorkForm",
+      "fill_form",
+      "validate_form"
+    ],
+    "lionhub/src/lionhub/orchestration/work/rules.py": [
+      "Rule",
+      "RuleSet"
+    ]
+  }
+}
