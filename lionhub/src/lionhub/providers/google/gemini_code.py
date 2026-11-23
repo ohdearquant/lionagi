@@ -84,13 +84,21 @@ def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
     workspace's environment is synced before the CLI starts. The locations a CLI child may not
     read, the settings' ``child_sandbox.deny_read`` entries included, are unreadable to it too,
     except ``_AGY_SIGN_IN_READS``.
+    The agent profile's ``deny_read`` entries are unreadable to it as well.
     On a host without the sandbox a ``yolo`` request is refused, since it would run commands
-    unconfined, and any other request runs as before with agy's own flags.
+    unconfined, and so is one carrying the profile's ``deny_read`` entries, since nothing would
+    hold them; any other request runs as before with agy's own flags.
     """
-    from lionhub.agent.child_sandbox import configured_deny_read
+    from lionhub.agent.child_sandbox import _GEMINI_NO_SEATBELT, _path_list, configured_deny_read
     from lionhub.tools._seatbelt import SeatbeltPolicy, seatbelt_available
 
+    profile_reads = _path_list("profile deny_read", list(request.profile_deny_read))
     if not seatbelt_available():
+        if profile_reads:
+            raise ConfigurationError(
+                f"the agent profile declares deny_read, which this run cannot hold: "
+                f"{_GEMINI_NO_SEATBELT}; remove deny_read from the profile"
+            )
         if request.yolo:
             raise ConfigurationError(
                 "gemini-cli with yolo needs the macOS sandbox (/usr/bin/sandbox-exec) to keep its "
@@ -103,6 +111,7 @@ def _confined_agy_command(binary: str, request: GeminiCodeRequest) -> list[str]:
         path.mkdir(parents=True, exist_ok=True)
         state.append(path)
     deny_read = [p for p in configured_deny_read() if p not in _AGY_SIGN_IN_READS]
+    deny_read += [p for p in profile_reads if p not in deny_read]
     if "=" in binary:
         # /usr/bin/env would read the path as one more variable to set.
         raise ConfigurationError(f"the agy path {binary!r} contains '='; install it elsewhere")
@@ -580,6 +589,14 @@ class GeminiCodeRequest(BaseModel):
         description=(
             "'light' always runs agy with --sandbox and counts against the total and gemini "
             "agent caps; 'heavy' (the default) also counts against the heavy cap."
+        ),
+    )
+    profile_deny_read: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "The agent profile's deny_read entries, added to what the macOS sandbox makes "
+            "unreadable. On a host without that sandbox a request that names any is refused."
         ),
     )
 

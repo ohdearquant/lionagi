@@ -728,6 +728,7 @@ class _PlainRequest:
     add_dir: list[str]
     env: dict[str, str] | None
     workload: str
+    profile_deny_read: tuple[str, ...] = ()
 
     def contains_account_integrations(self) -> bool:
         # A light request is contained whatever it set: its sandbox keeps the network out,
@@ -850,6 +851,7 @@ def _plain_request(
         add_dir=paths["add_dir"],
         env=None if env is None else env_as_the_spawn_encodes_it(env),
         workload=text("workload") or DEFAULT_WORKLOAD,
+        profile_deny_read=tuple(texts("profile_deny_read")),
     )
 
 
@@ -1312,13 +1314,23 @@ def _permission_profile_policy(plain: _PlainRequest) -> ChildSandboxPolicy | Non
     While the child sandbox is enabled a codex child runs under a permission profile in place
     of a sandbox mode. A request that bypasses approvals and the sandbox is refused in that
     state, so it is left to those refusals here; with the child sandbox switched off the
-    command line is the one a codex child always had.
+    command line is the one a codex child always had. The agent profile's ``deny_read``
+    entries join the policy's unreadable list; a request that names any is refused where no
+    permission profile would hold them.
     """
-    if plain.bypass_approvals:
-        return None
-    from lionhub.agent.child_sandbox import resolve_child_sandbox
+    from lionhub.agent.child_sandbox import resolve_child_sandbox, with_profile_deny_read
 
+    if plain.bypass_approvals:
+        if plain.profile_deny_read:
+            raise ConfigurationError(
+                "bypass_approvals turns codex's sandbox off, so the agent profile's deny_read "
+                "entries would not hold; run without bypass_approvals or remove deny_read from "
+                "the profile"
+            )
+        return None
     policy = resolve_child_sandbox(None)
+    # Refuses entries while the sandbox is off: no permission profile would hold them.
+    policy = with_profile_deny_read(policy, plain.profile_deny_read)
     return policy if policy.enabled else None
 
 
@@ -2020,6 +2032,15 @@ class CodexCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    profile_deny_read: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "The agent profile's deny_read entries, added to the permission profile's "
+            "unreadable list. A request that names any where no permission profile applies "
+            "(the child sandbox off, or bypass_approvals) is refused."
+        ),
+    )
     workload: SubagentWorkload = Field(
         default=DEFAULT_WORKLOAD,
         exclude=True,

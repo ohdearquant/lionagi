@@ -45,6 +45,57 @@ logger = logging.getLogger("lionagi.agent.factory")
 _MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
 
 
+def _hold_profile_deny_read(
+    models: list,
+    spec: Any,
+    sandbox_profile: str | None,
+    entries: tuple[str, ...] | None = None,
+) -> None:
+    """Hand the agent profile's ``deny_read`` entries to every model that runs a child.
+
+    ``entries`` are the loaded profile's; ``None`` loads the profile named ``sandbox_profile``
+    for them. A CLI endpoint (Claude Code, codex, the Antigravity CLI) takes them as
+    ``profile_deny_read`` in its config kwargs, so a restored model keeps them. An API model
+    holds them only when ``spec`` is the write tool set whose seatbelt policy was built with
+    them. Any other model refuses the build, naming what is missing.
+
+    Raises:
+        ConfigurationError: the profile declares entries that a model here cannot hold, or the
+            child sandbox is switched off.
+    """
+    from .child_sandbox import (
+        profile_deny_read_for,
+        profile_deny_read_refusal,
+        resolve_child_sandbox,
+        with_profile_deny_read,
+    )
+
+    if entries is None:
+        entries = profile_deny_read_for(sandbox_profile)
+    elif entries:
+        # Raises while the sandbox is switched off: nothing would hold the entries.
+        with_profile_deny_read(resolve_child_sandbox(None), entries, profile=sandbox_profile)
+    if not entries:
+        return
+    for model in models:
+        endpoint = model.endpoint
+        # Only an API model's tools run under the spec's seatbelt policy.
+        held = not model.is_cli and set(entries) <= set(getattr(spec, "_profile_deny_read", ()))
+        reason = profile_deny_read_refusal(
+            _canonical_provider(endpoint.config.provider),
+            is_cli=bool(model.is_cli),
+            api_tools="write" if held else None,
+        )
+        if reason is not None:
+            raise ConfigurationError(
+                f"agent profile {sandbox_profile!r} declares deny_read, which this run cannot "
+                f"hold: {reason}. Run the profile where its entries hold, or remove deny_read "
+                "from it."
+            )
+        if model.is_cli:
+            endpoint.config.kwargs["profile_deny_read"] = list(entries)
+
+
 class _AgentSettingError(ConfigurationError):
     """The resolved agent or model cannot carry a requested setting."""
 
@@ -595,6 +646,7 @@ async def create_agent(
         policy = resolve_child_sandbox(sandbox_profile)
         for endpoint in claude_endpoints:
             endpoint.config.kwargs["child_sandbox"] = policy.to_dict()
+    _hold_profile_deny_read(models, spec, sandbox_profile)
     branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()

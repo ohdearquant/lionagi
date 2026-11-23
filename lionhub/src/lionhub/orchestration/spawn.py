@@ -737,6 +737,9 @@ class AgentProfile:
     scratch: str | None = None
     """'remove' or 'keep': each ``li agent`` run of this role gets a writable scratch directory,
     removed or kept at run end (profile ``scratch: true`` or ``scratch: keep``); None for none."""
+    deny_read: tuple[str, ...] = ()
+    """Paths a child of this role may not read, added to the child sandbox's list after every
+    exemption (``lionhub.agent.child_sandbox.profile_deny_read``)."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -846,6 +849,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["codex_home"] = profile.codex_home
     if profile.scratch is not None:
         config["scratch"] = profile.scratch
+    if profile.deny_read:
+        config["deny_read"] = list(profile.deny_read)
     return config
 
 
@@ -1467,6 +1472,8 @@ _CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 _FLAG_KEY_LINE = re.compile(
     rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
 )
+# A line that sets deny_read as a key, in a mapping or a list item, quoted or not.
+_DENY_READ_KEY_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)*[\"']?(deny_read)[\"']?[ \t]*:", re.M)
 _LIGHT_WORKLOAD_LINE = re.compile(
     r"""^(?:workload|"workload"|'workload')[ \t]*:[ \t]+(?:light|"light"|'light')"""
     r"(?:[ \t]+(?:#[^\r\n]*)?)?\r?$",
@@ -1746,6 +1753,13 @@ def _check_readable_profile_settings(
     for opening_line, block in _profile_body_blocks(
         name, text[closing.end() :].splitlines(), line_offset=body_line_offset
     ):
+        if _DENY_READ_KEY_LINE.search(block):
+            # Read as prompt text, a deny_read here would deny nothing.
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line "
+                f"{body_line_offset + opening_line + 1} sets deny_read outside the leading "
+                "frontmatter, where it would be ignored; move it to the top of the file"
+            )
         reads, document = _read_profile_settings(block)
         if reads:
             _refuse_readable_tool_settings(
@@ -1796,6 +1810,19 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 "fix the frontmatter to proceed"
             )
 
+    def refuse_unread_deny_read(block: str, *, key_lines_only: bool = False) -> None:
+        """Refuse a block whose deny_read cannot be applied.
+
+        Ignoring it would let the child read what the profile denies, so a block that opens
+        the file refuses on any mention, and a span after prompt text on a line that sets it
+        as a key.
+        """
+        if _DENY_READ_KEY_LINE.search(block) if key_lines_only else "deny_read" in block:
+            raise ConfigurationError(
+                f"agent profile {name!r}: deny_read could not be read, and the child would "
+                "read what it denies; fix the frontmatter to proceed"
+            )
+
     def refuse_misplaced_tools(block: str, reads: bool, document: Any, opening: int) -> None:
         if reads:
             _refuse_readable_tool_settings(
@@ -1816,7 +1843,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     def refuse_misplaced_settings(block: str, opening: int) -> None:
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, opening + 1)
-        declared = set(_FLAG_KEY_LINE.findall(block))
+        declared = set(_FLAG_KEY_LINE.findall(block)) | set(_DENY_READ_KEY_LINE.findall(block))
         refuse_misplaced_tools(block, reads, document, opening)
         if not reads or isinstance(document, dict):
             declared.update(containment_settings(block, document))
@@ -1844,6 +1871,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         if reads and document is None:
             return {}
         refuse_unread_tool_settings(block)
+        refuse_unread_deny_read(block)
         settings = containment_settings(block, document)
         if _CONTAIN_KEY in block:
             # Keep containment for mentions in an unclosed user-settings block.
@@ -1870,6 +1898,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
         refuse_misplaced_tools(block, reads, document, 0)
+        refuse_unread_deny_read(block, key_lines_only=True)
         if closing is not None and closing != delimiters[-1]:
             # The closing rule opens a later span only if another rule bounds it.
             # The final fence has already been checked.
@@ -1907,6 +1936,8 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
+    from lionhub.agent.child_sandbox import profile_deny_read
+
     original = text
     text = _strip_frontmatter_prefix(original)
     line_offset = _profile_line_offset(original, len(original) - len(text))
@@ -1980,6 +2011,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         account=account,
         codex_home=codex_home,
         scratch=_parse_profile_scratch(name, frontmatter),
+        deny_read=profile_deny_read(name, frontmatter.get("deny_read")),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -2004,6 +2036,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "account",
                 "codex_home",
                 "scratch",
+                "deny_read",
             )
         },
     )

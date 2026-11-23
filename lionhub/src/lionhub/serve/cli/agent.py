@@ -661,11 +661,24 @@ def _make_api_agent_spec(
     tools: str,
     network: bool = False,
     _command_env_names: frozenset[str] | None = None,
+    profile_deny_read: tuple[str, ...] = (),
 ):
     """The AgentSpec for an API-model leg: the named tool set, path-guarded to cwd, and for
-    the write set the Seatbelt policy its editor and bash run under."""
+    the write set the Seatbelt policy its editor and bash run under.
+
+    ``profile_deny_read`` holds the agent profile's ``deny_read`` entries. The write set's
+    policy makes them unreadable too; the read set has no sandbox to hold them, so it refuses.
+    """
     from lionhub.agent.spec import AgentSpec, _wire_secure_guards
 
+    if profile_deny_read and tools not in _API_CONFINED_TOOL_SETS:
+        from lionhub.agent.child_sandbox import _PROFILE_DENY_READ_REFUSAL_API_READ
+
+        raise ConfigurationError(
+            "the agent profile declares deny_read, which this run cannot hold: "
+            f"{_PROFILE_DENY_READ_REFUSAL_API_READ}. Run it with 'api_tools: write' or on a CLI "
+            "model, or remove deny_read from the profile."
+        )
     spec = AgentSpec.compose(
         role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
     )
@@ -675,15 +688,18 @@ def _make_api_agent_spec(
         from lionhub.tools._seatbelt import SeatbeltPolicy
 
         # The locations a CLI child may not read, the settings' child_sandbox.deny_read entries
-        # included, are unreadable to this loop's bash and editor too, and its commands get a
-        # uv cache of their own.
+        # and the agent profile's own included, are unreadable to this loop's bash and editor
+        # too, and its commands get a uv cache of their own.
+        deny_read = configured_deny_read()
         spec.seatbelt = SeatbeltPolicy.for_workspace(
             cwd or Path.cwd(),
             network=network,
-            deny_read=configured_deny_read(),
+            deny_read=(*deny_read, *(p for p in profile_deny_read if p not in deny_read)),
             per_leg_uv_cache=True,
             _command_env_names=_command_env_names,
         )
+        # Read by create_agent, which refuses an API model whose spec does not hold them.
+        spec._profile_deny_read = tuple(profile_deny_read)
         from lionhub.tools import seatbelt_link_probe
 
         # On a volume where Seatbelt does not judge a hard link's source, a link out of the roots
@@ -2516,6 +2532,7 @@ async def _run_agent(
                         tools=api_launch["tools"],
                         network=api_launch["network"],
                         _command_env_names=command_names,
+                        profile_deny_read=tuple(getattr(profile, "deny_read", ()) or ()),
                     )
                 else:
                     spec = _make_coding_preset(
@@ -2960,6 +2977,7 @@ async def _run_agent(
                         tools=api_launch["tools"],
                         network=api_launch["network"],
                         _command_env_names=command_names,
+                        profile_deny_read=tuple(getattr(profile, "deny_read", ()) or ()),
                     ),
                 )
 
@@ -3039,6 +3057,32 @@ async def _run_agent(
                     f"give it: {_scratch_reason}. Run the profile on a claude_code model, or "
                     "remove scratch from it."
                 )
+        # The same for the profile's deny_read: refused before the run exists on a route with
+        # nothing to hold it (ADR-0041 Amendment 7), and handed to every CLI model otherwise.
+        profile_reads = tuple(getattr(profile, "deny_read", ()) or ())
+        if profile_reads:
+            from lionhub.agent.child_sandbox import (
+                profile_deny_read_refusal,
+                resolve_child_sandbox,
+                with_profile_deny_read,
+            )
+
+            # Raises while the child sandbox is switched off: nothing would hold the entries.
+            with_profile_deny_read(resolve_child_sandbox(None), profile_reads, profile=agent_name)
+            _reads_reason = profile_deny_read_refusal(
+                _canonical_provider(branch.chat_model.endpoint.config.provider),
+                is_cli=branch.chat_model.is_cli,
+                api_tools=api_launch["tools"] if api_launch is not None else None,
+            )
+            if _reads_reason is not None:
+                raise ConfigurationError(
+                    f"agent profile {agent_name!r} declares deny_read, which this run cannot "
+                    f"hold: {_reads_reason}. Run the profile where its entries hold, or remove "
+                    "deny_read from it."
+                )
+            for _model in (branch.chat_model, branch.parse_model):
+                if _model is not None and _model.is_cli:
+                    _model.endpoint.config.kwargs["profile_deny_read"] = list(profile_reads)
 
         inherited_run_id = current_run_id()
         job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)

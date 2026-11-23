@@ -1,11 +1,97 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
-  Amendments 1 to 5); Amendment 6 (2026-11-22) Proposed
+  Amendments 1 to 5); Amendment 6 (2026-11-22) and Amendment 7 (2026-11-23) Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 7 (2026-11-23) — an agent profile adds paths its child may not read
+
+**Status: Proposed.**
+
+The ask, in the words of the feature request ("Agent profiles: confine a leg's reads to its
+working directory"): "`workload: heavy` keeps a Codex leg read-only and `light` gives
+workspace-write with no network, but in both, reads reach anything the user can read." What it
+wants: "A profile field (for example `read_roots: [cwd]` or `deny_read: [...]`) passed to each
+provider's sandbox where it can be enforced, and a refusal at submit where it cannot, as `light`
+already refuses for providers without a sandbox." This amendment answers the `deny_read` half.
+An allow-list such as `read_roots` needs reads denied by default, which no route here has been
+measured to do; it comes as its own amendment once that is measured, and the key is not added
+before then.
+
+Decision:
+
+- **The profile key.** `deny_read: [path, ...]` in an agent profile's frontmatter. Each entry is
+  an absolute path or starts with `~/`. A relative path, an entry with a `.` or `..` part, an
+  entry holding a pattern character (`* ? [ ] { }`), and a value that is not a list of non-empty
+  strings refuse the profile when it is loaded, and the message names the entry. Patterns are
+  refused on every route, including those that could match one, so an entry always means the one
+  path it names.
+- **Links.** An entry whose existing part passes through a symbolic link to another path is
+  refused, and the message prints the path it resolves to so the author can write that instead.
+  On macOS `/tmp`, `/var` and `/etc` are links into `/private`, so an entry under them is refused
+  this way. An entry that does not exist is accepted and denies the path if it appears. Doubled
+  and trailing slashes are dropped, and an entry given twice is kept once.
+- **Never read as absent.** A frontmatter the parser cannot read that names `deny_read`, and a
+  `deny_read` key in a `---` block after the leading frontmatter, refuse the profile.
+- **Tightening only, from any profile file.** The entries are added to the run's deny list after
+  the `profiles.<name>.allow_read` exemptions are applied, so no exemption lifts one, and they are
+  denied for editing too. They can stop a run and cannot widen one, so a profile file in a
+  project's agents folder may carry them; exemptions stay limited to the profile files in the
+  user's own agents folder, as before. What an exemption lifts is unchanged on every route.
+- **The sandbox switch.** With the child sandbox switched off in `~/.lionagi/settings.yaml`, a
+  run whose profile declares entries is refused, since nothing would hold them.
+- **The probe record.** A codex launch with the `lionagi_child` permission profile needs a probe
+  record for its binary. The record is keyed to the binary (resolved path, version and digest),
+  not to the profile's content, and a profile's entries render through the same deny entries the
+  probe measures, so they need no probe of their own.
+- **Where it applies.** One row per launch surface and provider. A refusal names the reason shown
+  here; a refusal "at launch" happens before the run directory exists.
+
+| Launch surface | Provider | What holds the entries | Reason given when refused |
+| --- | --- | --- | --- |
+| `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI, `heavy` or `light` | `sandbox.filesystem.denyRead` (Bash reads) and `Read` and `Edit` deny rules (the file tools) in the child's `--settings`; `light` removes the write tools and keeps the same sandbox | |
+| the same | codex, `heavy` or `light` | deny entries of the `lionagi_child` permission profile. A working directory or write root that is, holds or lies inside an entry refuses the launch, as it does for every denied path | with `bypass_approvals`: codex's sandbox is off, so the entries would not hold |
+| the same | Gemini CLI, on a host with `/usr/bin/sandbox-exec` | `DENY_READ_<n>` parameters of the macOS sandbox policy the CLI runs under | |
+| the same | Gemini CLI, on a host without it | refused at launch | the CLI is held to the unreadable list only by the macOS sandbox, and this host has none |
+| the same | an API model, `api_tools: write` | the macOS sandbox policy its commands run under | |
+| the same | an API model, `api_tools: read` | refused at launch | its tools run in lionagi's process with no sandbox, so nothing denies a read |
+| the same | any other CLI | refused at launch | the named provider has no child sandbox to hold them |
+| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | as the rows above for its provider | as above | as above, at launch |
+| a worker's role in a flow, fan-out or play | as the rows above for its provider | as above | as above, when the worker is built, after the orchestrator's run directory exists |
+| an orchestration engine stage | any | not applied: a stage takes only the model and effort of a role's profile | |
+
+Required checks:
+
+- The key's accepted forms, each refused form naming its entry, a link refused with the resolved
+  path printed, and an entry under `/tmp` refused naming where `/tmp` resolves where it is a link.
+- A malformed, unreadable or misplaced `deny_read` refuses the profile; a project profile's
+  entries are taken.
+- Claude Code, the one route that reads exemptions: the rendered settings deny the entry while
+  `allow_read` for the same profile names the same path, `heavy` and `light`, with a control
+  showing that `allow_read` still lifts the path for a profile without the entry. Codex, the
+  Gemini CLI and API models read no exemption: on each the rendered permission profile, macOS
+  sandbox parameters or API-model policy contains the entry, with a control rendered without it.
+- Each refusing route refuses with its reason. `li agent` refuses before the run directory exists
+  for the Gemini CLI without the macOS sandbox and with the sandbox switched off, and so does an
+  orchestrator whose model is the Gemini CLI without it. The sandbox switched off refuses the
+  profile resolver, a Claude Code request, a codex request and a model build; codex refuses
+  under `bypass_approvals`.
+- On a macOS host where the sandbox can be applied, a command reads a control file and then a
+  denied file in one run: the control read succeeds and the denied read fails.
+
+Limits:
+
+- Measured on codex 0.162.1 with the network on, a unix socket under a denied path accepted a
+  connection. A `heavy` codex run therefore holds file reads under an entry but not a connection
+  to a socket there. What a profiled `heavy` codex launch may be given is decided in its own
+  amendment.
+- An engine stage does not apply a role's entries, as the table says. Whether a stage whose role
+  declares entries is refused or given them is decided before this amendment is accepted.
+- The entries are checked when the profile is loaded for a launch. A link made at an entry's path
+  after that is not seen by the check; the sandbox then denies the spelling the entry names.
 
 ## Amendment 6 (2026-11-22) — a per-run scratch directory for a read-only agent
 

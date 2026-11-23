@@ -485,6 +485,15 @@ class ClaudeCodeRequest(BaseModel):
             "child's TMPDIR, TMP and TEMP. None adds nothing."
         ),
     )
+    profile_deny_read: SkipJsonSchema[tuple[str, ...]] = Field(
+        default=(),
+        exclude=True,
+        description=(
+            "The agent profile's deny_read entries, added to the child sandbox's unreadable "
+            "list after every exemption. A request that names any while the sandbox is off is "
+            "refused."
+        ),
+    )
 
     # Legacy fields (kept for backward compat, unused in CLI args)
     mcp_tools: list[str] = Field(default_factory=list, exclude=True)
@@ -798,6 +807,7 @@ class ClaudeCodeRequest(BaseModel):
             effective_policy,
             policy_from_dict,
             resolve_child_sandbox,
+            with_profile_deny_read,
         )
 
         if self.child_sandbox is None:
@@ -813,6 +823,8 @@ class ClaudeCodeRequest(BaseModel):
                     "child_sandbox: the stored policy turns the sandbox off but the global "
                     "settings do not; the child runs under the global policy"
                 )
+        # Refuses a request that names entries while the sandbox is off: nothing would hold them.
+        policy = with_profile_deny_read(policy, self.profile_deny_read)
         if not policy.enabled:
             return None
         scratch = self._scratch_root()
