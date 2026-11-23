@@ -284,6 +284,30 @@ def test_a_light_profile_writes_nothing_beyond_the_working_directory(
     assert _profile_table(args) == _expected_profile(env, write=[], light=True)
 
 
+def test_a_launch_is_gated_on_the_socket_arm_of_the_table_it_renders(
+    tmp_path, sandbox_on, record_dir, monkeypatch
+):
+    project = _project(tmp_path)
+    networked = _home(tmp_path, "[sandbox_workspace_write]\nnetwork_access = true\n")
+    # Control: on a binary whose record passes every arm, the heavy table has the network on.
+    passing = _fake_binary(tmp_path / "passing")
+    probe_module.write_record(str(passing), _passing_arms())
+    monkeypatch.setattr(codex_module, "CODEX_CLI", str(passing))
+    heavy = _codex(project, networked, sandbox="workspace-write")
+    assert _profile_table(heavy)["network"]["enabled"] is True
+    # A binary whose network-on socket arm failed refuses that launch and runs a light one.
+    leaky = _fake_binary(tmp_path / "leaky")
+    arms = _passing_arms()
+    arms["unix_socket_refused_network_on"] = {"passed": False, "evidence": "accepted 1"}
+    probe_module.write_record(str(leaky), arms)
+    monkeypatch.setattr(codex_module, "CODEX_CLI", str(leaky))
+    with pytest.raises(CLIInputRefusedError, match="unix_socket_refused_network_on") as refused:
+        _codex(project, networked, sandbox="workspace-write")
+    assert "workload: light" in str(refused.value)
+    light = _codex(project, networked, workload="light")
+    assert _profile_table(light)["network"]["enabled"] is False
+
+
 # ------------------------------------------------------------------- refusals before the spawn
 
 
@@ -414,7 +438,9 @@ def test_a_user_config_sandbox_mode_logs_one_line_naming_the_config_and_the_reco
     tmp_path, sandbox_on, passing_binary, codex_log
 ):
     _, record = passing_binary
-    _gate(tmp_path, _home(tmp_path, 'sandbox_mode = "workspace-write"\n'))
+    # A working directory beside the probe records: the gate renders the launch's table, and a
+    # working directory above the record directory is refused while doing so.
+    _gate(_project(tmp_path), _home(tmp_path, 'sandbox_mode = "workspace-write"\n'))
     lines = [r.getMessage() for r in codex_log if r.levelno >= logging.WARNING]
     assert len(lines) == 1
     assert "\n" not in lines[0]
