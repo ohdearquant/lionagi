@@ -1254,6 +1254,9 @@
     "lionhub/src/lionhub/orchestration/prompts.py": [
       "__all__ = (\n    \"DECOMPOSE_INSTRUCTION\",\n    \"DECOMPOSE_DAG_INSTRUCTION\",\n    \"DECOMPOSE_DISCIPLINE\",\n    \"SPAWN_GUIDANCE\",\n    \"SYNTHESIS_INSTRUCTION\",\n)"
     ],
+    "lionhub/src/lionhub/orchestration/run_scratch.py": [
+      "__all__ = (\"SCRATCH_DIRNAME\", \"SCRATCH_MODES\", \"RunScratch\", \"remove_scratch\")"
+    ],
     "lionhub/src/lionhub/orchestration/runs.py": [
       "__all__ = (\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"RunDir\",\n    \"allocate_run\",\n    \"find_branch\",\n    \"load_last_branch\",\n    \"save_last_branch_pointer\",\n    \"list_runs\",\n    \"current_run_id\",\n    \"active_run_id\",\n    \"resolve_run_reason\",\n    \"setup_agent_persist\",\n    \"find_incomplete_session_for_run\",\n    \"teardown_persist\",\n    \"teardown_agent_persist\",\n    \"teardown_orchestration_persist\",\n)"
     ],
@@ -4112,6 +4115,10 @@
     ],
     "lionhub/src/lionhub/orchestration/project_store.py": [
       "get_project"
+    ],
+    "lionhub/src/lionhub/orchestration/run_scratch.py": [
+      "RunScratch",
+      "remove_scratch"
     ],
     "lionhub/src/lionhub/orchestration/runs.py": [
       "RunDir",

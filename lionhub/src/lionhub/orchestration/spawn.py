@@ -734,6 +734,9 @@ class AgentProfile:
     """Named subscription account the leg runs on (``lionhub.agent.subscription_accounts``)."""
     codex_home: str | None = None
     """Codex home a codex leg of this role runs under, as an absolute path."""
+    scratch: str | None = None
+    """'remove' or 'keep': each ``li agent`` run of this role gets a writable scratch directory,
+    removed or kept at run end (profile ``scratch: true`` or ``scratch: keep``); None for none."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -841,6 +844,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["account"] = profile.account
     if profile.codex_home is not None:
         config["codex_home"] = profile.codex_home
+    if profile.scratch is not None:
+        config["scratch"] = profile.scratch
     return config
 
 
@@ -1234,6 +1239,26 @@ def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
     if isinstance(raw, str) and raw == "none":
         return raw
     raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
+
+
+def _parse_profile_scratch(name: str, frontmatter: dict) -> str | None:
+    """Read the profile's per-run scratch request: ``true`` -> 'remove', ``keep`` -> 'keep'.
+
+    Absent or ``false`` asks for none. Any other value is refused: a scratch request read as
+    absent would leave a read-only agent without the directory it was declared to have.
+    """
+    if "scratch" not in frontmatter:
+        return None
+    raw = frontmatter["scratch"]
+    if raw is False:
+        return None
+    if raw is True:
+        return "remove"
+    if raw == "keep":
+        return "keep"
+    raise ConfigurationError(
+        f"agent profile {name!r}: scratch must be true, false or keep, not {raw!r}"
+    )
 
 
 # The deepest nesting of collections a profile's frontmatter may have. The YAML loaders
@@ -1954,6 +1979,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         mcp=_parse_profile_mcp(name, frontmatter),
         account=account,
         codex_home=codex_home,
+        scratch=_parse_profile_scratch(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1977,6 +2003,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "mcp",
                 "account",
                 "codex_home",
+                "scratch",
             )
         },
     )

@@ -1866,6 +1866,55 @@ def _attributed_resolution(
     )
 
 
+#: Why a run whose profile declares ``scratch`` is refused on a provider other than a Claude Code
+#: CLI child (ADR-0041 Amendment 6). Each names what is missing, not a preference.
+_SCRATCH_REFUSAL_API = (
+    "an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch "
+    "root yet"
+)
+_SCRATCH_REFUSAL_CODEX = (
+    "a codex run needs a sandbox probe record of format 4, which measures a read-only policy "
+    "with one write root, and no such record exists yet"
+)
+_SCRATCH_REFUSAL_GEMINI = (
+    "the Gemini CLI's sandbox does not bound reads and grants no single writable directory this "
+    "launcher can verify"
+)
+
+
+def _scratch_refusal(provider: str, *, api_launch: bool, is_cli: bool) -> str | None:
+    """Why a run on *provider* cannot have a scratch directory, or None when it can."""
+    if api_launch or not is_cli:
+        return _SCRATCH_REFUSAL_API
+    if provider == "claude_code":
+        return None
+    if provider == "codex":
+        return _SCRATCH_REFUSAL_CODEX
+    if provider == "gemini_code":
+        return _SCRATCH_REFUSAL_GEMINI
+    return f"the {provider or 'unknown'} provider has no scratch directory support"
+
+
+def _bind_run_scratch(chat_model: Any, scratch: Any) -> None:
+    """Hand the run's scratch directory to its CLI endpoint, or take away one left from before.
+
+    The path lives in the endpoint's runtime state, never in its config, so no saved branch or
+    run record carries it into a later run.
+    """
+    endpoint = chat_model.endpoint
+    state = getattr(endpoint, "_runtime_state", None)
+    takes_it = "scratch_dir" in getattr(endpoint, "_runtime_state_fields", ())
+    if scratch is None:
+        if isinstance(state, dict):
+            state.pop("scratch_dir", None)
+        return
+    if not takes_it or not isinstance(state, dict):
+        raise ConfigurationError(
+            "this run's endpoint cannot take a scratch directory, so the run is not started"
+        )
+    state["scratch_dir"] = str(scratch.path)
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -2957,6 +3006,22 @@ async def _run_agent(
             preamble = build_deadline_preamble(timeout)
             prompt = preamble + prompt
 
+        # Refused here, before the run exists, so a scratch request this run cannot honour leaves
+        # no run directory behind (ADR-0041 Amendment 6).
+        scratch_mode = getattr(profile, "scratch", None)
+        if scratch_mode is not None:
+            _scratch_reason = _scratch_refusal(
+                _canonical_provider(branch.chat_model.endpoint.config.provider),
+                api_launch=api_launch is not None,
+                is_cli=branch.chat_model.is_cli,
+            )
+            if _scratch_reason is not None:
+                raise ConfigurationError(
+                    f"agent profile {agent_name!r} declares scratch, which this run cannot "
+                    f"give it: {_scratch_reason}. Run the profile on a claude_code model, or "
+                    "remove scratch from it."
+                )
+
         inherited_run_id = current_run_id()
         job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)
         run = allocate_run()
@@ -3280,7 +3345,16 @@ async def _run_agent(
         # watchdog off instead.
         _idle = {"idle_timeout": idle_timeout} if idle_timeout is not None else {}
         _worker_spawn_teardown_cancel = None
+        _run_scratch = None
         try:
+            if scratch_mode is not None:
+                from lionhub.orchestration.run_scratch import RunScratch
+
+                _run_scratch = RunScratch.create(run.state_root, keep=scratch_mode == "keep")
+                run_manifest["scratch"] = _run_scratch.record()
+                if _write_run_manifest is not None:
+                    _write_run_manifest(run_manifest)
+            _bind_run_scratch(branch.chat_model, _run_scratch)
             if _api_turn is not None:
                 _api_fold = _install_api_input_cap(
                     branch,
@@ -3624,6 +3698,14 @@ async def _run_agent(
             # Shield teardown so iModel shutdown always runs (avoids leaked
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
+                if _run_scratch is not None:
+                    # The child's process group has ended by now, so nothing writes into the
+                    # directory while it goes. An automatic resume makes a scratch of its own.
+                    run_manifest["scratch"] = await run_sync(_run_scratch.finish)
+                    if run_manifest["scratch"]["removal_error"]:
+                        log_error(run_manifest["scratch"]["removal_error"])
+                    if _write_run_manifest is not None:
+                        _write_run_manifest(run_manifest)
                 job_result_run = None if will_auto_resume else _job_result_run
                 if notify or job_result_run is not None:
                     replies = _new_assistant_replies(branch, before_leg)

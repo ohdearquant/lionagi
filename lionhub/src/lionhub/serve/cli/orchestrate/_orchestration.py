@@ -469,6 +469,21 @@ def team_history_context(
     }
 
 
+def _refuse_orchestrated_scratch(profile: AgentProfile | None) -> None:
+    """Refuse a profile that declares ``scratch`` as an orchestrator or worker.
+
+    Only a direct ``li agent`` run on a claude_code model makes a scratch directory (ADR-0041
+    Amendment 6); a flow, fan-out or play running such a role would leave it without the
+    directory it was declared to have.
+    """
+    if profile is not None and getattr(profile, "scratch", None) is not None:
+        raise ConfigurationError(
+            f"agent profile {profile.name!r} declares scratch, which a flow, fan-out or play "
+            "does not give its orchestrator or workers yet; only a direct `li agent` run on a "
+            "claude_code model has one. Remove scratch from the profile to use it here."
+        )
+
+
 def resolve_worker_spec(
     token: str,
 ) -> tuple[str, AgentProfile | None]:
@@ -484,6 +499,7 @@ def resolve_worker_spec(
     """
     try:
         profile = load_agent_profile(token)
+        _refuse_orchestrated_scratch(profile)
         # No hardcoded fallback — callers apply their own default so it doesn't rot.
         return profile.model or token, profile
     except FileNotFoundError:
@@ -1108,6 +1124,8 @@ async def setup_orchestration(
                 "was found. Create one in .lionagi/agents/ or ~/.lionagi/agents/, "
                 "or name an agent or a model on this call."
             ) from exc
+        # Before the run is allocated, so the refusal leaves no run directory behind.
+        _refuse_orchestrated_scratch(orc_profile)
         if orc_profile.model and not model_spec:
             model_spec = orc_profile.model
         if orc_profile.effort and not effort:
