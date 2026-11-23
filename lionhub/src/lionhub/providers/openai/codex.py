@@ -720,6 +720,7 @@ class _PlainRequest:
     fast_mode: bool
     contain_account_integrations: bool
     ignore_user_config: bool
+    require_hooks: bool
     exclusive_mcp_names: list[str] | None
     account_connectors: list[str]
     output_schema: str | None
@@ -840,6 +841,7 @@ def _plain_request(
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
         ignore_user_config=flag("ignore_user_config"),
+        require_hooks=flag("require_hooks"),
         exclusive_mcp_names=(
             None if request.exclusive_mcp_names is None else texts("exclusive_mcp_names")
         ),
@@ -1805,6 +1807,19 @@ class CodexCodeRequest(BaseModel):
         ),
         json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
     )
+    require_hooks: bool = Field(
+        default=False,
+        description=(
+            "Refuse to start when a hook declared in CODEX_HOME/hooks.json, or in the "
+            "`[hooks]` table of CODEX_HOME/config.toml, will not run: codex runs a hook only "
+            "once its `[hooks.state]` entry records the hook's current hash, and the entry is "
+            "named for the declaring file's path, so a hook trusted under one codex home is "
+            "untrusted under another. The home read is the one the child's environment names. "
+            "A hook whose recorded hash differs from the one computed here is refused too, and "
+            "so is a hooks file codex cannot read; a hook the state disables is not. Hooks in "
+            "project layers, plugins and managed configuration are not checked. Off by default."
+        ),
+    )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
@@ -2314,6 +2329,8 @@ class CodexCodeRequest(BaseModel):
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
+        if plain.require_hooks:
+            _refuse_hooks_that_will_not_run(plain, plain.env if env is None else env)
 
         # A light agent writes only its working directory, so a linked worktree's git
         # directory is not made writable for it.
@@ -2868,6 +2885,42 @@ def _workspace_write_value(name: str, value: Any, config_path: Path) -> Any:
             roots,
         )
     return roots or None
+
+
+def _refuse_hooks_that_will_not_run(plain: _PlainRequest, env: Mapping[str, str] | None) -> None:
+    """Refuse a ``require_hooks`` run when a hook its codex home declares will not run.
+
+    The home is the one the child's environment names (ours when the request carries none).
+    The hook state is the user config's, then the `hooks.state` the run's overrides write. A
+    run that ignores the user config does not load the hooks of its `[hooks]` table, and is
+    refused before here when that table declares any.
+    """
+    from ._codex_hook_trust import UNCONFIRMED, hook_trust_for_env
+
+    hooks = _command_line_layer(plain).get("hooks")
+    report = hook_trust_for_env(
+        os.environ if env is None else env,
+        override_state=hooks.get("state") if isinstance(hooks, Mapping) else None,
+        include_config_hooks=not plain.ignore_user_config,
+    )
+    refused = report.refused()
+    if not refused and not report.problems:
+        return
+    reasons = [f"{hook.hook.name} ({hook.status})" for hook in refused]
+    reasons.extend(report.problems)
+    unconfirmed = (
+        " An unconfirmed hook has a recorded hash that differs from the one computed here, "
+        "which has not yet been checked against a hash codex wrote."
+        if any(hook.status == UNCONFIRMED for hook in refused)
+        else ""
+    )
+    raise ConfigurationError(
+        f"Codex is not started: require_hooks is set and the hooks of the codex home "
+        f"{str(report.codex_home)!r} cannot all run: {'; '.join(reasons)}. Codex runs a hook "
+        "only once it is trusted under the home that declares it, and a hook trusted under "
+        "another home does not count. Trust each one in codex under this home, or start "
+        f"without require_hooks.{unconfirmed}"
+    )
 
 
 def _hook_trust_records(state: Any) -> dict[str, dict[str, Any]]:
