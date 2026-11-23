@@ -1271,6 +1271,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `timeout` | Default hard timeout in seconds |
 | `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `workload` | `light` or `heavy` (default). Sets how the role's CLI workers count against the agent caps and how they are confined; see [Agent caps and workload](#agent-caps-and-workload). Any other value reads as `heavy` with a warning. `--workload` overrides it, and orchestration workers take their own profile's value |
+| `scratch` | `true` or `keep` gives each `li agent` run of the role a writable directory of its own, `scratch` in the run's state directory; see [Scratch directory](#scratch-directory). `false` or no key gives none, and any other value refuses the profile |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |
@@ -1288,6 +1289,37 @@ no role does, with the contained tools and the run's servers when the worker tha
 is run with `contain_user_settings`, and with none of the three fields otherwise. The denials
 of a `light` workload do not depend on these fields: the copy takes the workload of the worker
 that asked for it.
+
+#### Scratch directory
+
+A role whose sandbox is otherwise read-only, a reviewer for one, still needs somewhere to write
+while it runs the project's tests. `scratch: true` gives each `li agent` run of the role a
+directory, `scratch` inside the run's state directory, made with mode 0700 before the first turn
+and removed when the run ends. `scratch: keep` leaves it in place for you to read. The directory
+is the one place the child's sandbox may write beyond what the role already grants, and the
+child's `TMPDIR`, `TMP` and `TEMP` name it. run.json records it under `scratch`: its `path` and
+`keep`, and at the end whether it was `removed` and any `removal_error`.
+
+Removal goes by the recorded path and touches nothing else. A symbolic link inside is removed as
+a link and what it points to is left alone. When the directory itself has become a symbolic link,
+is no longer a directory, or is not where it was made, it is left exactly as it is and
+`removal_error` says why. A directory left read-only inside, a module cache for one, is opened up
+to its owner without following a link and removed. What could not be removed is named there too:
+a file a process the child left running is still writing, what is inside a directory its owner
+cannot open for reading, or, before Python 3.13, a tree deeper than the open-file limit.
+
+Only a direct `li agent` run on a Claude Code model gets a scratch directory, and that covers
+`agent.submit`, agent schedules and a leg host's launches, which start `li agent`. Each other
+run refuses the profile before its run directory is made, naming the reason: a codex model, a
+Gemini CLI model, an API model, and the orchestrator's role in `li o flow`, `li o fanout` and `li play`. A worker's role
+in a flow, fan-out or play is refused when the worker is resolved, after the orchestrator's run
+directory exists. Remove `scratch` from a profile to use it there.
+
+Claude Code's own sandbox handling of a hard link from the scratch directory to a file outside
+the writable roots has not been measured, as it has not been for the working directory.
+
+macOS limits a unix socket path to 104 bytes. A tool that makes a socket under `TMPDIR` can pass
+that limit when the run directory is deep; a shorter `LIONAGI_HOME` shortens every run's path.
 
 When `lion_system: true`, the global Lion system preamble is prepended to the body
 to form the system prompt. Set it to `false` for a verbatim body (e.g. when the
