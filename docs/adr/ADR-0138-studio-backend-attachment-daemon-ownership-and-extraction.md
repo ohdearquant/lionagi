@@ -17,9 +17,11 @@
   `tests/packaging/test_studio_import_boundary.py`. The installation proof named below,
   `tests/packaging/test_studio_backend_boundary.py::test_fresh_wheel_schedule_validate_and_export_without_backend`,
   runs from the checkout and, in CI, against the built `lionagi[studio]` wheel in a fresh environment
-  outside the checkout; today it blocks the application's modules, validates one valid interval
-  schedule and exports an empty store through the CLI's entry function in-process, human and machine,
-  and the rest of the list that section gives is the next change
+  outside the checkout. It runs each command as its own process through the command line, the
+  installed `li` console script in the wheel arm, with the application's modules refused, and covers
+  each item of the list that section gives: valid and invalid cron, interval, command, flow and
+  playbook declarations, populated declaration-managed and legacy rows, a partial export, validation
+  that leaves no file behind, and export that leaves the rows as they were
 - **Area**: studio
 - **Date**: 2026-10-25
 - **Relations**: decides the Studio backend form that ADR-0136 D7 deferred and that ADR-0136 Amendment 1
