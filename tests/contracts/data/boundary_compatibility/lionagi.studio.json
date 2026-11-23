@@ -1,0 +1,7 @@
+{
+  "package_exports": {
+    "lionagi/studio/operator/__init__.py": [
+      "def __getattr__(name: str):\n    if name not in _FORWARDED:\n        raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")\n    import importlib\n    import warnings\n\n    from lionagi._moved import _row, _warning_origin\n\n    row = _row(__name__)\n    new_name = row.new + __name__[len(row.old) :]\n    # Imported first, so an application that is not installed raises without a warning.\n    value = getattr(importlib.import_module(new_name), name)\n    # One moved package, so one warning: only the first name read warns. Each name is kept\n    # here once read, because ``from ... import`` reads a name twice.\n    if _FORWARDED.isdisjoint(globals()):\n        stacklevel, _ = _warning_origin()\n        warnings.warn(\n            f\"{__name__} moved to {new_name}; the old import path is removed in lionagi \"\n            f\"{row.removed_in}. Import from {new_name} instead.\",\n            DeprecationWarning,\n            stacklevel=stacklevel,\n        )\n    globals()[name] = value\n    return value"
+    ]
+  }
+}

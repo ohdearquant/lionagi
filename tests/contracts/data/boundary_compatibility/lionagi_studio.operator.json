@@ -1,0 +1,187 @@
+{
+  "environment_lookups": {
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/engine.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_OPERATOR_PROVIDER\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "os.environ.get:\"LIONAGI_OPERATOR_CONVERSATION_ID\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_DB_PATH\"",
+      "os.environ.get:\"LIONAGI_OPERATOR_REQUEST_ID\""
+    ]
+  },
+  "package_exports": {
+    "apps/studio/backend/src/lionagi_studio/operator/__init__.py": [
+      "from .coordinator import (\n    OperatorCoordinator,\n    get_operator_coordinator,\n    reset_operator_coordinator_for_testing,\n)",
+      "__all__ = (\n    \"OperatorCoordinator\",\n    \"get_operator_coordinator\",\n    \"reset_operator_coordinator_for_testing\",\n)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "__all__ = (\"wait_for_proposal\",)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/conversation_metadata.py": [
+      "__all__ = (\"UpdateConversationInput\", \"normalize_description\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_detail.py": [
+      "__all__ = (\"RunDetailInput\", \"run_detail\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_findings.py": [
+      "__all__ = (\"RunFindingsInput\", \"run_findings\")"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "__all__ = (\"MissingOwnerContextError\", \"RunProgressInput\", \"resolve_run\", \"run_progress\")"
+    ]
+  },
+  "public_definitions": {
+    "apps/studio/backend/src/lionagi_studio/operator/_common.py": [
+      "wait_for_proposal"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/application_mcp.py": [
+      "CurrentViewInput",
+      "GetArtifactInput",
+      "GetInvocationInput",
+      "LaunchPlaybookInput",
+      "ListAgentsInput",
+      "ListArtifactsInput",
+      "ListPlaybooksInput",
+      "ListSchedulesInput",
+      "ListSessionsInput",
+      "NavigateInput",
+      "PrefillScheduleInput",
+      "RecentRunsInput",
+      "RunStatsInput",
+      "SessionDetailInput",
+      "SessionSignalsInput",
+      "get_artifact",
+      "get_current_view",
+      "get_invocation",
+      "launch_playbook",
+      "list_agents",
+      "list_artifacts",
+      "list_playbooks",
+      "list_recent_runs",
+      "list_schedules",
+      "list_sessions",
+      "navigate",
+      "prefill_schedule",
+      "resolve_playbook_version",
+      "run_stats",
+      "session_detail",
+      "session_signals",
+      "update_conversation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/cancel_run.py": [
+      "AmbiguousRunReferenceError",
+      "CancelFailureReason",
+      "CancelRunInput",
+      "MissingOwnerContextError",
+      "apply_cancel_command",
+      "await_cancel_completion",
+      "cancel_run",
+      "execute_cancel_command"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/catalog.py": [
+      "OperatorModelSpec",
+      "OperatorSelectionError",
+      "catalog_entries",
+      "effort_choices",
+      "model_effort_choices",
+      "resolve_selection"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/conversation_metadata.py": [
+      "UpdateConversationInput",
+      "normalize_description"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/coordinator.py": [
+      "ApplicationCommandError",
+      "ApplicationTargetConflictError",
+      "OperatorCoordinator",
+      "get_operator_coordinator",
+      "reset_operator_coordinator_for_testing"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/engine.py": [
+      "BranchOperatorEngine",
+      "CompiledOperatorHistory",
+      "OperatorExecutionRootError",
+      "OperatorProviderUnavailableError",
+      "build_operator_branch",
+      "compile_operator_history",
+      "resolve_operator_execution_root",
+      "resolve_operator_provider_model",
+      "write_resumable_operator_snapshot"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/permission_mcp.py": [
+      "request_permission"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/rename_session.py": [
+      "RenameSessionInput",
+      "execute_rename_session_command",
+      "rename_session"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/resume_run.py": [
+      "ResumeRunInput",
+      "execute_resume_command",
+      "resume_run"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_control.py": [
+      "MissingOwnerContextError",
+      "PauseRunInput",
+      "ReleaseRunPauseInput",
+      "SteerRunInput",
+      "execute_pause_run_command",
+      "execute_release_run_pause_command",
+      "execute_run_control_command",
+      "execute_steer_run_command",
+      "pause_run",
+      "release_run_pause",
+      "steer_run"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_detail.py": [
+      "RunDetailInput",
+      "run_detail"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_findings.py": [
+      "RunFindingsInput",
+      "run_findings"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/run_progress.py": [
+      "MissingOwnerContextError",
+      "RunProgressInput",
+      "resolve_run",
+      "run_progress"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/store.py": [
+      "OperatorAuditUnavailableError",
+      "OperatorConflictError",
+      "OperatorNotFoundError",
+      "OperatorStore",
+      "OperatorStoreError",
+      "OperatorValidationError"
+    ],
+    "apps/studio/backend/src/lionagi_studio/operator/types.py": [
+      "AcknowledgeEffectRequest",
+      "ConfirmProposalRequest",
+      "CreateConversationRequest",
+      "DecideProposalRequest",
+      "ForkConversationRequest",
+      "OperatorContextSnapshot",
+      "OperatorEngine",
+      "OperatorEngineEvent",
+      "OperatorEngineTurn",
+      "OperatorTurnRequest",
+      "OperatorViewReport",
+      "PermissionDecision",
+      "UpdateConversationRequest",
+      "WireModel"
+    ]
+  }
+}
