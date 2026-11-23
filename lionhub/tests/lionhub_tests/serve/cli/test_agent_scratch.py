@@ -501,7 +501,8 @@ async def test_a_run_without_scratch_takes_none_and_records_none(monkeypatch, tm
 @pytest.mark.parametrize(
     ("model", "reason"),
     [
-        ("codex/gpt-5.5", "sandbox probe record of format 5"),
+        # The suite runs with the child sandbox switched off.
+        ("codex/gpt-5.5", "child sandbox is switched off"),
         ("gemini-cli/gemini-2.5-pro", "does not bound reads"),
     ],
 )
@@ -527,6 +528,46 @@ def test_an_api_model_run_is_refused_with_its_reason():
     assert _scratch_refusal("anthropic", api_launch=True, is_cli=False) == _SCRATCH_REFUSAL_API
     assert _scratch_refusal("claude_code", api_launch=False, is_cli=True) is None
     assert "pi provider" in _scratch_refusal("pi", api_launch=False, is_cli=True)
+
+
+def test_a_codex_run_is_refused_up_front_only_where_no_profile_would_hold_its_scratch(
+    monkeypatch,
+):
+    from lionhub.serve.cli.agent import (
+        _SCRATCH_REFUSAL_CODEX_BYPASS,
+        _SCRATCH_REFUSAL_CODEX_NO_SANDBOX,
+        _scratch_refusal,
+    )
+
+    def codex(kwargs):
+        return _scratch_refusal("codex", api_launch=False, is_cli=True, endpoint_kwargs=kwargs)
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {"child_sandbox": {}})
+    assert codex({}) is None
+    assert codex(None) is None
+    assert codex({"bypass_approvals": False}) is None
+    assert codex({"bypass_approvals": True}) == _SCRATCH_REFUSAL_CODEX_BYPASS
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
+    )
+    assert codex({}) == _SCRATCH_REFUSAL_CODEX_NO_SANDBOX
+
+
+@pytest.mark.asyncio
+async def test_a_codex_run_with_bypass_approvals_is_refused_before_it_exists(monkeypatch, tmp_path):
+    from lionhub.serve.cli.agent import _run_agent
+
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {"child_sandbox": {}})
+    state = _wire_run(
+        monkeypatch, tmp_path, _role("scratch: true\nbypass: true\n", model="codex/gpt-5.5")
+    )
+    _during_the_turn(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match="bypass_approvals turns codex's sandbox off"):
+        await _run_agent(None, "review", agent_name="role")
+
+    assert state["allocated"] == 0
+    assert not state["run_dir"].exists()
 
 
 # --------------------------------------------------------------------------- flows and fan-outs
