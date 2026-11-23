@@ -59,9 +59,9 @@ Decision:
 | the same | an API model, `api_tools: write` | the macOS sandbox policy its commands run under | |
 | the same | an API model, `api_tools: read` | refused at launch | its tools run in lionagi's process with no sandbox, so nothing denies a read |
 | the same | any other CLI | refused at launch | the named provider has no child sandbox to hold them |
-| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | as the rows above for its provider | as above | as above, at launch |
-| a worker's role in a flow, fan-out or play | as the rows above for its provider | as above | as above, when the worker is built, after the orchestrator's run directory exists |
-| an orchestration engine stage | any | refused when the stage's agent is built, before it counts against the engine's agent budget | a stage takes only the model and effort from its role's profile, so nothing carries the entries to its child |
+| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | as the rows above for a CLI; an API model, whatever its tool set | as above; an API model is refused at launch | as above, at launch; an API model's tools are not built under a policy holding the entries |
+| a worker's role in a flow, fan-out or play | as the rows above for a CLI; an API model, whatever its tool set | as above; an API model is refused | as above, when the worker is built, after the orchestrator's run directory exists; an API model's tools are not built under a policy holding the entries |
+| an orchestration engine stage | any | refused when the stage's agent is built, before it counts against the engine's agent budget, when the role's profile declares `deny_read`, or fails to load and its file names `deny_read` or cannot be read | a stage takes only the model and effort from its role's profile, so nothing carries the entries to its child; a profile that does not load leaves the stage on its other settings |
 
 Required checks:
 
@@ -78,8 +78,10 @@ Required checks:
   for the Gemini CLI without the macOS sandbox and with the sandbox switched off, and so does an
   orchestrator whose model is the Gemini CLI without it. A worker whose model cannot hold the
   entries refuses when it is built, with a control showing the same worker builds when its role
-  declares none. An engine stage whose role declares entries, or a malformed `deny_read`, refuses
-  when its agent is built, and a stage whose role declares none builds. The sandbox switched off
+  declares none. An engine stage refuses when its agent is built if its role declares entries,
+  has a malformed `deny_read`, fails to load for another reason while its file names
+  `deny_read`, or is a link whose target cannot be read; a stage whose role declares none
+  builds, and so does one whose file fails to load the same way without naming `deny_read`. The sandbox switched off
   refuses the profile resolver, a Claude Code request, a codex request and a model build; codex
   refuses under `bypass_approvals`.
 - On a macOS host where the sandbox can be applied, a command reads a control file and then a
@@ -93,6 +95,10 @@ Limits:
   ADR-0133 amendment, which measures the socket check once per network state.
 - An engine stage is refused rather than given a role's entries, as the table says. Carrying the
   entries to a stage's model is a later change with its own row here.
+- A macOS sandbox deny rule was measured, on a case-insensitive volume, to refuse a read by a
+  spelling in another letter case than the name on disk, beside a control read in the same run.
+  How Claude Code matches its `Read` and `Edit` deny rules against a path spelled in another
+  letter case is not measured.
 - The entries are checked when the profile is loaded for a launch. A link made at an entry's path
   after that is not seen by the check; the sandbox then denies the spelling the entry names.
 

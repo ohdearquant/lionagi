@@ -382,7 +382,9 @@ def test_the_route_table():
     assert refusal("codex", is_cli=True) is None
     assert refusal("anthropic", is_cli=False, api_tools="write") is None
     assert "read tool set" in refusal("anthropic", is_cli=False, api_tools="read")
-    assert "read tool set" in refusal("anthropic", is_cli=False)
+    # An API model whose tools were not built with the entries, as a flow's worker is not.
+    assert "write tool set runs under" in refusal("anthropic", is_cli=False)
+    assert "read tool set" not in refusal("anthropic", is_cli=False)
     assert "pi provider" in refusal("pi", is_cli=True)
 
 
@@ -416,7 +418,7 @@ def test_a_profile_without_entries_hands_nothing():
     ("model", "reason"),
     [
         (_model("pi"), "pi provider has no child sandbox"),
-        (_model("anthropic", is_cli=False), "read tool set"),
+        (_model("anthropic", is_cli=False), "tools were not given one"),
     ],
 )
 def test_a_model_that_cannot_hold_the_entries_refuses_the_build(model, reason):
@@ -571,7 +573,7 @@ def test_a_worker_whose_model_cannot_hold_the_entries_is_refused_when_built(tmp_
     assert "imodel_kwargs" in built
     with pytest.raises(ConfigurationError, match="'reader' declares deny_read") as refused:
         _build_worker(tmp_path, profile=_worker_profile((KEYS,)), provider="anthropic", **worker)
-    assert "read tool set" in str(refused.value)
+    assert "tools were not given one" in str(refused.value)
 
 
 # --------------------------------------------------------------------------- engine stages
@@ -617,3 +619,86 @@ async def test_an_engine_stage_whose_role_has_a_malformed_deny_read_is_refused(h
     with pytest.raises(ConfigurationError, match="must be an absolute path"):
         await run.make_agent("analyst", name="a1")
     assert run.agents_made == 0
+
+
+#: A setting the loader refuses for a reason of its own, which never names deny_read.
+_BAD_MCP = "mcp: everything\n"
+
+
+def _load_failure(role: str) -> str:
+    with pytest.raises(Exception) as failed:
+        spawn.load_agent_profile(role)
+    assert not isinstance(failed.value, FileNotFoundError)
+    return str(failed.value)
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_fails_to_load_and_names_entries_is_refused(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    _stage_profile(home, "critic", _DENY + _BAD_MCP)
+    # The load fails on the other setting, and its reason does not name the key.
+    assert "deny_read" not in _load_failure("critic")
+    run = Engine().new_run()
+    with pytest.raises(ConfigurationError, match="'critic' did not load") as refused:
+        await run.make_agent("critic", name="c1")
+    assert "critic.md names deny_read" in str(refused.value)
+    assert run.agents_made == 0
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_fails_to_load_without_naming_entries_is_built(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    # Control: the same file without deny_read runs on its other settings, as before.
+    _stage_profile(home, "critic", _BAD_MCP)
+    _load_failure("critic")
+    run = Engine().new_run()
+    branch = await run.make_agent("critic", name="c1")
+    assert branch.name == "c1"
+    assert run.agents_made == 1
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_is_a_link_to_an_unreadable_target_is_refused(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    (home / ".lionagi" / "agents" / "critic.md").symlink_to(home / "gone.md")
+    run = Engine().new_run()
+    with pytest.raises(ConfigurationError, match="symlink whose target cannot be read"):
+        await run.make_agent("critic", name="c1")
+    assert run.agents_made == 0
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_has_no_profile_is_built(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    run = Engine().new_run()
+    branch = await run.make_agent("critic", name="c1")
+    assert branch.name == "c1"
+    assert run.agents_made == 1
+
+
+def test_the_files_searched_are_the_ones_the_loader_reads(home):
+    agents = home / ".lionagi" / "agents"
+    names = spawn._profile_files_naming_deny_read
+    assert names("builder") == (f"{agents / 'builder.md'} names deny_read",)
+    assert names("plain") == ()
+    assert names("absent") == ()
+    # Two spellings of a name the loader refuses to choose between: each is searched.
+    (agents / "a_b_c.md").write_text(f"---\nname: a_b_c\n{_DENY}---\n")
+    (agents / "a-b-c.md").write_text("---\nname: a-b-c\n---\n")
+    with pytest.raises(ValueError, match="ambiguous"):
+        spawn.load_agent_profile("a-b_c")
+    assert names("a-b_c") == (f"{agents / 'a_b_c.md'} names deny_read",)
+    # A file the loader finds and cannot read: its entries cannot be ruled out.
+    (agents / "locked.md").write_text("---\nname: locked\n---\n")
+    (agents / "locked.md").chmod(0)
+    try:
+        if os.access(agents / "locked.md", os.R_OK):
+            pytest.skip("this user reads a file with no permissions")
+        (found,) = names("locked")
+        assert found.startswith(f"{agents / 'locked.md'} cannot be read")
+    finally:
+        (agents / "locked.md").chmod(0o644)

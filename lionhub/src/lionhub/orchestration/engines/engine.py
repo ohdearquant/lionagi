@@ -323,18 +323,40 @@ def role_profile_injection(role: str) -> Any:
     return value
 
 
+def _refuse_unloaded_stage_profile(role: str, failure: Exception | None) -> None:
+    """Refuse a stage whose role's profile did not load when the profile's file names
+    ``deny_read`` or cannot be read; return otherwise, leaving the stage on its other settings.
+    ``failure`` is the load error, or None when no profile was found."""
+    from lionhub.orchestration.spawn import _profile_files_naming_deny_read  # noqa: PLC0415
+
+    named = _profile_files_naming_deny_read(role)
+    if not named:
+        # role_profile_route logs a load failure; the stage runs on its other settings.
+        return
+    why = f" ({failure})" if failure is not None else ""
+    raise ConfigurationError(
+        f"agent profile {role!r} did not load{why}, and " + "; ".join(named) + ": an engine "
+        "stage whose profile does not load runs on its other settings, so the profile's "
+        "deny_read entries could not be shown to hold. Fix the profile so it loads, or remove "
+        "deny_read from it."
+    )
+
+
 def _refuse_stage_deny_read(role: str) -> None:
     """Refuse an engine stage whose role's agent profile declares ``deny_read``.
 
     A stage takes only the model and effort from its role's profile (:func:`role_profile_route`),
     so nothing carries the profile's ``deny_read`` entries to the stage's child, and building it
     would drop them (ADR-0041 Amendment 7). A profile whose ``deny_read`` does not read is refused
-    too, since the loader's refusal names the key. A profile that is absent, or fails to load for
-    any other reason, keeps the handling :func:`role_profile_route` gives it.
+    too, since the loader's refusal names the key. A profile that fails to load for any other
+    reason leaves the stage on its other settings, so it is refused when the file the loader
+    would read names ``deny_read`` at all, or cannot be read; otherwise, and when there is no
+    profile, the stage keeps the handling :func:`role_profile_route` gives it.
 
     Raises:
-        ConfigurationError: the role's profile declares ``deny_read``, or its ``deny_read`` is
-            malformed, unreadable or misplaced.
+        ConfigurationError: the role's profile declares ``deny_read``; its ``deny_read`` is
+            malformed, unreadable or misplaced; or it fails to load and its file names
+            ``deny_read`` or cannot be read.
     """
     if not isinstance(role, str) or not role:
         return
@@ -343,14 +365,17 @@ def _refuse_stage_deny_read(role: str) -> None:
     try:
         profile = load_agent_profile(role)
     except FileNotFoundError:
+        # No profile, unless a symlink names one whose target cannot be read.
+        _refuse_unloaded_stage_profile(role, None)
         return
     except ConfigurationError as exc:
         # Every loader refusal about the key names it; read as absent, the entries would drop.
         if "deny_read" in str(exc):
             raise
+        _refuse_unloaded_stage_profile(role, exc)
         return
-    except Exception:
-        # role_profile_route logs this one; the stage runs on its other settings, as before.
+    except Exception as exc:
+        _refuse_unloaded_stage_profile(role, exc)
         return
     if getattr(profile, "deny_read", ()):
         raise ConfigurationError(

@@ -974,6 +974,67 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
     raise AgentProfileNotFoundError(msg)
 
 
+def _profile_files_naming_deny_read(name: str, *, cwd: Path | None = None) -> tuple[str, ...]:
+    """The files ``load_agent_profile(name)`` would read that name ``deny_read``, or whose
+    entries cannot be ruled out, one line each; empty when there are none.
+
+    For a caller that runs a role on its other settings when the role's profile fails to load:
+    that caller must not drop the profile's ``deny_read`` with the rest. The files are found the
+    way the loader finds them and searched for the key as text, whatever else in them is
+    malformed. Where the loader refuses to choose (two spellings of the name in one agents
+    directory), each file it refuses between is searched. A file that cannot be read is listed,
+    and so is a symlink whose target cannot be read when no other file resolves the name: the
+    entries of either cannot be ruled out. A name the loader refuses outright has no file.
+    """
+    plugin_token = "/" in name
+    try:
+        if plugin_token:
+            plugin_part, _, agent_part = name.partition("/")
+            _validate_bare_name(plugin_part)
+            _validate_bare_name(agent_part)
+        else:
+            _validate_bare_name(name)
+    except (ValueError, ConfigurationError):
+        # The loader refuses this name before it reads any file.
+        return ()
+    candidates: list[Path] = []
+    unreadable_symlinks: list[tuple[Path, str]] = []
+    if not plugin_token:
+        for d in _find_lionagi_dirs() if cwd is None else _find_lionagi_dirs(cwd):
+            agents_dir = d / "agents"
+            try:
+                path = _resolve_profile_path(
+                    agents_dir, name, unreadable_symlinks=unreadable_symlinks
+                )
+            except AmbiguousProfileNameError:
+                candidates.extend(
+                    p for p in _profile_path_candidates(agents_dir, name) if p.is_file()
+                )
+                break
+            if path is not None:
+                candidates.append(path)
+                break
+    if not candidates:
+        plugin_path = _resolve_plugin_profile_path(name)
+        if plugin_path is not None:
+            candidates.append(plugin_path)
+    if not candidates:
+        return tuple(
+            f"{path} is a symlink whose target cannot be read ({target})"
+            for path, target in unreadable_symlinks
+        )
+    found: list[str] = []
+    for path in candidates:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            found.append(f"{path} cannot be read ({exc})")
+            continue
+        if b"deny_read" in data:
+            found.append(f"{path} names deny_read")
+    return tuple(found)
+
+
 #: The largest whole number of seconds a timeout may name: the largest a float holds exactly,
 #: which is what the run's deadline arithmetic and a JSON-number MCP caller both carry.
 MAX_TIMEOUT_SECONDS = 2**53 - 1

@@ -736,6 +736,10 @@ _PROFILE_DENY_READ_REFUSAL_API_READ = (
     "an API-model run with the read tool set runs its tools in lionagi's process with no "
     "sandbox, so nothing denies a read"
 )
+_PROFILE_DENY_READ_REFUSAL_API = (
+    "an API model holds the entries only in the macOS sandbox policy its write tool set runs "
+    "under, built with them, and this model's tools were not given one"
+)
 _GEMINI_NO_SEATBELT = (
     "the Antigravity CLI is held to the unreadable list only by the macOS sandbox "
     "(/usr/bin/sandbox-exec), and this host has none"
@@ -748,14 +752,18 @@ def profile_deny_read_refusal(
     """Why a run on ``provider`` cannot hold an agent profile's ``deny_read``, else None.
 
     ``provider`` is the canonical provider name. ``api_tools`` names the tool set of an
-    API-model run (``None`` for any other run). Claude Code and codex hold the entries through
-    the child sandbox, the Antigravity CLI through the macOS sandbox where the host has one, and
-    an API-model run with the write tool set in the seatbelt policy its tools run under.
+    API-model run whose tools were built with the entries (``None`` for any other run, and for an
+    API model whose tools were not, such as a flow's worker). Claude Code and codex hold the
+    entries through the child sandbox, the Antigravity CLI through the macOS sandbox where the
+    host has one, and an API-model run with the write tool set in the seatbelt policy its tools
+    run under.
     """
     if api_tools is not None or not is_cli:
         if api_tools == "write":
             return None
-        return _PROFILE_DENY_READ_REFUSAL_API_READ
+        if api_tools == "read":
+            return _PROFILE_DENY_READ_REFUSAL_API_READ
+        return _PROFILE_DENY_READ_REFUSAL_API
     if provider == "gemini_code":
         from lionhub.tools._seatbelt import seatbelt_available
 
