@@ -81,13 +81,13 @@ def test_the_default_capture_runs_two_cases_read_only_without_user_config(tmp_pa
     out = (tmp_path / "out").resolve()
     assert [argv for argv, _e, _c in recorder.calls] == [
         [
-            "codex", "exec", "--json", "--ignore-user-config", "--sandbox", "read-only",
-            "--skip-git-repo-check", "-C", str(out / "no_output" / "cwd"),
+            "codex", "exec", "--json", "--ephemeral", "--ignore-user-config",
+            "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(out / "no_output" / "cwd"),
             "--", CASES[0].prompt,
         ],
         [
-            "codex", "exec", "--json", "--ignore-user-config", "--sandbox", "read-only",
-            "--skip-git-repo-check", "-C", str(out / "unknown_model" / "cwd"),
+            "codex", "exec", "--json", "--ephemeral", "--ignore-user-config",
+            "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(out / "unknown_model" / "cwd"),
             "-m", UNAVAILABLE_MODEL, "--", CASES[1].prompt,
         ],
     ]  # fmt: skip
@@ -126,7 +126,7 @@ def test_the_hook_case_runs_in_a_scratch_home_whose_hook_reads_as_trusted(tmp_pa
     argv, child_env, _cwd = recorder.calls[2]
     home = out / "hook_blocked" / "codex-home"
     assert child_env["CODEX_HOME"] == str(home)
-    assert "--ignore-user-config" not in argv
+    assert "--ignore-user-config" not in argv and "--ephemeral" not in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     assert manifest["cases"]["hook_blocked"]["codex_home"] == "scratch"
     report = trust.hook_trust_report(home)
@@ -187,6 +187,84 @@ def test_system_mcp_servers_are_refused_before_any_run(tmp_path, env):
     with pytest.raises(CaptureRefusedError, match="ambient"):
         capture(tmp_path / "out", env=env, runner=recorder, say=lambda line: None)
     assert recorder.calls == []
+
+
+@pytest.mark.parametrize(
+    "system_text",
+    [
+        '[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ntype = "command"\ncommand = "x"\n',
+        'hooks = "not a table"\n',
+    ],
+)
+def test_hooks_in_the_system_config_are_refused_before_any_run(tmp_path, env, system_text):
+    (tmp_path / "system.toml").write_text(system_text)
+    recorder = _Recorder()
+    with pytest.raises(CaptureRefusedError, match="declares hooks"):
+        capture(tmp_path / "out", env=env, runner=recorder, say=lambda line: None)
+    assert recorder.calls == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_system_hooks_file_is_refused_before_any_run(tmp_path, env):
+    (tmp_path / "hooks.json").write_text('{"hooks": {}}\n')
+    recorder = _Recorder()
+    with pytest.raises(CaptureRefusedError, match="system hooks file"):
+        capture(tmp_path / "out", env=env, runner=recorder, say=lambda line: None)
+    assert recorder.calls == []
+
+
+def test_an_unreadable_system_config_is_refused(tmp_path, env):
+    (tmp_path / "system.toml").write_text("not = [toml\n")
+    recorder = _Recorder()
+    with pytest.raises(CaptureRefusedError, match="cannot be read"):
+        capture(tmp_path / "out", env=env, runner=recorder, say=lambda line: None)
+    assert recorder.calls == []
+
+
+def test_a_system_config_with_only_hook_state_and_settings_is_not_refused(tmp_path, env):
+    (tmp_path / "system.toml").write_text('model = "x"\n[hooks.state."a:b:0:0"]\nenabled = true\n')
+    manifest, recorder, _said, _events = _run(tmp_path, env)
+    assert len(recorder.calls) == 2 and manifest["cases"]
+
+
+@pytest.mark.parametrize(
+    ("cases", "hook_case", "ran"),
+    [
+        (None, False, ["no_output", "unknown_model"]),
+        (["hook_blocked"], False, ["hook_blocked"]),
+        (None, True, ["no_output", "unknown_model", "hook_blocked"]),
+        (["unknown_model", "no_output", "unknown_model"], False, ["no_output", "unknown_model"]),
+        (["unknown_model"], True, ["unknown_model", "hook_blocked"]),
+    ],
+)
+def test_cases_runs_the_named_cases_in_their_fixed_order(tmp_path, env, cases, hook_case, ran):
+    manifest, recorder, _said, _events = _run(tmp_path, env, cases=cases, hook_case=hook_case)
+    assert list(manifest["cases"]) == ran
+    assert len(recorder.calls) == len(ran)
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == sorted([*ran, "manifest.json"])
+
+
+def test_an_unknown_case_is_refused_before_anything_is_written(tmp_path, env):
+    recorder = _Recorder()
+    with pytest.raises(CaptureRefusedError, match="no such case"):
+        capture(tmp_path / "out", env=env, cases=["nope"], runner=recorder, say=lambda line: None)
+    assert recorder.calls == [] and not (tmp_path / "out").exists()
+
+
+def test_main_runs_only_the_cases_named_on_the_command_line(tmp_path, env, monkeypatch):
+    seen = {}
+
+    def fake_capture(out, **kwargs):
+        seen.update(kwargs)
+        return {"cases": {}}
+
+    monkeypatch.setattr(capture_module, "capture", fake_capture)
+    assert main(["--out", str(tmp_path / "o"), "--case", "hook_blocked"]) == 0
+    assert seen["cases"] == ["hook_blocked"] and seen["hook_case"] is False
+    assert main(["--out", str(tmp_path / "o")]) == 0
+    assert seen["cases"] is None
+    with pytest.raises(SystemExit):
+        main(["--out", str(tmp_path / "o"), "--case", "nope"])
 
 
 def test_a_relative_codex_home_is_refused(tmp_path, env):

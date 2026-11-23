@@ -12,31 +12,41 @@ what codex itself streams in each case, so this module records it::
 Each case runs ``codex exec --json`` once with a prompt fixed in this file, in an empty
 working directory under ``--out``, with the read-only sandbox and no MCP server, and keeps the
 standard output, the standard error and the exit status. The full command line is printed
-before each run. Nothing is written outside ``--out`` by this module; the codex child writes
-its own session files under the codex home it is given.
+before each run. Nothing is written outside ``--out`` by this module.
 
-Cases:
+Cases (``--case NAME``, repeatable; by default the first two):
 
 - ``no_output``: a run that starts, is not blocked, and is asked to write nothing.
 - ``unknown_model``: a run naming a model the account does not have, so the provider answers
   with an error. It is not a content refusal. Whether that error comes after the thread starts
   is what the capture records (``error_after_thread_started`` in the manifest); only when it
   does is the run an example of an error after start.
-- ``hook_blocked`` (only with ``--hook-case``): a run in a scratch codex home whose one
-  ``UserPromptSubmit`` hook refuses every prompt. The hook's trust record is computed by this
-  package's own hash, so a wrong hash shows as a run that was not blocked.
+- ``hook_blocked`` (with ``--case hook_blocked`` or ``--hook-case``): a run in a scratch codex
+  home whose one ``UserPromptSubmit`` hook refuses every prompt. The hook's trust record is
+  computed by this package's own hash, so a wrong hash shows as a run that was not blocked.
 
 The first two run under the operator's codex home, passed to the child by path and never
-opened here, with ``--ignore-user-config`` so the user config loads no MCP server and runs no
-hook. The hook case runs under a scratch home this module writes: ``hooks.json`` and a
+opened here, with ``--ephemeral`` so codex persists no session file there, and with
+``--ignore-user-config``. That flag replaces the home's ``config.toml`` with an empty table, so
+the runs load no MCP server from it. Codex still finds the home's hooks, but runs none of them:
+each hook's trust record lives in the ignored ``config.toml``, so codex reads it as untrusted.
+Managed hooks run whatever their trust records say. The capture refuses when the system config
+declares hooks, in its ``config.toml`` or a ``hooks.json`` beside it, and does not check hooks
+that come from managed preferences or requirements.
+
+The hook case runs under a scratch home this module writes: ``hooks.json`` and a
 ``config.toml`` holding only that hook's trust record, so the user config it loads declares no
-MCP server. No sign-in file is read, copied or written: the scratch home has none, so that case
-runs only where the environment the child inherits already signs codex in. Codex may install
-files into a fresh home and start processes there that outlive the run; this module stops
-nothing, and the manifest lists the entries the run added to the scratch home.
+MCP server. No sign-in file is read, copied or written. The scratch home has none, so the case
+signs in only where the environment the child inherits signs codex in. Where it does not, the
+run shows whether the hook fires before codex asks for sign-in. Codex may install files into a
+fresh home and start processes there that outlive the run; this module stops nothing, and the
+manifest lists the entries the run added to the scratch home.
 
 The manifest keeps, per case, the command line, the exit status and the ``type`` of each line
-of the JSON stream, never the text of an event.
+of the JSON stream, never the text of an event. The captured output is written with the values
+of environment variables removed, chosen by name only (names holding KEY, TOKEN, SECRET,
+PASSWORD or CREDENTIAL), plus the shapes the CLI log redaction removes; read it before
+committing it anywhere.
 """
 
 from __future__ import annotations
@@ -52,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lionhub.providers._cli_subprocess import _redact_secrets_for_log
+from lionhub.providers.openai import _codex_project_layers
 from lionhub.providers.openai._codex_hook_trust import (
     TRUSTED,
     hook_hash,
@@ -67,6 +78,7 @@ from lionhub.providers.openai._codex_project_layers import (
 
 __all__ = (
     "CASES",
+    "DEFAULT_CASES",
     "Case",
     "CaptureRefusedError",
     "capture",
@@ -119,6 +131,8 @@ CASES: tuple[Case, ...] = (
         scratch_home=True,
     ),
 )
+#: The cases run when none is named.
+DEFAULT_CASES: tuple[str, ...] = ("no_output", "unknown_model")
 
 
 class CaptureRefusedError(Exception):
@@ -129,13 +143,14 @@ def case_argv(binary: str, case: Case, cwd: Path) -> list[str]:
     """The ``codex exec`` command line for ``case`` run in ``cwd``.
 
     The read-only sandbox, the working directory and JSON output on every case.
-    ``--ignore-user-config`` on the cases under the operator's home, so its config loads no MCP
-    server and runs no hook; not on the hook case, whose trust record lives in the scratch
+    ``--ephemeral`` and ``--ignore-user-config`` on the cases under the operator's home, so
+    codex persists no session file there and that home's config loads no MCP server and gives
+    no hook a trust record; neither on the hook case, whose trust record lives in the scratch
     home's own config. The prompt follows ``--`` so it is never read as an option.
     """
     argv = [binary, "exec", "--json"]
     if not case.scratch_home:
-        argv.append("--ignore-user-config")
+        argv += ["--ephemeral", "--ignore-user-config"]
     argv += ["--sandbox", "read-only", "--skip-git-repo-check", "-C", str(cwd)]
     argv += [*case.extra_args, "--", case.prompt]
     return argv
@@ -186,6 +201,38 @@ def _refuse_mcp_sources(cwd: Path, env: Mapping[str, str]) -> None:
         raise CaptureRefusedError(
             f"the codex system config declares MCP servers {sorted(servers)!r}, which every run "
             "would load"
+        )
+
+
+def _refuse_system_hooks() -> None:
+    """Refuse when the system config declares hooks, which a run takes whatever its user config
+    and trust records say."""
+    from ._codex_profile import _read_codex_config
+
+    system = _codex_project_layers._SYSTEM_CONFIG
+    try:
+        config = _read_codex_config(system)
+        if config is None and (system.exists() or system.is_symlink()):
+            raise ValueError("it is not a regular file")
+    except ValueError as exc:
+        raise CaptureRefusedError(
+            f"the codex system config {str(system)!r} cannot be read ({exc}), so the hooks it "
+            "may declare are unknown"
+        ) from exc
+    hooks = (config or {}).get("hooks")
+    if isinstance(hooks, Mapping):
+        events = sorted(str(key) for key in hooks if key != "state")
+    else:
+        events = [] if hooks is None else ["<not a table>"]
+    if events:
+        raise CaptureRefusedError(
+            f"the codex system config {str(system)!r} declares hooks ({', '.join(events)}), "
+            "which every run would take"
+        )
+    beside = system.parent / "hooks.json"
+    if beside.exists() or beside.is_symlink():
+        raise CaptureRefusedError(
+            f"a codex system hooks file {str(beside)!r} exists, whose hooks every run would take"
         )
 
 
@@ -270,6 +317,7 @@ def capture(
     out: Path,
     *,
     binary: str = "codex",
+    cases: Sequence[str] | None = None,
     hook_case: bool = False,
     env: Mapping[str, str] | None = None,
     runner: Runner = _run,
@@ -277,17 +325,24 @@ def capture(
 ) -> dict[str, object]:
     """Run the cases into ``out`` and return the manifest also written there.
 
-    Every refusal comes before the first run, so a refused capture runs nothing.
+    ``cases`` names the cases to run, ``DEFAULT_CASES`` when empty; ``hook_case`` adds
+    ``hook_blocked``. Cases run in the order of ``CASES``. Every refusal comes before the first
+    run, so a refused capture runs nothing.
     """
+    known = {case.name: case for case in CASES}
+    wanted = set(cases or DEFAULT_CASES) | ({"hook_blocked"} if hook_case else set())
+    unknown = sorted(wanted - known.keys())
+    if unknown:
+        raise CaptureRefusedError(f"no such case {unknown!r}; the cases are {sorted(known)!r}")
     base_env = dict(os.environ if env is None else env)
     try:
         operator_home = _codex_home(base_env)
     except Exception as exc:
         raise CaptureRefusedError(f"the operator's codex home: {exc}") from exc
+    _refuse_system_hooks()
     out = _prepare_out(Path(out))
-    cases = [case for case in CASES if hook_case or not case.scratch_home]
     plans = []
-    for case in cases:
+    for case in (case for case in CASES if case.name in wanted):
         cwd = out / case.name / "cwd"
         cwd.mkdir(parents=True)
         child_env = dict(base_env)
@@ -342,13 +397,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path, help="a new or empty directory")
     parser.add_argument("--binary", default="codex", help="the codex binary (default: codex)")
     parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        choices=[case.name for case in CASES],
+        help=f"a case to run, repeatable (default: {' '.join(DEFAULT_CASES)})",
+    )
+    parser.add_argument(
         "--hook-case",
         action="store_true",
         help="also run the hook-blocked case in a scratch codex home",
     )
     args = parser.parse_args(argv)
     try:
-        manifest = capture(args.out, binary=args.binary, hook_case=args.hook_case)
+        manifest = capture(args.out, binary=args.binary, cases=args.cases, hook_case=args.hook_case)
     except CaptureRefusedError as refusal:
         print(f"codex_exec_capture: {refusal}", file=sys.stderr)
         return 2
