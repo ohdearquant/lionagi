@@ -14,6 +14,7 @@ mistake. Every refusal raised here ends with the same sentence naming the opt-ou
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -48,9 +49,13 @@ __all__ = (
     "effective_policy",
     "lionagi_home_config_paths",
     "policy_from_dict",
+    "profile_deny_read",
+    "profile_deny_read_for",
+    "profile_deny_read_refusal",
     "resolve_child_sandbox",
     "run_state_paths",
     "warn_project_child_sandbox",
+    "with_profile_deny_read",
 )
 
 logger = logging.getLogger(__name__)
@@ -616,6 +621,158 @@ def _read_extends(raw: Any) -> list[tuple[list[str], dict]]:
     return layers
 
 
+#: Characters that make an entry a pattern on some route. An agent profile's ``deny_read`` entry
+#: may hold none of them, so every route reads it as the one path it names.
+_PATTERN_CHARACTERS = frozenset("*?[]{}")
+
+
+def profile_deny_read(profile: str, raw: Any) -> tuple[str, ...]:
+    """Validate the ``deny_read`` list of the agent profile named ``profile``.
+
+    The entries add to the paths a child may not read for runs of that profile. Nothing they
+    hold can lift a denial, so any profile file may carry them, a project one included. Each
+    entry is an absolute path or starts with ``~/``, holds no ``.`` or ``..`` part and no
+    pattern character, and names the path it resolves to: an entry whose existing part passes
+    through a symbolic link to somewhere else is refused with the resolved spelling, since a
+    route that matches the spelling would deny a path no file sits at. An entry that does not
+    exist is accepted and denies the path if it appears. ``None`` (the key absent) is ``()``.
+
+    Raises:
+        ConfigurationError: the value is not a list of non-empty strings, or an entry breaks one
+            of the rules above; the message names the entry.
+    """
+    if raw is None:
+        return ()
+    label = f"agent profile {profile!r}: deny_read"
+    if not isinstance(raw, list) or not all(isinstance(p, str) and p.strip() for p in raw):
+        raise ConfigurationError(f"{label} must be a list of non-empty paths")
+    entries: list[str] = []
+    for raw_entry in raw:
+        if _PATTERN_CHARACTERS.intersection(raw_entry):
+            raise ConfigurationError(
+                f"{label} entry {raw_entry!r} is a pattern; name each path it should deny"
+            )
+        path = re.sub(r"/{2,}", "/", raw_entry.strip()).rstrip("/")
+        if not path.startswith(("~/", "/")):
+            raise ConfigurationError(
+                f"{label} entry {raw_entry!r} must be an absolute path or start with '~/'"
+            )
+        if any(part in {".", ".."} for part in path.split("/")):
+            raise ConfigurationError(f"{label} entry {raw_entry!r} must not contain '.' or '..'")
+        written = os.path.normpath(os.path.expanduser(path))
+        resolved = os.path.realpath(written)
+        if resolved != written:
+            raise ConfigurationError(
+                f"{label} entry {raw_entry!r} passes through a symbolic link and resolves to "
+                f"{resolved!r}; write that path instead"
+            )
+        entries.append(path)
+    return tuple(dict.fromkeys(entries))
+
+
+def _declared_deny_read(profile: str | None) -> tuple[str, ...]:
+    """The ``deny_read`` entries the agent profile named ``profile`` declares, loaded the way a
+    launch loads it; ``()`` for ``None`` and for a name no profile file declares."""
+    if not profile:
+        return ()
+    from lionhub.orchestration.spawn import AgentProfileNotFoundError, load_agent_profile
+
+    try:
+        return load_agent_profile(profile).deny_read
+    except AgentProfileNotFoundError:
+        return ()
+
+
+def _sandbox_off_refusal(profile: str | None) -> ConfigurationError:
+    named = f"agent profile {profile!r}" if profile else "the agent profile"
+    return ConfigurationError(
+        f"{named} declares deny_read, which only the child sandbox holds, and the sandbox is "
+        "switched off in ~/.lionagi/settings.yaml; turn it on or remove deny_read from the "
+        "profile"
+    )
+
+
+def profile_deny_read_for(profile: str | None) -> tuple[str, ...]:
+    """The ``deny_read`` entries the agent profile named ``profile`` declares, else ``()``.
+
+    Raises:
+        ConfigurationError: the profile declares entries and the child sandbox is switched off,
+            so nothing would hold them, or its ``deny_read`` value is malformed.
+    """
+    entries = _declared_deny_read(profile)
+    if entries and not resolve_child_sandbox(None).enabled:
+        raise _sandbox_off_refusal(profile)
+    return entries
+
+
+def with_profile_deny_read(
+    policy: ChildSandboxPolicy, entries: Any, *, profile: str | None = None
+) -> ChildSandboxPolicy:
+    """``policy`` with an agent profile's ``deny_read`` entries added to what it denies.
+
+    The entries go after every exemption the policy already applied, so no ``allow_read`` lifts
+    one, and they join the edit denial too. ``entries`` comes from a request field a caller can
+    set, so its shape is checked again here.
+
+    Raises:
+        ConfigurationError: ``entries`` is not a list of ``~/`` or absolute paths, or it names
+            any and ``policy`` is switched off, so nothing would hold them.
+    """
+    if not entries:
+        return policy
+    paths = _path_list("profile deny_read", list(entries))
+    if not policy.enabled:
+        raise _sandbox_off_refusal(profile or policy.profile)
+    return dataclasses.replace(
+        policy,
+        deny_read=tuple(dict.fromkeys([*policy.deny_read, *paths])),
+        deny_edit=tuple(dict.fromkeys([*policy.deny_edit, *paths])),
+    )
+
+
+#: Why a run whose agent profile declares ``deny_read`` is refused on a route with nothing to
+#: hold the entries (ADR-0041 Amendment 7). Each names what is missing.
+_PROFILE_DENY_READ_REFUSAL_API_READ = (
+    "an API-model run with the read tool set runs its tools in lionagi's process with no "
+    "sandbox, so nothing denies a read"
+)
+_PROFILE_DENY_READ_REFUSAL_API = (
+    "an API model holds the entries only in the macOS sandbox policy its write tool set runs "
+    "under, built with them, and this model's tools were not given one"
+)
+_GEMINI_NO_SEATBELT = (
+    "the Antigravity CLI is held to the unreadable list only by the macOS sandbox "
+    "(/usr/bin/sandbox-exec), and this host has none"
+)
+
+
+def profile_deny_read_refusal(
+    provider: str, *, is_cli: bool, api_tools: str | None = None
+) -> str | None:
+    """Why a run on ``provider`` cannot hold an agent profile's ``deny_read``, else None.
+
+    ``provider`` is the canonical provider name. ``api_tools`` names the tool set of an
+    API-model run whose tools were built with the entries (``None`` for any other run, and for an
+    API model whose tools were not, such as a flow's worker). Claude Code and codex hold the
+    entries through the child sandbox, the Antigravity CLI through the macOS sandbox where the
+    host has one, and an API-model run with the write tool set in the seatbelt policy its tools
+    run under.
+    """
+    if api_tools is not None or not is_cli:
+        if api_tools == "write":
+            return None
+        if api_tools == "read":
+            return _PROFILE_DENY_READ_REFUSAL_API_READ
+        return _PROFILE_DENY_READ_REFUSAL_API
+    if provider == "gemini_code":
+        from lionhub.tools._seatbelt import seatbelt_available
+
+        return None if seatbelt_available() else _GEMINI_NO_SEATBELT
+    if provider in ("claude_code", "codex"):
+        return None
+    return f"the {provider or 'unknown'} provider has no child sandbox to hold it"
+
+
 def _global_settings() -> dict:
     """The global lionagi settings layer; the project layer is never read here.
 
@@ -668,11 +825,15 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
     a project-level setting must not be able to relax the policy. A ``child_sandbox`` block in
     the project file is reported with one warning.
 
+    The ``deny_read`` entries the agent profile file itself declares are added after the
+    exemption, so an ``allow_read`` naming the same path does not lift them.
+
     Raises:
         ConfigurationError: any malformed value, unknown key, ``allow_read`` entry that is not on
             the deny list or that lies under another deny entry the profile leaves denied, or
             unreadable ``extends`` file, or a subscription accounts file that cannot be read, so
-            its sign-ins cannot be named.
+            its sign-ins cannot be named, or a profile that declares ``deny_read`` while the
+            sandbox is switched off.
     """
     if settings is None:
         warn_project_child_sandbox()
@@ -733,9 +894,15 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
                 "resolve to a file in ~/.lionagi/agents; the exemption is not applied",
                 profile,
             )
+    # What the agent profile itself denies goes after the exemption filter, so no allow_read
+    # lifts it; the edit denial below takes the whole read list, these entries included.
+    declared = _declared_deny_read(profile)
+    if declared and not enabled:
+        raise _sandbox_off_refusal(profile)
+    deny = [*deny, *(p for p in declared if p not in deny)]
     return ChildSandboxPolicy(
         enabled=enabled,
-        deny_read=tuple(p for p in deny if p not in exempt),
+        deny_read=tuple(p for p in deny if p not in exempt or p in declared),
         allow_write=tuple(dict.fromkeys(allow)),
         # A read exemption never lifts the edit denial, so the whole read list is kept here.
         # DEFAULT_DENY_EDIT stays the constant it is documented to be. The codex probe record

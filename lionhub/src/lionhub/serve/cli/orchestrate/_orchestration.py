@@ -1254,6 +1254,14 @@ async def setup_orchestration(
     if effort_requested:
         effort = orc_effort
 
+    if orc_profile and getattr(orc_profile, "deny_read", ()):
+        from lionhub.agent.factory import _hold_profile_deny_read
+
+        # Before the run exists, so a profile whose deny_read this model cannot hold leaves no
+        # run directory behind (ADR-0041 Amendment 7).
+        _hold_profile_deny_read(
+            [orc_imodel], None, orc_profile.name, entries=tuple(orc_profile.deny_read)
+        )
     run = allocate_run(save_dir=save_dir)
     if isinstance(run, RunDir):
         provenance = mcp_resolution
@@ -1663,6 +1671,14 @@ async def build_worker_branch(
     if is_cli:
         w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
         _confine_claude_worker(w_imodel, None if env.bare else getattr(w_profile, "name", None))
+    if not env.bare and getattr(w_profile, "deny_read", ()):
+        from lionhub.agent.factory import _hold_profile_deny_read
+
+        # A worker built here rather than by create_agent gets its profile's deny_read the
+        # same way; a model that cannot hold it refuses the worker.
+        _hold_profile_deny_read(
+            [w_imodel], None, w_profile.name, entries=tuple(w_profile.deny_read)
+        )
     env.worker_artifact_dirs[agent_id] = artifact_dir
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
