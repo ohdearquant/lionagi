@@ -506,6 +506,47 @@ def test_run_claude_ends_a_child_that_outlives_the_timeout_with_its_group(tmp_pa
         pytest.fail(f"the child's background process {pid} outlived the run")
 
 
+def _exited_and_uncollected(pid: int) -> bool:
+    """Whether *pid*, a child of this process, has exited and has not been collected yet."""
+    flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+    if hasattr(os, "waitid"):
+        try:
+            info = os.waitid(os.P_PID, pid, flags)
+        except ChildProcessError:
+            return False
+        return info is not None and info.si_pid == pid
+    if sys.platform != "darwin":
+        pytest.skip("no non-collecting wait on this platform")
+    import ctypes
+    import struct
+
+    waitid = ctypes.CDLL(None, use_errno=True).waitid
+    waitid.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    info = ctypes.create_string_buffer(128)
+    if waitid(os.P_PID, pid, ctypes.byref(info), flags) != 0:
+        return False
+    # Darwin siginfo_t: si_signo, si_errno, si_code, then si_pid at byte 12.
+    return struct.unpack_from("i", info.raw, 12)[0] == pid
+
+
+def test_run_claude_kills_the_group_before_it_collects_the_child(tmp_path, monkeypatch):
+    # Once the child is collected its pid, and so its group id, can be reused, and a kill sent
+    # to that id could reach an unrelated group.
+    seen: list[tuple[int, bool]] = []
+    real_killpg = os.killpg
+
+    def recording_killpg(pgid, sig):
+        seen.append((pgid, _exited_and_uncollected(pgid)))
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(probe_module.os, "killpg", recording_killpg)
+    script = _script(tmp_path / "bin", "exit 3\n")
+    assert probe_module.run_claude([str(script)], {"PATH": "/usr/bin:/bin"}, tmp_path) == 3
+    assert len(seen) == 1
+    assert seen[0][1], "the group was killed after the child had been collected"
+
+
 # ---------------------------------------------------------------------------------- the record
 def test_the_record_holds_what_the_child_was_given_and_never_a_value(tmp_path):
     binary = _binary(tmp_path / "bin")

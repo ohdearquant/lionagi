@@ -57,6 +57,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -64,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
@@ -93,6 +95,7 @@ _RECORD_FORMAT = 1
 Runner = Callable[[list[str], dict[str, str], Path], int]
 
 _RUN_TIMEOUT_SECONDS = 240
+_EXIT_POLL_SECONDS = 0.05
 _EVIDENCE_CHARS = 240
 _MODEL = "probe-stand-in"
 _PROMPT = "Run the probe steps."
@@ -335,7 +338,9 @@ def run_claude(argv: list[str], env: dict[str, str], cwd: Path) -> int:
     """Run one claude command line in a process group of its own and return its exit status.
 
     When it outlives the timeout the whole group is killed and -1 is returned. The group is
-    killed after a normal exit too, so nothing the child started outlives the run.
+    killed after a normal exit too, so nothing the child started outlives the run. Where the
+    platform can see an exit without collecting the child, the group is killed before the child
+    is collected, so its id cannot have passed to another process's group by then.
     """
     proc = subprocess.Popen(  # noqa: S603 -- the binary being probed and fixed flags
         argv,
@@ -346,14 +351,58 @@ def run_claude(argv: list[str], env: dict[str, str], cwd: Path) -> int:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    try:
-        status = proc.wait(timeout=_RUN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        status = -1
+    exited = _exited_unreaped(proc, _RUN_TIMEOUT_SECONDS)
+    # The signal does not change the status of a child that has already exited.
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
-    proc.wait()
-    return status
+    status = proc.wait()
+    return status if exited else -1
+
+
+def _exited_unreaped(proc: subprocess.Popen, timeout: float) -> bool:
+    """Whether *proc* exited within *timeout*, seen without collecting it where the platform allows.
+
+    A child that has exited but is not yet collected keeps its pid, so no other process can take
+    that number as its process group id. kqueue (macOS, the BSDs) and ``os.waitid`` with
+    ``WNOWAIT`` (Linux) see the exit without collecting the child. Where neither exists this
+    waits with ``Popen.wait``, which collects it.
+    """
+    kqueue = getattr(select, "kqueue", None)
+    if kqueue is not None:
+        queue = kqueue()
+        try:
+            exit_event = select.kevent(
+                proc.pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            try:
+                return bool(queue.control([exit_event], 1, timeout))
+            except ProcessLookupError:
+                # The kernel no longer lists it as running: it has exited.
+                return True
+        finally:
+            queue.close()
+    if hasattr(os, "waitid"):
+        deadline = time.monotonic() + timeout
+        flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+        while True:
+            try:
+                if os.waitid(os.P_PID, proc.pid, flags) is not None:
+                    return True
+            except ChildProcessError:
+                # Already collected, so it has exited.
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(_EXIT_POLL_SECONDS, remaining))
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
 
 
 def _settings(read_roots: Sequence[str] | None) -> dict[str, Any]:
