@@ -100,6 +100,16 @@ class ProviderPermissionError(ProviderError):
     """
 
 
+class ProviderEmptyTurnError(ProviderError):
+    """The CLI ended the turn the way a finished turn ends, with no assistant text, no tool
+    call and no error event, so the run has nothing to show and nothing said why.
+
+    ``stderr_tail`` holds the end of the CLI's stderr, with credentials removed, when the
+    provider captured it; it is the only evidence of the cause. Not retryable: nothing tells a
+    turn that will come back empty again from one that will not, so no caller may loop on it.
+    """
+
+
 class ProviderAdapterError(ProviderError):
     """A CLI adapter reported a non-success status with no more specific cause
     identified from the message text (e.g. an `agy` turn ending status=ERROR)."""

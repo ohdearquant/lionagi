@@ -21,6 +21,12 @@ channel with whatever exposure it already has. Copying it into the job record �
 a file that gets read, quoted, and passed on by the observer verbs — would open a
 second one onto the same secret for no classification value: the class and the
 retry hint are the parts a caller branches on.
+
+One class is the exception. A ``ProviderEmptyTurnError`` has no provider message: its
+text is this library's own sentence plus the end of the CLI's stderr, which passed the
+same credential redaction as every message the CLI subprocess layer logs or raises, and
+that stderr is the only evidence of why the turn was empty. Its text is carried as
+``detail``, bounded to ``DETAIL_CHARS``, and the job record shows it as ``reason_detail``.
 """
 
 from __future__ import annotations
@@ -31,10 +37,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lionagi._provider_errors import ProviderError
+from lionagi._provider_errors import ProviderEmptyTurnError, ProviderError
 from lionhub.serve.mcp import config
 
 __all__ = [
+    "DETAIL_CHARS",
     "STATUS_SOURCES",
     "allowed_cause_classes",
     "provider_status",
@@ -58,10 +65,17 @@ _STATUS_CODE_RE = re.compile(r"\(code\s+(?P<code>\d{3})\)")
 # not a provider error" tells a caller to stop looking for one.
 UNKNOWN_CAUSE = "unknown"
 
-# Bounds the read. The file this module writes is two short fields; a larger one
-# was written by something else, and parsing it would be answering about a
-# different file.
-_MAX_CAUSE_BYTES = 4096
+#: The most of an empty turn's text the cause carries as ``detail``, in characters.
+DETAIL_CHARS = 2400
+
+# The class whose text is carried; see the module docstring.
+_DETAIL_CLASS = ProviderEmptyTurnError.__name__
+
+# Bounds the read. The file this module writes is a few short fields and at most
+# DETAIL_CHARS of detail, six bytes a character at worst once JSON escapes it; a
+# larger one was written by something else, and parsing it would be answering
+# about a different file.
+_MAX_CAUSE_BYTES = 4096 + 6 * DETAIL_CHARS
 
 
 def allowed_cause_classes() -> frozenset[str]:
@@ -158,6 +172,8 @@ def write_terminal_cause(exc: BaseException) -> None:
         # code and a code can never be confused with its own absence.
         if code is not None:
             record["provider_status"] = code
+        if isinstance(exc, ProviderEmptyTurnError):
+            record["detail"] = str(exc)[:DETAIL_CHARS]
         Path(target).write_text(json.dumps(record))
     except Exception:  # noqa: BLE001, S110 — see docstring: this must not raise
         pass
@@ -206,4 +222,9 @@ def read_terminal_cause(path: str | os.PathLike[str] | None) -> dict[str, Any] |
         cause["provider_status"] = code
     elif source == "received":
         cause["status_source"] = "unreadable"
+    # Detail is kept only for the one class whose text is carried, and only within
+    # the bound the writer applies, so no other value can arrive by this field.
+    detail = loaded.get("detail")
+    if name == _DETAIL_CLASS and isinstance(detail, str) and 0 < len(detail) <= DETAIL_CHARS:
+        cause["detail"] = detail
     return cause
