@@ -192,6 +192,42 @@ def test_slash_rules_anchor_by_settings_source_and_root_and_home_rules_carry():
     assert _project("Read(~/.ssh/**)") == ["Read(~/.ssh/**)"]
 
 
+@pytest.mark.parametrize("name", ["proj[1]", "a*b", "a?b", "a{b,c}", "a(b)", "a\\b"])
+def test_a_directory_the_rule_syntax_reads_as_a_pattern_refuses(name):
+    odd = Path("/work") / name
+    for source_dir, leg_cwd, which in (
+        (odd, LEG, "the source project directory"),
+        (SOURCE, odd, "the leg's working directory"),
+    ):
+        for rule in ("Read(.env)", "Read(/config/key.pem)", "Edit(src/components/**)"):
+            with pytest.raises(ValueError) as caught:
+                render_permission_rule(
+                    rule, source_kind="project", source_dir=source_dir, leg_cwd=leg_cwd
+                )
+            assert str(caught.value).startswith(which), (rule, str(caught.value))
+            assert name not in str(caught.value)
+        # a rule that pastes no directory still carries
+        assert render_permission_rule(
+            "Read(//etc/shadow)", source_kind="project", source_dir=source_dir, leg_cwd=leg_cwd
+        ) == ["Read(//etc/shadow)"]
+
+
+def test_a_directory_that_is_not_absolute_refuses():
+    for source_dir, leg_cwd, which in (
+        (Path("work/project"), LEG, "the source project directory"),
+        (SOURCE, Path("legs/one"), "the leg's working directory"),
+    ):
+        for rule in ("Read(.env)", "Read(/config/key.pem)"):
+            with pytest.raises(ValueError) as caught:
+                render_permission_rule(
+                    rule, source_kind="project", source_dir=source_dir, leg_cwd=leg_cwd
+                )
+            assert (
+                str(caught.value)
+                == f"{which} is not an absolute path, so no rule can be anchored there"
+            )
+
+
 def test_negation_and_relative_rules_outside_project_settings_refuse():
     assert "negation" in _refused_rule("Read(!keep.txt)")
     assert "no known directory" in _refused_rule("Read(.env)", kind="other")
@@ -277,6 +313,16 @@ def test_a_relative_rule_in_a_file_that_is_not_project_settings_refuses(tmp_path
         _plan(tmp_path, document, source_path=str(elsewhere))
     assert caught.value.problems == (("permissions.deny[0]", caught.value.problems[0][1]),)
     assert "no known directory" in caught.value.problems[0][1]
+
+
+def test_a_project_directory_the_rule_syntax_reads_as_a_pattern_refuses_the_plan(tmp_path):
+    document = {"permissions": {"deny": ["Read(.env)", "Bash(curl:*)"]}}
+    source = _write(tmp_path / "proj[1]" / ".claude" / "settings.json", json.dumps(document))
+    with pytest.raises(HooksFromError) as caught:
+        _plan(tmp_path, document, source_path=str(source))
+    assert [problem[0] for problem in caught.value.problems] == ["permissions.deny[0]"]
+    assert caught.value.problems[0][1].startswith("the source project directory holds")
+    assert "proj[1]" not in str(caught.value)
 
 
 def test_a_user_settings_file_anchors_slash_rules_under_its_claude_directory(tmp_path):
