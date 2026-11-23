@@ -1,7 +1,8 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
-  Amendments 1 to 5); Amendment 6 (2026-11-22) and Amendment 7 (2026-11-23) Proposed
+  Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
+  Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
@@ -104,7 +105,10 @@ Limits:
 
 ## Amendment 6 (2026-11-22) — a per-run scratch directory for a read-only agent
 
-**Status: Proposed.**
+**Status: Accepted (2026-11-23).** A format-6 codex sandbox probe record from codex 0.162.1
+measured a read-only policy with one write root (`read_only_write_root` passed) and a child whose
+`TMPDIR`, `TMP` and `TEMP` name that root (`scratch_env` passed). A codex launch still refuses
+scratch, as the table says, until the later change named under Limits lands.
 
 The ask, in the words of the feature request: "A reviewer profile's sandbox has no writable
 temporary folder, so a reviewer agent cannot run the project's tests to check a claim." What it
@@ -146,7 +150,7 @@ Decision:
 | Launch surface | Provider | Scratch | Reason given when refused |
 | --- | --- | --- | --- |
 | `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI | made, as above | |
-| the same | codex | refused at launch | a codex run needs a sandbox probe record of format 4, which measures a read-only policy with one write root, and no such record exists yet |
+| the same | codex | refused at launch | a codex run needs a sandbox probe record of format 5, which measures a read-only policy with one write root, and no such record exists yet |
 | the same | Gemini CLI | refused at launch | the Gemini CLI's sandbox does not bound reads and grants no single writable directory this launcher can verify |
 | the same | an API model | refused at launch | an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch root yet |
 | the same | any other CLI | refused at launch | the named provider has no scratch directory support |
@@ -180,8 +184,8 @@ Required checks:
 Limits:
 
 - Codex and the seatbelt policy that API models and the Gemini CLI run under get the scratch root
-  in a later change to this same amendment: codex once a probe record of format 4 measures a
-  read-only policy with one write root, the seatbelt policy with Amendment 5's file-link rules
+  in a later change to this same amendment: codex once a launch grants the scratch root as the one
+  write entry of a read-only table, the policy the format-6 record above measured, the seatbelt policy with Amendment 5's file-link rules
   covering the new root and a probe arm proving that a hard link from scratch to a file outside
   the roots is refused. Until then both are refused as the table says.
 - Claude Code's own sandbox handling of a hard link from the scratch directory to a file outside
