@@ -1353,6 +1353,29 @@ def test_a_grant_without_a_verified_capability_is_accepted_and_unattributed(
     assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
 
 
+def test_a_grant_presenting_more_than_one_origin_is_unattributed(tmp_path, monkeypatch, capability):
+    """A capability is bound to one origin, so a request naming two, even the paired origin
+    twice, is recorded unattributed rather than attributed to either."""
+    from starlette.requests import Request as StarletteRequest
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+    headers = [(k.encode(), v.encode()) for k, v in _decision_headers(capability).items()]
+    headers.append((b"origin", _ORIGIN.encode()))
+
+    granted = _run(
+        approvals_mod.grant_approval_route(
+            approval_id, StarletteRequest({"type": "http", "headers": headers})
+        )
+    )
+
+    assert granted["status"] == "granted"
+    assert all(granted[name] is None for name in _PRINCIPAL_COLUMNS)
+    assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
+
+
 def test_an_unattributed_row_hashes_exactly_as_rows_did_before_principals(tmp_path, monkeypatch):
     """Chains written before the principal columns still verify: an unattributed row's
     content hash covers the same payload keys as it always did."""
