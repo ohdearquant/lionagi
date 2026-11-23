@@ -601,6 +601,87 @@ Limits added by this part:
 - The profile's deny entry and the write-root refusal keep a Codex child from writing the record directory. They do not stop another process of the same account from writing it, and the write-root refusal compares the spellings it sees when the command line is built, so a link made afterwards is not seen.
 - A launch whose `PATH` names a different binary than the one probed needs its own record.
 
+## Amendment: the socket arm per network state, and a read-only arm with one write root
+
+Status: Proposed
+
+Why it matters: a process that listens on a unix socket inside a denied directory, a credential
+agent or a local daemon for one, would answer a child that connects to it, so a denied directory
+is closed to the child only when the codex binary also refuses that connection.
+
+Measured on codex 0.162.1, a child in a run with the network on connected to a socket inside a
+denied directory. The probe's one `unix_socket_refused` arm runs only in the network-on run and is
+in `REQUIRED_ARMS`, so today every profiled launch on that binary is refused, network-off launches
+included, though no network-off run was shown to connect. This amendment measures the socket
+check once per network state and asks each launch for the arm that matches its own. It replaces
+the unix-socket bullet and the format bullet of "Probe arms and the probe record" above; the other
+bullets there stand.
+
+- **Two socket arms.** `unix_socket_refused_network_on` is the existing check, run in the heavy
+  run with the network on. `unix_socket_refused_network_off` runs the same two connects in the
+  light run and in the read-only run, both of which have the network off, and passes only when
+  both runs refuse the connect to the socket inside the denied directory and both reach the
+  control socket outside every denied path. A listener that cannot be bound fails the arm in
+  either case, as now.
+- **A launch needs the arm for its own network state.** The state is the `network.enabled` value
+  of the permission profile table the launch renders: off for `light` and for a read-only table,
+  and for a `heavy` table whatever the user config's `sandbox_workspace_write.network_access`
+  makes it. A launch whose state has no passing socket arm in the record is refused before the
+  process starts.
+- **A read-only arm with one write root** (`read_only_write_root`). One run starts from
+  `:read-only` with a single write entry granted by the table. Its child writes a file into the
+  entry, writes a file into its own working directory, and reads a file the profile leaves
+  readable. The arm passes only when the entry write lands, the working-directory write is refused
+  and no file lands there, and the read succeeds. It is what a codex scratch directory
+  (ADR-0041 Amendment 6) needs. It is required only for a launch whose table is read-only with a
+  write entry; no launch renders such a table until that amendment's codex change, so this arm
+  gates nothing yet and is recorded so the binary is probed once.
+- **The record is of format 4.** It carries the three arms above in place of
+  `unix_socket_refused`. A record of format 3 or earlier is no record, so it has no socket arm for
+  either network state and admits no launch: nothing passes on a stale record, and the probe is
+  run again.
+- **The refusal** names the codex version, the binary's resolved path and the arm that did not
+  pass. For `unix_socket_refused_network_on` it names two remedies: set
+  `sandbox_workspace_write.network_access = false` in the codex config, or run the role with
+  `workload: light`. For `unix_socket_refused_network_off` no setting admits the launch on that
+  binary, and the refusal says so and names the probe command for another codex version.
+- **No override.** No flag, request field, settings key or environment variable turns the refusal
+  into a warning. The gate reads only the record and the table the launch renders.
+
+What each launch does, by what the format 4 probe records on a binary:
+
+| Launch | Network | Arm it needs | network-off arm passes, network-on fails | both fail | both pass |
+| --- | --- | --- | --- | --- | --- |
+| `light` | off | `unix_socket_refused_network_off` | runs | refused | runs |
+| read-only | off | `unix_socket_refused_network_off` | runs | refused | runs |
+| `heavy`, `network_access` false or unset | off | `unix_socket_refused_network_off` | runs | refused | runs |
+| `heavy`, `network_access` true | on | `unix_socket_refused_network_on` | refused, naming both remedies | refused | runs |
+
+On codex 0.162.1 the network-on arm is known to fail, and whether the network-off arm passes is
+not yet measured. If both fail there, every profiled codex launch on that binary stays refused, as
+it is today; network-off launches open only on a binary whose record passes the network-off arm.
+
+Required checks:
+
+- A format 3 record admits no launch, with the network on or off.
+- A record whose network-off arm passed and network-on arm failed admits a `light`, a read-only
+  and a network-off `heavy` launch, and refuses a network-on `heavy` launch with a message naming
+  the version, the path, `unix_socket_refused_network_on` and both remedies.
+- A record whose network-on arm passed and network-off arm failed refuses every network-off
+  launch and admits a network-on `heavy` launch.
+- The probe's light and read-only runs carry the two connects; an unbound listener fails the
+  network-off arm; a connect that reaches the denied socket in either run fails it.
+- The read-only arm with one write root fails when the entry write does not land, when the
+  working-directory write lands, and when the control read fails.
+- No request field, settings key or environment variable changes the gate's answer for a record.
+
+Limits added by this amendment:
+
+- The network-off arm is measured in a `:workspace` run and a `:read-only` run. A heavy table with
+  the network off is `:workspace` too, so it rests on the first of those.
+- The arms are measured on the host that runs the probe, for the binary it probes, as every arm
+  is; a record does not carry to another binary or another machine.
+
 ## Amendment: a pool per subscription account
 
 Status: Proposed
