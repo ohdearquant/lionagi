@@ -107,6 +107,40 @@ ImageModels = Literal[IMAGE_MODELS]
 ModerationModels = Literal[MODERATION_MODELS]
 
 
+def _openai_model_name(model: object) -> str | None:
+    """The bare, lower-case OpenAI model name a model id refers to, or None.
+
+    A routing prefix (``openai/``, ``openrouter/openai/``) is dropped, and a
+    fine-tuned id (``ft:<base-model>:<org>:<suffix>:<id>``) names its base model.
+    """
+    if not isinstance(model, str):
+        return None
+    name = model.rsplit("/", 1)[-1].lower()
+    if name.startswith("ft:"):
+        name = name.split(":", 2)[1]
+    return name
+
+
+def classify_openai_chat_model(
+    model: object,
+) -> Literal["reasoning", "non_reasoning", "unlisted"]:
+    """Classify a model id against the known OpenAI chat models.
+
+    ``reasoning`` models take ``reasoning_effort`` and refuse sampling parameters,
+    ``non_reasoning`` models are the reverse, and ``unlisted`` names are not judged
+    here: the provider validates them. The id is read as ``uses_developer_messages``
+    reads it: a routing prefix is dropped, case is ignored and a fine-tuned id is
+    judged by its base model. Every decision about which parameters a chat model
+    carries should read this verdict rather than the model lists directly.
+    """
+    name = _openai_model_name(model)
+    if name in REASONING_MODELS:
+        return "reasoning"
+    if name in CHAT_MODELS:
+        return "non_reasoning"
+    return "unlisted"
+
+
 # Audio models
 AUDIO_MODELS = {
     "tts": ["tts-1", "tts-1-hd", "gpt-4o-mini-tts"],
@@ -393,36 +427,32 @@ class OpenAIChatCompletionsRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_reasoning_model_params(self):
-        if self.is_openai_model:
-            if self.is_reasoning_model:
-                self.temperature = None
-                self.top_p = None
-                self.logprobs = None
-                self.top_logprobs = None
-                self.logit_bias = None
-            else:
-                self.reasoning_effort = None
+        verdict = classify_openai_chat_model(self.model)
+        if verdict == "reasoning":
+            self.temperature = None
+            self.top_p = None
+            self.logprobs = None
+            self.top_logprobs = None
+            self.logit_bias = None
+        elif verdict == "non_reasoning":
+            self.reasoning_effort = None
         return self
 
     @property
     def is_reasoning_model(self) -> bool:
-        return self.model in REASONING_MODELS
+        return classify_openai_chat_model(self.model) == "reasoning"
 
     @property
     def is_openai_model(self) -> bool:
-        return self.model in CHAT_MODELS
+        return classify_openai_chat_model(self.model) != "unlisted"
 
 
 def uses_developer_messages(model: object) -> bool:
     """Whether the given model expects `developer` in place of `system` messages;
     fails closed (keeps `system`) for unknown or missing models."""
-    if not isinstance(model, str):
+    model_name = _openai_model_name(model)
+    if model_name is None:
         return False
-    model_name = model.rsplit("/", 1)[-1].lower()
-    if model_name.startswith("ft:"):
-        # Fine-tuned ids are "ft:<base-model>:<org>:<suffix>:<id>"; the family
-        # gate applies to the base model, not the "ft" wrapper.
-        model_name = model_name.split(":", 2)[1]
     return model_name.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
