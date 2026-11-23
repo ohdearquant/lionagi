@@ -650,12 +650,12 @@ bullets there stand.
 
 What each launch does, by what the format 4 probe records on a binary:
 
-| Launch | Network | Arm it needs | network-off arm passes, network-on fails | both fail | both pass |
-| --- | --- | --- | --- | --- | --- |
-| `light` | off | `unix_socket_refused_network_off` | runs | refused | runs |
-| read-only | off | `unix_socket_refused_network_off` | runs | refused | runs |
-| `heavy`, `network_access` false or unset | off | `unix_socket_refused_network_off` | runs | refused | runs |
-| `heavy`, `network_access` true | on | `unix_socket_refused_network_on` | refused, naming both remedies | refused | runs |
+| Launch | Network | Arm it needs | network-off arm passes, network-on fails | network-on arm passes, network-off fails | both fail | both pass |
+| --- | --- | --- | --- | --- | --- | --- |
+| `light` | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| read-only | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| `heavy`, `network_access` false or unset | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| `heavy`, `network_access` true | on | `unix_socket_refused_network_on` | refused, naming both remedies | runs | refused | runs |
 
 On codex 0.162.1 the network-on arm is known to fail, and whether the network-off arm passes is
 not yet measured. If both fail there, every profiled codex launch on that binary stays refused, as

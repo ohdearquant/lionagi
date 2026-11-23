@@ -84,7 +84,7 @@ def _no_host_probe_record(monkeypatch):
     monkeypatch.setattr(
         codex_module,
         "require_passing_probe_record",
-        lambda binary, env=None, cwd=None: "probe-record",
+        lambda binary, env=None, cwd=None, table=None: "probe-record",
     )
 
 

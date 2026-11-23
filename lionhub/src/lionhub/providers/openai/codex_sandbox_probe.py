@@ -10,7 +10,7 @@ passing record, and this module writes it::
     python -m lionhub.providers.openai.codex_sandbox_probe
 
 It builds the profile with the same ``permission_profile_table`` and ``deny_entries`` a launch
-uses, runs the codex binary on PATH three times against a loopback stand-in for a model
+uses, runs the codex binary on PATH five times against a loopback stand-in for a model
 provider, in a scratch working directory and a scratch ``CODEX_HOME``, and has the model ask the
 child to read, write and fetch. Acceptance is what the tool outputs the stand-in receives show
 (a denied canary that was not read, a write that did not land), never codex's own report. A
@@ -266,6 +266,48 @@ def _start_listener(path: Path) -> tuple[UnixListener | None, str | None]:
     return listener, None
 
 
+def _listening(
+    denied: Path, control: Path, run: Callable[[], dict[str, str | None]]
+) -> tuple[dict[str, str | None], dict[str, Any]]:
+    """``run()`` with a listener bound here, outside the sandbox, at each socket path: the run's
+    outputs, and how many connections reached each listener during that run alone."""
+    denied_listener, denied_error = _start_listener(denied)
+    control_listener, control_error = _start_listener(control)
+    try:
+        outputs = run()
+    finally:
+        for listener in (denied_listener, control_listener):
+            if listener is not None:
+                listener.stop()
+    seen = {
+        "up": denied_listener is not None and control_listener is not None,
+        "denied": denied_listener.accepted if denied_listener is not None else None,
+        "control": control_listener.accepted if control_listener is not None else None,
+        "error": denied_error or control_error,
+    }
+    return outputs, seen
+
+
+def _socket_verdict(outputs: Mapping[str, str | None], seen: Mapping[str, Any]) -> tuple[bool, str]:
+    """Whether one run refused the connect to the denied socket and made the control connect,
+    by the child's exit status and by the listeners' own counts; and a note saying which."""
+    passed = bool(
+        seen["up"]
+        and _refused(outputs.get("unix_denied"))
+        and seen["denied"] == 0
+        and _ok(outputs.get("unix_control"))
+        and seen["control"]
+    )
+    if seen["up"]:
+        note = (
+            f"the denied-path socket accepted {seen['denied']} connection(s), "
+            f"the control socket {seen['control']}"
+        )
+    else:
+        note = f"a listener could not be bound ({seen['error']}); fails closed"
+    return passed, note
+
+
 def _child_python() -> str:
     return sys.executable or shutil.which("python3") or "python3"
 
@@ -427,13 +469,14 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
 
     nonce = uuid.uuid4().hex[:12]
     deny_mark, open_mark = f"DENY-CANARY-{nonce}", f"OPEN-CANARY-{nonce}"
-    dirs = {n: root / n for n in ("cwd", "entry", "outside", "deny", "open")}
-    homes = {n: root / f"home-{n}" for n in ("heavy", "light", "user", "readonly")}
+    dirs = {n: root / n for n in ("cwd", "entry", "outside", "deny", "open", "scratch")}
+    homes = {n: root / f"home-{n}" for n in ("heavy", "light", "user", "readonly", "rowrite")}
     for path in (*dirs.values(), *homes.values()):
         path.mkdir(parents=True)
     (dirs["deny"] / "secret.txt").write_text(deny_mark + "\n")
     (dirs["open"] / "f.txt").write_text(open_mark + "\n")
     (dirs["open"] / "ro.txt").write_text(open_mark + "\n")
+    (dirs["open"] / "rw.txt").write_text(open_mark + "\n")
     for name, home in homes.items():
         (home / "auth.json").write_text(f'{{"key": "AUTH-CANARY-{name}-{nonce}"}}\n')
     (homes["user"] / "config.toml").write_text('sandbox_mode = "workspace-write"\n')
@@ -441,7 +484,9 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     policy_deny = list(resolve_child_sandbox(None).deny_read)
     deny_read = [str(dirs["deny"]), *policy_deny]
 
-    def table(home: Path, *, light: bool, read_only: bool = False) -> dict[str, Any]:
+    def table(
+        home: Path, *, light: bool, read_only: bool = False, read_only_write: Sequence[str] = ()
+    ) -> dict[str, Any]:
         return permission_profile_table(
             # Expanded against the HOME the probe's child gets, as a launch expands its entries
             # against the child's HOME.
@@ -453,6 +498,7 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             # network key both ways: off refuses, on reaches the listener. A read-only table has
             # the network off, as a read-only launch's does.
             network=not light and not read_only,
+            read_only_write=read_only_write,
         )
 
     q = shlex.quote
@@ -486,9 +532,15 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     tmp_slash = Path("/tmp") / f"lionagi-probe-{nonce}"  # noqa: S108
     tmpdir = os.environ.get("TMPDIR")
     tmp_env = Path(tmpdir) / f"lionagi-probe-{nonce}-env" if tmpdir else None
+    # The two connects run in each network-off run too: the light run and the read-only run.
+    connects = [
+        ("unix_control", _connect_command(python, control_sock)),
+        ("unix_denied", _connect_command(python, denied_sock)),
+    ]
     light_commands = [("tmp_slash", f"echo w > {q(str(tmp_slash))}")]
     if tmp_env is not None:
         light_commands.append(("tmp_env", f"echo w > {q(str(tmp_env))}"))
+    light_commands += connects
     user_commands = [
         ("deny_canary", f"/bin/cat {secret}"),
         ("own_codex_home", f"/bin/cat {q(str(homes['user'] / 'auth.json'))}"),
@@ -501,17 +553,26 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     readonly_commands = [
         ("read_control", f"/bin/cat {q(str(ro_read))}"),
         ("write_cwd", f"echo w > {q(str(ro_written))}"),
+        *connects,
+    ]
+    # A `:read-only` table that grants one write entry, as a codex scratch directory needs: the
+    # entry write must land, a write into the working directory must not, a read must work.
+    rw_entry, rw_cwd = dirs["scratch"] / "w", dirs["cwd"] / "rw"
+    rowrite_commands = [
+        ("write_entry", f"echo w > {q(str(rw_entry))}"),
+        ("write_cwd", f"echo w > {q(str(rw_cwd))}"),
+        ("read_control", f"/bin/cat {q(str(dirs['open'] / 'rw.txt'))}"),
     ]
 
     # The network step targets each run's own stub, whose port is known only once it listens,
     # so ``_run_with_network`` appends it to the plan after the stub starts.
-    # Two unix sockets, bound here outside the sandbox: one inside the denied directory, one in a
-    # directory no denied path covers. The child connects to each. The write entry is granted by
-    # the profile table alone: no run passes --add-dir.
-    denied_listener, denied_error = _start_listener(denied_sock)
-    control_listener, control_error = _start_listener(control_sock)
-    try:
-        heavy = _run_with_network(
+    # Two unix sockets, bound here outside the sandbox for each run that connects: one inside the
+    # denied directory, one in a directory no denied path covers. The child connects to each. The
+    # write entry is granted by the profile table alone: no run passes --add-dir.
+    heavy, heavy_seen = _listening(
+        denied_sock,
+        control_sock,
+        lambda: _run_with_network(
             binary,
             runner,
             heavy_commands,
@@ -519,19 +580,20 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             homes["heavy"],
             dirs["cwd"],
             [],
-        )
-    finally:
-        for listener in (denied_listener, control_listener):
-            if listener is not None:
-                listener.stop()
-    light = _run_with_network(
-        binary,
-        runner,
-        light_commands,
-        table(homes["light"], light=True),
-        homes["light"],
-        dirs["cwd"],
-        [],
+        ),
+    )
+    light, light_seen = _listening(
+        denied_sock,
+        control_sock,
+        lambda: _run_with_network(
+            binary,
+            runner,
+            light_commands,
+            table(homes["light"], light=True),
+            homes["light"],
+            dirs["cwd"],
+            [],
+        ),
     )
     user = _run(
         binary,
@@ -541,12 +603,26 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         home=homes["user"],
         cwd=dirs["cwd"],
     )
-    readonly = _run(
+    readonly, readonly_seen = _listening(
+        denied_sock,
+        control_sock,
+        lambda: _run(
+            binary,
+            runner,
+            commands=readonly_commands,
+            table=table(homes["readonly"], light=False, read_only=True),
+            home=homes["readonly"],
+            cwd=dirs["cwd"],
+        ),
+    )
+    rowrite = _run(
         binary,
         runner,
-        commands=readonly_commands,
-        table=table(homes["readonly"], light=False, read_only=True),
-        home=homes["readonly"],
+        commands=rowrite_commands,
+        table=table(
+            homes["rowrite"], light=False, read_only=True, read_only_write=[str(dirs["scratch"])]
+        ),
+        home=homes["rowrite"],
         cwd=dirs["cwd"],
     )
 
@@ -560,23 +636,9 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     for path in (tmp_slash, tmp_env):
         if path is not None:
             path.unlink(missing_ok=True)
-    listeners_up = denied_listener is not None and control_listener is not None
-    denied_hits = denied_listener.accepted if denied_listener is not None else None
-    control_hits = control_listener.accepted if control_listener is not None else None
-    unix_ok = (
-        listeners_up
-        and _refused(heavy["unix_denied"])
-        and denied_hits == 0
-        and _ok(heavy["unix_control"])
-        and bool(control_hits)
-    )
-    if listeners_up:
-        unix_note = (
-            f"the denied-path socket accepted {denied_hits} connection(s), "
-            f"the control socket {control_hits}"
-        )
-    else:
-        unix_note = f"a listener could not be bound ({denied_error or control_error}); fails closed"
+    unix_on_ok, unix_on_note = _socket_verdict(heavy, heavy_seen)
+    light_unix_ok, light_unix_note = _socket_verdict(light, light_seen)
+    readonly_unix_ok, readonly_unix_note = _socket_verdict(readonly, readonly_seen)
 
     arms = {
         "deny_canary": _arm(
@@ -588,8 +650,19 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
                 f"{len(real)} real denied path(s) opened for 0 bytes, all refused: {real_refused}"
             ),
         ),
-        "unix_socket_refused": _arm(
-            unix_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_note
+        "unix_socket_refused_network_on": _arm(
+            unix_on_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_on_note
+        ),
+        # Both network-off runs must refuse and both controls connect: a read-only launch rests
+        # on the read-only run's own measurement, a light or network-off heavy one on the light
+        # run's.
+        "unix_socket_refused_network_off": _arm(
+            light_unix_ok and readonly_unix_ok,
+            light["unix_denied"],
+            light["unix_control"],
+            readonly["unix_denied"],
+            readonly["unix_control"],
+            note=f"light run: {light_unix_note}; read-only run: {readonly_unix_note}",
         ),
         "own_codex_home": _arm(
             _refused(heavy["own_codex_home"], f"AUTH-CANARY-heavy-{nonce}"), heavy["own_codex_home"]
@@ -640,6 +713,17 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
             readonly["read_control"],
             readonly["write_cwd"],
             note="a :read-only table; the read of a readable file is the same run's control",
+        ),
+        "read_only_write_root": _arm(
+            _ok(rowrite["write_entry"])
+            and rw_entry.exists()
+            and _refused(rowrite["write_cwd"])
+            and not rw_cwd.exists()
+            and _ok(rowrite["read_control"], open_mark),
+            rowrite["write_entry"],
+            rowrite["write_cwd"],
+            rowrite["read_control"],
+            note="a :read-only table granting one write entry, which no launch renders yet",
         ),
     }
     return {name: arms[name] for name in REQUIRED_ARMS}

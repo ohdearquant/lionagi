@@ -520,6 +520,7 @@
       "binary_sha256",
       "codex_binary_version",
       "deny_entries",
+      "launch_arms",
       "permission_profile_table",
       "probe_record",
       "probe_record_dir",
