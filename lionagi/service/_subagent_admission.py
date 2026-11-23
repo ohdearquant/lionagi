@@ -15,7 +15,12 @@ empty or ``0`` means no cap):
 
 - ``all``: every CLI agent, ``LIONAGI_MAX_SUBAGENTS``;
 - ``heavy``: agents whose workload is ``heavy``, ``LIONAGI_MAX_SUBAGENTS_HEAVY``;
-- ``<engine>``: one engine's agents, ``LIONAGI_MAX_SUBAGENTS_<ENGINE>``.
+- ``<engine>``: one engine's agents, ``LIONAGI_MAX_SUBAGENTS_<ENGINE>``;
+- ``account.<provider>.<name>``: the agents of one named subscription account, capped by
+  that account's ``max_concurrent`` in ``accounts.toml``. The cap reaches this module in the
+  child environment the account builds (``LIONAGI_SUBAGENT_ACCOUNT`` and
+  ``LIONAGI_SUBAGENT_ACCOUNT_CAP``, see :func:`account_admission`); the spawn removes both
+  before the child starts.
 
 The lock belongs to the spawning process, never to the child: Python opens the
 file non-inheritable, so a grandchild that daemonizes cannot keep a slot after
@@ -82,6 +87,8 @@ else:
     import fcntl as _fcntl
 
 __all__ = (
+    "ACCOUNT_CAP_ENV",
+    "ACCOUNT_ENV",
     "ADMIT_WAIT_ENV",
     "AGENT_DEPTH_ENV",
     "DEFAULT_ADMIT_WAIT_SECONDS",
@@ -93,18 +100,25 @@ __all__ = (
     "SubagentAdmissionRefusedError",
     "SubagentLease",
     "SubagentWorkload",
+    "account_admission",
     "admit_subagent",
     "child_agent_depth",
     "engine_cap_env",
     "refuse_nested_agent",
     "set_child_agent_depth",
     "subagent_admission_status",
+    "without_account_names",
 )
 
 TOTAL_CAP_ENV = "LIONAGI_MAX_SUBAGENTS"
 HEAVY_CAP_ENV = "LIONAGI_MAX_SUBAGENTS_HEAVY"
 ADMIT_WAIT_ENV = "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS"
 DEFAULT_ADMIT_WAIT_SECONDS = 600.0
+# The account a CLI child runs on and that account's cap, set in the child environment a
+# named subscription account builds and read by the spawn, which removes both before the
+# child starts. Names only: neither ever holds a credential.
+ACCOUNT_ENV = "LIONAGI_SUBAGENT_ACCOUNT"
+ACCOUNT_CAP_ENV = "LIONAGI_SUBAGENT_ACCOUNT_CAP"
 # How many lionagi-started agents deep a process runs. `li agent` and the flow, fan-out and
 # play workers stamp it, and every CLI spawn sets it on the child over any inherited value: 1,
 # or 0 for a profile in LIONAGI_SEAT_PROFILES. A process carrying 1 or more is inside an agent.
@@ -246,6 +260,10 @@ _CONTENTION_RETRIES = 25
 # A slot record is a few hundred bytes; one larger than this is not read as a record.
 _RECORD_BYTES = 65536
 _ENGINE_POOL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+# ``<provider>.<name>``: an account provider as an engine pool is spelled, then an account
+# name. The dot keeps every account pool apart from every engine pool.
+_ACCOUNT_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\.[a-z0-9][a-z0-9_-]{0,199}")
+_ACCOUNT_POOL_PREFIX = "account."
 
 
 # Told when an agent started in this context begins waiting for slots and when it is
@@ -334,12 +352,66 @@ def _read_wait(environ: Mapping[str, str]) -> float:
     return value
 
 
+def without_account_names(env: Mapping[str, str]) -> dict[str, str]:
+    """A copy of *env* without ``ACCOUNT_ENV`` and ``ACCOUNT_CAP_ENV``.
+
+    Every child environment built by copying a process environment, or by laying an overlay
+    over one, passes through here, so names the launching process inherited, or an overlay
+    set, never reach the spawn as an account. Only a named subscription account's own child
+    environment sets them, after this.
+    """
+    return {k: v for k, v in env.items() if k not in (ACCOUNT_ENV, ACCOUNT_CAP_ENV)}
+
+
+def account_admission(env: Mapping[str, str] | None) -> tuple[str | None, int]:
+    """The account a child environment names for admission, as ``<provider>.<name>``, and
+    that account's cap.
+
+    ``(None, 0)`` when *env* is None or names neither. Only an account built with a
+    ``max_concurrent`` names itself, so a named account always carries a cap of 1 or more:
+    a value that cannot name an account, a cap that is missing, 0 or not a whole number, or
+    a cap with no account refuses, and never reads as no cap. The account's value is never
+    repeated in the refusal.
+    """
+    if env is None:
+        return None, 0
+    account = env.get(ACCOUNT_ENV, "").strip()
+    raw_cap = env.get(ACCOUNT_CAP_ENV, "").strip()
+    if not account:
+        if raw_cap:
+            raise SubagentAdmissionRefusedError(
+                f"subagent admission refused: {ACCOUNT_CAP_ENV} is set but {ACCOUNT_ENV} "
+                "names no account"
+            )
+        return None, 0
+    if not _ACCOUNT_RE.fullmatch(account):
+        raise SubagentAdmissionRefusedError(
+            f"subagent admission refused: {ACCOUNT_ENV} does not name an account as "
+            "<provider>.<name>"
+        )
+    cap = _read_whole_number(env, ACCOUNT_CAP_ENV)
+    if cap < 1:
+        raise SubagentAdmissionRefusedError(
+            f"subagent admission refused: {ACCOUNT_CAP_ENV}={raw_cap!r} is not a whole number "
+            "of 1 or more for the account it names"
+        )
+    return account, cap
+
+
 def _caps(
-    environ: Mapping[str, str], engine: str | None, workload: str
+    environ: Mapping[str, str],
+    engine: str | None,
+    workload: str,
+    account: str | None = None,
+    account_cap: int = 0,
 ) -> list[tuple[str, str, int]]:
     """``(pool, variable, cap)`` for every capped pool this agent counts against, sorted by
     pool name: every process takes the admission locks in that one order."""
     pools: list[tuple[str, str, int]] = []
+    if account is not None and account_cap > 0:
+        pools.append(
+            (_ACCOUNT_POOL_PREFIX + account, f"max_concurrent of account {account}", account_cap)
+        )
     if engine:
         pool = _engine_pool(engine)
         if pool is None:
@@ -641,19 +713,36 @@ async def admit_subagent(
     engine: str | None,
     workload: str = DEFAULT_WORKLOAD,
     environ: Mapping[str, str] | None = None,
+    account: str | None = None,
+    account_cap: int = 0,
 ) -> SubagentLease:
     """Take one slot in every capped pool this agent counts against, waiting for room.
 
-    Returns an empty lease when no pool is capped. Raises
-    :class:`SubagentAdmissionRefusedError` when a pool stays full for the whole wait
-    or when the caps, the wait or the pool directory cannot be read.
+    *account* (``<provider>.<name>``, as :func:`account_admission` reads it) adds that
+    account's pool, capped at *account_cap*, which must then be 1 or more. Returns an empty
+    lease when no pool is capped.
+    Raises :class:`SubagentAdmissionRefusedError` when a pool stays full for the whole wait
+    or when the caps, the wait, the account or the pool directory cannot be read.
     """
     if workload not in WORKLOADS:
         raise SubagentAdmissionRefusedError(
             f"subagent admission refused: workload {workload!r} is not one of {', '.join(WORKLOADS)}"
         )
+    if account is not None and not (isinstance(account, str) and _ACCOUNT_RE.fullmatch(account)):
+        raise SubagentAdmissionRefusedError(
+            "subagent admission refused: the account does not name one as <provider>.<name>"
+        )
+    if (
+        isinstance(account_cap, bool)
+        or not isinstance(account_cap, int)
+        or account_cap < (0 if account is None else 1)
+    ):
+        raise SubagentAdmissionRefusedError(
+            f"subagent admission refused: an account cap of {account_cap!r} is not a whole "
+            "number of 1 or more"
+        )
     environ = os.environ if environ is None else environ
-    caps = _caps(environ, engine, workload)
+    caps = _caps(environ, engine, workload, account, account_cap)
     if not caps:
         return _admitted(SubagentLease())
     if _fcntl is None:
@@ -668,6 +757,7 @@ async def admit_subagent(
         "holder_pid": os.getpid(),
         "engine": engine,
         "workload": workload,
+        "account": account,
         "since": time.time(),
         "child_pid": None,
         "child_started": None,
@@ -827,8 +917,24 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
             entry["error"] = type(exc).__name__
             continue
         entry["held"] = len(held)
+        if pool.startswith(_ACCOUNT_POOL_PREFIX):
+            # An account's cap is its accounts.toml row, not a variable here: the smallest
+            # cap a holder recorded is the one an admission to the pool enforces.
+            recorded = [c for c in (_recorded_cap(r) for r in held) if c is not None]
+            entry["cap"] = min(recorded) if recorded else 0
         entry["holders"] = [
-            {k: r.get(k) for k in ("holder_pid", "child_pid", "engine", "workload", "since", "cap")}
+            {
+                k: r.get(k)
+                for k in (
+                    "holder_pid",
+                    "child_pid",
+                    "engine",
+                    "workload",
+                    "account",
+                    "since",
+                    "cap",
+                )
+            }
             for r in held
         ]
     return {"root": str(root), "caps": caps, "pools": pools}

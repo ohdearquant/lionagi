@@ -112,8 +112,8 @@ relative timestamps, formatted durations, or tables.
       "cli_path": "schedule apply"
     }
   ],
-  "verb_count": 71,
-  "available_count": 45,
+  "verb_count": 72,
+  "available_count": 46,
   "max_ops": 8,
   "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ..."
 }
@@ -168,7 +168,7 @@ file.
 
 ## The catalog
 
-45 verbs are reachable. Both tables in this section are checked against the
+46 verbs are reachable. Both tables in this section are checked against the
 registry by the test suite, so a verb added or withdrawn without updating them
 fails a test rather than going unnoticed. The registry is the authority; ask it
 directly with:
@@ -181,6 +181,7 @@ python -c "from lionhub.serve.mcp import verbs as v; print(len(v.VERBS)); [print
 
 | Verb | Summary |
 |------|---------|
+| `account.list` | The subscription accounts this machine declares, with their caps, held slots, running and recent jobs, and the last usage limit recorded. |
 | `agent.submit` | Run one agent on one task as a detached background run. |
 | `dispatch.ack` | Acknowledge a delivered dispatch with its ack token, so the queue stops redelivering it. A wrong token is refused without echoing the real one. |
 | `dispatch.ls` | Rows in the durable dispatch outbox, newest first, without their payloads. |
@@ -433,6 +434,33 @@ derived from it is an upper bound on how long the run actually ran.
 `job.wait`'s **`all_terminal` means every valid requested run has a recorded
 end**, including `indeterminate` ones. It does not mean every run succeeded or reported
 an outcome — read each entry's `outcome` for that.
+
+## Subscription accounts (`account.list`)
+
+`account.list` takes no arguments. It returns one row per account that
+`accounts.toml` and the `claude-<name>` token files declare (see
+[subscription accounts](../internals/subscription-accounts.md)), plus the time it
+read them:
+
+| Field | Derived from |
+|-------|--------------|
+| `name`, `provider`, `source`, `max_concurrent` | the account's row: `source` is `file`, `keychain`, `dotenv` or `home`; `max_concurrent` is null when the row sets no cap |
+| `slots_held`, `enforced_cap` | the account's machine-wide admission pool, which counts every CLI agent on the account however it was started; `enforced_cap` is the smallest cap a current holder recorded, null when none holds a slot; both null when the pool cannot be read |
+| `running` | this server's agent jobs not yet terminal |
+| `completed_24h` | this server's agent jobs that reached a terminal state with `finished_at` inside `window_hours` of `read_at` |
+| `last_limit`, `last_limit_reason` | for a codex account, the newest of its jobs whose run ended in `ProviderQuotaError`: `run_id`, `at` (when the job ended) and `reset_text`, the reset time in the provider's own words, which carry no time zone; otherwise null with `none_in_job_records`. Claude Code limits are `not_recorded`: no refusal of that provider has been captured to classify |
+
+A job counts for the account its run resolved (its `run.json`) or, before the run
+has written one, for the account its submission asked for. A running job that asked
+for an account by name before its provider is known counts in
+`unattributed_running`. Job records written before jobs carried an account count for
+no account, and nothing is backfilled; the reply's `history` field says so. Names
+that are declared and do not resolve (defined twice, a malformed row, a Codex home
+that is gone) are listed under `unresolved` with their provider.
+
+The reply never carries a token, a token file path, a keychain item, a `.env` file
+or a Codex home. An accounts directory setting or `accounts.toml` that cannot be
+read fails the call as `unavailable`.
 
 ## Compatibility
 

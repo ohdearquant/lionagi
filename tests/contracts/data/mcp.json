@@ -86,10 +86,11 @@
   ],
   "available_path_count": 83,
   "catalog": {
-    "verb_count": 71,
-    "available_count": 45,
+    "verb_count": 72,
+    "available_count": 46,
     "max_ops": 8,
     "verb_names": [
+      "account.list",
       "agent.submit",
       "casts",
       "dispatch.ack",
@@ -163,6 +164,7 @@
       "team.show"
     ],
     "available_verb_names": [
+      "account.list",
       "agent.submit",
       "dispatch.ack",
       "dispatch.ls",
@@ -261,7 +263,7 @@
           "summary",
           "verb"
         ],
-        17
+        18
       ]
     ]
   },

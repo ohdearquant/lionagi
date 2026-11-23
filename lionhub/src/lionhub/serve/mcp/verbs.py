@@ -348,6 +348,8 @@ _JOB_WAIT_SCHEMA = _own(
 
 _SERVER_INFO_SCHEMA = _own({})
 
+_ACCOUNT_LIST_SCHEMA = _own({})
+
 _ROSTER_CWD = {
     "type": "string",
     "description": (
@@ -512,6 +514,26 @@ _REGISTERED: tuple[Verb, ...] = (
         ),
         executor="roster",
         own_schema=_PROFILE_SHOW_SCHEMA,
+    ),
+    Verb(
+        name="account.list",
+        summary=(
+            "The subscription accounts accounts.toml and the token files declare, one row "
+            "each: name, provider, source (file, keychain, dotenv or home) and "
+            "max_concurrent from the row; slots_held and enforced_cap from the machine-wide "
+            "admission pools, which count every CLI agent on the account however it started; "
+            "running, completed_24h (terminal with finished_at inside window_hours of read_at) "
+            "and last_limit from this server's agent job records, each counted for the account "
+            "its run resolved or, before the run says, the one its submission asked for. "
+            "last_limit is the newest codex ProviderQuotaError with the reset time in the "
+            "provider's own words, which carry no time zone; claude_code limits are "
+            "not_recorded. Never returns a token, a token file path, a keychain item, a .env "
+            "file or a Codex home. Job records written before jobs carried an account count "
+            "for none and are not backfilled; names that do not resolve are listed under "
+            "unresolved."
+        ),
+        executor="job",
+        own_schema=_ACCOUNT_LIST_SCHEMA,
     ),
     Verb(
         name="server.info",

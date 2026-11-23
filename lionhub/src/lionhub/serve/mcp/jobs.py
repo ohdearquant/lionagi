@@ -1347,6 +1347,8 @@ def submit(
     write_capable: bool = False,
     profile: Any | None = None,
     replay_mcp_choice: bool = False,
+    account: str | None = None,
+    account_provider: str | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1372,6 +1374,11 @@ def submit(
     `--flag=value` form) since this function must decide whether to resolve its
     own server set. *profile* is the already-resolved submitting agent profile,
     so its MCP policy is applied before any ambient config is read.
+
+    *account* and *account_provider* are the subscription account the submission asks the
+    run to use, as names only (``accounts.toml``'s name and its provider table); they are
+    recorded and returned as given. The run resolves the account itself and writes what it
+    resolved to its ``run.json``.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1644,6 +1651,10 @@ def submit(
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
+        # The account the submission asked for, names only; null when it named none. What
+        # the run resolved is in its run.json.
+        "account": account,
+        "account_provider": account_provider,
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
@@ -1739,6 +1750,8 @@ def submit(
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
+        "account": account,
+        "account_provider": account_provider,
     }
 
 
@@ -2596,6 +2609,10 @@ def status(run_id: str) -> dict[str, Any]:
         "child_actor": (job or {}).get("child_actor"),
         "child_actor_config": (job or {}).get("child_actor_config"),
         "submitting_actor": (job or {}).get("submitting_actor"),
+        # Null on records written before these fields existed, as on a submission that
+        # named no account.
+        "account": (job or {}).get("account"),
+        "account_provider": (job or {}).get("account_provider"),
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
@@ -3179,6 +3196,31 @@ def _notify_delivery_state(outcome: Any) -> str:
     return "failed"
 
 
+def job_run_ids() -> list[str]:
+    """Run ids that have a job record, newest first (run_id sorts by timestamp).
+
+    A directory without a job record is not a job: a submission reserves its directory
+    before `job.json` publishes it. A record that cannot even be stat'ed is kept, for
+    ``status`` to classify. A missing jobs directory is no jobs; an unreadable one raises.
+    """
+    try:
+        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
+    except FileNotFoundError:
+        return []
+    run_ids: list[str] = []
+    for d in entries:
+        if not d.is_dir():
+            continue
+        try:
+            (d / "job.json").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # let status() classify an inaccessible record
+        run_ids.append(d.name)
+    return run_ids
+
+
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
 
@@ -3196,21 +3238,9 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     field to say "could not be read" and reporting empty would falsely mean
     "no jobs at all".
     """
-    try:
-        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
-    except FileNotFoundError:
-        return []
     out: list[dict[str, Any]] = []
-    for d in entries:
-        if not d.is_dir():
-            continue
-        try:
-            (d / "job.json").stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            pass  # let status() classify an inaccessible record
-        st = status(d.name)
+    for run_id in job_run_ids():
+        st = status(run_id)
         if status_filter and st["status"] != status_filter:
             continue
         out.append(
@@ -3229,6 +3259,8 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "finished_at_precision": st["finished_at_precision"],
                 "terminal_source": st["terminal_source"],
                 "record_state": st["record_state"],
+                "account": st["account"],
+                "account_provider": st["account_provider"],
                 _PERSISTENCE_DEGRADED_REASON_FIELD: st[_PERSISTENCE_DEGRADED_REASON_FIELD],
                 "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
             }

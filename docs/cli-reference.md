@@ -191,6 +191,14 @@ records the design.
 | `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | one engine's workers: `CODEX`, `CLAUDE`, `GEMINI`, `PI` | unset (no cap) |
 | `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | how long a worker waits for a slot | `600`; `0` refuses at once |
 
+A subscription account can carry its own cap: `max_concurrent = N` on its row in `accounts.toml`
+(see [subscription accounts](internals/subscription-accounts.md)) puts every worker on that
+account into the pool `account.<provider>.<name>`, capped at `N`, beside the pools above. lionagi
+passes the account and its cap to the slot as `LIONAGI_SUBAGENT_ACCOUNT` and
+`LIONAGI_SUBAGENT_ACCOUNT_CAP` in the worker's own environment and removes both before the worker
+starts; setting them in your shell has no effect. The MCP verb `account.list` shows each account's
+cap and the slots its pool holds.
+
 `0`, empty or unset means no cap. A value that is not a whole number refuses the worker rather
 than letting it start uncounted. A worker that waits out the whole window is refused with one
 line naming the pool, its cap and the pids holding it, and `li agent` exits `75` (`EX_TEMPFAIL`):

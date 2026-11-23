@@ -176,7 +176,26 @@ def test_a_malformed_name_is_refused(logins, name):
         ('[codex.x]\nhome = "~/codex"\n', "not an absolute path"),
         ('[codex.x]\nhome = "relative"\n', "not an absolute path"),
         ('[codex.x]\nhome = "/does/not/exist/anywhere"\n', "not an existing directory"),
-        ('[codex.x]\nhome = "/tmp"\nextra = 1\n', "exactly one key"),
+        ('[codex.x]\nhome = "/tmp"\nextra = 1\n', "takes `home`, and optionally"),
+        ("[codex.x]\nmax_concurrent = 2\n", "takes `home`, and optionally"),
+        ('[codex.x]\nhome = "/tmp"\nmax_concurrent = 0\n', "max_concurrent must be"),
+        (
+            '[claude_code.x]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = -1\n',
+            "max_concurrent must be",
+        ),
+        (
+            '[claude_code.x]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = true\n',
+            "max_concurrent must be",
+        ),
+        (
+            '[claude_code.x]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = "2"\n',
+            "max_concurrent must be",
+        ),
+        (
+            '[claude_code.x]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = 1.5\n',
+            "max_concurrent must be",
+        ),
+        ("[claude_code.x]\nmax_concurrent = 2\n", "exactly one token source"),
         ("[other.x]\n", "unknown top-level"),
         ("not toml [", "cannot read the accounts file"),
     ],
@@ -411,3 +430,96 @@ def test_an_undecodable_lionagi_home_env_file_refuses(tmp_path, monkeypatch):
         logins_dir()
     assert TOKEN not in str(refused.value)
     assert refused.value.__suppress_context__
+
+
+# ---- max_concurrent ---------------------------------------------------------------------
+
+ACCOUNT_NAMES = (accounts.ACCOUNT_ENV, accounts.ACCOUNT_CAP_ENV)
+
+
+def test_an_account_without_max_concurrent_has_no_cap(logins):
+    (logins / "claude-alpha").write_text(TOKEN)
+    _toml(logins, '[claude_code.mail]\nkeychain = { service = "s", account = "a" }\n')
+    assert resolve_account("alpha", "claude_code").max_concurrent is None
+    assert resolve_account("mail", "claude_code").max_concurrent is None
+
+
+def test_each_kind_of_table_row_takes_max_concurrent(logins, tmp_path):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    _toml(
+        logins,
+        '[claude_code.mail]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = 2\n'
+        f'[claude_code.beta]\ndotenv = {{ file = "{tmp_path / "a.env"}", var = "T" }}\n'
+        "max_concurrent = 3\n"
+        f'[codex.alt]\nhome = "{home}"\nmax_concurrent = 1\n',
+    )
+    assert resolve_account("mail", "claude_code").max_concurrent == 2
+    assert resolve_account("beta", "claude_code").max_concurrent == 3
+    alt = resolve_account("alt", "codex")
+    assert (alt.source, alt.location, alt.max_concurrent) == ("home", (str(home.resolve()),), 1)
+
+
+def test_a_table_holding_only_max_concurrent_caps_the_token_file_of_its_name(logins):
+    (logins / "claude-alpha").write_text(TOKEN)
+    _toml(logins, "[claude_code.alpha]\nmax_concurrent = 4\n")
+    account = resolve_account("alpha", "claude_code")
+    assert (account.source, account.max_concurrent) == ("file", 4)
+
+
+def test_a_token_files_cap_table_is_checked_like_any_other(logins):
+    (logins / "claude-alpha").write_text(TOKEN)
+    _toml(logins, "[claude_code.alpha]\nmax_concurrent = 0\n")
+    with pytest.raises(SubscriptionAccountError, match="max_concurrent must be"):
+        resolve_account("alpha", "claude_code")
+
+
+def test_a_table_beside_a_token_file_with_more_than_a_cap_is_still_defined_twice(logins):
+    (logins / "claude-alpha").write_text(TOKEN)
+    _toml(
+        logins,
+        '[claude_code.alpha]\nkeychain = { service = "s", account = "a" }\nmax_concurrent = 2\n',
+    )
+    with pytest.raises(SubscriptionAccountError, match="defined twice"):
+        resolve_account("alpha", "claude_code")
+
+
+def test_a_capped_account_names_itself_and_its_cap_for_admission(logins, tmp_path, no_keychain):
+    (logins / "claude-alpha").write_text(TOKEN)
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    _toml(
+        logins,
+        "[claude_code.alpha]\nmax_concurrent = 2\n"
+        f'[codex.alt]\nhome = "{home}"\nmax_concurrent = 1\n',
+    )
+    claude_env, _ = account_child_env(resolve_account("alpha", "claude_code"), {})
+    assert (claude_env[ACCOUNT_NAMES[0]], claude_env[ACCOUNT_NAMES[1]]) == (
+        "claude_code.alpha",
+        "2",
+    )
+    codex_env, _ = account_child_env(resolve_account("alt", "codex"), {})
+    assert (codex_env[ACCOUNT_NAMES[0]], codex_env[ACCOUNT_NAMES[1]]) == ("codex.alt", "1")
+
+
+def test_names_the_parent_held_are_dropped_so_a_child_counts_only_against_its_own(
+    logins, tmp_path, no_keychain
+):
+    inherited = {"PATH": "/usr/bin", ACCOUNT_NAMES[0]: "claude_code.other", ACCOUNT_NAMES[1]: "9"}
+    (logins / "claude-alpha").write_text(TOKEN)
+    env, _ = account_child_env(resolve_account("alpha", "claude_code"), inherited)
+    assert not set(ACCOUNT_NAMES) & set(env)
+    _toml(logins, "[claude_code.alpha]\nmax_concurrent = 2\n")
+    env, _ = account_child_env(resolve_account("alpha", "claude_code"), inherited)
+    assert env[ACCOUNT_NAMES[0]] == "claude_code.alpha" and env[ACCOUNT_NAMES[1]] == "2"
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    leg = resolve_leg_account("codex", codex_home=str(home), parent_env=inherited)
+    assert not set(ACCOUNT_NAMES) & set(leg.env)
+
+
+def test_a_leg_records_names_only_with_or_without_a_cap(logins, no_keychain):
+    (logins / "claude-alpha").write_text(TOKEN)
+    _toml(logins, "[claude_code.alpha]\nmax_concurrent = 2\n")
+    leg = resolve_leg_account("claude_code", account="alpha", parent_env={})
+    assert leg.record == {"account": "alpha", "account_provider": "claude_code"}

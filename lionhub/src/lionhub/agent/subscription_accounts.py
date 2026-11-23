@@ -14,7 +14,10 @@ The accounts live in one directory, ``LIONAGI_LOGINS_DIR`` (default ``<LIONAGI_H
 - ``accounts.toml``: a ``[claude_code.<name>]`` table with exactly one token source,
   ``keychain = { service = "...", account = "..." }`` (a macOS login keychain item) or
   ``dotenv = { file = "/abs/.env", var = "NAME" }``; a ``[codex.<name>]`` table with
-  ``home = "/abs/path"``.
+  ``home = "/abs/path"``. Any of these tables may also set ``max_concurrent = N`` (a whole
+  number, 1 or more): at most N CLI agents on that account run at once on this machine, on
+  top of the machine-wide caps (``lionagi.service._subagent_admission``). A token-file account
+  takes its cap from a ``[claude_code.<name>]`` table holding only ``max_concurrent``.
 
 Nothing in the directory listing or ``accounts.toml`` is a secret: a token is read from its
 source when a child is spawned and goes into that child's environment only, never into a
@@ -35,6 +38,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError
+from lionagi.service._subagent_admission import (
+    ACCOUNT_CAP_ENV,
+    ACCOUNT_ENV,
+    without_account_names,
+)
 
 try:
     import tomllib as _tomllib
@@ -54,6 +62,7 @@ __all__ = (
     "codex_home_child_env",
     "credential_paths",
     "leg_account_reached",
+    "list_accounts",
     "logins_dir",
     "resolve_account",
     "resolve_leg_account",
@@ -110,6 +119,8 @@ class SubscriptionAccount:
     location: tuple[str, ...]
     """The token file path; the keychain service and account; the .env file and variable;
     or the Codex home's real path."""
+    max_concurrent: int | None = None
+    """How many CLI agents on this account may run at once on this machine; None, no cap."""
 
     def describe(self) -> str:
         """Where the credential comes from, for an error or a launch line. No secret."""
@@ -226,15 +237,31 @@ def _read_accounts_file(directory: Path) -> dict:
     return data
 
 
+def _max_concurrent(where: str, row: dict) -> int | None:
+    """A table's ``max_concurrent``: None when absent, else a whole number of 1 or more."""
+    if "max_concurrent" not in row:
+        return None
+    value = row["max_concurrent"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SubscriptionAccountError(
+            f"{where} max_concurrent must be a whole number of 1 or more, got {value!r}."
+        )
+    return value
+
+
 def _table_entry(path: Path, provider: str, name: str, row: object) -> SubscriptionAccount:
     where = f"{str(path)!r} [{provider}.{name}]"
     if not isinstance(row, dict):
         raise SubscriptionAccountError(f"{where} must be a table.")
+    cap = _max_concurrent(where, row)
+    row = {k: v for k, v in row.items() if k != "max_concurrent"}
     if provider == "codex":
         if set(row) != {"home"}:
-            raise SubscriptionAccountError(f"{where} takes exactly one key, `home`.")
+            raise SubscriptionAccountError(
+                f"{where} takes `home`, and optionally `max_concurrent`."
+            )
         home = validate_codex_home(row["home"], where=f"{where} home")
-        return SubscriptionAccount(name, provider, "home", (home,))
+        return SubscriptionAccount(name, provider, "home", (home,), cap)
     sources = sorted(set(row) & {"keychain", "dotenv"})
     if len(sources) != 1 or set(row) != set(sources):
         raise SubscriptionAccountError(
@@ -253,7 +280,7 @@ def _table_entry(path: Path, provider: str, name: str, row: object) -> Subscript
         )
     if source == "dotenv" and (spec["file"].startswith("~") or not os.path.isabs(spec["file"])):
         raise SubscriptionAccountError(f"{where} dotenv file {spec['file']!r} is not absolute.")
-    return SubscriptionAccount(name, provider, source, tuple(spec[k] for k in keys))
+    return SubscriptionAccount(name, provider, source, tuple(spec[k] for k in keys), cap)
 
 
 def credential_paths(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
@@ -322,13 +349,26 @@ def resolve_account(
     # A dangling link counts as an entry, so it refuses when read rather than letting a
     # table entry of the same name answer for it.
     has_file = kind == "claude_code" and os.path.lexists(token_file)
-    if has_file and name in table:
+    # A table holding only max_concurrent caps the token file of the same name; any other
+    # table beside the file defines the account a second time.
+    cap_only = (
+        has_file
+        and name in table
+        and isinstance(table[name], dict)
+        and set(table[name]) == {"max_concurrent"}
+    )
+    if has_file and name in table and not cap_only:
         raise SubscriptionAccountError(
             f"account {name!r} is defined twice for claude_code: {str(token_file)!r} and "
             f"[claude_code.{name}] in {str(directory / ACCOUNTS_FILE)!r}."
         )
     if has_file:
-        return SubscriptionAccount(name, kind, "file", (str(token_file),))
+        cap = (
+            _max_concurrent(f"{str(directory / ACCOUNTS_FILE)!r} [{kind}.{name}]", table[name])
+            if cap_only
+            else None
+        )
+        return SubscriptionAccount(name, kind, "file", (str(token_file),), cap)
     if name in table:
         return _table_entry(directory / ACCOUNTS_FILE, kind, name, table[name])
     raise SubscriptionAccountError(
@@ -337,6 +377,40 @@ def resolve_account(
         + f"no [{kind}.{name}] in {ACCOUNTS_FILE}). The spawn does not fall back to another "
         "account or to this machine's own login."
     )
+
+
+def list_accounts(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[tuple[SubscriptionAccount, ...], tuple[tuple[str, str], ...]]:
+    """Every account the accounts directory declares, as ``(accounts, unresolved)``.
+
+    *accounts* holds each declared name as ``resolve_account`` resolves it; *unresolved* holds
+    ``(provider, name)`` for each declared name it refuses (defined twice, a malformed row, a
+    Codex home that is gone). Both are sorted by provider, then name. A token file or table
+    whose name is not an account name is no account ``resolve_account`` could reach, and is
+    in neither. No credential is read.
+
+    Raises:
+        SubscriptionAccountError: the directory setting or the accounts file cannot be read.
+    """
+    directory = logins_dir(environ)
+    data = _read_accounts_file(directory)
+    declared: set[tuple[str, str]] = set()
+    if directory.is_dir():
+        for path in directory.glob("claude-*"):
+            name = path.name[len("claude-") :]
+            if _NAME_RE.fullmatch(name):
+                declared.add(("claude_code", name))
+    for provider in ACCOUNT_PROVIDERS:
+        declared.update((provider, n) for n in data.get(provider, {}) if _NAME_RE.fullmatch(n))
+    accounts: list[SubscriptionAccount] = []
+    unresolved: list[tuple[str, str]] = []
+    for provider, name in sorted(declared):
+        try:
+            accounts.append(resolve_account(name, provider, environ=environ))
+        except SubscriptionAccountError:
+            unresolved.append((provider, name))
+    return tuple(accounts), tuple(unresolved)
 
 
 def _read_token(account: SubscriptionAccount) -> str:
@@ -432,7 +506,8 @@ def codex_home_child_env(home: str, parent_env: Mapping[str, str] | None = None)
     The variables by which Codex would sign in from the environment are removed, so the
     home's own sign-in decides the account."""
     source = os.environ if parent_env is None else parent_env
-    env = {k: v for k, v in source.items() if k not in _CODEX_OUTRANKING_ENV}
+    dropped = (*_CODEX_OUTRANKING_ENV, ACCOUNT_ENV, ACCOUNT_CAP_ENV)
+    env = {k: v for k, v in source.items() if k not in dropped}
     env["CODEX_HOME"] = home
     return env
 
@@ -445,17 +520,27 @@ def account_child_env(
     Claude Code: the parent environment without the variables that outrank an OAuth token,
     with ``CLAUDE_CODE_OAUTH_TOKEN`` set to the account's token; the secret lookup skips those
     variables, so it does not put one back. Codex: the parent environment with ``CODEX_HOME``.
-    Reads the credential now, so a source that cannot be read refuses here.
+    Reads the credential now, so a source that cannot be read refuses here. An account with a
+    ``max_concurrent`` also names itself and that cap for the spawn's admission (names only;
+    the spawn removes both before the child starts); any such names the parent environment
+    held are dropped, so a child counts against no account but its own.
     """
     source = os.environ if parent_env is None else parent_env
+    source = without_account_names(source)
     if account.provider == "codex":
         home = validate_codex_home(account.location[0], where=f"account {account.name!r} home")
-        return codex_home_child_env(home, source), frozenset(_CODEX_OUTRANKING_ENV)
-    token = _read_token(account)
-    outranking = {name.upper() for name in _CLAUDE_OUTRANKING_ENV}
-    env = {k: v for k, v in source.items() if k.upper() not in outranking}
-    env[_CLAUDE_TOKEN_ENV] = token
-    return env, frozenset(_CLAUDE_OUTRANKING_ENV)
+        env = codex_home_child_env(home, source)
+        skip = frozenset(_CODEX_OUTRANKING_ENV)
+    else:
+        token = _read_token(account)
+        outranking = {name.upper() for name in _CLAUDE_OUTRANKING_ENV}
+        env = {k: v for k, v in source.items() if k.upper() not in outranking}
+        env[_CLAUDE_TOKEN_ENV] = token
+        skip = frozenset(_CLAUDE_OUTRANKING_ENV)
+    if account.max_concurrent is not None:
+        env[ACCOUNT_ENV] = f"{account.provider}.{account.name}"
+        env[ACCOUNT_CAP_ENV] = str(account.max_concurrent)
+    return env, skip
 
 
 @dataclass(frozen=True)

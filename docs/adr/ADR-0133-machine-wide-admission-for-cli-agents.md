@@ -601,6 +601,30 @@ Limits added by this part:
 - The profile's deny entry and the write-root refusal keep a Codex child from writing the record directory. They do not stop another process of the same account from writing it, and the write-root refusal compares the spellings it sees when the command line is built, so a link made afterwards is not seen.
 - A launch whose `PATH` names a different binary than the one probed needs its own record.
 
+## Amendment: a pool per subscription account
+
+Status: Proposed
+
+A subscription account's provider limits how many sessions it serves at once, and that limit belongs to the account, not to the engine or the machine: two Claude Code accounts on one machine each have their own.
+
+This amendment serves issue #4720. It adds a fourth kind of pool to D2. It changes nothing for an agent that runs on no named account, or on an account with no cap.
+
+| Pool | Counts | Cap |
+|------|--------|-----|
+| `account.<provider>.<name>` | agents on one named subscription account | the account row's `max_concurrent` in `accounts.toml` |
+
+- **Where the cap comes from.** A `[claude_code.<name>]` or `[codex.<name>]` row may set `max_concurrent = N`, a whole number of 1 or more; a token-file account takes it from a `[claude_code.<name>]` table holding only that key. A value that is not a whole number of at least 1 refuses the row when the account is resolved, so a cap never reads as unlimited. Without the key the account takes no account pool.
+- **How it reaches the spawn site.** D1's single spawn site is unchanged. The account's child environment carries two names, `LIONAGI_SUBAGENT_ACCOUNT=<provider>.<name>` and `LIONAGI_SUBAGENT_ACCOUNT_CAP=<N>`; the spawn site reads them only from an environment its caller built, removes both before the child's environment is final, and passes the account and its cap to the same all-or-none admission as the other pools. Both names are dropped from every child environment lionagi builds by copying a process environment: a named account's own environment, a profile's `agent_env` overlay, the environment of a run moved from an API model to a Claude Code subscription, and the pi environment. Values inherited from the launching process's own environment are therefore never read, so an agent cannot put itself, or a child, into another account's pool, or out of its own. A profile's `agent_env` cannot set them either: an agent is admitted into an account pool only through a named account. A marker that does not parse (a malformed name, a cap that is missing, `0` or not a whole number) refuses the spawn before the child starts, naming the variable and never echoing its value.
+- **The pool name** is built from the provider and the account's name in `accounts.toml` only, never from a path, so a Codex home moved to another directory keeps its pool and two names for one home are two pools.
+- **Recorded cap.** Each holder records the cap it was admitted under, and an admission enforces the smallest cap a current holder recorded, as for the variable caps (D3): a lowered `max_concurrent` applies at once, a raised one as the holders admitted under the lower one release. `subagent_admission_status` reports an account pool's cap as that smallest recorded cap, `0` when no slot is held, and each holder's account.
+- **Who counts.** Every CLI agent the spawn site starts on the account counts, however it was started. An agent on a Codex home named directly (`codex_home`, no name) takes no account pool.
+- **What a person sees.** The MCP verb `account.list` lists each declared account with its `max_concurrent`, the slots its pool holds and the cap the pool enforces, beside counts this server's job records support.
+
+Limits added by this amendment:
+
+- The cap counts agents on this machine that share one `LIONAGI_HOME`, as every pool does. Sessions on the same account from another machine, or from the provider's own client outside lionagi, are not counted.
+- An account pool is created on the first admission to it, so an account that has never run an agent shows no pool and `0` held slots.
+
 ## Notes
 
 The engine pool name is the engine string lower-cased (`codex`, `claude`, `gemini`, `pi`); the
