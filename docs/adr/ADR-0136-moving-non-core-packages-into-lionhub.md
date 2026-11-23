@@ -18,8 +18,9 @@
   `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
   until 2.0.0. Other mentions of the hub under `lionagi/` are comments and docstrings. The Studio
   application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
-  `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is not yet a test: the
-  moved-module tests derive their old paths from the packages as they stand. Later package moves and
+  `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is
+  `tests/test_studio_frozen_inventory.py`; G4's fresh-install tests from the built wheel outside the
+  checkout are not yet written. Later package moves and
   the removal release (D4) remain. See `lionhub/tests` and `lionhub/README.md`.
 - **Area**: governance
 - **Date**: 2026-10-25
