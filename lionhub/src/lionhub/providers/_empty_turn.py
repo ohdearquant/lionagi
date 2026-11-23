@@ -39,13 +39,15 @@ STDERR_TAIL_CHARS = 2000
 _FAILURE = "The CLI ended the turn without assistant text, a tool call or an error (empty_turn)."
 
 
-def is_empty_turn(session: CLISession) -> bool:
+def is_empty_turn(session: CLISession, *, made_call: bool = False) -> bool:
     """Whether *session* ended with no failure, no tool call and no assistant text.
 
     Text counts when it holds a character other than whitespace, in a text chunk or in the
-    session's result. Reasoning and notices are not assistant text.
+    session's result. Reasoning and notices are not assistant text. *made_call* is the
+    parser's own record that the CLI made a call, for a parser that sees calls it does not
+    keep as tool uses (an MCP tool call or a web search in codex).
     """
-    if session.is_error or session.tool_uses or session.tool_results:
+    if made_call or session.is_error or session.tool_uses or session.tool_results:
         return False
     if isinstance(session.result, str) and session.result.strip():
         return False

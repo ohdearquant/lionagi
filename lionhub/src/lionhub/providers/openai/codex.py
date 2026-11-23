@@ -3802,6 +3802,10 @@ async def stream_codex_cli(
     # call-markup check reads only the last one, when a turn completes or the
     # stream ends. Code regions of that text are removed before matching.
     _last_agent_text: str | None = None
+    # Whether a completed item was a call or a call's result, of any type in
+    # `_CALL_ITEM_TYPES`: some (an MCP tool call, a web search) are not kept as tool uses,
+    # and a turn that made one is not an empty turn.
+    _made_call = False
     # The CLI's stderr after a clean exit, as the closing ``done`` event carries it; None when
     # the stream ended without one.
     _stderr: str | None = None
@@ -3835,6 +3839,7 @@ async def stream_codex_cli(
                 # must not fail the turn. Other items leave the text as it was.
                 if item_type in _CALL_ITEM_TYPES:
                     _last_agent_text = None
+                    _made_call = True
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
@@ -4107,7 +4112,7 @@ async def stream_codex_cli(
                     # A turn that is empty at the sentinel is not ended by it: the
                     # stream runs on to its end, where the empty turn fails with the
                     # CLI's stderr, which is read only once the CLI has exited.
-                    if is_empty_turn(session):
+                    if is_empty_turn(session, made_call=_made_call):
                         continue
                     sc = StreamChunk(
                         type="error",
@@ -4267,7 +4272,7 @@ async def stream_codex_cli(
 
     # A turn that ended with no text, no tool call and no failure fails here, quoting the CLI's
     # stderr. Nothing retries it.
-    if is_empty_turn(session):
+    if is_empty_turn(session, made_call=_made_call):
         yield empty_turn_chunk(session, _stderr, _stderr_unread)
 
     if not session.result:

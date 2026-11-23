@@ -15,6 +15,11 @@ LARGE_JSON_EXCEPTIONS = frozenset(
     {
         "apps/studio/frontend/package-lock.json",
         "benchmarks/comparisons/benchmark_results_20251015_141023.json",
+        # The compatibility snapshot is written by its own test from the public surface
+        # (every module's __all__ and signatures) and compared parsed, never read by hand
+        # in full; it grows by one entry per new export, so a size ceiling on it would
+        # refuse an export rather than a data dump. Same kind as cli.json and http.json.
+        "tests/contracts/data/boundary_compatibility.json",
         "tests/contracts/data/cli.json",
         "tests/contracts/data/http.json",
     }

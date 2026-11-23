@@ -23,7 +23,12 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import resolve_run_reason
 from lionhub.providers._empty_turn import STDERR_TAIL_CHARS, is_empty_turn
-from lionhub.providers.openai.codex import CodexCLIEndpoint, CodexCodeRequest, stream_codex_cli
+from lionhub.providers.openai.codex import (
+    _CALL_ITEM_TYPES,
+    CodexCLIEndpoint,
+    CodexCodeRequest,
+    stream_codex_cli,
+)
 
 TURN_COMPLETED = {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 0}}
 BENIGN_SENTINEL = {"type": "error", "error": {}}
@@ -94,6 +99,54 @@ class TestTheParser:
 
         assert _empty_turn(chunks) == []
         assert [c.content for c in chunks if c.is_error] == ["boom"]
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {
+                "type": "mcp_tool_call",
+                "id": "item_1",
+                "server": "notes",
+                "tool": "send",
+                "arguments": {"to": "someone"},
+                "status": "completed",
+            },
+            {"type": "web_search", "id": "item_2", "query": "release notes"},
+        ],
+        ids=["mcp_tool_call", "web_search"],
+    )
+    async def test_a_turn_whose_only_work_was_a_call_is_not_empty(self, item):
+        """The parser keeps neither of these as a tool use; it records the call itself."""
+        chunks, session = await _parse(
+            [{"type": "item.completed", "item": item}, TURN_COMPLETED, _done("")]
+        )
+
+        assert _empty_turn(chunks) == []
+        assert session.is_error is False
+
+    @pytest.mark.parametrize("item_type", sorted(_CALL_ITEM_TYPES))
+    async def test_every_item_type_the_parser_counts_as_a_call_keeps_a_turn_from_being_empty(
+        self, item_type
+    ):
+        """One list decides both what supersedes a message and what makes a turn not empty."""
+        item = {"type": item_type, "id": "item_1", "call_id": "call_1", "name": "tool"}
+        chunks, session = await _parse(
+            [{"type": "item.completed", "item": item}, TURN_COMPLETED, _done("")]
+        )
+
+        assert _empty_turn(chunks) == []
+        assert session.is_error is False
+
+    async def test_an_item_that_is_not_a_call_leaves_the_turn_empty(self):
+        chunks, _ = await _parse(
+            [
+                {"type": "item.completed", "item": {"type": "reasoning", "text": "thinking"}},
+                TURN_COMPLETED,
+                _done(""),
+            ]
+        )
+
+        assert len(_empty_turn(chunks)) == 1
 
     def test_a_tool_call_alone_is_not_an_empty_turn(self):
         session = CLISession()
