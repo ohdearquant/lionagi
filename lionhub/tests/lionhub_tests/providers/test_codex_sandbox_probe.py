@@ -1174,13 +1174,15 @@ def _real_listeners(monkeypatch) -> dict[str, probe_module.UnixListener]:
 
 
 def _child_connect(path: str) -> str:
-    return subprocess.run(
+    """A connect step's output as a probe step prints it: the connect line, then ``rc=``."""
+    done = subprocess.run(
         [sys.executable, "-c", probe_module._CONNECT_CODE, path],
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
-    ).stdout
+    )
+    return f"{done.stdout}rc={done.returncode}"
 
 
 def test_the_outside_marks_bracket_a_real_run(tmp_path, monkeypatch):
