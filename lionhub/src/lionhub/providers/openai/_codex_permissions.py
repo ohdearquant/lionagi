@@ -685,16 +685,25 @@ def _launch_binary(binary: str, env: Mapping[str, str], cwd: str | os.PathLike[s
     return found or binary
 
 
-def _socket_refusal(arm: str, version: str, resolved: str) -> str:
+def _socket_refusal(arm: str, version: str, resolved: str, *, other_passed: bool) -> str:
     """Why a launch is refused when its network state's socket arm did not pass, and what the
     remedies are: the binary, the arm, and either the settings that turn the network off or
-    the fact that no setting admits the launch on this binary."""
+    the fact that no setting admits the launch on this binary. ``other_passed`` says whether
+    the record shows the other network state's socket arm as passed: when a network-on launch
+    is refused and the network-off arm did not pass either, turning the network off admits
+    nothing, so no setting is offered."""
     head = (
         f"codex {version} at {resolved!r} did not pass {arm}: a child of a run with the network "
         f"{'on' if arm == SOCKET_ARMS[True] else 'off'} could connect to a unix socket inside a "
         "denied directory, so a listener there (a credential agent, a local daemon) would answer "
         "it."
     )
+    if arm == SOCKET_ARMS[True] and not other_passed:
+        return (
+            f"{head} It did not pass {SOCKET_ARMS[False]} either, so no setting admits a profiled "
+            f"launch on this binary; probe another codex version with "
+            f"`{PROBE_COMMAND} --binary <path>`."
+        )
     if arm == SOCKET_ARMS[True]:
         return (
             f"{head} Set `sandbox_workspace_write.network_access = false` in the codex config, or "
@@ -746,11 +755,16 @@ def require_passing_probe_record(
         failed = _failed_arms(record, launch_env, table)
         sockets = [name for name in failed if name in SOCKET_ARMS.values()]
         if failed and len(sockets) == len(failed) == 1:
-            # The one arm a setting may answer: its own remedies, and no others.
+            # The one arm a setting may answer: its own remedies, and no others. The record also
+            # says whether the other state's arm passed, which decides whether a setting helps.
+            network_on = sockets[0] == SOCKET_ARMS[True]
+            arms = record.get("arms")
+            other = arms.get(SOCKET_ARMS[not network_on]) if isinstance(arms, Mapping) else None
+            other_passed = isinstance(other, Mapping) and other.get("passed") is True
             raise CLIInputRefusedError(
                 "a codex child runs under lionagi's permission profile while the child sandbox "
                 "is enabled, and only on a codex binary shown to enforce it; "
-                + _socket_refusal(sockets[0], version, resolved)
+                + _socket_refusal(sockets[0], version, resolved, other_passed=other_passed)
             )
         if failed:
             problem = (

@@ -946,6 +946,27 @@ def test_a_network_on_refusal_names_the_binary_the_arm_and_both_remedies(tmp_pat
     assert "child_sandbox" not in text
 
 
+def test_a_network_on_refusal_offers_no_setting_when_the_network_off_arm_failed_too(
+    tmp_path, record_dir
+):
+    # The both-fail column read as text: turning the network off would meet a second refusal.
+    binary = _record_with(tmp_path, **{_ON: True, _OFF: True})
+    with pytest.raises(CLIInputRefusedError) as refused:
+        require_passing_probe_record(
+            str(binary), env={"PATH": ""}, table=_LAUNCHES["heavy, network on"]
+        )
+    text = str(refused.value)
+    assert "codex 0.162.1" in text
+    assert repr(os.path.realpath(binary)) in text
+    assert _ON in text
+    assert _OFF in text
+    assert "no setting admits a profiled launch on this binary" in text
+    assert f"{PROBE_COMMAND} --binary" in text
+    assert "network_access" not in text
+    assert "workload" not in text
+    assert "child_sandbox" not in text
+
+
 def test_a_network_off_refusal_says_no_setting_admits_it_and_names_the_probe(tmp_path, record_dir):
     binary = _record_with(tmp_path, **{_OFF: True})
     for name in ("light", "read-only", "heavy, network off"):
