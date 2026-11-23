@@ -544,3 +544,76 @@ async def test_an_orchestrator_whose_model_cannot_hold_the_entries_is_refused_be
             no_mcp_config=True,
         )
     assert allocated == []
+
+
+def _worker_profile(entries: tuple[str, ...]) -> SimpleNamespace:
+    return SimpleNamespace(
+        name="reader",
+        raw_body=True,
+        system_prompt="Read and report.",
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        khive_injection=None,
+        workload="light",
+        deny_read=entries,
+    )
+
+
+def test_a_worker_whose_model_cannot_hold_the_entries_is_refused_when_built(tmp_path):
+    from lionhub_tests.serve.cli.orchestrate.test_worker_artifact_directive import _build_worker
+
+    worker = {"agent_id": "reader", "role": "reader", "bare": False, "is_cli": False}
+    # Control: the same worker on the same API model builds when its role declares nothing.
+    _env, _imodel, built = _build_worker(
+        tmp_path, profile=_worker_profile(()), provider="anthropic", **worker
+    )
+    assert "imodel_kwargs" in built
+    with pytest.raises(ConfigurationError, match="'reader' declares deny_read") as refused:
+        _build_worker(tmp_path, profile=_worker_profile((KEYS,)), provider="anthropic", **worker)
+    assert "read tool set" in str(refused.value)
+
+
+# --------------------------------------------------------------------------- engine stages
+
+
+# A stage role must be one AgentSpec composes, so these use built-in role names, each given a
+# profile file of its own.
+
+
+def _stage_profile(home: Path, role: str, lines: str = "") -> None:
+    (home / ".lionagi" / "agents" / f"{role}.md").write_text(f"---\nname: {role}\n{lines}---\n")
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_declares_entries_is_refused_when_built(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    _stage_profile(home, "critic", _DENY)
+    run = Engine().new_run()
+    with pytest.raises(ConfigurationError, match="'critic' declares deny_read") as refused:
+        await run.make_agent("critic", name="c1")
+    assert "engine stage takes only the model and effort" in str(refused.value)
+    assert run.agents_made == 0
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_declares_no_entries_is_built(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    _stage_profile(home, "researcher")
+    run = Engine().new_run()
+    branch = await run.make_agent("researcher", name="r1")
+    assert branch.name == "r1"
+    assert run.agents_made == 1
+
+
+@pytest.mark.asyncio
+async def test_an_engine_stage_whose_role_has_a_malformed_deny_read_is_refused(home):
+    from lionhub.orchestration.engines.engine import Engine
+
+    _stage_profile(home, "analyst", "deny_read:\n  - relative/keys\n")
+    run = Engine().new_run()
+    with pytest.raises(ConfigurationError, match="must be an absolute path"):
+        await run.make_agent("analyst", name="a1")
+    assert run.agents_made == 0

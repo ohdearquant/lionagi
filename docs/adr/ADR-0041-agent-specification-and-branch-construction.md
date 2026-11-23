@@ -61,7 +61,7 @@ Decision:
 | the same | any other CLI | refused at launch | the named provider has no child sandbox to hold them |
 | `li o flow`, `li o fanout` and `li play`, the orchestrator's role | as the rows above for its provider | as above | as above, at launch |
 | a worker's role in a flow, fan-out or play | as the rows above for its provider | as above | as above, when the worker is built, after the orchestrator's run directory exists |
-| an orchestration engine stage | any | not applied: a stage takes only the model and effort of a role's profile | |
+| an orchestration engine stage | any | refused when the stage's agent is built, before it counts against the engine's agent budget | a stage takes only the model and effort from its role's profile, so nothing carries the entries to its child |
 
 Required checks:
 
@@ -76,9 +76,12 @@ Required checks:
   sandbox parameters or API-model policy contains the entry, with a control rendered without it.
 - Each refusing route refuses with its reason. `li agent` refuses before the run directory exists
   for the Gemini CLI without the macOS sandbox and with the sandbox switched off, and so does an
-  orchestrator whose model is the Gemini CLI without it. The sandbox switched off refuses the
-  profile resolver, a Claude Code request, a codex request and a model build; codex refuses
-  under `bypass_approvals`.
+  orchestrator whose model is the Gemini CLI without it. A worker whose model cannot hold the
+  entries refuses when it is built, with a control showing the same worker builds when its role
+  declares none. An engine stage whose role declares entries, or a malformed `deny_read`, refuses
+  when its agent is built, and a stage whose role declares none builds. The sandbox switched off
+  refuses the profile resolver, a Claude Code request, a codex request and a model build; codex
+  refuses under `bypass_approvals`.
 - On a macOS host where the sandbox can be applied, a command reads a control file and then a
   denied file in one run: the control read succeeds and the denied read fails.
 
@@ -86,10 +89,10 @@ Limits:
 
 - Measured on codex 0.162.1 with the network on, a unix socket under a denied path accepted a
   connection. A `heavy` codex run therefore holds file reads under an entry but not a connection
-  to a socket there. What a profiled `heavy` codex launch may be given is decided in its own
-  amendment.
-- An engine stage does not apply a role's entries, as the table says. Whether a stage whose role
-  declares entries is refused or given them is decided before this amendment is accepted.
+  to a socket there. Which profiled codex launches may run on such a binary is decided in an
+  ADR-0133 amendment, which measures the socket check once per network state.
+- An engine stage is refused rather than given a role's entries, as the table says. Carrying the
+  entries to a stage's model is a later change with its own row here.
 - The entries are checked when the profile is loaded for a launch. A link made at an entry's path
   after that is not seen by the check; the sandbox then denies the spelling the entry names.
 

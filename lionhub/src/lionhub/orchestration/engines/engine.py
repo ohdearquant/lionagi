@@ -323,6 +323,44 @@ def role_profile_injection(role: str) -> Any:
     return value
 
 
+def _refuse_stage_deny_read(role: str) -> None:
+    """Refuse an engine stage whose role's agent profile declares ``deny_read``.
+
+    A stage takes only the model and effort from its role's profile (:func:`role_profile_route`),
+    so nothing carries the profile's ``deny_read`` entries to the stage's child, and building it
+    would drop them (ADR-0041 Amendment 7). A profile whose ``deny_read`` does not read is refused
+    too, since the loader's refusal names the key. A profile that is absent, or fails to load for
+    any other reason, keeps the handling :func:`role_profile_route` gives it.
+
+    Raises:
+        ConfigurationError: the role's profile declares ``deny_read``, or its ``deny_read`` is
+            malformed, unreadable or misplaced.
+    """
+    if not isinstance(role, str) or not role:
+        return
+    from lionhub.orchestration.spawn import load_agent_profile  # noqa: PLC0415
+
+    try:
+        profile = load_agent_profile(role)
+    except FileNotFoundError:
+        return
+    except ConfigurationError as exc:
+        # Every loader refusal about the key names it; read as absent, the entries would drop.
+        if "deny_read" in str(exc):
+            raise
+        return
+    except Exception:
+        # role_profile_route logs this one; the stage runs on its other settings, as before.
+        return
+    if getattr(profile, "deny_read", ()):
+        raise ConfigurationError(
+            f"agent profile {role!r} declares deny_read, which this run cannot hold: an engine "
+            "stage takes only the model and effort from its role's profile, so nothing carries "
+            "the entries to the stage's child. Run the profile where its entries hold, or remove "
+            "deny_read from it."
+        )
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -776,6 +814,8 @@ class EngineRun:
         _effort_origin: str | None = None,
         _model_origin: str | None = None,
     ) -> Branch:
+        # Before the budget is spent: a stage that cannot hold its role's deny_read never builds.
+        _refuse_stage_deny_read(role)
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
         if not exempt and not self.budget_left():
