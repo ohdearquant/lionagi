@@ -449,7 +449,8 @@ def _role(lines: str, model: str = "claude_code/sonnet") -> str:
 
 def _wire_run(monkeypatch, tmp_path: Path, role_text: str) -> dict:
     import lionhub.serve.cli.agent as agent_mod
-    from lionhub_tests.serve.cli.test_agent_resume_model_override import _wire_agent_stubs
+
+    from ..serve.cli.test_agent_resume_model_override import _wire_agent_stubs
 
     _wire_agent_stubs(monkeypatch, tmp_path)
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: SETTINGS)
@@ -563,7 +564,7 @@ def _worker_profile(entries: tuple[str, ...]) -> SimpleNamespace:
 
 
 def test_a_worker_whose_model_cannot_hold_the_entries_is_refused_when_built(tmp_path):
-    from lionhub_tests.serve.cli.orchestrate.test_worker_artifact_directive import _build_worker
+    from ..serve.cli.orchestrate.test_worker_artifact_directive import _build_worker
 
     worker = {"agent_id": "reader", "role": "reader", "bare": False, "is_cli": False}
     # Control: the same worker on the same API model builds when its role declares nothing.
