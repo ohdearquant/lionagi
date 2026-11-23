@@ -1295,13 +1295,15 @@ child's `TMPDIR`, `TMP` and `TEMP` name it. run.json records it under `scratch`:
 Removal goes by the recorded path and touches nothing else. A symbolic link inside is removed as
 a link and what it points to is left alone. When the directory itself has become a symbolic link,
 is no longer a directory, or is not where it was made, it is left exactly as it is and
-`removal_error` says why. What could not be removed, such as a file a process the child left
-running is still writing, is named there too.
+`removal_error` says why. A directory left read-only inside, a module cache for one, is opened up
+to its owner without following a link and removed. What could not be removed is named there too:
+a file a process the child left running is still writing, what is inside a directory its owner
+cannot open for reading, or, before Python 3.13, a tree deeper than the open-file limit.
 
 Only a direct `li agent` run on a Claude Code model gets a scratch directory, and that covers
-`agent.submit` and agent schedules, which start `li agent`. Each other run refuses the profile
-before its run directory is made, naming the reason: a codex model, a Gemini CLI model, an API
-model, and the orchestrator's role in `li o flow`, `li o fanout` and `li play`. A worker's role
+`agent.submit`, agent schedules and a leg host's launches, which start `li agent`. Each other
+run refuses the profile before its run directory is made, naming the reason: a codex model, a
+Gemini CLI model, an API model, and the orchestrator's role in `li o flow`, `li o fanout` and `li play`. A worker's role
 in a flow, fan-out or play is refused when the worker is resolved, after the orchestrator's run
 directory exists. Remove `scratch` from a profile to use it there.
 

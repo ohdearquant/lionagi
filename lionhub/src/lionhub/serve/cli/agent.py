@@ -1895,6 +1895,24 @@ def _scratch_refusal(provider: str, *, api_launch: bool, is_cli: bool) -> str | 
     return f"the {provider or 'unknown'} provider has no scratch directory support"
 
 
+def _finish_run_scratch(scratch: Any) -> dict[str, Any]:
+    """End a run's scratch directory and return its run.json entry; nothing it raises escapes.
+
+    The removal walks a tree the child wrote, and it runs first in the run's shielded teardown,
+    ahead of the final reply, the terminal notice and the model shutdown that teardown exists to
+    reach. Whatever leaves it becomes the entry's ``removal_error``, and ``removed`` says whether
+    the directory is still there.
+    """
+    try:
+        return scratch.finish()
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return {
+            **scratch.record(),
+            "removed": not os.path.lexists(scratch.path),
+            "removal_error": f"scratch removal raised {type(exc).__name__}: {exc}",
+        }
+
+
 def _bind_run_scratch(chat_model: Any, scratch: Any) -> None:
     """Hand the run's scratch directory to its CLI endpoint, or take away one left from before.
 
@@ -3701,11 +3719,16 @@ async def _run_agent(
                 if _run_scratch is not None:
                     # The child's process group has ended by now, so nothing writes into the
                     # directory while it goes. An automatic resume makes a scratch of its own.
-                    run_manifest["scratch"] = await run_sync(_run_scratch.finish)
+                    run_manifest["scratch"] = await run_sync(_finish_run_scratch, _run_scratch)
                     if run_manifest["scratch"]["removal_error"]:
                         log_error(run_manifest["scratch"]["removal_error"])
                     if _write_run_manifest is not None:
-                        _write_run_manifest(run_manifest)
+                        try:
+                            _write_run_manifest(run_manifest)
+                        except Exception as _manifest_exc:  # noqa: BLE001 — teardown goes on
+                            log_error(
+                                f"could not record the scratch directory's end: {_manifest_exc!r}"
+                            )
                 job_result_run = None if will_auto_resume else _job_result_run
                 if notify or job_result_run is not None:
                     replies = _new_assistant_replies(branch, before_leg)

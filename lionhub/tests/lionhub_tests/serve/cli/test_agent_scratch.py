@@ -176,9 +176,10 @@ def test_a_directory_already_gone_is_not_an_error(tmp_path):
     assert scratch.finish()["removal_error"] is None
 
 
-@pytest.mark.skipif(
-    os.chmod not in os.supports_follow_symlinks, reason="needs a mode change that follows no link"
-)
+_OWNER_BYPASSES_MODES = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+@pytest.mark.skipif(_OWNER_BYPASSES_MODES, reason="root removes a read-only directory anyway")
 def test_a_read_only_directory_inside_is_removed(tmp_path):
     scratch = RunScratch.create(_run_dir(tmp_path), keep=False)
     locked = scratch.path / "cache" / "pkg"
@@ -188,6 +189,41 @@ def test_a_read_only_directory_inside_is_removed(tmp_path):
     os.chmod(locked.parent, 0o555)
     entry = scratch.finish()
     assert entry["removed"] is True and entry["removal_error"] is None
+
+
+@pytest.mark.skipif(_OWNER_BYPASSES_MODES, reason="root opens a directory whatever its mode")
+def test_a_directory_its_owner_cannot_open_is_left_and_named(tmp_path):
+    scratch = RunScratch.create(_run_dir(tmp_path), keep=False)
+    sealed = scratch.path / "sealed"
+    sealed.mkdir()
+    (sealed / "held").write_text("x")
+    os.chmod(sealed, 0)
+    try:
+        entry = scratch.finish()
+        assert entry["removed"] is False
+        assert entry["removal_error"].startswith("scratch partly removed: ")
+        assert str(sealed) in entry["removal_error"]
+    finally:
+        os.chmod(sealed, 0o700)
+
+
+@pytest.mark.skipif(_OWNER_BYPASSES_MODES, reason="root removes a read-only directory anyway")
+def test_opening_up_a_directory_changes_no_link_target(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.chmod(outside, 0o500)
+    scratch = RunScratch.create(_run_dir(tmp_path), keep=False)
+    locked = scratch.path / "locked"
+    locked.mkdir()
+    os.symlink(outside, locked / "out")
+    (locked / "held").write_text("x")
+    os.chmod(locked, 0o500)
+    try:
+        entry = scratch.finish()
+        assert entry["removed"] is True and entry["removal_error"] is None
+        assert stat.S_IMODE(os.stat(outside).st_mode) == 0o500
+    finally:
+        os.chmod(outside, 0o700)
 
 
 # --------------------------------------------------------------------------- the claude_code child
@@ -396,6 +432,41 @@ async def test_a_link_put_in_place_of_scratch_is_left_and_named_in_run_json(monk
     assert final["removed"] is False
     assert "is a symbolic link" in final["removal_error"]
     assert sentinel.read_text() == "keep me"
+
+
+@pytest.mark.asyncio
+async def test_a_removal_that_raises_is_recorded_and_the_teardown_still_runs(monkeypatch, tmp_path):
+    import lionhub.orchestration.run_scratch as run_scratch
+    import lionhub.serve.cli.agent as agent_mod
+    from lionagi.service.manager import iModelManager
+    from lionhub.serve.cli.agent import _run_agent
+
+    state = _wire_run(monkeypatch, tmp_path, _role("scratch: true\n"))
+    _during_the_turn(monkeypatch)
+    teardowns: list[str] = []
+
+    async def recording_teardown(ctx, *, status="completed", **kw):
+        teardowns.append(status)
+        return status
+
+    def raising(path, run_dir):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", recording_teardown)
+    monkeypatch.setattr(run_scratch, "remove_scratch", raising)
+
+    await _run_agent(None, "review", agent_name="role")
+
+    path = state["run_dir"] / "scratch"
+    assert state["manifests"][-1]["scratch"] == {
+        "path": str(path),
+        "keep": False,
+        "removed": False,
+        "removal_error": "scratch removal raised RecursionError: maximum recursion depth exceeded",
+    }
+    assert path.is_dir()
+    assert teardowns == ["completed"]
+    iModelManager.shutdown.assert_awaited()
 
 
 @pytest.mark.asyncio

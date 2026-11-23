@@ -26,30 +26,44 @@ SCRATCH_MODES: tuple[str, ...] = ("remove", "keep")
 
 _OWNER_ONLY = stat.S_IRWXU
 
+# A directory opened with these flags is never reached through a symbolic link at the last
+# component, so a mode changed through the descriptor is that directory's, not a link target's.
+# Linux has no lchmod, so a mode change by path cannot refuse a link there; this works on Linux and
+# macOS alike.
+_CAN_OPEN_UP = all(hasattr(os, name) for name in ("fchmod", "O_DIRECTORY", "O_NOFOLLOW"))
+_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _open_up(path: str) -> None:
+    """Give the owner read, write and search on the directory at *path*, if it can be opened."""
+    try:
+        fd = os.open(path, _DIRECTORY_FLAGS)
+    except OSError:
+        return
+    try:
+        os.fchmod(fd, _OWNER_ONLY)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
 
 def _grant_owner_access(root: str) -> None:
     """Give the owner read, write and search on every directory under *root*, links not followed.
 
     A tool can leave a directory it made read-only (a module cache does), and removing its
-    entries needs write on it. Only real directories are changed: a symbolic link is skipped, and
-    the change itself does not follow one. Where the platform cannot change a mode without
-    following a link, nothing is changed and the first removal's errors stand.
+    entries needs write on it. Each directory is opened with ``O_DIRECTORY`` and ``O_NOFOLLOW``
+    and its mode changed through that descriptor, so a symbolic link in its place is not opened
+    and nothing it names is changed. A directory its owner cannot open for reading is left as it
+    is, with everything below it, and the second removal's errors name it. Where the platform
+    lacks ``fchmod``, ``O_DIRECTORY`` or ``O_NOFOLLOW``, nothing is changed.
     """
-    if os.chmod not in os.supports_follow_symlinks:
+    if not _CAN_OPEN_UP:
         return
-    try:
-        os.chmod(root, _OWNER_ONLY, follow_symlinks=False)
-    except OSError:
-        return
+    _open_up(root)
     for dirpath, dirnames, _ in os.walk(root, followlinks=False):
         for name in dirnames:
-            path = os.path.join(dirpath, name)
-            try:
-                if not stat.S_ISDIR(os.lstat(path).st_mode):
-                    continue
-                os.chmod(path, _OWNER_ONLY, follow_symlinks=False)
-            except OSError:
-                continue
+            _open_up(os.path.join(dirpath, name))
 
 
 def _rmtree(path: str) -> list[str]:
@@ -71,7 +85,9 @@ def remove_scratch(path: str | os.PathLike[str], run_dir: str | os.PathLike[str]
     Only that directory goes, by the path the run recorded. It is refused, and left exactly as it
     is, when it is a symbolic link, is not a directory, is not named ``scratch``, or does not sit
     directly in *run_dir*. Nothing inside it is followed: a link inside is removed as a link and
-    what it points to is left alone. A directory already gone is not an error.
+    what it points to is left alone. A directory already gone is not an error. When the first
+    removal leaves something, every directory under *path* is opened up to its owner and removal
+    runs once more; what is inside a directory its owner cannot open is left and named.
     """
     path = os.fspath(path)
     run_dir = os.fspath(run_dir)

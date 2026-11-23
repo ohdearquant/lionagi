@@ -34,11 +34,14 @@ Decision:
 - **Removal.** In the run's shielded teardown, after the child's process group has ended, `true`
   removes the directory by its recorded path. It is refused, and left exactly as it is, when it is
   a symbolic link, is not a directory, is not named `scratch`, or is not directly in the run
-  directory. A link inside is removed as a link and what it points to is left alone. When a
-  directory inside is read-only, the owner is given access to every directory under scratch,
-  without following a link, and removal runs once more. run.json's `scratch` then reads
-  `removed` and `removal_error`; the error names what was refused or left. `keep` leaves the
-  directory and reads `removed: false` with no error.
+  directory. A link inside is removed as a link and what it points to is left alone. When the
+  first removal leaves something, a directory inside being read-only for one, every directory
+  under scratch is opened with `O_DIRECTORY` and `O_NOFOLLOW` and given owner access through that
+  descriptor, so no link is followed on Linux or macOS, and removal runs once more. What is
+  inside a directory its owner cannot open for reading is left and named. Anything the
+  removal raises is recorded as its error, and the teardown after it still runs. run.json's
+  `scratch` then reads `removed` and `removal_error`; the error names what was refused or left.
+  `keep` leaves the directory and reads `removed: false` with no error.
 - **Sockets.** macOS limits a unix socket path to 104 bytes, and a tool that makes a socket under
   `TMPDIR` in a deep run directory can pass it. The docs say so; no shorter directory is made in
   its place.
@@ -47,7 +50,7 @@ Decision:
 
 | Launch surface | Provider | Scratch | Reason given when refused |
 | --- | --- | --- | --- |
-| `li agent`, and `agent.submit` and an agent schedule, which start `li agent` | Claude Code CLI | made, as above | |
+| `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI | made, as above | |
 | the same | codex | refused at launch | a codex run needs a sandbox probe record of format 4, which measures a read-only policy with one write root, and no such record exists yet |
 | the same | Gemini CLI | refused at launch | the Gemini CLI's sandbox does not bound reads and grants no single writable directory this launcher can verify |
 | the same | an API model | refused at launch | an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch root yet |
@@ -66,7 +69,10 @@ Required checks:
   targets survive. A symbolic link put in place of scratch is left, its target survives, and
   run.json carries the named error, both from the removal itself and from a run.
 - A path that is a file, is named otherwise, or is outside the run directory is refused and left.
-  A read-only directory inside is removed where a mode can be changed without following a link.
+  A read-only directory inside is removed, a directory its owner cannot open is left and named,
+  and opening up a directory changes nothing a link inside it points to. A removal that raises
+  something other than an `OSError` is recorded in run.json, and the teardown after it still
+  runs.
 - The child's settings gain exactly the scratch path as a write root and in the hook's roots; a
   scratch path that is a link refuses the launch; a gone one adds nothing. The child's three
   temporary-directory variables name it, with an inherited and a given environment, and a run
@@ -89,6 +95,10 @@ Limits:
   run's directory goes at that run's end unless kept.
 - A process the child left running after the run can still write into the directory while it is
   removed. Removal reports what it could not remove, and nothing retries it.
+- Before Python 3.13, removal descends recursively and holds a descriptor per level, so a tree
+  deeper than the open-file limit (256 by default on macOS) is left and named.
+- A directory its owner cannot open for reading, mode 0300 for one, is not opened up, so what is
+  inside it is left and named.
 - A kept directory stays until its run directory is removed; nothing sweeps kept directories.
 
 ## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
