@@ -71,9 +71,14 @@ def _run(tmp_path, env, **kwargs):
 
 
 def test_the_prompts_and_cases_are_fixed_in_the_source():
-    assert [case.name for case in CASES] == ["no_output", "unknown_model", "hook_blocked"]
+    assert [case.name for case in CASES] == [
+        "no_output", "unknown_model", "hook_blocked", "scratch_no_hook",
+    ]  # fmt: skip
     assert all(case.prompt for case in CASES)
-    assert [case.scratch_home for case in CASES] == [False, False, True]
+    assert [case.scratch_home for case in CASES] == [False, False, True, True]
+    assert [case.hook for case in CASES] == [False, False, True, False]
+    # The control asks what the hook case asks, so the hook is the one difference.
+    assert CASES[2].prompt == CASES[3].prompt and CASES[2].extra_args == CASES[3].extra_args
 
 
 def test_the_default_capture_runs_two_cases_read_only_without_user_config(tmp_path, env):
@@ -139,6 +144,23 @@ def test_the_hook_case_runs_in_a_scratch_home_whose_hook_reads_as_trusted(tmp_pa
         [str(home / "block-prompt.sh")], capture_output=True, text=True, check=False
     )
     assert (blocked.returncode, blocked.stderr.strip()) == (2, HOOK_REASON)
+
+
+def test_the_control_runs_in_a_scratch_home_written_the_same_way_with_no_hook(tmp_path, env):
+    manifest, recorder, _said, _events = _run(tmp_path, env, hook_case=True)
+    out = (tmp_path / "out").resolve()
+    hook_argv, hook_env, _ = recorder.calls[2]
+    argv, child_env, cwd = recorder.calls[3]
+    home = out / "scratch_no_hook" / "codex-home"
+    assert child_env["CODEX_HOME"] == str(home)
+    assert manifest["cases"]["scratch_no_hook"]["codex_home"] == "scratch"
+    # The same command line as the hook case but for the working directory.
+    assert argv == [str(cwd) if a == hook_argv[hook_argv.index("-C") + 1] else a for a in hook_argv]
+    assert sorted(p.name for p in home.iterdir()) == ["config.toml"]
+    assert (home / "config.toml").read_text() == ""
+    report = trust.hook_trust_report(home)
+    assert (report.hooks, report.problems) == ((), ())
+    assert hook_env["CODEX_HOME"] != child_env["CODEX_HOME"]
 
 
 def test_a_trust_record_with_the_wrong_hash_would_not_read_as_trusted(tmp_path, env):
@@ -232,9 +254,10 @@ def test_a_system_config_with_only_hook_state_and_settings_is_not_refused(tmp_pa
     [
         (None, False, ["no_output", "unknown_model"]),
         (["hook_blocked"], False, ["hook_blocked"]),
-        (None, True, ["no_output", "unknown_model", "hook_blocked"]),
+        (["scratch_no_hook"], False, ["scratch_no_hook"]),
+        (None, True, ["no_output", "unknown_model", "hook_blocked", "scratch_no_hook"]),
         (["unknown_model", "no_output", "unknown_model"], False, ["no_output", "unknown_model"]),
-        (["unknown_model"], True, ["unknown_model", "hook_blocked"]),
+        (["unknown_model"], True, ["unknown_model", "hook_blocked", "scratch_no_hook"]),
     ],
 )
 def test_cases_runs_the_named_cases_in_their_fixed_order(tmp_path, env, cases, hook_case, ran):
@@ -285,6 +308,29 @@ def test_secret_values_in_the_environment_are_removed_from_what_is_written(tmp_p
     assert "[redacted]" in (out / "no_output" / "stdout.jsonl").read_text()
     assert not any(_SECRET in line for line in said)
     assert manifest["cases"]["no_output"]["exit_status"] == 1
+
+
+def test_the_written_stream_keeps_one_line_per_event_and_every_line_parses(tmp_path, env):
+    env["OPENAI_API_KEY"] = _SECRET
+    events = [
+        {"type": "thread.started", "thread_id": "t"},
+        # A JSON string holding a newline is the two characters backslash and n on the line.
+        {"type": "error", "message": f"line one\nline two, key {_SECRET}"},
+        {"type": "turn.failed", "error": {"message": "x"}},
+    ]
+    stdout = "".join(json.dumps(event) + "\n" for event in events)
+    stderr = f"first\nsecond {_SECRET}\n"
+    _run(tmp_path, env, runner=_Recorder((1, stdout, stderr)))
+    out = (tmp_path / "out").resolve()
+    written = (out / "no_output" / "stdout.jsonl").read_text()
+    assert written.endswith("\n")
+    lines = written.splitlines()
+    assert len(lines) == len(events)
+    parsed = [json.loads(line) for line in lines]
+    assert [event["type"] for event in parsed] == [event["type"] for event in events]
+    assert parsed[1]["message"] == "line one\nline two, key [redacted]"
+    assert _SECRET not in written
+    assert (out / "no_output" / "stderr.txt").read_text() == "first\nsecond [redacted]\n"
 
 
 def test_a_runner_that_cannot_start_is_recorded_not_raised(tmp_path, env):
