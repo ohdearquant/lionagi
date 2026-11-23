@@ -190,6 +190,145 @@ def test_the_digest_follows_the_read_rules(monkeypatch):
     assert policy_digest(policy) != before
 
 
+def test_the_digest_follows_the_metadata_only_paths():
+    policy = SeatbeltPolicy(writable_roots=("/w",), read_roots=("/r",))
+    linked = SeatbeltPolicy(writable_roots=("/w",), read_roots=("/r",), read_metadata=("/l/x",))
+
+    assert policy_digest(linked) != policy_digest(policy)
+
+
+def test_the_root_directory_is_readable_only_under_read_roots():
+    # Without the root directory itself, no process starts under a policy with read roots.
+    root = '  (literal "/")\n'
+
+    assert root in _seatbelt._SYSTEM_READ_LITERALS
+    assert root in SeatbeltPolicy(writable_roots=("/w",), read_roots=()).profile()
+    assert root not in SeatbeltPolicy(writable_roots=("/w",)).profile()
+
+
+def test_metadata_only_paths_are_passed_as_parents_and_never_as_subtrees():
+    policy = SeatbeltPolicy(
+        writable_roots=("/w/ws",), read_roots=("/r/x",), read_metadata=("/l", "/l/py", "/w")
+    )
+    params = _params(policy.wrap(["/usr/bin/true"]))
+    parents = [value for name, value in params if name.startswith("READ_PARENT_")]
+
+    assert parents == ["/w", "/", "/r", "/l", "/l/py"]
+    assert [value for name, value in params if name.startswith("READ_ROOT_")] == ["/r/x"]
+    assert policy.profile().count('(literal (param "READ_PARENT_') == len(parents)
+    # Without read roots nothing about them is rendered.
+    open_policy = SeatbeltPolicy(writable_roots=("/w/ws",), read_metadata=("/l",))
+    assert "READ_PARENT" not in open_policy.profile()
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        pytest.param(
+            lambda b: b.replace("(allow file-read*)\n", "(allow file-read* )\n"), id="reworded"
+        ),
+        pytest.param(lambda b: b + "(allow file-read*)\n", id="twice"),
+    ],
+)
+def test_a_base_without_its_read_line_exactly_once_is_refused_under_read_roots(monkeypatch, base):
+    monkeypatch.setattr(_seatbelt, "_BASE_POLICY", base(_seatbelt._BASE_POLICY))
+
+    with pytest.raises(RuntimeError, match="not once"):
+        SeatbeltPolicy(writable_roots=("/w",), read_roots=("/r",)).profile()
+    # Without read roots the base is used as it stands.
+    assert SeatbeltPolicy(writable_roots=("/w",)).profile().startswith(_seatbelt._BASE_POLICY)
+
+
+def test_the_shipped_base_holds_its_read_line_exactly_once():
+    assert _seatbelt._BASE_POLICY.count("(allow file-read*)\n") == 1
+
+
+# ---------------------------------------------------------------------------- the interpreter's path
+@pytest.fixture
+def linked_python(tmp_path) -> dict[str, Path]:
+    """An interpreter reached as a uv-installed one is: ``venv/bin/python`` links to
+    ``python3.12`` beside it, which links to ``local/bin/python3.12``, which links into
+    ``share/cp-link``, itself a link to the directory ``share/cp-real``."""
+    base = tmp_path.resolve() / "py"
+    (base / "share" / "cp-real" / "bin").mkdir(parents=True)
+    real = base / "share" / "cp-real" / "bin" / "python3.12"
+    real.write_text("")
+    (base / "share" / "cp-link").symlink_to("cp-real")
+    (base / "local" / "bin").mkdir(parents=True)
+    (base / "local" / "bin" / "python3.12").symlink_to(
+        base / "share" / "cp-link" / "bin" / "python3.12"
+    )
+    (base / "venv" / "bin").mkdir(parents=True)
+    (base / "venv" / "bin" / "python3.12").symlink_to(base / "local" / "bin" / "python3.12")
+    (base / "venv" / "bin" / "python").symlink_to("python3.12")
+    return {
+        "python": base / "venv" / "bin" / "python",
+        "venv_link": base / "venv" / "bin" / "python3.12",
+        "local_link": base / "local" / "bin" / "python3.12",
+        "local_bin": base / "local" / "bin",
+        "linked_dir": base / "share" / "cp-link",
+        "real_dir": base / "share" / "cp-real",
+        "real": real,
+    }
+
+
+def test_the_lookup_walk_names_every_link_and_linked_directory(linked_python):
+    paths = _seatbelt._lookup_paths(str(linked_python["python"]))
+
+    for name in ("python", "venv_link", "local_link", "linked_dir", "real_dir", "real"):
+        assert str(linked_python[name]) in paths, name
+    assert paths[-1] == str(linked_python["real"])
+    assert (
+        paths.index(str(linked_python["python"]))
+        < paths.index(str(linked_python["local_link"]))
+        < paths.index(str(linked_python["linked_dir"]))
+        < paths.index(str(linked_python["real"]))
+    )
+    assert len(paths) == len(set(paths))
+    # The control: realpath alone reaches only the last of these.
+    assert os.path.realpath(linked_python["python"]) == str(linked_python["real"])
+
+
+def test_a_link_loop_ends_the_lookup_walk(tmp_path):
+    base = tmp_path.resolve()
+    (base / "a").symlink_to(base / "b")
+    (base / "b").symlink_to(base / "a")
+
+    paths = _seatbelt._lookup_paths(str(base / "a"))
+
+    assert str(base / "a") in paths and str(base / "b") in paths
+
+
+def test_read_roots_grant_metadata_on_the_interpreter_path_only(home, linked_python, monkeypatch):
+    (home / "workspace").mkdir()
+    monkeypatch.setattr(sys, "executable", str(linked_python["python"]))
+
+    policy = SeatbeltPolicy.for_workspace(home / "workspace", per_leg_uv_cache=True, read_roots=[])
+    readable = policy.read_roots or ()
+    parents = [
+        value
+        for name, value in _params(policy.wrap(["/usr/bin/true"]))
+        if name.startswith("READ_PARENT_")
+    ]
+
+    for name in ("python", "venv_link", "local_link", "linked_dir", "real"):
+        assert str(linked_python[name]) in policy.read_metadata, name
+        assert str(linked_python[name]) in parents, name
+    # A directory a link sits in gets its metadata, never its contents.
+    assert str(linked_python["local_bin"]) not in readable
+    assert not _readable(policy, linked_python["local_bin"] / "other")
+    assert len(parents) == len(set(parents))
+
+
+def test_without_read_roots_no_metadata_paths_are_named(home, linked_python, monkeypatch):
+    (home / "workspace").mkdir()
+    monkeypatch.setattr(sys, "executable", str(linked_python["python"]))
+
+    assert (
+        SeatbeltPolicy.for_workspace(home / "workspace", per_leg_uv_cache=True).read_metadata == ()
+    )
+
+
 # ---------------------------------------------------------------------------- building a policy
 def test_a_workspace_policy_without_read_roots_leaves_reads_open(home):
     (home / "workspace").mkdir()
@@ -409,6 +548,9 @@ def test_the_probe_on_this_volume_writes_a_record_for_every_arm(home):
     assert set(arms) == set(REQUIRED_ARMS)
     # The control must hold on any host: without read roots the outside file reads.
     assert arms["control_reads_outside_without_read_roots"]["passed"], arms
+    # And the policy with read roots must hold on this host: every arm passes.
+    failed = sorted(name for name, arm in arms.items() if not arm["passed"])
+    assert not failed, arms
     path = write_record(mount, uuid, arms, digest, read_roots)
     assert path.parent == home / "home" / "seatbelt-read-probes"
 

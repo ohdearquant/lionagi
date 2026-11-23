@@ -100,9 +100,15 @@ _SYSTEM_READ_ROOTS: tuple[str, ...] = (
     "/private/var/select",
 )
 
-# Under a policy with read roots: the links at the top of the disk, each read as a link only, and
-# the devices a process reads that the base does not already allow.
+# The base's unrestricted read line, which a policy with read roots replaces.
+_UNRESTRICTED_READ = "(allow file-read*)\n"
+
+# Under a policy with read roots: the root directory itself, which a process must read to start
+# (without it `/usr/bin/true` aborts; the metadata its parent grant gives is not enough), the links
+# at the top of the disk, each read as a link only, and the devices a process reads that the base
+# does not already allow.
 _SYSTEM_READ_LITERALS = """(allow file-read*
+  (literal "/")
   (literal "/etc")
   (literal "/tmp")
   (literal "/var")
@@ -188,6 +194,50 @@ def _system_read_roots() -> tuple[str, ...]:
     return tuple(dict.fromkeys(os.path.realpath(path) for path in named if path))
 
 
+# More links than this in one resolution is treated as a loop, as the operating system does.
+_MAX_LOOKUP_LINKS = 40
+
+
+def _lookup_paths(path: str) -> tuple[str, ...]:
+    """Every path the kernel looks up to resolve ``path``, in order: each directory on the way
+    and each link as it is met, then the components its target names, until the file itself.
+
+    Under read roots the metadata of each is readable, so an executable reached through links
+    outside every root still starts: a uv-installed interpreter's ``python`` links to a name in
+    another directory, which links into a linked directory, and the prefixes resolve only the
+    last of these. The directories the links sit in stay unlisted. A loop, or a link that cannot
+    be read, ends the walk where it stands.
+    """
+    seen: dict[str, None] = {}
+    resolved = "/"
+    start = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    parts = [part for part in start.split("/") if part]
+    links = 0
+    while parts:
+        name = parts.pop(0)
+        if name == ".":
+            continue
+        if name == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, name)
+        seen[candidate] = None
+        if not os.path.islink(candidate):
+            resolved = candidate
+            continue
+        links += 1
+        if links > _MAX_LOOKUP_LINKS:
+            break
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            break
+        if target.startswith("/"):
+            resolved = "/"
+        parts = [part for part in target.split("/") if part] + parts
+    return tuple(seen)
+
+
 def _within(path: Path, root: Path) -> bool:
     """Whether ``path`` is ``root`` or lies under it. Where both exist this is judged by file
     identity, so a spelling in another case on a case-insensitive volume counts too."""
@@ -212,7 +262,9 @@ class SeatbeltPolicy:
     paths the confined process may not read, the environment entries its commands run with, and
     the read roots: ``None`` leaves reads unrestricted, and a tuple, even an empty one, allows
     reads only under the writable roots and these roots, beside the links and devices of
-    ``_SYSTEM_READ_LITERALS``. ``for_workspace`` adds the system directories to the read roots."""
+    ``_SYSTEM_READ_LITERALS``. ``for_workspace`` adds the system directories to the read roots.
+    ``read_metadata`` names paths whose metadata alone is readable under read roots:
+    ``for_workspace`` puts there every path looked up on the way to the running interpreter."""
 
     writable_roots: tuple[str, ...]
     read_only: tuple[str, ...] = ()
@@ -221,6 +273,7 @@ class SeatbeltPolicy:
     deny_read: tuple[str, ...] = ()
     child_env: tuple[tuple[str, str], ...] = ()
     read_roots: tuple[str, ...] | None = None
+    read_metadata: tuple[str, ...] = ()
 
     @classmethod
     def for_workspace(
@@ -258,8 +311,10 @@ class SeatbeltPolicy:
         shared cache. ``read_roots``, when given (an empty sequence included), denies reads by
         default: the process may read under the writable roots, these roots, the system
         directories and the running interpreter's prefixes, and may read the metadata of the
-        directories above them so their paths resolve. A read root that is the home directory
-        or holds it is refused, since every read would then pass."""
+        directories above them so their paths resolve, and of every directory and link on the
+        way to the running interpreter, so it starts when it is reached through links outside
+        the roots. A read root that is the home directory or holds it is refused, since every
+        read would then pass."""
         from lionhub.agent.child_sandbox import _refuse_a_home_workspace, _written_and_resolved
 
         _refuse_a_home_workspace(workspace_root)
@@ -314,6 +369,7 @@ class SeatbeltPolicy:
                         )
                 unreadable.append(entry)
         readable: tuple[str, ...] | None = None
+        metadata: tuple[str, ...] = ()
         if read_roots is not None:
             home = Path.home().expanduser().resolve()
             named: list[str] = []
@@ -327,6 +383,7 @@ class SeatbeltPolicy:
                 if resolved not in named and resolved not in roots:
                     named.append(resolved)
             readable = tuple(named)
+            metadata = _lookup_paths(sys.executable) if sys.executable else ()
         return cls(
             tuple(roots),
             (str(workspace / ".git"),),
@@ -335,15 +392,19 @@ class SeatbeltPolicy:
             tuple(unreadable),
             child_env,
             readable,
+            metadata,
         )
 
     def _read_parents(self) -> tuple[str, ...]:
-        """Every directory above a writable or a read root, each once. Under read roots their
-        metadata is readable, so a path under a root resolves; their contents are not."""
+        """Every directory above a writable or a read root, then ``read_metadata``, each once.
+        Under read roots their metadata is readable, so a path under a root resolves and a link
+        on the way to the interpreter can be followed; their contents are not."""
         parents: dict[str, None] = {}
         for root in (*self.writable_roots, *(self.read_roots or ())):
             for parent in Path(root).parents:
                 parents[str(parent)] = None
+        for path in self.read_metadata:
+            parents[path] = None
         return tuple(parents)
 
     def _read_rules(self) -> str:
@@ -367,11 +428,18 @@ class SeatbeltPolicy:
         writes = "\n".join(
             f'  (subpath (param "WRITABLE_ROOT_{i}"))' for i in range(len(self.writable_roots))
         )
-        base = (
-            _BASE_POLICY
-            if self.read_roots is None
-            else _BASE_POLICY.replace("(allow file-read*)\n", self._read_rules(), 1)
-        )
+        if self.read_roots is None:
+            base = _BASE_POLICY
+        else:
+            # A reworded base would leave its unrestricted read line in place under read roots,
+            # and a second copy would survive the replacement: either way reads stay open.
+            found = _BASE_POLICY.count(_UNRESTRICTED_READ)
+            if found != 1:
+                raise RuntimeError(
+                    f"the base Seatbelt policy holds its unrestricted read line {found} times, "
+                    "not once, so reads would not be confined to the read roots"
+                )
+            base = _BASE_POLICY.replace(_UNRESTRICTED_READ, self._read_rules(), 1)
         parts = [base, f"(allow file-write*\n{writes})\n"]
         parts += [
             f'(deny file-write* (subpath (param "READ_ONLY_{i}")))\n'

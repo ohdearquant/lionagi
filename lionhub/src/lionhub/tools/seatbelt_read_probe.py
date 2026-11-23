@@ -109,9 +109,9 @@ def read_record_dir() -> Path:
 def policy_digest(policy: SeatbeltPolicy) -> str:
     """SHA-256 of ``policy``'s text with its read roots (none counts as an empty set) and every
     option that renders rules turned on: the network and terminal rules and one unreadable entry.
-    Paths travel as parameters, so the text records how many roots, read roots and parent
-    directories the measured policy had and every rule it rendered; how a launch's own policy is
-    matched to a record is for the launch key that reads it."""
+    Paths travel as parameters, so the text records how many roots, read roots, parent
+    directories and metadata-only paths the measured policy had and every rule it rendered; how a
+    launch's own policy is matched to a record is for the launch key that reads it."""
     text = SeatbeltPolicy(
         writable_roots=policy.writable_roots,
         read_only=policy.read_only,
@@ -119,6 +119,7 @@ def policy_digest(policy: SeatbeltPolicy) -> str:
         pty=True,
         deny_read=("/unreadable",),
         read_roots=policy.read_roots if policy.read_roots is not None else (),
+        read_metadata=policy.read_metadata,
     ).profile()
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
