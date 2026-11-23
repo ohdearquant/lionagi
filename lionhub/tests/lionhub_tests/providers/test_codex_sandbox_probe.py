@@ -21,6 +21,7 @@ import shlex
 import shutil
 import socket
 import stat
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -288,7 +289,8 @@ class FakeCodex:
                 reachable = True
             if not light and "heavy_network_on" in leaks:
                 reachable = False
-            return "pong\nrc=0" if reachable else "rc=7"
+            # curl -s prints the body with no newline, so the step's marker follows it directly.
+            return "pongrc=0" if reachable else "rc=7"
         raise AssertionError(f"unexpected probe command {cmd!r}")
 
 
@@ -794,3 +796,49 @@ def test_the_unix_listener_counts_the_connections_that_reach_it(tmp_path, monkey
     listener.stop()
     assert listener.accepted == 1
     assert not Path("s.sock").exists()
+
+
+# ------------------------------------------------------------------------- reading a step's rc
+@pytest.mark.parametrize(
+    ("command", "rc"),
+    [
+        # The network step's shape: curl -s prints its body with no newline.
+        ("printf pong", 0),
+        ("printf pong; false", 1),
+        ("echo pong", 0),
+        ("true", 0),
+    ],
+)
+def test_a_step_run_by_the_shell_reads_back_its_own_exit_status(command, rc):
+    step = probe_module._step(command)
+    result = subprocess.run(
+        [step["shell"], "-c", step["cmd"]], capture_output=True, text=True, timeout=30
+    )
+    assert probe_module._rc(result.stdout) == rc
+
+
+def test_the_network_step_s_output_reads_as_reached():
+    step = probe_module._step("printf pong")
+    out = subprocess.run(
+        [step["shell"], "-c", step["cmd"]], capture_output=True, text=True, timeout=30
+    ).stdout
+    assert out.startswith("pongrc=0")
+    assert probe_module._ok(out, "pong")
+    assert not probe_module._refused(out, "pong")
+
+
+@pytest.mark.parametrize(
+    ("text", "rc"),
+    [
+        ("pongrc=0", 0),
+        ("pongrc=0\n", 0),
+        ("pongrc=7", 7),
+        ("sh: x: Permission denied\nrc=1", 1),
+        ("rc=1 then more words", 1),
+        ("no marker at all", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_the_marker_is_read_glued_at_the_end_or_starting_a_word(text, rc):
+    assert probe_module._rc(text) == rc

@@ -384,7 +384,18 @@ def _run(
 
 # ------------------------------------------------------------------------------- arm verdicts
 def _rc(text: str | None) -> int | None:
-    found = re.findall(r"\brc=(\d+)", text or "")
+    """The exit status a step's own ``echo rc=$?`` printed, or None when it printed none.
+
+    The marker starts its own line only when the command's output ended in a newline: ``curl
+    -s`` prints a body without one, so that step's output reads ``pongrc=0``. A marker that ends
+    the text is therefore read wherever it starts; otherwise the last marker that starts a word
+    is.
+    """
+    text = text or ""
+    last = re.search(r"rc=(\d+)\s*\Z", text)
+    if last:
+        return int(last.group(1))
+    found = re.findall(r"\brc=(\d+)", text)
     return int(found[-1]) if found else None
 
 
