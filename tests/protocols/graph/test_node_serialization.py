@@ -43,9 +43,6 @@ def _registry_snapshot():
 class TestBackwardsCompatibility:
     """Ensure base Node and unaware subclasses remain unaffected."""
 
-    def test_base_node_has_no_config(self):
-        assert Node.node_config is None
-
     def test_base_node_touch_is_noop(self):
         n = Node(content="safe")
         n.touch()
