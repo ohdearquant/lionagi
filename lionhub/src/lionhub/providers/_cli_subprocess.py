@@ -1473,6 +1473,7 @@ async def ndjson_from_cli(
     secret_fill_skip: frozenset[str] = frozenset(),
     auth_env: Iterable[str] | Callable[[Mapping[str, str]], Iterable[str]] | None = frozenset(),
     secret_values: Iterable[str] = (),
+    on_clean_exit: Callable[[str, str | None], None] | None = None,
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1493,7 +1494,10 @@ async def ndjson_from_cli(
     environment after the secret fill, for a provider whose login names depend on what that
     environment holds. ``secret_values`` are literal values the caller knows to be secret and
     that no environment mapping or named argument holds; they are removed from every message
-    this function logs or raises. See
+    this function logs or raises. ``on_clean_exit``, when given, is called once the child has
+    exited with status 0 and its output is read, with the child's stderr, credentials removed as
+    for any message here, and a note saying why that stderr may be incomplete (``None`` when it was
+    read to its end); waiting for the stderr reader takes at most two seconds. See
     docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
@@ -1988,6 +1992,19 @@ async def ndjson_from_cli(
                 err += " [stderr drain timed out]"
             stderr_already_surfaced = True
             raise RuntimeError(err)
+        if on_clean_exit is not None:
+            unread: str | None = None
+            try:
+                await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                unread = "its stderr drain did not finish"
+            except asyncio.CancelledError:
+                raise
+            if stderr_drain_error is not None:
+                unread = f"reading its stderr failed with {stderr_drain_error}"
+            elif stderr_unavailable is not None:
+                unread = stderr_unavailable
+            on_clean_exit(captured_stderr(), unread)
 
     except BaseException as exc:
         primary_error = exc

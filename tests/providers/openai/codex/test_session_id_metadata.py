@@ -81,7 +81,11 @@ async def test_end_to_end_run_captures_codex_engine_session_id():
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
 
-    events = [{"type": "thread.started", "thread_id": "codex-thread-e2e"}]
+    # The turn writes text: a turn with none fails as an empty turn, which is not this path.
+    events = [
+        {"type": "thread.started", "thread_id": "codex-thread-e2e"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+    ]
     chunks = await _chunks_from_events(events)
 
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")

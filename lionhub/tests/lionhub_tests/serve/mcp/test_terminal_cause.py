@@ -17,11 +17,13 @@ import pytest
 from lionagi._provider_errors import (
     ProviderAdapterError,
     ProviderAuthError,
+    ProviderEmptyTurnError,
     ProviderError,
     ProviderQuotaError,
 )
-from lionhub.serve.mcp import _notify_hook, config, jobs
+from lionhub.serve.mcp import _notify_hook, _terminal_cause, config, jobs
 from lionhub.serve.mcp._terminal_cause import (
+    DETAIL_CHARS,
     STATUS_SOURCES,
     UNKNOWN_CAUSE,
     allowed_cause_classes,
@@ -156,7 +158,8 @@ class TestTheReaderFailsClosed:
         """Something other than this writer produced it, so parsing it would be
         answering about a different file."""
         p = tmp_path / "c.json"
-        p.write_text(json.dumps({"class": "ProviderQuotaError", "pad": "x" * 8192}))
+        pad = "x" * (_terminal_cause._MAX_CAUSE_BYTES + 1)
+        p.write_text(json.dumps({"class": "ProviderQuotaError", "pad": pad}))
         assert read_terminal_cause(p) is None
 
     def test_a_class_name_outside_the_set_is_pinned_never_stored_verbatim(self, tmp_path):
@@ -262,6 +265,104 @@ class TestTheHookLiftsItIntoTheRecord:
     ):
         monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
         assert jobs.failure_cause_path("no-such-run") is None
+
+
+class TestAnEmptyTurnCarriesItsText:
+    """The one class whose text is kept. An empty turn has no provider message:
+    its text is the library's own sentence and the end of the CLI's stderr, with
+    credentials already removed, and that stderr is the only evidence of why the
+    turn was empty.
+    """
+
+    TEXT = (
+        "The CLI ended the turn without assistant text, a tool call or an error "
+        "(empty_turn). Its stderr ended with: a hook refused the prompt"
+    )
+
+    def test_the_text_round_trips_as_detail(self, cause_file):
+        write_terminal_cause(ProviderEmptyTurnError(self.TEXT))
+        assert read_terminal_cause(cause_file) == {
+            "class": "ProviderEmptyTurnError",
+            "retryable": False,
+            "status_source": "absent",
+            "detail": self.TEXT,
+        }
+
+    def test_the_detail_is_bounded_by_the_writer(self, cause_file):
+        write_terminal_cause(ProviderEmptyTurnError("y" * (DETAIL_CHARS * 2)))
+        assert read_terminal_cause(cause_file)["detail"] == "y" * DETAIL_CHARS
+
+    def test_a_detail_on_any_other_class_is_dropped_on_read(self, tmp_path):
+        """The writer runs in another process at another version; the reader
+        keeps text only for the class whose text it means to carry."""
+        p = tmp_path / "c.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "class": "ProviderAuthError",
+                    "retryable": False,
+                    "status_source": "absent",
+                    "detail": "401 using sk-notarealkey-000111222333",
+                }
+            )
+        )
+        assert "detail" not in read_terminal_cause(p)
+
+    @pytest.mark.parametrize("detail", ["z" * (DETAIL_CHARS + 1), "", 42, ["a"]])
+    def test_a_detail_the_writer_could_not_have_written_is_dropped(self, tmp_path, detail):
+        p = tmp_path / "c.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "class": "ProviderEmptyTurnError",
+                    "retryable": False,
+                    "status_source": "absent",
+                    "detail": detail,
+                }
+            )
+        )
+        cause = read_terminal_cause(p)
+        assert cause["class"] == "ProviderEmptyTurnError"
+        assert "detail" not in cause
+
+    def test_the_hook_puts_it_on_the_record_as_reason_detail(self, monkeypatch, tmp_path):
+        rid = _job(monkeypatch, tmp_path)
+        jobs.failure_cause_path(rid).write_text(
+            json.dumps(
+                {
+                    "class": "ProviderEmptyTurnError",
+                    "retryable": False,
+                    "status_source": "absent",
+                    "detail": self.TEXT,
+                }
+            )
+        )
+
+        assert _notify_hook.main(["--run-id", rid, "--status", "failed"]) == 0
+
+        record = jobs._read_job(rid)
+        assert record["failure_cause"]["detail"] == self.TEXT
+        assert record["reason_detail"] == self.TEXT
+
+    def test_a_reason_detail_the_record_already_holds_is_kept(self, monkeypatch, tmp_path):
+        rid = _job(monkeypatch, tmp_path)
+        job = jobs._read_job(rid)
+        job["reason_detail"] = "set before the cause was read"
+        jobs._write_job(job)
+        jobs.failure_cause_path(rid).write_text(
+            json.dumps(
+                {
+                    "class": "ProviderEmptyTurnError",
+                    "retryable": False,
+                    "status_source": "absent",
+                    "detail": self.TEXT,
+                }
+            )
+        )
+
+        assert _notify_hook.main(["--run-id", rid, "--status", "failed"]) == 0
+
+        assert jobs._read_job(rid)["reason_detail"] == "set before the cause was read"
 
 
 class TestTheProviderStatusDiscriminator:

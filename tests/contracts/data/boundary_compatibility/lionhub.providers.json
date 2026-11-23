@@ -17,6 +17,9 @@
     "lionhub/src/lionhub/providers/_agentic_handlers.py": [
       "__all__ = (\"RUNTIME_STATE_NAMES\", \"AgenticHandlersMixin\")"
     ],
+    "lionhub/src/lionhub/providers/_empty_turn.py": [
+      "__all__ = (\n    \"EMPTY_TURN_KEY\",\n    \"STDERR_TAIL_CHARS\",\n    \"empty_turn_chunk\",\n    \"empty_turn_error\",\n    \"is_empty_turn\",\n)"
+    ],
     "lionhub/src/lionhub/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
     ],
@@ -69,7 +72,7 @@
       "__all__ = (\"DeepseekChatCompletionsRequest\", \"DeepseekChatEndpoint\")"
     ],
     "lionhub/src/lionhub/providers/errors.py": [
-      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
+      "__all__ = (\n    \"ProviderError\",\n    \"ProviderQuotaError\",\n    \"ProviderAuthError\",\n    \"ProviderContextError\",\n    \"ProviderCapacityError\",\n    \"ProviderUnsupportedModelError\",\n    \"ProviderSafetyError\",\n    \"ProviderStreamDisconnectError\",\n    \"ProviderTeardownError\",\n    \"ProviderPermissionError\",\n    \"ProviderAdapterError\",\n    \"ProviderEmptyTurnError\",\n    \"WorkerLivenessError\",\n    \"SubagentAdmissionRefusedError\",\n    \"NestedAgentRefusedError\",\n)"
     ],
     "lionhub/src/lionhub/providers/exa/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
@@ -312,6 +315,11 @@
       "spawned_pgid",
       "unencodable_env_entry",
       "validate_message_prompt"
+    ],
+    "lionhub/src/lionhub/providers/_empty_turn.py": [
+      "empty_turn_chunk",
+      "empty_turn_error",
+      "is_empty_turn"
     ],
     "lionhub/src/lionhub/providers/ag2/_config.py": [
       "AG2Configs"

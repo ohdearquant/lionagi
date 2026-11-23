@@ -13,6 +13,9 @@ import pytest
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionhub.providers.openai.codex import CodexCodeRequest, stream_codex_cli
 
+# The turn's text, which a benign end of stream follows; see the benign arms below.
+_TEXT = {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}}
+
 
 def _make_request() -> CodexCodeRequest:
     return CodexCodeRequest(prompt="test", verbose_output=False)
@@ -69,8 +72,9 @@ async def test_turn_failed_with_empty_error_is_not_benign():
 @pytest.mark.asyncio
 async def test_error_event_with_empty_error_dict_is_benign_eos():
     """{"error":{}} is the resume-EOF sentinel and must be tagged benign_eos=True so run() terminates cleanly."""
-    # A bare error event with an empty error payload — the resume-EOF sentinel.
-    events = [{"type": "error", "error": {}}]
+    # A bare error event with an empty error payload — the resume-EOF sentinel — after the
+    # turn's text: with none, the stream's end reports an empty turn instead.
+    events = [_TEXT, {"type": "error", "error": {}}]
     chunks = await _chunks_from_events(events)
 
     error_chunks = [c for c in chunks if c.type == "error"]
@@ -203,7 +207,7 @@ async def test_error_event_null_payload_is_not_benign():
 @pytest.mark.asyncio
 async def test_error_event_empty_dict_is_still_benign_after_null_fix():
     """{"error":{}} must remain benign EOS after the null-normalisation fix — the original sentinel must not break."""
-    events = [{"type": "error", "error": {}}]
+    events = [_TEXT, {"type": "error", "error": {}}]
     chunks = await _chunks_from_events(events)
 
     error_chunks = [c for c in chunks if c.type == "error"]

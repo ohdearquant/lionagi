@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
-from lionagi._provider_errors import ProviderError, _WorkerSpawnAdmissionError
+from lionagi._provider_errors import (
+    ProviderEmptyTurnError,
+    ProviderError,
+    _WorkerSpawnAdmissionError,
+)
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
@@ -893,6 +897,8 @@ def resolve_run_reason(
         while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:
             seen.add(id(cause))
             cause = cause.__cause__
+        if isinstance(cause, ProviderEmptyTurnError):
+            return RunReasons.FAILED_EMPTY_TURN, f"{type(cause).__name__}: {cause}", None
         if isinstance(cause, ProviderError):
             code = (
                 RunReasons.FAILED_PROVIDER_RETRYABLE

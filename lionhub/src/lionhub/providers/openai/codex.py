@@ -73,6 +73,7 @@ from lionhub.providers._cli_subprocess import (
     reveal_redacted,
     validate_message_prompt,
 )
+from lionhub.providers._empty_turn import empty_turn_chunk, empty_turn_error, is_empty_turn
 
 from ._codex_permissions import (
     PERMISSION_PROFILE,
@@ -3331,7 +3332,11 @@ def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[s
 
 
 # TODO: migrate create_subprocess_exec + wait_for to anyio
-async def _ndjson_from_cli(request: CodexCodeRequest):
+async def _ndjson_from_cli(
+    request: CodexCodeRequest,
+    *,
+    on_clean_exit: Callable[[str, str | None], None] | None = None,
+):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so the request is reduced again here, where
@@ -3381,6 +3386,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             secret_fill_skip=request.secret_fill_skip,
             workload=plain.workload,
             auth_env=functools.partial(_codex_auth_env, plain),
+            on_clean_exit=on_clean_exit,
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:
@@ -3392,13 +3398,28 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
 
 
 async def stream_codex_cli_events(request: CodexCodeRequest):
-    """Stream events from Codex CLI."""
+    """Stream events from Codex CLI.
+
+    The closing ``done`` event is this module's own, never the CLI's. After a clean exit it
+    carries the CLI's ``stderr`` (credentials removed) and ``stderr_unread``, why that stderr may
+    be incomplete, so the parser can quote it when the turn turns out empty.
+    """
     if not CODEX_CLI:
         raise RuntimeError("Codex CLI not found (npm i -g @openai/codex)")
-    async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+    exits: list[tuple[str, str | None]] = []
+
+    def on_clean_exit(stderr: str, unread: str | None) -> None:
+        exits.append((stderr, unread))
+
+    async with contextlib.aclosing(
+        _ndjson_from_cli(request, on_clean_exit=on_clean_exit)
+    ) as stream:
         async for obj in stream:
             yield obj
-    yield {"type": "done"}
+    done: dict[str, Any] = {"type": "done"}
+    if exits:
+        done["stderr"], done["stderr_unread"] = exits[-1]
+    yield done
 
 
 #: The most of one tool result this provider keeps, and of a command, a file change or a
@@ -3781,6 +3802,14 @@ async def stream_codex_cli(
     # call-markup check reads only the last one, when a turn completes or the
     # stream ends. Code regions of that text are removed before matching.
     _last_agent_text: str | None = None
+    # Whether a completed item was a call or a call's result, of any type in
+    # `_CALL_ITEM_TYPES`: some (an MCP tool call, a web search) are not kept as tool uses,
+    # and a turn that made one is not an empty turn.
+    _made_call = False
+    # The CLI's stderr after a clean exit, as the closing ``done`` event carries it; None when
+    # the stream ended without one.
+    _stderr: str | None = None
+    _stderr_unread: str | None = None
 
     stream = stream_codex_cli_events(request)
     try:
@@ -3810,6 +3839,7 @@ async def stream_codex_cli(
                 # must not fail the turn. Other items leave the text as it was.
                 if item_type in _CALL_ITEM_TYPES:
                     _last_agent_text = None
+                    _made_call = True
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
@@ -4079,6 +4109,11 @@ async def stream_codex_cli(
                     if _has_tool_call_markup(_last_agent_text or ""):
                         yield _call_markup_error_chunk(session, obj)
                     _last_agent_text = None
+                    # A turn that is empty at the sentinel is not ended by it: the
+                    # stream runs on to its end, where the empty turn fails with the
+                    # CLI's stderr, which is read only once the CLI has exited.
+                    if is_empty_turn(session, made_call=_made_call):
+                        continue
                     sc = StreamChunk(
                         type="error",
                         content=_err_message,
@@ -4219,6 +4254,10 @@ async def stream_codex_cli(
                     yield rsc
 
             elif typ == "done":
+                _stderr = obj.get("stderr") if isinstance(obj.get("stderr"), str) else None
+                _stderr_unread = (
+                    obj.get("stderr_unread") if isinstance(obj.get("stderr_unread"), str) else None
+                )
                 break
     finally:
         await stream.aclose()
@@ -4230,6 +4269,11 @@ async def stream_codex_cli(
     if _has_tool_call_markup(_last_agent_text or ""):
         yield _call_markup_error_chunk(session, {})
         _last_agent_text = None
+
+    # A turn that ended with no text, no tool call and no failure fails here, quoting the CLI's
+    # stderr. Nothing retries it.
+    if is_empty_turn(session, made_call=_made_call):
+        yield empty_turn_chunk(session, _stderr, _stderr_unread)
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
@@ -4392,6 +4436,9 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             named = [t for t in failures if not t.startswith(_EMPTY_ERROR_PAYLOAD)]
             if session.session_id:
                 self.session_id = session.session_id
+            empty = empty_turn_error(session)
+            if empty is not None:
+                raise empty
             raise classify_provider_error(
                 "\n".join(named or failures) or "Codex session failed",
                 status=session.error_status,

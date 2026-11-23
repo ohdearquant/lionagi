@@ -21,6 +21,7 @@ EXPECTED = {
     "ProviderTeardownError",
     "ProviderPermissionError",
     "ProviderAdapterError",
+    "ProviderEmptyTurnError",
     "WorkerLivenessError",
     "SubagentAdmissionRefusedError",
     "NestedAgentRefusedError",
@@ -28,7 +29,7 @@ EXPECTED = {
 
 
 def test_public_error_exports_are_exact_and_exclude_other_private_module_names():
-    assert len(public.__all__) == 14
+    assert len(public.__all__) == 15
     assert set(public.__all__) == EXPECTED
     for name in ("classify_provider_error", "EmissionError", "_WorkerSpawnAdmissionError"):
         assert name not in public.__all__

@@ -181,6 +181,7 @@
       "ProviderCompositionError",
       "ProviderContextError",
       "ProviderContractVersionError",
+      "ProviderEmptyTurnError",
       "ProviderError",
       "ProviderPermissionError",
       "ProviderQuotaError",

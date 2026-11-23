@@ -3521,12 +3521,19 @@ def record_failure_cause(run_id: str, cause: dict[str, Any]) -> WriteResult:
     Only called with a cause that was actually read. A run whose cause file is
     absent leaves this field off the record entirely, so a caller can tell a run
     that reported no typed cause from one that predates the field.
+
+    A cause carrying ``detail`` (an empty turn's text and the CLI's stderr tail)
+    also becomes the record's ``reason_detail`` when the record has none, which is
+    where the job status reads it.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
             return WriteResult(None, guard.state)
         job["failure_cause"] = cause
+        detail = cause.get("detail")
+        if isinstance(detail, str) and detail and not job.get("reason_detail"):
+            job["reason_detail"] = detail
         return WriteResult(job, guard.state)
 
 

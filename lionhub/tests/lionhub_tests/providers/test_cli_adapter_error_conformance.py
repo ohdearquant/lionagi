@@ -107,6 +107,9 @@ _GEMINI_TERMINAL = {
     "duration_seconds": 1.0,
 }
 
+_CODEX_TEXT = {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}}
+_CODEX_TURN_COMPLETED = {"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 3}}
+
 ADAPTERS: list[Adapter] = [
     Adapter(
         id="claude_code",
@@ -146,10 +149,9 @@ ADAPTERS: list[Adapter] = [
             [{"type": "turn.failed", "error": {"message": "sandbox denied the write"}}],
             AUTHORED,
         ),
-        healthy=Fixture(
-            [{"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 3}}],
-            AUTHORED,
-        ),
+        # A turn that writes no text fails as an empty turn (the pairs below), so the healthy
+        # stream carries the turn's text.
+        healthy=Fixture([_CODEX_TEXT, _CODEX_TURN_COMPLETED], AUTHORED),
     ),
     Adapter(
         id="pi",
@@ -173,7 +175,7 @@ ADAPTERS: list[Adapter] = [
 async def _stream_chunks(adapter: Adapter, fixture: Fixture, monkeypatch) -> list:
     mod = importlib.import_module(adapter.module)
 
-    async def fake_ndjson(_request):
+    async def fake_ndjson(_request, **_kwargs):
         for event in fixture.events:
             yield event
 
@@ -273,9 +275,12 @@ async def test_codex_benign_end_of_stream_keeps_its_discriminators(monkeypatch):
     either discriminator gets the right answer. What this test pins is that both
     discriminators survive, because it is their presence, not the chunk's
     absence, that keeps the case distinguishable from a real failure.
+
+    The sentinel follows the turn's text here. After a turn with none, the
+    stream's end reports an empty turn instead (the empty-turn pairs below).
     """
     adapter = next(a for a in ADAPTERS if a.id == "codex")
-    benign_eos = Fixture([{"type": "error", "error": {}}], AUTHORED)
+    benign_eos = Fixture([_CODEX_TEXT, {"type": "error", "error": {}}], AUTHORED)
     chunks = await _stream_chunks(adapter, benign_eos, monkeypatch)
 
     errors = [c for c in chunks if c.type == "error"]
@@ -292,6 +297,64 @@ async def test_codex_benign_end_of_stream_keeps_its_discriminators(monkeypatch):
     )
 
 
+@dataclass(frozen=True)
+class EmptyTurnPair:
+    """One provider's two streams for the empty-turn rule.
+
+    The two differ in one fact, whether the turn wrote assistant text. A turn
+    that ended the way a finished turn ends (no error event, the CLI exiting 0)
+    with no text and no tool call must fail, and the same turn with its text
+    must not.
+    """
+
+    adapter_id: str
+    with_text: Fixture
+    empty: Fixture
+
+
+# A provider joins the empty-turn rule with one pair here; its row in ADAPTERS
+# supplies the rest.
+EMPTY_TURN_PAIRS: list[EmptyTurnPair] = [
+    EmptyTurnPair(
+        adapter_id="codex",
+        with_text=Fixture([_CODEX_TEXT, _CODEX_TURN_COMPLETED], AUTHORED),
+        empty=Fixture([_CODEX_TURN_COMPLETED], AUTHORED),
+    ),
+]
+
+
+def _empty_turn_params():
+    by_id = {adapter.id: adapter for adapter in ADAPTERS}
+    return [
+        pytest.param(by_id[pair.adapter_id], pair, id=pair.adapter_id) for pair in EMPTY_TURN_PAIRS
+    ]
+
+
+@pytest.mark.parametrize(("adapter", "pair"), _empty_turn_params())
+async def test_an_empty_turn_yields_exactly_one_error_chunk_naming_it(adapter, pair, monkeypatch):
+    chunks = await _stream_chunks(adapter, pair.empty, monkeypatch)
+    errors = [c for c in chunks if c.type == "error"]
+
+    assert len(errors) == 1, (
+        f"{adapter.id}: a turn with nothing in it produced {len(errors)} error chunks; read as "
+        "a completed run it is an empty answer with no reason attached"
+    )
+    assert errors[0].is_error is True
+    assert errors[0].metadata.get("empty_turn") is True
+
+
+@pytest.mark.parametrize(("adapter", "pair"), _empty_turn_params())
+async def test_the_same_turn_with_its_text_yields_no_error_chunk(adapter, pair, monkeypatch):
+    chunks = await _stream_chunks(adapter, pair.with_text, monkeypatch)
+
+    assert [c for c in chunks if c.type == "error"] == [], (
+        f"{adapter.id}: a turn that wrote text was failed as empty"
+    )
+    assert any(c.type == "text" for c in chunks), (
+        f"{adapter.id}: the with-text stream yielded no text, so the pair differs in nothing"
+    )
+
+
 def test_every_fixture_declares_where_it_came_from():
     """The labels are the only thing separating evidence about the world from
     evidence about our own model of it, so a missing one is a defect."""
@@ -301,3 +364,9 @@ def test_every_fixture_declares_where_it_came_from():
                 f"{adapter.id}.{name} has no origin label"
             )
             assert fixture.events, f"{adapter.id}.{name} is empty"
+    for pair in EMPTY_TURN_PAIRS:
+        for name, fixture in (("with_text", pair.with_text), ("empty", pair.empty)):
+            assert fixture.origin in (RECORDED, AUTHORED), (
+                f"{pair.adapter_id}.{name} has no origin label"
+            )
+            assert fixture.events, f"{pair.adapter_id}.{name} is empty"
