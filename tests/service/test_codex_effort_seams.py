@@ -10,6 +10,9 @@ that config's own default model. Over the resolved model's ceiling, that is a
 route, so each seam gets an arm here.
 """
 
+import json
+import os
+import shutil
 import subprocess
 import sys
 
@@ -32,12 +35,12 @@ def global_ultra(tmp_path, monkeypatch):
 
 @pytest.fixture
 def refuse_codex_compatibility_lookup(monkeypatch):
-    from lionagi.service.connections import _provider_compat
+    from lionagi.service import providers
 
     def unexpected_lookup(*args, **kwargs):
-        pytest.fail("A selected Codex adapter called the compatibility lookup")
+        pytest.fail("A selected Codex adapter called the adapter-less default")
 
-    monkeypatch.setattr(_provider_compat, "codex_unset_effort_1x", unexpected_lookup)
+    monkeypatch.setattr(providers, "codex_unset_effort_default", unexpected_lookup)
 
 
 class TestTheStudioOperatorSeam:
@@ -442,19 +445,14 @@ pinned = [
     for pin in ("medium", None)
 ]
 public_pinned = codex_unset_effort_default(model, {"model_reasoning_effort": None})
-try:
-    codex_unset_effort_default(model)
-except ModuleNotFoundError as exc:
-    missing_module = exc.name
-else:
-    missing_module = None
+public_default = codex_unset_effort_default(model)
 
 print(json.dumps({
     "derived": derived,
     "pinned": pinned,
     "reader_received_original_envs": len(calls) == 2 and calls[0] is None and calls[1] is replacement,
     "public_pinned": public_pinned,
-    "public_missing_module": missing_module,
+    "public_default": public_default,
 }))
 """,
             tmp_path,
@@ -465,10 +463,11 @@ print(json.dumps({
             "pinned": [None, None],
             "reader_received_original_envs": True,
             "public_pinned": None,
-            "public_missing_module": "lionhub",
+            # A blocked hub is a missing feature to the catalog, so no effort is emitted.
+            "public_default": None,
         }
 
-    def test_cold_public_default_loads_only_the_codex_config_reader(self, global_ultra):
+    def test_cold_public_default_goes_through_the_provider_catalog(self, global_ultra):
         code = """
 import sys
 from pathlib import Path
@@ -479,9 +478,9 @@ from lionagi.service.providers import codex_unset_effort_default
 
 assert "lionhub" not in sys.modules
 assert codex_unset_effort_default("gpt-5.3-codex-spark") == "xhigh"
-assert "lionhub.providers.openai._codex_profile" in sys.modules
-assert "lionhub.providers.manifest" not in sys.modules
-assert "lionhub.providers.openai.codex" not in sys.modules
+# The policy is reached through the catalog's codex endpoint class.
+assert "lionhub.providers.manifest" in sys.modules
+assert "lionhub.providers.openai.codex" in sys.modules
 """
         proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed script
             [sys.executable, "-c", code, str(ROOT)],
@@ -493,3 +492,167 @@ assert "lionhub.providers.openai.codex" not in sys.modules
             check=False,
         )
         assert proc.returncode == 0, proc.stderr
+
+
+class _Declaration:
+    def __init__(self, factory):
+        self.factory = factory
+
+
+class _Catalog:
+    """A provider catalog that answers every endpoint question with one declaration."""
+
+    def __init__(self, declaration):
+        self.declaration = declaration
+        self.asked = []
+
+    def endpoint(self, provider, endpoint_key_or_alias=None):
+        self.asked.append(provider)
+        return self.declaration
+
+
+def _use_catalog(monkeypatch, catalog):
+    from lionagi.service.connections import _provider_compat
+
+    monkeypatch.setattr(_provider_compat, "default_provider_catalog", lambda: catalog)
+    return catalog
+
+
+class TestThePolicyComesFromTheCodexAdapter:
+    def test_both_routes_agree_for_every_known_model_and_configured_effort(self, tmp_path):
+        from lionagi.service.providers import _CODEX_KNOWN_EFFORT_MODELS, EFFORT_LEVELS
+        from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
+
+        models = [*sorted(_CODEX_KNOWN_EFFORT_MODELS), "gpt-9.9-future"]
+        models += [f"codex/{model}" for model in models]
+        configured = [None, *sorted(EFFORT_LEVELS), "ULTRA"]
+        overrides = (None, {"model_reasoning_effort": "medium"}, {"model": "gpt-5.5"})
+        rows = 0
+        outcomes = set()
+        for index, effort in enumerate(configured):
+            home = tmp_path / f"home-{index}"
+            home.mkdir()
+            body = 'model = "gpt-5.6-sol"\n'
+            if effort is not None:
+                body += f'model_reasoning_effort = "{effort}"\n'
+            (home / "config.toml").write_text(body)
+            env = {"CODEX_HOME": str(home)}
+            for model in models:
+                for pin in overrides:
+                    catalog_route = codex_unset_effort_default(model, pin, env)
+                    adapter_route = codex_unset_effort_from_config(model, pin, env)
+                    assert catalog_route == adapter_route, (model, effort, pin)
+                    outcomes.add(catalog_route)
+                    rows += 1
+        assert rows == len(configured) * len(models) * len(overrides)
+        # The rows reach every kind of answer, so this is not agreement on None alone.
+        assert {None, "low", "xhigh", "max", "ultra"} <= outcomes
+
+    def test_the_endpoint_class_policy_receives_the_call(self, monkeypatch):
+        calls = []
+
+        class WithPolicy:
+            @classmethod
+            def unset_reasoning_effort(cls, model, profile_overrides=None, env=None):
+                calls.append((model, profile_overrides, env))
+                return "medium"
+
+        catalog = _use_catalog(monkeypatch, _Catalog(_Declaration(lambda: WithPolicy)))
+        env = {"CODEX_HOME": "/nowhere"}
+
+        assert codex_unset_effort_default("gpt-5.5", {"a": 1}, env) == "medium"
+        assert calls == [("gpt-5.5", {"a": 1}, env)]
+        assert catalog.asked == ["codex"]
+
+    def test_an_endpoint_class_without_the_policy_gives_no_effort(self, monkeypatch):
+        class WithoutPolicy:
+            pass
+
+        _use_catalog(monkeypatch, _Catalog(_Declaration(lambda: WithoutPolicy)))
+        assert codex_unset_effort_default("gpt-5.3-codex-spark") is None
+
+    def test_a_catalog_without_codex_gives_no_effort(self, monkeypatch):
+        catalog = _use_catalog(monkeypatch, _Catalog(None))
+        assert codex_unset_effort_default("gpt-5.3-codex-spark") is None
+        assert catalog.asked == ["codex"]
+
+    def test_a_provider_that_cannot_be_activated_gives_no_effort(self, monkeypatch):
+        from lionagi._provider_errors import ProviderActivationError
+
+        def fail():
+            raise ProviderActivationError(
+                provider="codex", endpoint="query_cli", source="test", reason="activation_failed"
+            )
+
+        _use_catalog(monkeypatch, _Catalog(_Declaration(fail)))
+        assert codex_unset_effort_default("gpt-5.3-codex-spark") is None
+
+    def test_any_other_failure_propagates(self, monkeypatch):
+        def fail():
+            raise RuntimeError("a defect in the endpoint module")
+
+        _use_catalog(monkeypatch, _Catalog(_Declaration(fail)))
+        with pytest.raises(RuntimeError, match="a defect in the endpoint module"):
+            codex_unset_effort_default("gpt-5.3-codex-spark")
+
+    def test_with_the_hub_physically_absent_no_effort_is_emitted(self, tmp_path):
+        """Only the core package is on the path: no import system refusal stands in for the hub.
+
+        The configured effort is one the hub would clamp and emit, so reaching the hub would
+        show as ``xhigh`` rather than ``None``.
+        """
+        from tests._core_imports import ROOT
+
+        site = tmp_path / "site"
+        shutil.copytree(
+            ROOT / "lionagi", site / "lionagi", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        home = tmp_path / "codex-home"
+        home.mkdir()
+        (home / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
+        code = """
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+site = Path(sys.argv[1]).resolve()
+sys.path[:] = [str(site)] + [
+    entry
+    for entry in sys.path
+    if entry and not (Path(entry) / "lionagi").exists() and not (Path(entry) / "lionhub").exists()
+]
+sys.meta_path[:] = [f for f in sys.meta_path if "editable" not in type(f).__module__]
+absent = importlib.util.find_spec("lionhub") is None
+
+import lionagi
+from lionagi.service.providers import codex_unset_effort_default
+
+print(json.dumps({
+    "hub_absent": absent,
+    "core_from_site": Path(lionagi.__file__).resolve().is_relative_to(site),
+    "default": codex_unset_effort_default("gpt-5.3-codex-spark"),
+    "still_absent": "lionhub" not in sys.modules,
+}))
+"""
+        proc = subprocess.run(  # noqa: S603 -- this interpreter, a fixed script
+            [sys.executable, "-c", code, str(site)],
+            cwd=tmp_path,
+            env={
+                "CODEX_HOME": str(home),
+                "HOME": str(tmp_path),
+                "PATH": os.environ.get("PATH", ""),
+                "TMPDIR": os.environ.get("TMPDIR", str(tmp_path)),
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout.strip().splitlines()[-1]) == {
+            "hub_absent": True,
+            "core_from_site": True,
+            "default": None,
+            "still_absent": True,
+        }

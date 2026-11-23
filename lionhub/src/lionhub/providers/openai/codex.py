@@ -4408,6 +4408,23 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     # see stream_codex_cli() above.
     streams_first_output_early = True
 
+    @classmethod
+    def unset_reasoning_effort(
+        cls,
+        model: str,
+        profile_overrides: dict | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> str | None:
+        """The effort to emit for a codex request that sets none, for a caller without one.
+
+        ``lionagi.service.providers.codex_unset_effort_default`` reaches this by name through
+        the provider catalog, so the core names no codex module. It reads the configuration a
+        request's own validation reads, from the codex home ``env`` names.
+        """
+        from ._codex_profile import codex_unset_effort_from_config
+
+        return codex_unset_effort_from_config(model, profile_overrides, env)
+
     def _carried_runtime_state(self, request, req_dict: dict) -> dict:
         carried = super()._carried_runtime_state(request, req_dict)
         if isinstance(request, CodexCodeRequest):

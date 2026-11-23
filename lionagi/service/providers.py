@@ -105,6 +105,11 @@ def _clamp_codex_effort(effort: str, model: str | None) -> str:
     return effort
 
 
+# The class method a codex endpoint class offers for the effort to emit when a request sets
+# none. The core reaches it by this name through the provider catalog; the hub's tests pin it.
+_CODEX_UNSET_EFFORT_METHOD = "unset_reasoning_effort"
+
+
 def codex_unset_effort_default(
     model: str,
     profile_overrides: dict | None = None,
@@ -130,9 +135,16 @@ def codex_unset_effort_default(
     depth. The table is the boundary of the guarantee, and widening the
     guarantee means widening the table.
 
-    The selected adapter supplies its configuration reader to the shared
-    selector. This entry point keeps cold compatibility for Python callers
-    without a selected adapter.
+    The policy comes from the codex adapter, so this module names no provider
+    implementation: the default provider catalog's codex endpoint class supplies
+    it through its ``unset_reasoning_effort`` class method. This returns
+    ``None``, and so emits nothing, when that catalog has no codex provider,
+    when the hub is not installed (``MissingFeatureError``), when the codex
+    provider cannot be activated (``ProviderActivationError``), and when the
+    endpoint class offers no such method. That hides nothing a launch would
+    report: a real codex launch resolves the same catalog and raises the same
+    typed error itself, and with no effort emitted the codex CLI reads its own
+    config as it would without this default. Any other failure propagates.
 
     ``env`` is the environment the spawned codex process will run under, when
     the caller knows it. A request may carry a complete replacement
@@ -140,9 +152,21 @@ def codex_unset_effort_default(
     resolving against our own would clamp against a file the child never opens
     while leaving unclamped the one it does.
     """
-    from lionagi.service.connections._provider_compat import codex_unset_effort_1x
+    from lionagi._feature_errors import MissingFeatureError
+    from lionagi._provider_errors import ProviderActivationError
+    from lionagi.service.connections import _provider_compat
 
-    return codex_unset_effort_1x(model, profile_overrides, env)
+    try:
+        declaration = _provider_compat.default_provider_catalog().endpoint("codex")
+        if declaration is None:
+            return None
+        endpoint_class = declaration.factory()
+    except (MissingFeatureError, ProviderActivationError):
+        return None
+    policy = getattr(endpoint_class, _CODEX_UNSET_EFFORT_METHOD, None)
+    if not callable(policy):
+        return None
+    return policy(model, profile_overrides, env)
 
 
 def _codex_unset_effort_from_reader(
