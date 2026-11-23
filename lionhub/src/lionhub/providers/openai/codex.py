@@ -1456,7 +1456,21 @@ def _permission_profile_args(
     policy: ChildSandboxPolicy,
     carried: Any,
 ) -> list[str]:
-    """The two ``-c`` overrides that put a codex child under the permission profile.
+    """The two ``-c`` overrides that put a codex child under the permission profile
+    ``_permission_profile_launch_table`` renders."""
+    return _permission_profile_overrides(
+        _permission_profile_launch_table(plain, cwd, env, policy, carried)
+    )
+
+
+def _permission_profile_launch_table(
+    plain: _PlainRequest,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    policy: ChildSandboxPolicy,
+    carried: Any,
+) -> dict[str, Any]:
+    """The permission profile table a codex child runs under.
 
     ``env`` is the environment the child runs in: the ``CODEX_HOME`` it names is the one the
     profile denies, beside every ``deny_read`` entry of ``policy``. The profile starts from
@@ -1498,7 +1512,7 @@ def _permission_profile_args(
     if not read_only:
         refuse_write_roots_on_denied_paths([str(cwd)], deny, what="the working directory")
     refuse_write_roots_on_denied_paths(write_roots, deny)
-    table = permission_profile_table(
+    return permission_profile_table(
         deny=deny,
         write=[] if read_only else write_roots,
         light=light,
@@ -1507,7 +1521,6 @@ def _permission_profile_args(
         exclude_slash_tmp=exclude_slash_tmp and not read_only,
         exclude_tmpdir=exclude_tmpdir and not read_only,
     )
-    return _permission_profile_overrides(table)
 
 
 def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
@@ -1530,7 +1543,9 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
     """Refuse, before spawn, a profiled launch that another layer could weaken or that runs on
     a codex binary not shown to enforce the profile.
 
-    ``env`` is the child's final environment. When the user config sets a root
+    ``env`` is the child's final environment. The probe record is read against the table the
+    launch renders, so the socket arm asked for is the one of the launch's own network state
+    (ADR-0133, "the socket arm per network state"). When the user config sets a root
     ``sandbox_mode`` the profile governs over it; one line in the log says so, naming the config
     and the probe record the binary's check rests on.
     """
@@ -1542,7 +1557,13 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
         profile=plain.profile,
         ignore_user_config=plain.ignore_user_config,
     )
-    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd)
+    policy = _permission_profile_policy(plain)
+    table = None
+    if policy is not None:
+        carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
+        table = _permission_profile_launch_table(plain, cwd, env, policy, carried)
+    # With no policy there is no table, and the record is then asked for every arm.
+    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd, table=table)
     if governed is not None:
         log.warning(
             "the command-line permission profile governs over the sandbox_mode set in %s, as the "

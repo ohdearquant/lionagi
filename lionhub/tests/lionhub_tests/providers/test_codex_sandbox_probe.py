@@ -32,7 +32,10 @@ from lionhub.providers.openai._codex_permissions import (
     PERMISSION_PROFILE,
     PROBE_COMMAND,
     REQUIRED_ARMS,
+    SOCKET_ARMS,
     binary_sha256,
+    launch_arms,
+    permission_profile_table,
     probe_record,
     probe_record_path,
     require_passing_probe_record,
@@ -224,9 +227,11 @@ class FakeCodex:
         )
         grants = [cwd, *map(Path, add_dirs), *table_writes]
         read_only_leak = "read_only_cwd_write_refused" in self.leaks
-        if table.get("extends") == ":read-only" and not read_only_leak:
-            # codex's `:read-only` built-in grants no write, the working directory included.
-            grants = []
+        read_only = table.get("extends") == ":read-only"
+        if read_only and not read_only_leak:
+            # codex's `:read-only` built-in grants no write, the working directory included; a
+            # write entry of the table is granted all the same, unless that is the leak.
+            grants = [] if "read_only_write_root" in self.leaks else table_writes
         scratch = cwd.parent
         leaks = self.leaks
         # A user-layer sandbox_mode that wins over the profile is a profile that is not applied.
@@ -241,8 +246,11 @@ class FakeCodex:
         if words[0] != "/bin/sh" and words[1:2] == ["-c"]:
             # The child's connect to a unix socket: refused inside the denied set, else made.
             target = Path(words[-1])
+            network_on = table["network"]["enabled"]
             refused = _under(target, deny) and not ignored
-            refused &= "unix_socket_refused" not in leaks
+            refused &= SOCKET_ARMS[network_on] not in leaks
+            refused &= not (read_only and "unix_read_only_run_connects" in leaks)
+            refused &= not (not read_only and not network_on and "unix_light_run_connects" in leaks)
             refused |= "unix_always_fails" in leaks
             if refused:
                 return "PermissionError: [Errno 1] Operation not permitted\nrc=1"
@@ -258,6 +266,7 @@ class FakeCodex:
             refused &= not (ours and target.name == "auth.json" and "own_codex_home" in leaks)
             refused |= ours and target.name == "f.txt" and "read_control" in leaks
             refused |= ours and target.name == "ro.txt" and "read_only_read_fails" in leaks
+            refused |= ours and target.name == "rw.txt" and "read_only_rw_read_fails" in leaks
             if refused:
                 return f"{words[0]}: {target}: Permission denied\nrc=1"
             text = target.read_text() if words[0] == "/bin/cat" and target.exists() else ""
@@ -319,6 +328,9 @@ def test_each_arm_fails_when_its_behaviour_is_not_enforced(tmp_path, sandbox_on,
     allowed_company = (
         {"user_layer_sandbox_mode"} if leak in _SHARED_WITH_THE_USER_LAYER_ARM else set()
     )
+    if leak == "read_only_cwd_write_refused":
+        # The write-root run is read-only too, and its working-directory write lands with it.
+        allowed_company = {"read_only_write_root"}
     assert failed - {leak} <= allowed_company
 
 
@@ -350,16 +362,21 @@ def test_the_read_only_run_starts_from_the_read_only_built_in(tmp_path, sandbox_
     for argv, _env, _cwd in fake.runs:
         row = next(a for a in argv if a.startswith(f"permissions.{PERMISSION_PROFILE}="))
         tables.append(_toml_loads("table = " + row.split("=", 1)[1])["table"])
+    # Two runs extend the read-only built-in: the read-only run grants no write at all, and the
+    # write-root run grants exactly one write entry.
     read_only = [t for t in tables if t["extends"] == ":read-only"]
-    assert len(read_only) == 1
-    assert read_only[0]["network"]["enabled"] is False
-    assert [p for p, mode in read_only[0]["filesystem"].items() if mode == "write"] == []
+    assert len(read_only) == 2
+    assert all(t["network"]["enabled"] is False for t in read_only)
+    writes = sorted(
+        len([p for p, mode in t["filesystem"].items() if mode == "write"]) for t in read_only
+    )
+    assert writes == [0, 1]
 
 
 def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbox_on):
     fake = FakeCodex()
     probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
-    assert len(fake.runs) == 4
+    assert len(fake.runs) == 5
     networks = []
     for argv, env, cwd in fake.runs:
         assert argv[0] == "/opt/codex"
@@ -372,7 +389,7 @@ def test_the_probe_runs_codex_under_the_profile_a_launch_builds(tmp_path, sandbo
         assert table["filesystem"][env["CODEX_HOME"]] == "deny"
         assert Path(env["CODEX_HOME"]).parent == Path(cwd).parent
         networks.append(table["network"]["enabled"])
-    assert sorted(networks) == [False, False, True, True]
+    assert sorted(networks) == [False, False, False, True, True]
 
 
 def test_the_probe_carries_the_profile_overrides_a_launch_renders(tmp_path, sandbox_on):
@@ -498,7 +515,7 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 3
+    assert record["format"] == 4
     assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
@@ -535,15 +552,16 @@ def test_the_record_is_keyed_by_the_version(tmp_path, record_dir):
         require_passing_probe_record(str(binary))
 
 
-@pytest.mark.parametrize("earlier", [1, 2])
+@pytest.mark.parametrize("earlier", [1, 2, 3])
 def test_a_record_of_another_format_is_no_record(tmp_path, record_dir, earlier):
-    # Format 2 records predate the read-only arm, so they no longer admit a launch.
+    # Format 2 records predate the read-only arm and format 3 records the per-network-state
+    # socket arms, so neither admits a launch.
     binary = _fake_binary(tmp_path / "bin")
     path = probe_module.write_record(str(binary), _passing_arms())
     record = json.loads(path.read_text())
     record["format"] = earlier
     path.write_text(json.dumps(record))
-    with pytest.raises(CLIInputRefusedError, match="is not for codex"):
+    with pytest.raises(CLIInputRefusedError, match=f"is of format {earlier}"):
         require_passing_probe_record(str(binary))
 
 
@@ -689,7 +707,8 @@ def test_the_write_entry_arm_fails_when_only_add_dir_would_grant_it(tmp_path, sa
     arms = probe_module.probe(
         "codex", runner=FakeCodex(("table_write_ignored",)), scratch=tmp_path / "scratch"
     )
-    assert _failed_arm_names(arms) == {"write_entry"}
+    # The write-root run's entry is granted by its table alone too.
+    assert _failed_arm_names(arms) == {"write_entry", "read_only_write_root"}
 
 
 def test_the_scratch_root_defaults_under_the_lionagi_state_directory(tmp_path, monkeypatch):
@@ -758,28 +777,227 @@ def test_an_arm_that_is_not_conditional_cannot_be_skipped_into_a_pass(tmp_path, 
         require_passing_probe_record(str(binary), env={"PATH": os.environ.get("PATH", "")})
 
 
-def test_the_unix_arm_fails_when_the_denied_socket_accepts_a_connection(tmp_path, sandbox_on):
-    arms = probe_module.probe(
-        "codex", runner=FakeCodex(("unix_socket_refused",)), scratch=tmp_path / "scratch"
-    )
-    assert _failed_arm_names(arms) == {"unix_socket_refused"}
-    assert "accepted 1 connection" in arms["unix_socket_refused"]["evidence"]
+_ON, _OFF = SOCKET_ARMS[True], SOCKET_ARMS[False]
 
 
-def test_the_unix_arm_fails_when_its_control_connect_fails(tmp_path, sandbox_on):
+def test_the_network_on_arm_fails_when_the_denied_socket_accepts_a_connection(tmp_path, sandbox_on):
+    arms = probe_module.probe("codex", runner=FakeCodex((_ON,)), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == {_ON}
+    assert "accepted 1 connection" in arms[_ON]["evidence"]
+    assert "accepted 0 connection" in arms[_OFF]["evidence"]
+
+
+def test_the_network_off_arm_fails_when_both_network_off_runs_connect(tmp_path, sandbox_on):
+    arms = probe_module.probe("codex", runner=FakeCodex((_OFF,)), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == {_OFF}
+    evidence = arms[_OFF]["evidence"]
+    assert "light run: the denied-path socket accepted 1" in evidence
+    assert "read-only run: the denied-path socket accepted 1" in evidence
+
+
+@pytest.mark.parametrize(
+    ("leak", "run"),
+    [("unix_light_run_connects", "light"), ("unix_read_only_run_connects", "read-only")],
+)
+def test_the_network_off_arm_needs_both_of_its_runs_to_refuse(tmp_path, sandbox_on, leak, run):
+    arms = probe_module.probe("codex", runner=FakeCodex((leak,)), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == {_OFF}
+    assert f"{run} run: the denied-path socket accepted 1" in arms[_OFF]["evidence"]
+
+
+def test_the_socket_arms_fail_when_their_control_connects_fail(tmp_path, sandbox_on):
     arms = probe_module.probe(
         "codex", runner=FakeCodex(("unix_always_fails",)), scratch=tmp_path / "scratch"
     )
-    assert _failed_arm_names(arms) == {"unix_socket_refused"}
+    assert _failed_arm_names(arms) == {_ON, _OFF}
 
 
-def test_the_unix_arm_fails_closed_when_a_listener_cannot_be_bound(
+def test_the_socket_arms_fail_closed_when_a_listener_cannot_be_bound(
     tmp_path, sandbox_on, monkeypatch
 ):
     monkeypatch.setattr(probe_module, "_start_listener", lambda path: (None, "OSError: too long"))
     arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
-    assert _failed_arm_names(arms) == {"unix_socket_refused"}
-    assert "fails closed" in arms["unix_socket_refused"]["evidence"]
+    assert _failed_arm_names(arms) == {_ON, _OFF}
+    assert "fails closed" in arms[_ON]["evidence"]
+    assert "fails closed" in arms[_OFF]["evidence"]
+
+
+def test_the_light_and_read_only_runs_carry_the_two_connects(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    connects = [c for c in fake.commands if "socket.AF_UNIX" in c]
+    # Two in each of the heavy, light and read-only runs.
+    assert len(connects) == 6
+    assert sum("d.sock" in c for c in connects) == 3
+    assert sum("c.sock" in c for c in connects) == 3
+
+
+def test_the_write_root_run_is_read_only_with_one_write_entry(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert arms["read_only_write_root"]["passed"]
+    tables = [
+        _toml_loads("t = " + a.split("=", 1)[1])["t"]
+        for argv, _, _ in fake.runs
+        for a in argv
+        if a.startswith(f"permissions.{PERMISSION_PROFILE}=")
+    ]
+    read_only_writes = [
+        [p for p, m in t["filesystem"].items() if m == "write"]
+        for t in tables
+        if t["extends"] == ":read-only"
+    ]
+    assert sorted(len(w) for w in read_only_writes) == [0, 1]
+    assert read_only_writes[1 if read_only_writes[0] == [] else 0][0].endswith("/scratch")
+
+
+@pytest.mark.parametrize(
+    "leak", ["read_only_write_root", "read_only_cwd_write_refused", "read_only_rw_read_fails"]
+)
+def test_the_write_root_arm_fails_on_each_of_its_three_checks(tmp_path, sandbox_on, leak):
+    arms = probe_module.probe("codex", runner=FakeCodex((leak,)), scratch=tmp_path / "scratch")
+    assert "read_only_write_root" in _failed_arm_names(arms)
+
+
+# ------------------------------------------------------------------ the gate, per network state
+def _table(*, light=False, read_only=False, network=False, read_only_write=()) -> dict:
+    return permission_profile_table(
+        deny=[],
+        write=[],
+        light=light,
+        read_only=read_only,
+        network=network,
+        read_only_write=read_only_write,
+    )
+
+
+#: Each launch the amendment's table names, by the table it renders.
+_LAUNCHES = {
+    "light": _table(light=True),
+    "read-only": _table(read_only=True),
+    "heavy, network off": _table(),
+    "heavy, network on": _table(network=True),
+}
+
+
+def _record_with(tmp_path, **failed: bool) -> Path:
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    for name, fails in failed.items():
+        if fails:
+            arms[name] = {"passed": False, "evidence": "rc=0 accepted 1 connection(s)"}
+    probe_module.write_record(str(binary), arms)
+    return binary
+
+
+def _admitted(binary: Path, table) -> bool:
+    try:
+        require_passing_probe_record(str(binary), env={"PATH": ""}, table=table)
+    except CLIInputRefusedError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    ("on_fails", "off_fails", "expected"),
+    [
+        (
+            True,
+            False,
+            {"light": 1, "read-only": 1, "heavy, network off": 1, "heavy, network on": 0},
+        ),
+        (
+            False,
+            True,
+            {"light": 0, "read-only": 0, "heavy, network off": 0, "heavy, network on": 1},
+        ),
+        (True, True, {"light": 0, "read-only": 0, "heavy, network off": 0, "heavy, network on": 0}),
+        (
+            False,
+            False,
+            {"light": 1, "read-only": 1, "heavy, network off": 1, "heavy, network on": 1},
+        ),
+    ],
+)
+def test_each_launch_needs_the_socket_arm_of_its_own_network_state(
+    tmp_path, record_dir, on_fails, off_fails, expected
+):
+    # The amendment's outcome table, column by column.
+    binary = _record_with(tmp_path, **{_ON: on_fails, _OFF: off_fails})
+    got = {name: int(_admitted(binary, table)) for name, table in _LAUNCHES.items()}
+    assert got == expected
+
+
+def test_a_network_on_refusal_names_the_binary_the_arm_and_both_remedies(tmp_path, record_dir):
+    binary = _record_with(tmp_path, **{_ON: True})
+    with pytest.raises(CLIInputRefusedError) as refused:
+        require_passing_probe_record(
+            str(binary), env={"PATH": ""}, table=_LAUNCHES["heavy, network on"]
+        )
+    text = str(refused.value)
+    assert "codex 0.162.1" in text
+    assert repr(os.path.realpath(binary)) in text
+    assert _ON in text
+    assert "sandbox_workspace_write.network_access = false" in text
+    assert "workload: light" in text
+    # Its own remedies only: switching the sandbox off is not offered for this arm.
+    assert "child_sandbox" not in text
+
+
+def test_a_network_off_refusal_says_no_setting_admits_it_and_names_the_probe(tmp_path, record_dir):
+    binary = _record_with(tmp_path, **{_OFF: True})
+    for name in ("light", "read-only", "heavy, network off"):
+        with pytest.raises(CLIInputRefusedError) as refused:
+            require_passing_probe_record(str(binary), env={"PATH": ""}, table=_LAUNCHES[name])
+        text = str(refused.value)
+        assert "codex 0.162.1" in text
+        assert _OFF in text
+        assert "No setting admits a launch with the network off" in text
+        assert f"{PROBE_COMMAND} --binary" in text
+
+
+def test_a_format_3_record_admits_no_launch(tmp_path, record_dir):
+    binary = _record_with(tmp_path)
+    path, record, _resolved, _version = probe_record(str(binary))
+    record["format"] = 3
+    path.write_text(json.dumps(record), encoding="utf-8")
+    for table in (*_LAUNCHES.values(), None):
+        with pytest.raises(CLIInputRefusedError, match="is of format 3"):
+            require_passing_probe_record(str(binary), env={"PATH": ""}, table=table)
+
+
+def test_without_a_table_every_arm_is_needed(tmp_path, record_dir):
+    assert launch_arms(None) == REQUIRED_ARMS
+    assert launch_arms({"network": {"enabled": "yes"}}) == REQUIRED_ARMS
+    for arm in (_ON, _OFF, "read_only_write_root"):
+        binary = _record_with(tmp_path / arm, **{arm: True})
+        assert not _admitted(binary, None)
+
+
+def test_the_write_root_arm_is_needed_only_by_a_read_only_table_with_a_write_entry(
+    tmp_path, record_dir
+):
+    binary = _record_with(tmp_path, read_only_write_root=True)
+    for table in _LAUNCHES.values():
+        assert _admitted(binary, table)
+    scratch = _table(read_only=True, read_only_write=[str(tmp_path / "scratch")])
+    assert not _admitted(binary, scratch)
+    assert "read_only_write_root" in launch_arms(scratch)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"PATH": ""},
+        {"PATH": "", "TMPDIR": "/nonexistent"},
+        {"PATH": "", "CODEX_HOME": "/nonexistent", "LIONAGI_CHILD_SANDBOX": "0"},
+    ],
+)
+def test_the_environment_does_not_change_the_socket_answer(tmp_path, record_dir, env):
+    binary = _record_with(tmp_path, **{_ON: True})
+    with pytest.raises(CLIInputRefusedError, match=_ON):
+        require_passing_probe_record(str(binary), env=env, table=_LAUNCHES["heavy, network on"])
+    require_passing_probe_record(str(binary), env=env, table=_LAUNCHES["light"])
 
 
 def test_the_unix_listener_counts_the_connections_that_reach_it(tmp_path, monkeypatch):
