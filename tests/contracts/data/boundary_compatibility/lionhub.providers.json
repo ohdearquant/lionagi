@@ -203,6 +203,9 @@
     "lionhub/src/lionhub/providers/openai/_audio_schemas.py": [
       "__all__ = (\"AudioSpeechRequest\", \"AudioTranscriptionRequest\")"
     ],
+    "lionhub/src/lionhub/providers/openai/_codex_hook_trust.py": [
+      "__all__ = (\n    \"DISABLED\",\n    \"EVENT_LABELS\",\n    \"HASH_CONFIRMED\",\n    \"MODIFIED\",\n    \"REFUSED_STATUSES\",\n    \"TRUSTED\",\n    \"UNCONFIRMED\",\n    \"UNREADABLE\",\n    \"UNTRUSTED\",\n    \"DeclaredHook\",\n    \"HookTrust\",\n    \"HookTrustReport\",\n    \"hook_hash\",\n    \"hook_identity\",\n    \"hook_trust_for_env\",\n    \"hook_trust_report\",\n)"
+    ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
       "__all__ = (\n    \"PERMISSION_PROFILE\",\n    \"PROBE_COMMAND\",\n    \"codex_binary_version\",\n    \"permission_profile_table\",\n    \"probe_record\",\n    \"probe_record_dir\",\n    \"probe_record_path\",\n    \"refuse_a_second_sandbox_setting\",\n    \"require_passing_probe_record\",\n    \"user_layer_tables\",\n)"
     ],
@@ -503,6 +506,15 @@
     "lionhub/src/lionhub/providers/openai/_audio_schemas.py": [
       "AudioSpeechRequest",
       "AudioTranscriptionRequest"
+    ],
+    "lionhub/src/lionhub/providers/openai/_codex_hook_trust.py": [
+      "DeclaredHook",
+      "HookTrust",
+      "HookTrustReport",
+      "hook_hash",
+      "hook_identity",
+      "hook_trust_for_env",
+      "hook_trust_report"
     ],
     "lionhub/src/lionhub/providers/openai/_codex_permissions.py": [
       "binary_sha256",
