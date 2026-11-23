@@ -1,7 +1,8 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
-  Amendments 1 to 5); Amendment 6 (2026-11-22) and Amendment 7 (2026-11-23) Proposed
+  Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
+  Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
@@ -104,7 +105,10 @@ Limits:
 
 ## Amendment 6 (2026-11-22) — a per-run writable scratch directory for an agent
 
-**Status: Proposed.**
+**Status: Accepted (2026-11-23),** on a format-6 codex sandbox probe record from codex 0.162.1 in
+which `scratch_env` passed (the child's `TMPDIR`, `TMP` and `TEMP` each named the directory and the
+file written under `$TMPDIR` landed in it), with `read_only_write_root` and `write_entry` passed
+beside it.
 
 The ask, in the words of the feature request: "A reviewer profile's sandbox has no writable
 temporary folder, so a reviewer agent cannot run the project's tests to check a claim." What it

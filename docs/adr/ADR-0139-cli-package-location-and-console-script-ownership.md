@@ -4,7 +4,10 @@
 - **Kind**: Aspirational
 - **Implementation-status**: partial. The D2 step-3 module moves are complete. Step 6 moved the
   CLI to `lionhub.serve.cli`, with `li` targeting `lionhub.serve.cli.main:main` and
-  `lionagi/_moved.py` recording the compatibility paths. D5 and the 2.0 date remain open.
+  `lionagi/_moved.py` recording the compatibility paths.
+  `test_optional_command_feature_errors_are_unchanged` is in
+  `lionhub/tests/lionhub_tests/serve/cli/test_cli_catalog_boundary.py`. D5 and the 2.0 date remain
+  open.
 - **Area**: cli-surface
 - **Date**: 2026-10-26
 - **Relations**: resolves the CLI decisions deferred by ADR-0136 D7. Amendment 5 follows the
