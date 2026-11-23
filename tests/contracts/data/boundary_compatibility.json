@@ -30,8 +30,11 @@
     ],
     "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
       "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
       "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
-      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\""
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
+      "os.getenv:_MAX_TTL_ENV",
+      "os.getenv:name"
     ],
     "apps/studio/backend/src/lionagi_studio/services/leo.py": [
       "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
@@ -1947,7 +1950,9 @@
       "validate_agent"
     ],
     "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
+      "approval_ttl_bounds",
       "compute_params_hash",
+      "consume_approval_route",
       "create_approval",
       "create_approval_route",
       "deny_approval",

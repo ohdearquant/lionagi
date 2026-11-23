@@ -94,9 +94,9 @@ def specialized_cases(_specialized_snapshot):
     return deepcopy(_specialized_snapshot)
 
 
-def test_http_route_count_is_151():
+def test_http_route_count_is_152():
     live = _capture.capture_http()
-    assert live["count"] == 151
+    assert live["count"] == 152
 
 
 def _routes_by_key(payload: dict) -> dict[str, dict]:
