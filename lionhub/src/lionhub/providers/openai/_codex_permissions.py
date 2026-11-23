@@ -66,8 +66,13 @@ PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 #: satisfies a launch. Format 4 measures the unix-socket check once per network state, in place
 #: of the one ``unix_socket_refused`` arm, and adds ``read_only_write_root`` (ADR-0133, "the
 #: socket arm per network state"): a record of format 3 or earlier has no socket arm for either
-#: state, so it admits no launch.
-_RECORD_FORMAT = 4
+#: state, so it admits no launch. Format 5 reads each socket connect by the token the child prints
+#: (``connect=ok`` or ``connect=<errno name>``), brackets each listener run with the probe's own
+#: connects from outside the sandbox, and passes a network-off run whose control connect the
+#: sandbox refused as well as one whose control connect reached its listener, naming which
+#: (ADR-0133, "the network-off socket rule"): a format 4 record measured no such case, so it
+#: admits no launch.
+_RECORD_FORMAT = 5
 
 #: The socket arm a launch needs, by its table's ``network.enabled``.
 SOCKET_ARMS: Mapping[bool, str] = {
@@ -693,10 +698,10 @@ def _socket_refusal(arm: str, version: str, resolved: str, *, other_passed: bool
     is refused and the network-off arm did not pass either, turning the network off admits
     nothing, so no setting is offered."""
     head = (
-        f"codex {version} at {resolved!r} did not pass {arm}: a child of a run with the network "
-        f"{'on' if arm == SOCKET_ARMS[True] else 'off'} could connect to a unix socket inside a "
-        "denied directory, so a listener there (a credential agent, a local daemon) would answer "
-        "it."
+        f"codex {version} at {resolved!r} did not pass {arm}: the probe did not show a child of a "
+        f"run with the network {'on' if arm == SOCKET_ARMS[True] else 'off'} refused by the "
+        "sandbox when it connects to a unix socket inside a denied directory, so a listener there "
+        "(a credential agent, a local daemon) may answer it."
     )
     if arm == SOCKET_ARMS[True] and not other_passed:
         return (

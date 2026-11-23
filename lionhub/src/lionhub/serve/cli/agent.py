@@ -1889,7 +1889,7 @@ _SCRATCH_REFUSAL_API = (
     "root yet"
 )
 _SCRATCH_REFUSAL_CODEX = (
-    "a codex run needs a sandbox probe record of format 4, which measures a read-only policy "
+    "a codex run needs a sandbox probe record of format 5, which measures a read-only policy "
     "with one write root, and no such record exists yet"
 )
 _SCRATCH_REFUSAL_GEMINI = (

@@ -501,7 +501,7 @@ async def test_a_run_without_scratch_takes_none_and_records_none(monkeypatch, tm
 @pytest.mark.parametrize(
     ("model", "reason"),
     [
-        ("codex/gpt-5.5", "sandbox probe record of format 4"),
+        ("codex/gpt-5.5", "sandbox probe record of format 5"),
         ("gemini-cli/gemini-2.5-pro", "does not bound reads"),
     ],
 )

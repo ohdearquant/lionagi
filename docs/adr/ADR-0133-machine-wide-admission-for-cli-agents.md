@@ -682,6 +682,73 @@ Limits added by this amendment:
 - The arms are measured on the host that runs the probe, for the binary it probes, as every arm
   is; a record does not carry to another binary or another machine.
 
+## Amendment: the network-off socket rule
+
+Status: Proposed
+
+Why it matters: on codex 0.162.1 a run with the network off refuses every unix-socket connect,
+the control socket's included. The network-off arm above needs the control reached, so it fails on
+a binary that closes local sockets more widely than the arm asks, and every network-off launch
+stays refused though no denied socket was reached. The check also read a refusal from the child's
+exit status alone, so a connect that found no socket read as a refusal, and it read the listeners'
+counts at a moment that could precede the count of a connection the kernel had already queued.
+
+This amendment changes how a socket connect is read, how a listener's count for a run is taken,
+and what passes the network-off arm. It changes the network-on arm's denied connect, and moves the
+record to format 5. The rest of the amendment above stands.
+
+- **A connect prints its token.** The connect code sets a 3 second timeout, connects, and prints
+  one line: `connect=ok`, `connect=<errno name>` from Python's errno table, `connect=timeout`, or
+  `connect=<exception name>` for an error without an errno. Each verdict reads the token. A
+  refusal by the sandbox is `connect=EPERM` and nothing else: `ENOENT`, `ECONNREFUSED`, a timeout
+  or any other token is not a refusal.
+- **An outside control brackets each run.** Before and after each run that carries the two
+  connects (heavy, light and read-only), the probe runs the same connect code itself, outside the
+  sandbox, to both sockets; each of those connects sends a mark of its own once connected. Each must
+  print `connect=ok` and its mark must reach its listener. When one does not, no count is read for
+  that run and every socket arm resting on it fails.
+- **A listener's count for a run** is the after-run mark's place in the order the listener counted
+  connections, less the before-run mark's place, less 1. It is read once the after-run mark is
+  recorded and at no earlier moment. A listener counts connections in the order the kernel queued
+  them, so by then every connection queued before the after-run mark has been counted, a child's
+  included.
+- **The network-on arm** passes when the child's denied connect prints `connect=EPERM` and the
+  denied listener's count is 0, and the child's control connect prints `connect=ok` and the control
+  listener's count is at least 1. This replaces "refuses the connect" for that arm.
+- **The network-off arm** passes when both its runs pass. A run passes when the child's denied
+  connect prints `connect=EPERM` with the denied listener's count 0, and its control connect either
+  prints `connect=ok` with the control listener's count at least 1 ("control reached") or prints
+  `connect=EPERM` with the control listener's count 0 ("control refused"). Every other outcome fails
+  the run. The record names the case for each run.
+- **The record is of format 5.** Each socket arm keeps, for each of its runs, the token each
+  connect printed (the child's two and the probe's four outside ones) and each listener's count for
+  the run. A record of format 4 or earlier is no record and admits no launch. The refusal of a
+  codex scratch run (ADR-0041 Amendment 6) names format 5 in place of format 4.
+- **The refusal** keeps the wording of the amendment above, with its first sentence saying the
+  probe did not show the child refused by the sandbox, since the arm now also fails when a count
+  could not be read.
+
+Required checks:
+
+- A format 3 and a format 4 record admit no launch.
+- A denied connect that prints `connect=ENOENT` fails the network-on arm and the network-off arm.
+- A run that refuses every connect with the network off passes the network-off arm as "control
+  refused"; the network-on arm still needs its control reached and fails when it is refused.
+- A control connect that prints `connect=EPERM` while its listener counts it fails the run.
+- An outside connect that does not print `connect=ok`, or whose mark is not recorded, before or
+  after the run, fails every socket arm.
+- A listener whose accept thread is held until after the child exits still reports the child's
+  connection in the run's count, and the denied arm fails on it.
+- A passing record names each network-off run's case and keeps every token and count.
+
+Limits added by this amendment:
+
+- A binary that refuses a denied connect with an errno other than `EPERM` fails both arms. The
+  record keeps the token it printed, so a later amendment can name that errno from evidence.
+- No launch declares that its child needs a local socket, so a network-off launch on a binary
+  whose record shows "control refused" runs, and a child that needs a local socket there fails at
+  its own connect. The record says which case a binary showed.
+
 ## Amendment: a pool per subscription account
 
 Status: Proposed
