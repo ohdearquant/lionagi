@@ -531,13 +531,17 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
                     "  {'answer': "
                     "<class "
                     "'str'>}\n"
-                    "  ```No "
+                    "  ```\n"
+                    "  Do not put "
                     "triple "
-                    "backticks. "
-                    "Escape all "
-                    "quotes and "
-                    "special "
-                    "characters.",
+                    "backticks "
+                    "inside JSON "
+                    "string values. "
+                    "Escape quotes "
+                    "and special "
+                    "characters "
+                    "inside JSON "
+                    "strings.",
                     "session_id": "<id:3>",
                 },
                 "metadata": {},
