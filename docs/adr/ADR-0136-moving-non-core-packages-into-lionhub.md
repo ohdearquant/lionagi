@@ -12,7 +12,11 @@
   change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3); the discovery contract
   replaced the 46 interim module strings with `lionhub.providers.manifest`, read through
   `lionagi/service/connections/_provider_compat.py`, and the three hub imports C2 deferred to
-  before 2.0 are gone (`service/providers.py`'s in #4745), so `service` is the only core package that names the hub. The Studio
+  before 2.0 are gone (`service/providers.py`'s in #4745). `service` is the only core package that
+  imports the hub, through `_provider_compat`. Two root modules hold hub paths as data, resolved only
+  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths, and
+  `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
+  until 2.0.0. Other mentions of the hub under `lionagi/` are comments and docstrings. The Studio
   application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
   `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is not yet a test: the
   moved-module tests derive their old paths from the packages as they stand. Later package moves and
@@ -226,7 +230,13 @@ maintainer merges or closes them.
 If an outside pull request opens after the move has merged, its author rebases onto the new path.
 `lionhub/README.md` and the table row are where that author finds it.
 
+Note (2026-11-23): the move merged as #4533 on 2026-11-15, while #3454 and #3455 were still open
+drafts, so it did not wait for them as this section requires. The paragraph above now applies to
+both: each rebases onto the new path.
+
 ## Amendment 3 (2026-10-31): providers move first, with finite interim imports
+
+**Status**: Accepted (2026-11-23).
 
 Amendment 5 (G4) replaces this amendment's Studio timing: C1's reference to Amendment 2's retained
 application holds until the application moves to its own import root, and in C2 `studio` and its

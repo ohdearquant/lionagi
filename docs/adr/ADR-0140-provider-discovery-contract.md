@@ -2,7 +2,12 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial. The providers package moved to `lionhub.providers` (#4077, D7
+  step 2). Of step 3, the development line has the contract types and `compose_provider_catalog` in
+  `lionagi.service.connections.provider_catalog`, `_provider_compat` as the one core module that
+  names `lionhub.providers.manifest`, the hub's `get_provider_manifest()`, and an optional
+  `provider_catalog` on `iModel`, endpoint resolution and token-budget lookup; the
+  `_import_all_providers` list and the `_PROVIDER_MODULES` table are gone. Step 4, at 2.0, remains.
 - **Area**: service-providers
 - **Date**: 2026-10-31
 - **Relations**: supplies ADR-0136 D6's providers contract; requires ADR-0136 Amendment 3; specifies finite exceptions to ADR-0122 D1, D2 and D5; preserves ADR-0088's directory-plugin trust and collision rules. ADR-0088 D8 remains deferred.
