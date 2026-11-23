@@ -22,6 +22,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -153,20 +154,49 @@ def _scratch_may_sit_in_a_temp_root(monkeypatch):
 
 
 class FakeListener:
-    """A unix listener that counts connects in memory, as the probe's own one counts accepts.
+    """A unix listener in memory. A connect is queued, and the queue is counted in order only
+    when the probe waits for a mark or stops the listener, the way a real listener's accept
+    thread can lag behind the kernel: a count read before the drain would miss the child.
 
     Pytest's temp paths can exceed the platform's unix-socket path limit, so the arm tests swap
-    the real listener for this one; the real class has its own test on a short relative path."""
+    the real listener for this one; the real class has its own tests on short relative paths."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.accepted = 0
+        self.queued: list[str | None] = []
+        self.marks: dict[str, int] = {}
+
+    def connect(self, mark: str | None = None) -> None:
+        self.queued.append(mark)
+
+    def _count_queued(self) -> None:
+        for mark in self.queued:
+            self.accepted += 1
+            if mark is not None:
+                self.marks.setdefault(mark, self.accepted)
+        self.queued.clear()
+
+    def wait_for_mark(self, mark: str, timeout: float) -> int | None:
+        self._count_queued()
+        return self.marks.get(mark)
 
     def stop(self) -> None:
-        return None
+        self._count_queued()
 
 
 _LISTENERS: dict[Path, FakeListener] = {}
+_REAL_START_LISTENER = probe_module._start_listener
+_REAL_OUTSIDE_CONNECT = probe_module._outside_connect
+
+
+def _outside_in_memory(path, mark):
+    """The probe's own connect from outside the sandbox, against the in-memory listeners."""
+    listener = _LISTENERS.get(Path(path))
+    if listener is None:
+        return "ENOENT"
+    listener.connect(mark)
+    return "ok"
 
 
 @pytest.fixture(autouse=True)
@@ -179,6 +209,7 @@ def _unix_listeners_in_memory(monkeypatch):
         return listener, None
 
     monkeypatch.setattr(probe_module, "_start_listener", start)
+    monkeypatch.setattr(probe_module, "_outside_connect", _outside_in_memory)
 
 
 @pytest.fixture(autouse=True)
@@ -245,20 +276,31 @@ class FakeCodex:
                 return f"/bin/sh: {target}: Permission denied\nrc=1"
             return "rc=0"
         if words[0] != "/bin/sh" and words[1:2] == ["-c"]:
-            # The child's connect to a unix socket: refused inside the denied set, else made.
+            # The child's connect to a unix socket: refused by the sandbox (EPERM) inside the
+            # denied set, else queued on the listener there; it prints its token as the real
+            # connect code does.
             target = Path(words[-1])
             network_on = table["network"]["enabled"]
-            refused = _under(target, deny) and not ignored
+            denied_path = _under(target, deny)
+            listener = _LISTENERS.get(target)
+            if denied_path and "unix_denied_enoent" in leaks:
+                return "connect=ENOENT\nrc=1"
+            if not denied_path and not network_on and "unix_control_eperm_but_reached" in leaks:
+                if listener is not None:
+                    listener.connect()
+                return "connect=EPERM\nrc=1"
+            refused = denied_path and not ignored
             refused &= SOCKET_ARMS[network_on] not in leaks
             refused &= not (read_only and "unix_read_only_run_connects" in leaks)
             refused &= not (not read_only and not network_on and "unix_light_run_connects" in leaks)
             refused |= "unix_always_fails" in leaks
+            refused |= not network_on and "unix_network_off_refuses_all" in leaks
             if refused:
-                return "PermissionError: [Errno 1] Operation not permitted\nrc=1"
-            listener = _LISTENERS.get(target)
-            if listener is not None:
-                listener.accepted += 1
-            return "rc=0"
+                return "connect=EPERM\nrc=1"
+            if listener is None:
+                return "connect=ENOENT\nrc=1"
+            listener.connect()
+            return "connect=ok\nrc=0"
         if words[0] == "/bin/cat":
             target = Path(words[-1])
             ours = scratch in target.parents
@@ -517,7 +559,7 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 4
+    assert record["format"] == 5
     assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
@@ -807,11 +849,83 @@ def test_the_network_off_arm_needs_both_of_its_runs_to_refuse(tmp_path, sandbox_
     assert f"{run} run: the denied-path socket accepted 1" in arms[_OFF]["evidence"]
 
 
-def test_the_socket_arms_fail_when_their_control_connects_fail(tmp_path, sandbox_on):
+def test_a_passing_record_names_each_network_off_case_and_keeps_every_token(tmp_path, sandbox_on):
+    arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == set()
+    assert arms[_OFF]["cases"] == {"light": "control reached", "read_only": "control reached"}
+    for arm, runs in ((_ON, ("heavy",)), (_OFF, ("light", "read_only"))):
+        for run in runs:
+            connects = arms[arm]["connects"][run]
+            assert connects["child"] == {"denied": "EPERM", "control": "ok"}
+            assert connects["in_run"] == {"denied": 0, "control": 1}
+            assert connects["outside"] == {
+                "before": {"denied": "ok", "control": "ok"},
+                "after": {"denied": "ok", "control": "ok"},
+            }
+
+
+def test_the_network_on_arm_needs_its_control_reached(tmp_path, sandbox_on):
+    # Every connect refused: the network-on arm fails, the network-off arm passes as "control
+    # refused", since a sandbox that refuses every local socket with the network off refuses
+    # the denied one too.
     arms = probe_module.probe(
         "codex", runner=FakeCodex(("unix_always_fails",)), scratch=tmp_path / "scratch"
     )
+    assert _failed_arm_names(arms) == {_ON}
+    assert arms[_OFF]["cases"] == {"light": "control refused", "read_only": "control refused"}
+
+
+def test_a_network_off_run_that_refuses_every_socket_passes_as_control_refused(
+    tmp_path, sandbox_on
+):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("unix_network_off_refuses_all",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == set()
+    assert arms[_OFF]["cases"] == {"light": "control refused", "read_only": "control refused"}
+    assert "control refused: no local socket connects at all" in arms[_OFF]["evidence"]
+    assert arms[_OFF]["connects"]["light"]["in_run"] == {"denied": 0, "control": 0}
+
+
+def test_a_denied_connect_that_finds_no_socket_is_not_a_refusal(tmp_path, sandbox_on):
+    # ENOENT is not the sandbox refusing, with the network on or off.
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("unix_denied_enoent",)), scratch=tmp_path / "scratch"
+    )
     assert _failed_arm_names(arms) == {_ON, _OFF}
+    assert "connect=ENOENT for the denied socket" in arms[_ON]["evidence"]
+    assert "connect=ENOENT for the denied socket" in arms[_OFF]["evidence"]
+    assert arms[_OFF]["cases"] == {"light": None, "read_only": None}
+
+
+def test_a_control_that_printed_eperm_but_reached_its_listener_fails(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("unix_control_eperm_but_reached",)), scratch=tmp_path / "scratch"
+    )
+    assert _failed_arm_names(arms) == {_OFF}
+    assert "neither reached its listener nor was refused" in arms[_OFF]["evidence"]
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+@pytest.mark.parametrize("how", ["token", "mark"])
+def test_the_socket_arms_fail_closed_when_the_outside_control_does_not_reach(
+    tmp_path, sandbox_on, monkeypatch, when, how
+):
+    # The probe's own connect from outside the sandbox either prints no connect=ok, or prints it
+    # and its mark is never recorded: no count is read for that run, and every socket arm fails.
+    def outside(path, mark):
+        if not mark.endswith(f"-{when}"):
+            return _outside_in_memory(path, mark)
+        if how == "token":
+            return "ECONNREFUSED"
+        return "ok"
+
+    monkeypatch.setattr(probe_module, "_outside_connect", outside)
+    arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
+    assert _failed_arm_names(arms) == {_ON, _OFF}
+    for arm in (_ON, _OFF):
+        assert "did not reach both listeners" in arms[arm]["evidence"]
+        assert "fails closed" in arms[arm]["evidence"]
 
 
 def test_the_socket_arms_fail_closed_when_a_listener_cannot_be_bound(
@@ -979,13 +1093,14 @@ def test_a_network_off_refusal_says_no_setting_admits_it_and_names_the_probe(tmp
         assert f"{PROBE_COMMAND} --binary" in text
 
 
-def test_a_format_3_record_admits_no_launch(tmp_path, record_dir):
+@pytest.mark.parametrize("earlier", [3, 4])
+def test_an_earlier_format_record_admits_no_launch(tmp_path, record_dir, earlier):
     binary = _record_with(tmp_path)
     path, record, _resolved, _version = probe_record(str(binary))
-    record["format"] = 3
+    record["format"] = earlier
     path.write_text(json.dumps(record), encoding="utf-8")
     for table in (*_LAUNCHES.values(), None):
-        with pytest.raises(CLIInputRefusedError, match="is of format 3"):
+        with pytest.raises(CLIInputRefusedError, match=f"is of format {earlier}"):
             require_passing_probe_record(str(binary), env={"PATH": ""}, table=table)
 
 
@@ -1035,6 +1150,77 @@ def test_the_unix_listener_counts_the_connections_that_reach_it(tmp_path, monkey
     listener.stop()
     assert listener.accepted == 1
     assert not Path("s.sock").exists()
+
+
+def test_the_connect_code_prints_enoent_for_a_missing_socket(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert _REAL_OUTSIDE_CONNECT(Path("missing.sock"), "lionagi-probe-mark-x") == "ENOENT"
+
+
+def _real_listeners(monkeypatch) -> dict[str, probe_module.UnixListener]:
+    """Real listeners for ``_listening``, by socket name; the test skips where binding fails."""
+    started: dict[str, probe_module.UnixListener] = {}
+
+    def start(path):
+        listener, why = _REAL_START_LISTENER(path)
+        if listener is None:
+            pytest.skip(f"this host refuses to bind a unix socket: {why}")
+        started[Path(path).name] = listener
+        return listener, why
+
+    monkeypatch.setattr(probe_module, "_start_listener", start)
+    monkeypatch.setattr(probe_module, "_outside_connect", _REAL_OUTSIDE_CONNECT)
+    return started
+
+
+def _child_connect(path: str) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", probe_module._CONNECT_CODE, path],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    ).stdout
+
+
+def test_the_outside_marks_bracket_a_real_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # relative socket names stay under the platform's path limit
+    _real_listeners(monkeypatch)
+
+    def run():
+        return {"unix_denied": "connect=EPERM\nrc=1", "unix_control": _child_connect("c.sock")}
+
+    outputs, seen = probe_module._listening(Path("d.sock"), Path("c.sock"), run)
+    assert outputs["unix_control"].startswith("connect=ok")
+    assert seen["outside_reached"]
+    assert (seen["denied"], seen["control"]) == (0, 1)
+    assert probe_module._network_off_verdict(outputs, seen)[:2] == (True, "control reached")
+
+
+def test_a_child_connection_counted_only_after_the_child_exits_still_fails_the_denied_arm(
+    tmp_path, monkeypatch
+):
+    # The denied listener's accept thread is held while the child connects and exits, so at
+    # the end of the run the listener has not counted the child. The child's connection is still
+    # in the in-run count, read after the after-run mark, and the denied arm fails on it even
+    # though the run's output claims a refusal.
+    monkeypatch.chdir(tmp_path)
+    started = _real_listeners(monkeypatch)
+
+    def run():
+        denied = started["d.sock"]
+        with denied._counted:  # the accept thread cannot count a connection while this is held
+            _child_connect("d.sock")
+            assert denied.accepted == 1  # the before-run mark only
+        return {"unix_denied": "connect=EPERM\nrc=1", "unix_control": _child_connect("c.sock")}
+
+    outputs, seen = probe_module._listening(Path("d.sock"), Path("c.sock"), run)
+    assert seen["outside_reached"]
+    assert seen["denied"] == 1
+    passed, case, note = probe_module._network_off_verdict(outputs, seen)
+    assert (passed, case) == (False, None)
+    assert "the denied-path socket accepted 1 connection" in note
+    assert probe_module._network_on_verdict(outputs, seen)[0] is False
 
 
 # ------------------------------------------------------------------------- reading a step's rc

@@ -69,9 +69,31 @@ _REAL_PATHS_OPENED = 5
 # The shell opens its argument for reading and reads nothing: ``:`` is a no-op, so the exit
 # status is the status of the redirection's open and nothing else.
 _OPEN_FOR_ZERO_BYTES = ': < "$1"'
-_CONNECT_ONE_LINER = (
-    "import socket, sys; s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1])"
+# The connect a child (and the probe itself, outside the sandbox) runs against one unix socket.
+# It prints one token and exits: ``connect=ok``, ``connect=<errno name>`` from its own errno
+# table, ``connect=timeout``, or ``connect=<exception name>`` for an OSError with no errno. The
+# verdicts read the token, never the traceback text or the errno's number. Given a second
+# argument it sends that as a mark once connected: the probe's own connects do, the child's never.
+_CONNECT_CODE = (
+    "import errno, socket, sys\n"
+    "s = socket.socket(socket.AF_UNIX)\n"
+    "s.settimeout(3)\n"
+    "try:\n"
+    "    s.connect(sys.argv[1])\n"
+    "    if len(sys.argv) > 2:\n"
+    "        s.sendall(sys.argv[2].encode())\n"
+    "except socket.timeout:\n"
+    "    print('connect=timeout')\n"
+    "    sys.exit(1)\n"
+    "except OSError as e:\n"
+    "    print('connect=' + (errno.errorcode.get(e.errno or -1) or type(e).__name__))\n"
+    "    sys.exit(1)\n"
+    "print('connect=ok')\n"
 )
+_CONNECT_TOKEN = re.compile(r"^connect=([A-Za-z0-9_]+)[ \t]*$", re.MULTILINE)
+_OUTSIDE_TIMEOUT_SECONDS = 10
+_MARK_PREFIX = "lionagi-probe-mark-"
+_MARK_READ_SECONDS = 3
 
 
 # ------------------------------------------------------------------------- loopback provider
@@ -200,13 +222,18 @@ class UnixListener:
     """A listener on one unix socket, counting the connections that reach it.
 
     The probe binds it outside the sandbox, at a path inside or outside the denied set, and has
-    the child try to connect. ``accepted`` is exact once ``stop`` has returned: ``stop`` takes the
-    connections the kernel queued that the serving thread had not yet accepted.
+    the child try to connect. ``accepted`` counts connections in the order the kernel queued
+    them. A connection whose first bytes are a mark (the probe's own connects send one) is
+    recorded under that mark with its place in that order, and ``wait_for_mark`` waits for it:
+    once a mark sent after the child exited is recorded, every connection queued before it has
+    been counted. ``stop`` also takes the connections still queued.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.accepted = 0
+        self._marks: dict[str, int] = {}
+        self._counted = threading.Condition()
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -234,8 +261,32 @@ class UnixListener:
                 continue
             except OSError:
                 return
-            self.accepted += 1
+            with self._counted:
+                self.accepted += 1
+                place = self.accepted
+            threading.Thread(target=self._read_mark, args=(conn, place), daemon=True).start()
+
+    def _read_mark(self, conn: socket.socket, place: int) -> None:
+        """Record the connection at ``place`` under the mark it sent, if it sent one."""
+        try:
+            conn.settimeout(_MARK_READ_SECONDS)
+            data = conn.recv(256)
+        except OSError:
+            data = b""
+        finally:
             conn.close()
+        mark = data.decode("ascii", "replace").strip()
+        if mark.startswith(_MARK_PREFIX):
+            with self._counted:
+                self._marks.setdefault(mark, place)
+                self._counted.notify_all()
+
+    def wait_for_mark(self, mark: str, timeout: float) -> int | None:
+        """The place of the connection that sent ``mark`` in the order the listener counted
+        connections, once it is recorded; None when it is not recorded within ``timeout``."""
+        with self._counted:
+            self._counted.wait_for(lambda: mark in self._marks, timeout)
+            return self._marks.get(mark)
 
     def stop(self) -> None:
         """Stop serving, count what is still queued, close and remove the socket."""
@@ -249,7 +300,8 @@ class UnixListener:
                     conn, _ = self._sock.accept()
                 except OSError:
                     break
-                self.accepted += 1
+                with self._counted:
+                    self.accepted += 1
                 conn.close()
             self._sock.close()
             self._sock = None
@@ -266,46 +318,179 @@ def _start_listener(path: Path) -> tuple[UnixListener | None, str | None]:
     return listener, None
 
 
+def _connect_token(text: str | None) -> str | None:
+    """The last token the connect code printed in ``text``, or None when it printed none."""
+    found = _CONNECT_TOKEN.findall(text or "")
+    return found[-1] if found else None
+
+
+def _outside_connect(path: Path, mark: str) -> str:
+    """The token the connect code prints when the probe runs it itself, outside the sandbox,
+    sending ``mark`` once connected."""
+    try:
+        done = subprocess.run(  # noqa: S603 -- this interpreter and the probe's own code
+            [_child_python(), "-c", _CONNECT_CODE, str(path), mark],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_OUTSIDE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"not-run-{type(exc).__name__}"
+    return _connect_token(done.stdout) or "no-token"
+
+
 def _listening(
     denied: Path, control: Path, run: Callable[[], dict[str, str | None]]
 ) -> tuple[dict[str, str | None], dict[str, Any]]:
     """``run()`` with a listener bound here, outside the sandbox, at each socket path: the run's
-    outputs, and how many connections reached each listener during that run alone."""
+    outputs, and how many connections reached each listener from the run alone.
+
+    The run is bracketed by an outside control: before and after it, the probe runs the same
+    connect code itself, outside the sandbox, to both sockets, each connect sending a mark of its
+    own. A listener counts connections in the order they were queued, so once the after-run
+    mark is recorded every connection queued before it has been counted, the child's included.
+    The run's own count of a listener is the after-run mark's place less the before-run mark's
+    place less 1, read at no earlier moment. When an outside connect did not print
+    ``connect=ok`` or its mark was not recorded, the count is None and every socket verdict on
+    the run fails.
+    """
     denied_listener, denied_error = _start_listener(denied)
     control_listener, control_error = _start_listener(control)
+    up = denied_listener is not None and control_listener is not None
+    listeners = {"denied": (denied, denied_listener), "control": (control, control_listener)}
+    run_id = uuid.uuid4().hex
+    outside: dict[str, dict[str, str]] = {}
+    places: dict[str, dict[str, int | None]] = {}
+
+    def bracket(when: str) -> None:
+        mark = f"{_MARK_PREFIX}{run_id}-{when}"
+        outside[when], places[when] = {}, {}
+        for key, (path, listener) in listeners.items():
+            printed = _outside_connect(path, mark)
+            outside[when][key] = printed
+            places[when][key] = (
+                listener.wait_for_mark(mark, _OUTSIDE_TIMEOUT_SECONDS)
+                if printed == "ok" and listener is not None
+                else None
+            )
+
     try:
+        if up:
+            bracket("before")
         outputs = run()
+        if up:
+            bracket("after")
     finally:
-        for listener in (denied_listener, control_listener):
+        for _path, listener in listeners.values():
             if listener is not None:
                 listener.stop()
+
+    def own(key: str) -> int | None:
+        before = places.get("before", {}).get(key)
+        after = places.get("after", {}).get(key)
+        if before is None or after is None:
+            return None
+        return after - before - 1
+
     seen = {
-        "up": denied_listener is not None and control_listener is not None,
-        "denied": denied_listener.accepted if denied_listener is not None else None,
-        "control": control_listener.accepted if control_listener is not None else None,
+        "up": up,
+        "denied": own("denied"),
+        "control": own("control"),
         "error": denied_error or control_error,
+        "outside": outside,
+        "outside_reached": up and own("denied") is not None and own("control") is not None,
     }
     return outputs, seen
 
 
-def _socket_verdict(outputs: Mapping[str, str | None], seen: Mapping[str, Any]) -> tuple[bool, str]:
-    """Whether one run refused the connect to the denied socket and made the control connect,
-    by the child's exit status and by the listeners' own counts; and a note saying which."""
+def _counts_note(outputs: Mapping[str, str | None], seen: Mapping[str, Any]) -> str:
+    return (
+        f"the denied-path socket accepted {seen['denied']} connection(s), "
+        f"the control socket {seen['control']}; the child printed "
+        f"connect={_connect_token(outputs.get('unix_denied'))} for the denied socket and "
+        f"connect={_connect_token(outputs.get('unix_control'))} for the control"
+    )
+
+
+def _not_reached_note(outputs: Mapping[str, str | None], seen: Mapping[str, Any]) -> str:
+    return (
+        f"the probe's own connects outside the sandbox did not reach both listeners before and "
+        f"after the run ({seen['outside']}), so no count is read; the child printed "
+        f"connect={_connect_token(outputs.get('unix_denied'))} for the denied socket and "
+        f"connect={_connect_token(outputs.get('unix_control'))} for the control; fails closed"
+    )
+
+
+def _connects(outputs: Mapping[str, str | None], seen: Mapping[str, Any]) -> dict[str, Any]:
+    """What the record keeps of one run's connects: each token seen and each in-run count."""
+    return {
+        "child": {
+            "denied": _connect_token(outputs.get("unix_denied")),
+            "control": _connect_token(outputs.get("unix_control")),
+        },
+        "outside": seen.get("outside") or {},
+        "in_run": {"denied": seen.get("denied"), "control": seen.get("control")},
+    }
+
+
+def _network_on_verdict(
+    outputs: Mapping[str, str | None], seen: Mapping[str, Any]
+) -> tuple[bool, str]:
+    """Whether the network-on run's child was refused the denied socket by the sandbox (EPERM)
+    and reached the control, by its own tokens and the listeners' counts; and a note."""
+    if not seen["up"]:
+        return False, f"a listener could not be bound ({seen['error']}); fails closed"
+    if not seen["outside_reached"]:
+        return False, _not_reached_note(outputs, seen)
     passed = bool(
-        seen["up"]
-        and _refused(outputs.get("unix_denied"))
+        _connect_token(outputs.get("unix_denied")) == "EPERM"
         and seen["denied"] == 0
         and _ok(outputs.get("unix_control"))
-        and seen["control"]
+        and _connect_token(outputs.get("unix_control")) == "ok"
+        and (seen["control"] or 0) >= 1
     )
-    if seen["up"]:
-        note = (
-            f"the denied-path socket accepted {seen['denied']} connection(s), "
-            f"the control socket {seen['control']}"
+    return passed, _counts_note(outputs, seen)
+
+
+#: How a passing network-off run's control connect ended, as the record names it.
+CONTROL_REACHED = "control reached"
+CONTROL_REFUSED = "control refused"
+
+
+def _network_off_verdict(
+    outputs: Mapping[str, str | None], seen: Mapping[str, Any]
+) -> tuple[bool, str | None, str]:
+    """Whether one network-off run passes the socket check, which case it showed
+    (``CONTROL_REACHED`` or ``CONTROL_REFUSED``, None when it failed), and a note.
+
+    It passes when the probe's own connects reached both listeners before and after the run,
+    the child's denied connect printed connect=EPERM with the denied listener counting 0, and
+    the control either printed connect=ok with its listener counting at least 1, or printed
+    connect=EPERM with its listener counting 0. Every other outcome fails.
+    """
+    if not seen["up"]:
+        return False, None, f"a listener could not be bound ({seen['error']}); fails closed"
+    if not seen["outside_reached"]:
+        return False, None, _not_reached_note(outputs, seen)
+    note = _counts_note(outputs, seen)
+    if _connect_token(outputs.get("unix_denied")) != "EPERM" or seen["denied"] != 0:
+        return False, None, f"{note}; the denied connect was not refused by the sandbox"
+    control = _connect_token(outputs.get("unix_control"))
+    if control == "ok" and _ok(outputs.get("unix_control")) and (seen["control"] or 0) >= 1:
+        return (
+            True,
+            CONTROL_REACHED,
+            f"{note}; {CONTROL_REACHED}: the refusal is scoped to the denied path",
         )
-    else:
-        note = f"a listener could not be bound ({seen['error']}); fails closed"
-    return passed, note
+    if control == "EPERM" and seen["control"] == 0:
+        return True, CONTROL_REFUSED, f"{note}; {CONTROL_REFUSED}: no local socket connects at all"
+    return (
+        False,
+        None,
+        f"{note}; the control connect neither reached its listener nor was refused by the sandbox",
+    )
 
 
 def _child_python() -> str:
@@ -314,7 +499,7 @@ def _child_python() -> str:
 
 def _connect_command(python: str, path: Path) -> str:
     """The shell command that connects to the unix socket at ``path`` and exits."""
-    return f"{shlex.quote(python)} -c {shlex.quote(_CONNECT_ONE_LINER)} {shlex.quote(str(path))}"
+    return f"{shlex.quote(python)} -c {shlex.quote(_CONNECT_CODE)} {shlex.quote(str(path))}"
 
 
 def _temp_roots() -> list[Path]:
@@ -636,9 +821,11 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     for path in (tmp_slash, tmp_env):
         if path is not None:
             path.unlink(missing_ok=True)
-    unix_on_ok, unix_on_note = _socket_verdict(heavy, heavy_seen)
-    light_unix_ok, light_unix_note = _socket_verdict(light, light_seen)
-    readonly_unix_ok, readonly_unix_note = _socket_verdict(readonly, readonly_seen)
+    unix_on_ok, unix_on_note = _network_on_verdict(heavy, heavy_seen)
+    light_unix_ok, light_case, light_unix_note = _network_off_verdict(light, light_seen)
+    readonly_unix_ok, readonly_case, readonly_unix_note = _network_off_verdict(
+        readonly, readonly_seen
+    )
 
     arms = {
         "deny_canary": _arm(
@@ -650,20 +837,28 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
                 f"{len(real)} real denied path(s) opened for 0 bytes, all refused: {real_refused}"
             ),
         ),
-        "unix_socket_refused_network_on": _arm(
-            unix_on_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_on_note
-        ),
-        # Both network-off runs must refuse and both controls connect: a read-only launch rests
-        # on the read-only run's own measurement, a light or network-off heavy one on the light
-        # run's.
-        "unix_socket_refused_network_off": _arm(
-            light_unix_ok and readonly_unix_ok,
-            light["unix_denied"],
-            light["unix_control"],
-            readonly["unix_denied"],
-            readonly["unix_control"],
-            note=f"light run: {light_unix_note}; read-only run: {readonly_unix_note}",
-        ),
+        "unix_socket_refused_network_on": {
+            **_arm(unix_on_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_on_note),
+            "connects": {"heavy": _connects(heavy, heavy_seen)},
+        },
+        # Both network-off runs must pass: a read-only launch rests on the read-only run's own
+        # measurement, a light or network-off heavy one on the light run's. Each run's case
+        # (control reached or refused) and each connect's token and count are recorded.
+        "unix_socket_refused_network_off": {
+            **_arm(
+                light_unix_ok and readonly_unix_ok,
+                light["unix_denied"],
+                light["unix_control"],
+                readonly["unix_denied"],
+                readonly["unix_control"],
+                note=f"light run: {light_unix_note}; read-only run: {readonly_unix_note}",
+            ),
+            "cases": {"light": light_case, "read_only": readonly_case},
+            "connects": {
+                "light": _connects(light, light_seen),
+                "read_only": _connects(readonly, readonly_seen),
+            },
+        },
         "own_codex_home": _arm(
             _refused(heavy["own_codex_home"], f"AUTH-CANARY-heavy-{nonce}"), heavy["own_codex_home"]
         ),
