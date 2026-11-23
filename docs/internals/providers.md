@@ -370,8 +370,18 @@ because an operator asked. Its text is the one provider-error text the terminal
 cause file carries. Every other class records only its class, retry hint and
 status, because a provider message can quote a credential back.
 
-What causes an empty turn has not been measured. A prompt a hook refused is one
-possible cause.
+The causes of an empty turn have not been measured as a population. One case
+has: codex 0.162.1 ends a prompt that a `UserPromptSubmit` hook refused with exit
+status 0, `thread.started`, `turn.started`, and `turn.completed` whose usage
+counts are all zero, with no item event. The hook's message is on neither its
+stdout nor its stderr. When an empty Codex turn's last `turn.completed` reported
+usage whose every count is zero and the stream had no item event, the failure
+says, before the stderr sentence, that the prompt did not reach the model, that a
+prompt refused by a hook before the turn started ends this way, and that codex
+does not report the hook's message. The stderr tail in that case need not bear on
+why. An empty turn with any non-zero count, any value in its usage that is not a
+number, any item event, or no `turn.completed` keeps the text above unchanged.
+The reason stays `run.failed.empty_turn` in both cases.
 
 A provider joins the rule by calling `empty_turn_chunk` where its stream ends
 and adding one pair of event streams, the turn with its text and the same turn
