@@ -1,10 +1,13 @@
 # ADR-0139: CLI package location and console-script ownership
 
-- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.serve.cli` (Amendment 5); D5 and the 2.0 release date stay Proposed
+- **Status**: Proposed; D1 is adopted with the CLI at `lionhub.serve.cli` (Amendment 5); D5 accepted 2026-11-23; the 2.0 release date stays a project decision
 - **Kind**: Aspirational
 - **Implementation-status**: partial. The D2 step-3 module moves are complete. Step 6 moved the
   CLI to `lionhub.serve.cli`, with `li` targeting `lionhub.serve.cli.main:main` and
-  `lionagi/_moved.py` recording the compatibility paths. D5 and the 2.0 date remain open.
+  `lionagi/_moved.py` recording the compatibility paths. D5 takes effect at the 2.0 split, and
+  `test_core_only_has_no_li` and `test_hub_owns_exactly_one_li` land with it;
+  `test_optional_command_feature_errors_are_unchanged` is in
+  `lionhub/tests/lionhub_tests/serve/cli/test_cli_catalog_boundary.py`. The 2.0 date remains open.
 - **Area**: cli-surface
 - **Date**: 2026-10-26
 - **Relations**: resolves the CLI decisions deferred by ADR-0136 D7. Amendment 5 follows the
@@ -710,7 +713,7 @@ and the existing D2/D4 boundary and removal guards.
 
 ### D5 — The hub distribution owns li at 2.0
 
-Proposed, pending the same project decision as D1; the date of the 2.0 release is also a project
+Accepted (2026-11-23), after D1 was adopted (Amendment 5). The date of the 2.0 release is a project
 decision, which this record does not set.
 
 From the 2.0 core/hub split:
