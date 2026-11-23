@@ -12,8 +12,9 @@ the only evidence of why.
 The decision reads the session the parser built, never the provider's own events, so one rule
 serves every CLI parser. A provider takes part by calling :func:`empty_turn_chunk` where its
 stream ends and by adding its pair of event streams (one whose text counts, one empty) to the
-conformance test. The cause of such a turn has not been measured; a prompt a hook refused is one
-possible cause.
+conformance test. The causes of such a turn have not been measured as a population. A provider
+that can tell from its own stream that the prompt never reached the model says so in the
+failure's *cause* sentence; a prompt a hook refused is one measured case of that.
 """
 
 from __future__ import annotations
@@ -73,17 +74,23 @@ def _stderr_sentence(stderr: str | None, unread: str | None) -> tuple[str, str]:
 
 
 def empty_turn_chunk(
-    session: CLISession, stderr: str | None = None, unread: str | None = None
+    session: CLISession,
+    stderr: str | None = None,
+    unread: str | None = None,
+    *,
+    cause: str | None = None,
 ) -> StreamChunk:
     """Mark *session* failed as an empty turn and return the error chunk that says so.
 
     *stderr* is the CLI's stderr with credentials already removed, ``None`` when the provider
-    captured none; *unread* says why it may be incomplete. The session is marked failed the way
-    any failed turn is, ``is_error`` and a result naming the cause, and the chunk carries
-    ``empty_turn`` and the quoted ``stderr_tail`` in its metadata.
+    captured none; *unread* says why it may be incomplete. *cause* is what the provider's own
+    stream says about why the turn was empty; it comes before the stderr sentence, which then
+    may not bear on it. The session is marked failed the way any failed turn is, ``is_error``
+    and a result naming the cause, and the chunk carries ``empty_turn`` and the quoted
+    ``stderr_tail`` in its metadata.
     """
     sentence, tail = _stderr_sentence(stderr, unread)
-    message = f"{_FAILURE} {sentence}"
+    message = " ".join(part for part in (_FAILURE, cause, sentence) if part)
     session.is_error = True
     session.result = message
     chunk = StreamChunk(

@@ -270,11 +270,32 @@ _CALL_ITEM_TYPES = frozenset(
     }
 )
 
+# What an empty turn's failure says, before the stderr tail, when the turn's usage is all zero
+# and the stream had no item. codex 0.162.1 ends a prompt that a UserPromptSubmit hook refused
+# this way: exit 0, turn.completed with every count at 0, no item, and the hook's message
+# neither on stdout nor on stderr. Other causes of that shape have not been measured.
+_PROMPT_NOT_SENT = (
+    "The turn reported zero usage and no item, so the prompt did not reach the model. "
+    "A prompt a hook refused before the turn started ends this way; codex does not report "
+    "the hook's message."
+)
+
 # The failure recorded when the turn's last text carries call markup.
 _TOOL_CALL_MARKUP_FAILURE = (
     "The model wrote a tool call as text in its final message "
     "instead of making the call; the run stopped before the call ran."
 )
+
+
+def _reports_zero_usage(usage: object) -> bool:
+    """Whether a turn's usage holds counts and every one of them is zero.
+
+    A value that is not a number (a nested object, a flag) is not a zero count, so usage that
+    holds one does not qualify.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return False
+    return all(type(value) in (int, float) and value == 0 for value in usage.values())
 
 
 def _decode_references(text: str) -> str:
@@ -4056,6 +4077,10 @@ async def stream_codex_cli(
     # `_CALL_ITEM_TYPES`: some (an MCP tool call, a web search) are not kept as tool uses,
     # and a turn that made one is not an empty turn.
     _made_call = False
+    # Whether the stream had any item event, and whether the last turn.completed reported
+    # usage whose every count is zero. Both together mean the prompt never reached the model.
+    _saw_item = False
+    _zero_usage = False
     # The CLI's stderr after a clean exit, as the closing ``done`` event carries it; None when
     # the stream ended without one.
     _stderr: str | None = None
@@ -4065,6 +4090,8 @@ async def stream_codex_cli(
     try:
         async for obj in stream:
             typ = obj.get("type", "unknown")
+            if isinstance(typ, str) and typ.startswith("item."):
+                _saw_item = True
 
             # -- thread / session start --
             if typ in ("thread.started", "system", "init", "session.start"):
@@ -4253,6 +4280,7 @@ async def stream_codex_cli(
             elif typ == "turn.completed":
                 turn_usage = obj.get("usage", {}) or {}
                 session.usage = turn_usage
+                _zero_usage = _reports_zero_usage(turn_usage)
                 turn_cost = obj.get("total_cost_usd", obj.get("cost"))
                 session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
@@ -4521,9 +4549,12 @@ async def stream_codex_cli(
         _last_agent_text = None
 
     # A turn that ended with no text, no tool call and no failure fails here, quoting the CLI's
-    # stderr. Nothing retries it.
+    # stderr. Nothing retries it. When its usage was all zero and the stream had no item, the
+    # failure first says that the prompt did not reach the model, because the stderr tail then
+    # need not bear on why.
     if is_empty_turn(session, made_call=_made_call):
-        yield empty_turn_chunk(session, _stderr, _stderr_unread)
+        cause = _PROMPT_NOT_SENT if _zero_usage and not _saw_item else None
+        yield empty_turn_chunk(session, _stderr, _stderr_unread, cause=cause)
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
