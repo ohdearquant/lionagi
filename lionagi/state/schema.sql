@@ -1024,7 +1024,16 @@ CREATE TABLE IF NOT EXISTS approvals (
   proposed_at   REAL    NOT NULL,
   granted_at    REAL,
   consumed_at   REAL,
-  expires_at    REAL    NOT NULL
+  expires_at    REAL    NOT NULL,
+  -- Who granted or denied it: a verified Studio decision capability's principal
+  -- (the fields studio_operator_proposals records), or method 'credential' for
+  -- a request the bearer token admitted without one. NULL for an in-process
+  -- decision that named no principal and on rows written before these columns.
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_approvals_status
@@ -1040,6 +1049,9 @@ CREATE INDEX IF NOT EXISTS idx_approvals_session
 -- canonical (sorted-keys) JSON of the row's payload fields. Never stores raw
 -- action params -- only the params_hash already computed for the approval.
 -- hmac_sig is populated only when LIONAGI_STUDIO_EVIDENCE_HMAC_KEY is set.
+-- The decision_* columns name who granted or denied, as on approvals; the
+-- hashed payload carries them only when one is set, so an unattributed row
+-- hashes as rows written before these columns existed.
 
 CREATE TABLE IF NOT EXISTS approval_evidence (
   id                    TEXT    PRIMARY KEY,
@@ -1057,7 +1069,12 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
   content_hash          TEXT    NOT NULL,
   previous_hash         TEXT    NOT NULL,
   chain_hash            TEXT    NOT NULL,
-  hmac_sig              TEXT
+  hmac_sig              TEXT,
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence

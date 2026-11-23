@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -1221,3 +1222,389 @@ def test_default_longer_than_the_unset_cap_raises_the_cap(tmp_path, monkeypatch)
     from lionagi_studio.services import approvals as approvals_mod
 
     assert approvals_mod.approval_ttl_bounds() == (7200, 7200)
+
+
+# Who decided: the decision principal on grant and deny
+
+_ORIGIN = "http://localhost:5173"
+_PRINCIPAL_COLUMNS = (
+    "decision_principal_id",
+    "decision_epoch",
+    "decision_method",
+    "decision_origin",
+    "decision_scope",
+)
+_OLD_PAYLOAD_KEYS = (
+    "id",
+    "sequence",
+    "event_type",
+    "approval_id",
+    "action_kind",
+    "status_from",
+    "status_to",
+    "params_hash",
+    "justification_class",
+    "justification_reason",
+    "created_at",
+)
+
+
+def _decision_headers(capability: str | None, *, origin: str = _ORIGIN) -> dict[str, str]:
+    headers = {"authorization": "Bearer test-token", "origin": origin}
+    if capability is not None:
+        headers["x-studio-decision-token"] = capability
+    return headers
+
+
+def _pending(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+    from lionagi_studio.services import approvals as approvals_mod
+
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"n": 1}))
+    return row["id"]
+
+
+@pytest.fixture
+def capability():
+    from lionhub.serve.daemon.launch_access import mint_decision_capability, reset_launch_access
+
+    reset_launch_access()
+    yield mint_decision_capability(_ORIGIN)
+    reset_launch_access()
+
+
+def test_grant_with_a_decision_capability_records_who_granted(tmp_path, monkeypatch, capability):
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+
+    granted = _run(
+        approvals_mod.grant_approval_route(
+            approval_id, _fake_request(_decision_headers(capability))
+        )
+    )
+
+    assert granted["status"] == "granted"
+    assert granted["decision_principal_id"]
+    assert granted["decision_epoch"]
+    assert granted["decision_method"] == "pairing"
+    assert granted["decision_origin"] == _ORIGIN
+    assert granted["decision_scope"] == "operator:decide"
+    assert _run(approvals_mod.get_approval(approval_id)) == granted
+    proposed, grant_row = _evidence_rows(db_path)
+    assert all(proposed[name] is None for name in _PRINCIPAL_COLUMNS)
+    assert {name: grant_row[name] for name in _PRINCIPAL_COLUMNS} == {
+        name: granted[name] for name in _PRINCIPAL_COLUMNS
+    }
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True, verdict
+
+
+def test_deny_with_a_decision_capability_records_who_denied(tmp_path, monkeypatch, capability):
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+
+    denied = _run(
+        approvals_mod.deny_approval_route(
+            approval_id,
+            _fake_request(_decision_headers(capability)),
+            approvals_mod._DenyBody(reason_class="policy", reason="not this week"),
+        )
+    )
+
+    assert denied["status"] == "denied"
+    assert denied["decision_origin"] == _ORIGIN
+    deny_row = _evidence_rows(db_path)[-1]
+    assert deny_row["event_type"] == "denied"
+    assert deny_row["justification_reason"] == "not this week"
+    assert deny_row["decision_principal_id"] == denied["decision_principal_id"]
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
+
+
+def _assert_credential_principal(row: dict) -> None:
+    from lionhub.serve.daemon.launch_access import daemon_epoch
+
+    assert {name: row[name] for name in _PRINCIPAL_COLUMNS} == {
+        "decision_principal_id": "studio-credential",
+        "decision_epoch": daemon_epoch(),
+        "decision_method": "credential",
+        "decision_origin": None,
+        "decision_scope": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param(lambda cap: _decision_headers(None), id="no-capability"),
+        pytest.param(
+            lambda cap: _decision_headers(cap, origin="https://elsewhere.example"),
+            id="capability-from-another-origin",
+        ),
+        pytest.param(lambda cap: _decision_headers("not-a-capability"), id="unknown-capability"),
+    ],
+)
+def test_a_grant_without_a_verified_capability_records_the_credential(
+    tmp_path, monkeypatch, capability, headers
+):
+    """The bearer token admitted it and no capability verified, so the credential decided."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+
+    granted = _run(
+        approvals_mod.grant_approval_route(approval_id, _fake_request(headers(capability)))
+    )
+
+    assert granted["status"] == "granted"
+    _assert_credential_principal(granted)
+    _assert_credential_principal(_evidence_rows(db_path)[-1])
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
+
+
+@pytest.mark.parametrize("decision", ["grant", "deny"])
+def test_a_decision_over_http_with_only_the_bearer_records_the_credential(
+    tmp_path, monkeypatch, decision
+):
+    """The caller the feedback describes: create and decide over HTTP with the configured
+    token and nothing else. The record names the credential, never the token."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    db_path = tmp_path / "state.db"
+    client = _make_client(db_path, monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"n": 1}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/{decision}", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+
+    row = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token")).json()
+    assert row["decision_method"] == "credential"
+    _assert_credential_principal(row)
+    evidence = _evidence_rows(db_path)[-1]
+    _assert_credential_principal(evidence)
+    assert "test-token" not in json.dumps({**row, **evidence})
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
+
+
+def test_a_grant_presenting_more_than_one_origin_records_the_credential(
+    tmp_path, monkeypatch, capability
+):
+    """A capability is bound to one origin, so a request naming two, even the paired origin
+    twice, is not attributed to the capability's principal; the credential decided."""
+    from starlette.requests import Request as StarletteRequest
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+    headers = [(k.encode(), v.encode()) for k, v in _decision_headers(capability).items()]
+    headers.append((b"origin", _ORIGIN.encode()))
+
+    granted = _run(
+        approvals_mod.grant_approval_route(
+            approval_id, StarletteRequest({"type": "http", "headers": headers})
+        )
+    )
+
+    assert granted["status"] == "granted"
+    _assert_credential_principal(granted)
+    _assert_credential_principal(_evidence_rows(db_path)[-1])
+
+
+def test_an_unattributed_row_hashes_exactly_as_rows_did_before_principals(tmp_path, monkeypatch):
+    """Chains written before the principal columns still verify: an unattributed row's
+    content hash covers the same payload keys as it always did."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+    _run(approvals_mod.grant_approval(approval_id))
+
+    for row in _evidence_rows(db_path):
+        old_payload = {key: row[key] for key in _OLD_PAYLOAD_KEYS}
+        assert row["content_hash"] == approvals_mod._compute_content_hash(old_payload)
+
+
+@pytest.mark.parametrize(
+    ("attributed", "tamper"),
+    [
+        pytest.param(True, "decision_principal_id = NULL", id="principal-cleared"),
+        pytest.param(True, "decision_origin = 'https://evil.example'", id="origin-changed"),
+        pytest.param(False, "decision_principal_id = 'someone'", id="principal-added"),
+        pytest.param(False, "decision_scope = 'operator:decide'", id="scope-added"),
+    ],
+)
+def test_changing_the_recorded_principal_breaks_the_chain(
+    tmp_path, monkeypatch, capability, attributed, tamper
+):
+    from lionagi_studio.services import approvals as approvals_mod
+    from lionhub.orchestration.state_store import open_db
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+    if attributed:
+        _run(
+            approvals_mod.grant_approval_route(
+                approval_id, _fake_request(_decision_headers(capability))
+            )
+        )
+    else:
+        # An in-process grant that names no principal stays unattributed.
+        _run(approvals_mod.grant_approval(approval_id))
+        assert all(_evidence_rows(db_path)[-1][name] is None for name in _PRINCIPAL_COLUMNS)
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True
+
+    async def _tamper():
+        async with open_db(str(db_path)) as db:
+            await db.execute(f"UPDATE approval_evidence SET {tamper} WHERE sequence = 2")
+            await db.commit()
+
+    _run(_tamper())
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is False
+    assert "sequence 2: content hash mismatch" in verdict["errors"]
+
+
+_PRE_PRINCIPAL_TABLES = """
+CREATE TABLE approvals (
+  id TEXT PRIMARY KEY, action_kind TEXT NOT NULL, params_hash TEXT NOT NULL,
+  session_id TEXT, status TEXT NOT NULL DEFAULT 'pending', proposed_at REAL NOT NULL,
+  granted_at REAL, consumed_at REAL, expires_at REAL NOT NULL
+);
+CREATE TABLE approval_evidence (
+  id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
+  approval_id TEXT NOT NULL, action_kind TEXT NOT NULL, status_from TEXT,
+  status_to TEXT NOT NULL, params_hash TEXT NOT NULL, justification_class TEXT,
+  justification_reason TEXT, created_at REAL NOT NULL, content_hash TEXT NOT NULL,
+  previous_hash TEXT NOT NULL, chain_hash TEXT NOT NULL, hmac_sig TEXT
+);
+"""
+
+
+def _columns(db_path: Path, table: str) -> set[str]:
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _write_pre_principal_chain(db_path: Path) -> None:
+    """A proposed-then-granted chain in the shape and hash rows had before principals."""
+    import sqlite3
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    now = time.time()
+    params_hash = approvals_mod.compute_params_hash({"old": True})
+    previous = approvals_mod.GENESIS_HASH
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_PRE_PRINCIPAL_TABLES)
+        conn.execute(
+            "INSERT INTO approvals (id, action_kind, params_hash, status, proposed_at, "
+            "granted_at, expires_at) VALUES ('old', 'launch_playbook', ?, 'granted', ?, ?, ?)",
+            (params_hash, now, now, now + 300),
+        )
+        for sequence, (event, status_from, status_to) in enumerate(
+            [("proposed", None, "pending"), ("granted", "pending", "granted")], start=1
+        ):
+            payload = {
+                "id": f"old-{sequence}",
+                "sequence": sequence,
+                "event_type": event,
+                "approval_id": "old",
+                "action_kind": "launch_playbook",
+                "status_from": status_from,
+                "status_to": status_to,
+                "params_hash": params_hash,
+                "justification_class": None,
+                "justification_reason": None,
+                "created_at": now,
+            }
+            content = approvals_mod._compute_content_hash(payload)
+            chain = approvals_mod._compute_chain_hash(content, previous)
+            conn.execute(
+                "INSERT INTO approval_evidence VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                (*payload.values(), content, previous, chain),
+            )
+            previous = chain
+
+
+def test_the_fallback_gives_a_pre_principal_table_the_columns(tmp_path, monkeypatch, capability):
+    """A ledger created before the principal columns, opened only through this module,
+    gains them as NULL; its existing chain still verifies, and the next decision's
+    principal is recorded and chained onto it."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    db_path = tmp_path / "bare.db"
+    _patch_db(monkeypatch, db_path)
+    _write_pre_principal_chain(db_path)
+    assert "decision_principal_id" not in _columns(db_path, "approvals")
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict == {**verdict, "valid": True, "total_entries": 2}
+    assert all(_run(approvals_mod.get_approval("old"))[name] is None for name in _PRINCIPAL_COLUMNS)
+
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params={}))
+    granted = _run(
+        approvals_mod.grant_approval_route(row["id"], _fake_request(_decision_headers(capability)))
+    )
+
+    for table in ("approvals", "approval_evidence"):
+        assert set(_PRINCIPAL_COLUMNS) <= _columns(db_path, table)
+    assert granted["decision_origin"] == _ORIGIN
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict == {**verdict, "valid": True, "total_entries": 4}
+
+
+def test_a_state_db_open_keeps_a_pre_principal_chain_verifiable(tmp_path, monkeypatch):
+    """The same pre-change chain, upgraded by a StateDB open rather than the fallback."""
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _write_pre_principal_chain(db_path)
+
+    _run(_init_db(db_path))
+
+    for table in ("approvals", "approval_evidence"):
+        assert set(_PRINCIPAL_COLUMNS) <= _columns(db_path, table)
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict == {**verdict, "valid": True, "total_entries": 2}
+
+
+def test_a_state_db_open_adds_the_columns_to_an_existing_ledger(tmp_path, monkeypatch):
+    """An existing store at the current schema version gains the columns on its next
+    writable open, with its approval rows intact and NULL in the new columns."""
+    import sqlite3
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    db_path = tmp_path / "state.db"
+    approval_id = _pending(db_path, monkeypatch)
+    with sqlite3.connect(db_path) as conn:
+        for table in ("approvals", "approval_evidence"):
+            for name in _PRINCIPAL_COLUMNS:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
+    assert "decision_scope" not in _columns(db_path, "approval_evidence")
+
+    _run(_init_db(db_path))
+
+    for table in ("approvals", "approval_evidence"):
+        assert set(_PRINCIPAL_COLUMNS) <= _columns(db_path, table)
+    row = _run(approvals_mod.get_approval(approval_id))
+    assert row["status"] == "pending"
+    assert all(row[name] is None for name in _PRINCIPAL_COLUMNS)
+    assert _run(approvals_mod.verify_evidence_chain())["valid"] is True

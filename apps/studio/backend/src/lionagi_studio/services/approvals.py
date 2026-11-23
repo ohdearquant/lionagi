@@ -11,8 +11,10 @@ import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request
@@ -21,6 +23,12 @@ from pydantic import BaseModel, Field, field_validator
 from lionagi.ln import compute_hash
 from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.orchestration.state_store import require_file_store, store_path
+from lionhub.serve.daemon.launch_access import (
+    DECISION_TOKEN_HEADER,
+    DecisionPrincipal,
+    daemon_epoch,
+    resolve_decision_capability,
+)
 
 from ..registry import studio_route
 
@@ -40,6 +48,36 @@ _STATUSES = frozenset({"pending", "granted", "consumed", "expired", "denied"})
 # disqualifies the caller from grant/deny -- there is no "correct" value that passes.
 _SERVICE_PRINCIPAL_HEADER = "x-lionagi-operator-principal"
 
+# Who decided an approval: the five fields the Operator records on its proposals, taken from a
+# verified decision capability or, for a grant or deny the bearer token admitted without one,
+# from the credential (``_CredentialPrincipal``). NULL means an in-process decision that named
+# no principal, and rows written before these columns existed stay NULL.
+_PRINCIPAL_COLUMNS = (
+    "decision_principal_id",
+    "decision_epoch",
+    "decision_method",
+    "decision_origin",
+    "decision_scope",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _CredentialPrincipal:
+    """Who decided a grant or deny that the configured bearer token admitted and that carried
+    no decision capability this daemon verifies: the credential, by its role.
+
+    It names the credential, never its text or any digest of it, so everyone holding the one
+    configured token is this one principal. ``epoch`` is the daemon start that admitted it.
+    Its method is not ``pairing``, so a reader tells it from a paired page's decision.
+    """
+
+    id: str = "studio-credential"
+    epoch: str = field(default_factory=daemon_epoch)
+    method: str = "credential"
+    origin: str | None = None
+    scope: str | None = None
+
+
 # Mirrors the approvals table in schema.sql -- a defensive fallback so direct
 # callers of this module (outside the studio app's lifespan, which applies
 # the full StateDB schema on startup) never hit "no such table".
@@ -54,7 +92,12 @@ CREATE TABLE IF NOT EXISTS approvals (
   proposed_at   REAL    NOT NULL,
   granted_at    REAL,
   consumed_at   REAL,
-  expires_at    REAL    NOT NULL
+  expires_at    REAL    NOT NULL,
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status
   ON approvals(status) WHERE status IN ('pending', 'granted');
@@ -85,7 +128,12 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
   content_hash          TEXT    NOT NULL,
   previous_hash         TEXT    NOT NULL,
   chain_hash            TEXT    NOT NULL,
-  hmac_sig              TEXT
+  hmac_sig              TEXT,
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence
   ON approval_evidence(sequence);
@@ -96,10 +144,27 @@ CREATE INDEX IF NOT EXISTS idx_approval_evidence_approval
 
 async def _ensure_table(db: Any) -> None:
     await db.executescript(_ENSURE_TABLE_SQL)
+    await _add_principal_columns(db, "approvals")
 
 
 async def _ensure_evidence_table(db: Any) -> None:
     await db.executescript(_ENSURE_EVIDENCE_TABLE_SQL)
+    await _add_principal_columns(db, "approval_evidence")
+
+
+async def _add_principal_columns(db: Any, table: str) -> None:
+    """Give a table created before the decision principal columns those columns, as NULL."""
+    rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+    present = {row[1] for row in rows}
+    for name in _PRINCIPAL_COLUMNS:
+        if name in present:
+            continue
+        try:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
+        except sqlite3.OperationalError as exc:
+            # Another connection added it between the read above and this statement.
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 
 def compute_params_hash(params: dict[str, Any]) -> str:
@@ -174,6 +239,53 @@ def _require_daemon_credential(request: Request) -> None:
         )
 
 
+def _decision_principal(request: Request) -> DecisionPrincipal | None:
+    """Who a grant or deny request's decision capability resolves to, or None.
+
+    Resolved as the Operator's decision routes resolve it: the ``X-Studio-Decision-Token``
+    capability ``li studio`` paired the page with, presented from exactly one ``Origin``.
+    None covers a request without one and a capability this daemon cannot verify (unknown,
+    expired, revoked, from another start, origin or scope); the route then records the
+    credential (:func:`_route_principal`). It admits and refuses nothing: the bearer check in
+    :func:`_require_human_principal` is what admits a grant or deny.
+    """
+    presented = request.headers.get(DECISION_TOKEN_HEADER)
+    if not presented:
+        return None
+    origins = request.headers.getlist("origin")
+    if len(origins) != 1:
+        return None
+    return resolve_decision_capability(presented, origin=origins[0])
+
+
+def _route_principal(request: Request) -> DecisionPrincipal | _CredentialPrincipal:
+    """Who decided a grant or deny the bearer check admitted: the verified decision
+    capability's principal, else the configured credential."""
+    return _decision_principal(request) or _CredentialPrincipal()
+
+
+def _principal_values(
+    principal: DecisionPrincipal | _CredentialPrincipal | None,
+) -> tuple[str | None, ...]:
+    """The decision principal columns for *principal*, all None for an unattributed decision."""
+    if principal is None:
+        return (None,) * len(_PRINCIPAL_COLUMNS)
+    return (principal.id, principal.epoch, principal.method, principal.origin, principal.scope)
+
+
+def _principal_payload(values: tuple[Any, ...]) -> dict[str, Any] | None:
+    """The hashed evidence payload's view of the recorded principal columns.
+
+    None when every column is empty, and the payload then leaves the key out, so an
+    unattributed row hashes exactly as rows written before principals were recorded and
+    those chains still verify. Any non-empty column puts all five in the payload, so
+    adding, changing or clearing one afterwards breaks the row's content hash.
+    """
+    if all(value is None for value in values):
+        return None
+    return dict(zip(("id", "epoch", "method", "origin", "scope"), values, strict=True))
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -185,6 +297,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "granted_at": row["granted_at"],
         "consumed_at": row["consumed_at"],
         "expires_at": row["expires_at"],
+        **{name: row[name] for name in _PRINCIPAL_COLUMNS},
     }
 
 
@@ -194,7 +307,9 @@ async def _fetch_row(approval_id: str) -> dict[str, Any] | None:
         await _ensure_table(db)
         cur = await db.execute(
             "SELECT id, action_kind, params_hash, session_id, status, "
-            "proposed_at, granted_at, consumed_at, expires_at "
+            "proposed_at, granted_at, consumed_at, expires_at, "
+            "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+            "decision_scope "
             "FROM approvals WHERE id = ?",
             (approval_id,),
         )
@@ -213,8 +328,9 @@ async def _write_evidence(
     params_hash: str,
     justification_class: str | None = None,
     justification_reason: str | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> None:
-    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free."""
+    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free. *principal* is who decided a grant or deny: a verified decision capability's principal or the admitting credential, None for an in-process decision that named none."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
     )
@@ -237,6 +353,10 @@ async def _write_evidence(
         "justification_reason": justification_reason,
         "created_at": created_at,
     }
+    principal_values = _principal_values(principal)
+    principal_payload = _principal_payload(principal_values)
+    if principal_payload is not None:
+        payload["decision_principal"] = principal_payload
     content_hash = _compute_content_hash(payload)
     chain_hash = _compute_chain_hash(content_hash, previous_hash)
 
@@ -247,8 +367,10 @@ async def _write_evidence(
         "INSERT INTO approval_evidence "
         "(id, sequence, event_type, approval_id, action_kind, status_from, status_to, "
         "params_hash, justification_class, justification_reason, created_at, "
-        "content_hash, previous_hash, chain_hash, hmac_sig) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "content_hash, previous_hash, chain_hash, hmac_sig, "
+        "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+        "decision_scope) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             evidence_id,
             sequence,
@@ -265,6 +387,7 @@ async def _write_evidence(
             previous_hash,
             chain_hash,
             hmac_sig,
+            *principal_values,
         ),
     )
 
@@ -279,7 +402,9 @@ async def verify_evidence_chain() -> dict[str, Any]:
         cur = await db.execute(
             "SELECT id, sequence, event_type, approval_id, action_kind, status_from, "
             "status_to, params_hash, justification_class, justification_reason, "
-            "created_at, content_hash, previous_hash, chain_hash, hmac_sig "
+            "created_at, content_hash, previous_hash, chain_hash, hmac_sig, "
+            "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+            "decision_scope "
             "FROM approval_evidence ORDER BY sequence ASC"
         )
         rows = await cur.fetchall()
@@ -308,6 +433,9 @@ async def verify_evidence_chain() -> dict[str, Any]:
             "justification_reason": row["justification_reason"],
             "created_at": row["created_at"],
         }
+        principal_payload = _principal_payload(tuple(row[name] for name in _PRINCIPAL_COLUMNS))
+        if principal_payload is not None:
+            payload["decision_principal"] = principal_payload
         recomputed_content = _compute_content_hash(payload)
         if recomputed_content != row["content_hash"]:
             errors.append(f"sequence {row['sequence']}: content hash mismatch")
@@ -463,8 +591,14 @@ async def create_approval(
     return row
 
 
-async def grant_approval(approval_id: str) -> dict[str, Any]:
-    """CAS pending -> granted. Raises HTTPException on any non-pending state."""
+async def grant_approval(
+    approval_id: str, *, principal: DecisionPrincipal | _CredentialPrincipal | None = None
+) -> dict[str, Any]:
+    """CAS pending -> granted. Raises HTTPException on any non-pending state.
+
+    *principal* is who granted it, recorded on the approval and its evidence row; None
+    records an unattributed grant.
+    """
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -479,8 +613,11 @@ async def grant_approval(approval_id: str) -> dict[str, Any]:
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
-            "UPDATE approvals SET status = 'granted', granted_at = ? WHERE id = ? AND status = 'pending'",
-            (now, approval_id),
+            "UPDATE approvals SET status = 'granted', granted_at = ?, "
+            "decision_principal_id = ?, decision_epoch = ?, decision_method = ?, "
+            "decision_origin = ?, decision_scope = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (now, *_principal_values(principal), approval_id),
         )
         if cur.rowcount != 1:
             await db.rollback()
@@ -496,6 +633,7 @@ async def grant_approval(approval_id: str) -> dict[str, Any]:
             status_from=row["status"],
             status_to="granted",
             params_hash=row["params_hash"],
+            principal=principal,
         )
         await db.commit()
     updated = await _fetch_row(approval_id)
@@ -508,8 +646,13 @@ async def deny_approval(
     *,
     justification_class: str | None = None,
     justification_reason: str | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> dict[str, Any]:
-    """CAS pending -> denied. Raises HTTPException on any non-pending state."""
+    """CAS pending -> denied. Raises HTTPException on any non-pending state.
+
+    *principal* is who denied it, recorded on the approval and its evidence row; None
+    records an unattributed deny.
+    """
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -523,8 +666,11 @@ async def deny_approval(
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
-            "UPDATE approvals SET status = 'denied' WHERE id = ? AND status = 'pending'",
-            (approval_id,),
+            "UPDATE approvals SET status = 'denied', "
+            "decision_principal_id = ?, decision_epoch = ?, decision_method = ?, "
+            "decision_origin = ?, decision_scope = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (*_principal_values(principal), approval_id),
         )
         if cur.rowcount != 1:
             await db.rollback()
@@ -542,6 +688,7 @@ async def deny_approval(
             params_hash=row["params_hash"],
             justification_class=justification_class,
             justification_reason=justification_reason,
+            principal=principal,
         )
         await db.commit()
     updated = await _fetch_row(approval_id)
@@ -677,8 +824,10 @@ async def get_approval_route(approval_id: str) -> dict[str, Any]:
     "/approvals/{approval_id}/grant", method="POST", area="approvals", name="grant_approval"
 )
 async def grant_approval_route(approval_id: str, request: Request) -> dict[str, Any]:
+    """Grant a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
-    return await grant_approval(approval_id)
+    return await grant_approval(approval_id, principal=_route_principal(request))
 
 
 @studio_route(
@@ -704,6 +853,8 @@ async def consume_approval_route(
 async def deny_approval_route(
     approval_id: str, request: Request, body: _DenyBody | None = None
 ) -> dict[str, Any]:
+    """Deny a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
     justification_class = body.reason_class if body is not None else None
     justification_reason = body.reason if body is not None else None
@@ -711,4 +862,5 @@ async def deny_approval_route(
         approval_id,
         justification_class=justification_class,
         justification_reason=justification_reason,
+        principal=_route_principal(request),
     )

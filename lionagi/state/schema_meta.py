@@ -1249,6 +1249,12 @@ approvals = Table(
     Column("granted_at", Float),
     Column("consumed_at", Float),
     Column("expires_at", Float, nullable=False),
+    # Who granted or denied it: a verified decision capability's principal or the credential.
+    Column("decision_principal_id", Text),
+    Column("decision_epoch", Text),
+    Column("decision_method", Text),
+    Column("decision_origin", Text),
+    Column("decision_scope", Text),
 )
 
 Index(
@@ -1293,6 +1299,11 @@ approval_evidence = Table(
     Column("previous_hash", Text, nullable=False),
     Column("chain_hash", Text, nullable=False),
     Column("hmac_sig", Text),
+    Column("decision_principal_id", Text),
+    Column("decision_epoch", Text),
+    Column("decision_method", Text),
+    Column("decision_origin", Text),
+    Column("decision_scope", Text),
 )
 
 Index(
