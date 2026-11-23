@@ -51,6 +51,9 @@
     "lionhub/src/lionhub/tools/seatbelt_link_probe.py": [
       "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"VolumeIdentityError\",\n    \"link_record_dir\",\n    \"probe\",\n    \"require_passing_link_record\",\n    \"volume_identity\",\n    \"write_record\",\n)"
     ],
+    "lionhub/src/lionhub/tools/seatbelt_read_probe.py": [
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"policy_digest\",\n    \"probe\",\n    \"read_record_dir\",\n    \"write_record\",\n)"
+    ],
     "lionhub/src/lionhub/tools/types.py": [
       "__all__ = (\n    \"CodingToolkit\",\n    \"ReaderTool\",\n    \"EditorTool\",\n    \"BashTool\",\n    \"SearchTool\",\n    \"ContextTool\",\n    \"chunk\",\n)"
     ]
@@ -167,6 +170,13 @@
       "probe",
       "require_passing_link_record",
       "volume_identity",
+      "write_record"
+    ],
+    "lionhub/src/lionhub/tools/seatbelt_read_probe.py": [
+      "main",
+      "policy_digest",
+      "probe",
+      "read_record_dir",
       "write_record"
     ]
   }
