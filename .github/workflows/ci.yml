@@ -153,6 +153,46 @@ jobs:
         print("core surface imported with base dependencies only")
         PY
 
+  # ADR-0138's proof that local schedule validation and export need no backend,
+  # run against the built wheel: installed with the studio extra into a new
+  # environment outside the checkout, with the application's imports refused
+  # (tests/packaging/test_studio_backend_boundary.py, installed arm). The test
+  # runner is the checkout's environment; the assertions run in the new one, and
+  # the test fails unless lionagi and lionhub load from it and its package files
+  # match the RECORD of the wheel built here.
+  studio-wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Build the wheel
+      run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+    - name: Install the wheel with the studio extra into a new environment
+      working-directory: ${{ runner.temp }}
+      run: |
+        set -- "$RUNNER_TEMP"/dist/lionagi-*.whl
+        test "$#" -eq 1
+        test -f "$1"
+        uv venv "$RUNNER_TEMP/wheel-env"
+        uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" "lionagi[studio] @ file://$1"
+        echo "LIONAGI_STUDIO_WHEEL=$1" >> "$GITHUB_ENV"
+        echo "LIONAGI_STUDIO_WHEEL_PYTHON=$RUNNER_TEMP/wheel-env/bin/python" >> "$GITHUB_ENV"
+    - name: Install the test runner
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Schedule validate and export from the installed wheel
+      run: |
+        test -f "$LIONAGI_STUDIO_WHEEL"
+        test -x "$LIONAGI_STUDIO_WHEEL_PYTHON"
+        uv run --no-sync python -m pytest tests/packaging/test_studio_backend_boundary.py -p no:cacheprovider -n0 -rA
+
   docs:
     needs: changes
     # The `needs: changes` edge exists only so the ADR steps below can read
@@ -1058,7 +1098,7 @@ jobs:
   # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, compat-deps, lionrs, lion1, vscode, marketplace]
+    needs: [lint, core-install, studio-wheel, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, compat-deps, lionrs, lion1, vscode, marketplace]
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -1075,6 +1115,7 @@ jobs:
         hard_gates = [
             "lint",
             "core-install",
+            "studio-wheel",
             "docs",
             "test",
             "frontend",

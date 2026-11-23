@@ -14,7 +14,12 @@
   `lionhub/tests/lionhub_tests/serve/daemon/services/test_extracted_helpers.py`; F6
   `tests/contracts/test_auto_registry.py`; F7
   `apps/studio/backend/tests/lionagi_studio_tests/server/test_studio_compatibility_manifest.py` and
-  `tests/packaging/test_studio_import_boundary.py`
+  `tests/packaging/test_studio_import_boundary.py`. The installation proof named below,
+  `tests/packaging/test_studio_backend_boundary.py::test_fresh_wheel_schedule_validate_and_export_without_backend`,
+  runs from the checkout and, in CI, against the built `lionagi[studio]` wheel in a fresh environment
+  outside the checkout; today it blocks the application's modules, validates one valid interval
+  schedule and exports an empty store through the CLI's entry function in-process, human and machine,
+  and the rest of the list that section gives is the next change
 - **Area**: studio
 - **Date**: 2026-10-25
 - **Relations**: decides the Studio backend form that ADR-0136 D7 deferred and that ADR-0136 Amendment 1

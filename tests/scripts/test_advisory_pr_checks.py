@@ -1303,6 +1303,7 @@ def test_what_a_required_workflow_may_hold(text: str) -> None:
 CI_GATE_HARD_GATES = [
     "lint",
     "core-install",
+    "studio-wheel",
     "docs",
     "test",
     "frontend",
