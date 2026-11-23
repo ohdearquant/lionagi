@@ -15,14 +15,17 @@ exists.
 from __future__ import annotations
 
 import contextlib
+import errno
 import itertools
 import json
 import os
+import select
 import shlex
 import socket
 import stat
 import sys
 import time
+import types
 import urllib.request
 from pathlib import Path
 
@@ -545,6 +548,38 @@ def test_run_claude_kills_the_group_before_it_collects_the_child(tmp_path, monke
     assert probe_module.run_claude([str(script)], {"PATH": "/usr/bin:/bin"}, tmp_path) == 3
     assert len(seen) == 1
     assert seen[0][1], "the group was killed after the child had been collected"
+
+
+def test_run_claude_does_not_read_a_refused_exit_watch_as_an_exit(tmp_path, monkeypatch):
+    # kqueue reports a refused watch as an event with EV_ERROR set and the errno in its data.
+    # Only ESRCH says the child has exited; after any other errno the child must be waited on
+    # by the next method, not killed as though it had exited.
+    for name, value in {
+        "KQ_FILTER_PROC": -5,
+        "KQ_EV_ADD": 0x1,
+        "KQ_EV_ONESHOT": 0x10,
+        "KQ_EV_ERROR": 0x4000,
+        "KQ_NOTE_EXIT": 0x80000000,
+    }.items():
+        if not hasattr(select, name):
+            monkeypatch.setattr(select, name, value, raising=False)
+    calls: list[float] = []
+
+    class RefusingKqueue:
+        def control(self, changes, max_events, timeout):
+            calls.append(timeout)
+            return [
+                types.SimpleNamespace(flags=select.KQ_EV_ADD | select.KQ_EV_ERROR, data=errno.EPERM)
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(select, "kqueue", RefusingKqueue, raising=False)
+    monkeypatch.setattr(select, "kevent", lambda *args, **kwargs: None, raising=False)
+    script = _script(tmp_path / "bin", "/bin/sleep 1\nexit 3\n")
+    assert probe_module.run_claude([str(script)], {"PATH": "/usr/bin:/bin"}, tmp_path) == 3
+    assert calls == [probe_module._RUN_TIMEOUT_SECONDS]
 
 
 # ---------------------------------------------------------------------------------- the record

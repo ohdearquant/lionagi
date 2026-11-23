@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -364,8 +365,9 @@ def _exited_unreaped(proc: subprocess.Popen, timeout: float) -> bool:
 
     A child that has exited but is not yet collected keeps its pid, so no other process can take
     that number as its process group id. kqueue (macOS, the BSDs) and ``os.waitid`` with
-    ``WNOWAIT`` (Linux) see the exit without collecting the child. Where neither exists this
-    waits with ``Popen.wait``, which collects it.
+    ``WNOWAIT`` (Linux) see the exit without collecting the child. Where neither exists, or
+    kqueue refuses the watch for a reason other than the process having exited, the next
+    method is used; the last, ``Popen.wait``, collects the child.
     """
     kqueue = getattr(select, "kqueue", None)
     if kqueue is not None:
@@ -377,13 +379,17 @@ def _exited_unreaped(proc: subprocess.Popen, timeout: float) -> bool:
                 flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                 fflags=select.KQ_NOTE_EXIT,
             )
-            try:
-                return bool(queue.control([exit_event], 1, timeout))
-            except ProcessLookupError:
-                # The kernel no longer lists it as running: it has exited.
-                return True
+            events = queue.control([exit_event], 1, timeout)
         finally:
             queue.close()
+        if not events:
+            return False
+        # A refused watch comes back as an event with EV_ERROR set and the errno in ``data``.
+        # ESRCH means the kernel no longer lists the process as running: it has exited.
+        # Any other errno says nothing about the child.
+        event = events[0]
+        if not event.flags & select.KQ_EV_ERROR or event.data == errno.ESRCH:
+            return True
     if hasattr(os, "waitid"):
         deadline = time.monotonic() + timeout
         flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
