@@ -188,19 +188,31 @@ def test_fresh_wheel_schedule_validate_and_export_without_backend() -> None:
         "error": None,
     }, machine_export
     assert refused == [], refused
-    try:
-        import apps.studio
-    except ImportError:
-        pass
+    if mode == "source":
+        # The checkout has a top-level `apps`, so the blocker is what refuses `apps.studio`.
+        try:
+            import apps.studio
+        except ImportError:
+            pass
+        else:
+            raise AssertionError("the application import control was not refused")
     else:
-        raise AssertionError("the application import control was not refused")
+        # The wheel ships no top-level `apps`: the import fails on `apps` itself, before
+        # the blocker is asked about `apps.studio`.
+        try:
+            import apps.studio
+        except ModuleNotFoundError as exc:
+            assert exc.name == "apps", (exc.name, refused)
+        else:
+            raise AssertionError("`apps` is importable outside the checkout")
     try:
         import lionagi_studio
     except ImportError:
         pass
     else:
         raise AssertionError("the application package control was not refused")
-    assert refused == ["apps.studio", "lionagi_studio"]
+    expected_refused = ["apps.studio", "lionagi_studio"] if mode == "source" else ["lionagi_studio"]
+    assert refused == expected_refused, (mode, refused)
     if mode == "installed":
         from importlib import metadata
         prefix = Path(sys.prefix).resolve()
