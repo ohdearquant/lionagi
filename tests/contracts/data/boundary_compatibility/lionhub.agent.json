@@ -1,0 +1,217 @@
+{
+  "environment_lookups": {
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "os.environ.get:\"UV_CACHE_DIR\""
+    ],
+    "lionhub/src/lionhub/agent/factory.py": [
+      "os.getenv:\"LIONAGI_KHIVE_INJECTION\""
+    ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "os.environ.get:MINTED_CHILD_ACTOR_ENV"
+    ]
+  },
+  "package_exports": {
+    "lionhub/src/lionhub/agent/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AgentSpec\": (\"spec\", None),\n    \"HooksMixin\": (\"spec\", None),\n    \"PermissionPolicy\": (\"permissions\", None),\n    \"create_agent\": (\"factory\", None),\n    \"load_settings\": (\"settings\", None),\n    \"apply_hooks_from_settings\": (\"settings\", None),\n}",
+      "def __getattr__(name: str) -> object:\n    if name in _SUBMODULES:\n        import importlib\n\n        return importlib.import_module(f\"{__name__}.{name}\")\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    \"AgentSpec\",\n    \"HooksMixin\",\n    \"PermissionPolicy\",\n    \"create_agent\",\n    \"load_settings\",\n    \"apply_hooks_from_settings\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/_email_in_headers.py": [
+      "__all__ = (\n    \"ALLOWED_DOMAIN_RE\",\n    \"EMAIL_RE\",\n    \"HEADER_TOKEN_RE\",\n    \"X_HEADER_RE\",\n    \"SHORT_HEADER_FLAG_RE\",\n    \"find_leak\",\n    \"find_leak_with_allowed\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/casts/__init__.py": [
+      "from lionagi.ln._lazy_init import lazy_import",
+      "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"build_catalog\": (\"catalog\", None),\n    \"SPAWN_ALLOWED_OPERATIONS\": (\"emission\", None),\n    \"AnalysisResult\": (\"emission\", None),\n    \"ArtifactProduced\": (\"emission\", None),\n    \"ComplexityScore\": (\"emission\", None),\n    \"ComplianceVerdict\": (\"emission\", None),\n    \"Conflict\": (\"emission\", None),\n    \"DesignSpec\": (\"emission\", None),\n    \"Diagnosis\": (\"emission\", None),\n    \"Document\": (\"emission\", None),\n    \"EscalationRequest\": (\"emission\", None),\n    \"ExecutionPlan\": (\"emission\", None),\n    \"Finding\": (\"emission\", None),\n    \"Gap\": (\"emission\", None),\n    \"Objection\": (\"emission\", None),\n    \"OperationOutcome\": (\"emission\", None),\n    \"Postmortem\": (\"emission\", None),\n    \"Proposal\": (\"emission\", None),\n    \"Recommendation\": (\"emission\", None),\n    \"RiskAssessment\": (\"emission\", None),\n    \"SpawnRequest\": (\"emission\", None),\n    \"Synthesis\": (\"emission\", None),\n    \"TaskAssignment\": (\"emission\", None),\n    \"Verdict\": (\"emission\", None),\n    \"VerificationResult\": (\"emission\", None),\n    \"build_emission_operable\": (\"emission\", None),\n    \"field_name_for\": (\"emission\", None),\n    \"Pack\": (\"pack\", None),\n    \"RoleConfig\": (\"pack\", None),\n    \"RolePolicy\": (\"pack\", None),\n    \"Mode\": (\"pattern\", None),\n    \"Pattern\": (\"pattern\", None),\n    \"PatternKind\": (\"pattern\", None),\n    \"Role\": (\"pattern\", None),\n    \"list_modes\": (\"pattern\", None),\n    \"list_roles\": (\"pattern\", None),\n    \"Profile\": (\"profile\", None),\n}",
+      "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
+      "__all__ = (\n    # catalog (read-only metadata seam)\n    \"build_catalog\",\n    # pattern layer\n    \"Pattern\",\n    \"PatternKind\",\n    \"Role\",\n    \"Mode\",\n    \"list_roles\",\n    \"list_modes\",\n    # profile\n    \"Profile\",\n    # pack layer\n    \"Pack\",\n    \"RolePolicy\",\n    \"RoleConfig\",\n    # emission builder\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n    # emission contracts \u2014 discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # emission contracts \u2014 judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # emission contracts \u2014 analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # emission contracts \u2014 planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # emission contracts \u2014 production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # emission contracts \u2014 generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # emission contracts \u2014 universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/casts/catalog.py": [
+      "__all__ = (\"build_catalog\",)"
+    ],
+    "lionhub/src/lionhub/agent/casts/emission.py": [
+      "__all__ = (\n    # discovery\n    \"Finding\",\n    \"Conflict\",\n    \"Gap\",\n    \"Diagnosis\",\n    \"Synthesis\",\n    # judgement\n    \"Verdict\",\n    \"ComplianceVerdict\",\n    \"RiskAssessment\",\n    \"Objection\",\n    \"Recommendation\",\n    # analysis\n    \"AnalysisResult\",\n    \"ComplexityScore\",\n    # planning / coordination\n    \"ExecutionPlan\",\n    \"TaskAssignment\",\n    \"DesignSpec\",\n    # production\n    \"ArtifactProduced\",\n    \"VerificationResult\",\n    \"Document\",\n    \"OperationOutcome\",\n    # generative / retrospective\n    \"Proposal\",\n    \"Postmortem\",\n    # universal\n    \"EscalationRequest\",\n    \"SpawnRequest\",\n    \"build_emission_operable\",\n    \"field_name_for\",\n    \"SPAWN_ALLOWED_OPERATIONS\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/casts/pack.py": [
+      "__all__ = (\"Pack\", \"RolePolicy\", \"RoleConfig\")"
+    ],
+    "lionhub/src/lionhub/agent/casts/pattern.py": [
+      "__all__ = (\n    \"Pattern\",\n    \"PatternKind\",\n    \"Mode\",\n    \"Role\",\n    \"list_roles\",\n    \"list_modes\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/casts/profile.py": [
+      "__all__ = (\"Profile\",)"
+    ],
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "__all__ = (\n    \"CHILD_SANDBOX_OPT_OUT\",\n    \"CLAUDE_CLI_FLOOR\",\n    \"DEFAULT_ALLOW_WRITE\",\n    \"DEFAULT_DENY_EDIT\",\n    \"DEFAULT_DENY_READ\",\n    \"PROJECT_CONFIG_NAMES\",\n    \"ChildSandboxPolicy\",\n    \"check_claude_cli_floor\",\n    \"check_sandbox_backend\",\n    \"claude_settings_argument\",\n    \"claude_settings_for\",\n    \"configured_deny_read\",\n    \"credential_deny_read\",\n    \"default_allow_write\",\n    \"effective_policy\",\n    \"lionagi_home_config_paths\",\n    \"policy_from_dict\",\n    \"profile_deny_read\",\n    \"profile_deny_read_for\",\n    \"profile_deny_read_refusal\",\n    \"resolve_child_sandbox\",\n    \"run_state_paths\",\n    \"warn_project_child_sandbox\",\n    \"with_profile_deny_read\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/context_fold.py": [
+      "__all__ = (\"ContextFold\", \"estimate_next_request_tokens\", \"install_context_fold\")"
+    ],
+    "lionhub/src/lionhub/agent/factory.py": [
+      "__all__ = (\n    \"create_agent\",\n    \"CREATE_AGENT_BRANCH_ORIGIN_KEY\",\n    \"_chain_pre_hooks\",\n    \"_chain_post_hooks\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/gate.py": [
+      "__all__ = (\n    \"ControlUnavailableError\",\n    \"GateDeniedError\",\n    \"GateEvaluator\",\n    \"GateResult\",\n    \"adapt_legacy_hook\",\n    \"adapt_session_gate\",\n    \"run_gate_pass\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/hooks.py": [
+      "__all__ = (\n    \"auto_format_python\",\n    \"guard_destructive\",\n    \"guard_email_in_headers\",\n    \"guard_paths\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "__all__ = (\n    \"KHIVE_ACTOR_ENV\",\n    \"MINTED_CHILD_ACTOR_ENV\",\n    \"attribute_khive_servers\",\n    \"child_khive_actor\",\n    \"is_khive_server\",\n    \"minted_child_actor\",\n    \"run_khive_actor\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/nudge.py": [
+      "__all__ = (\n    \"NudgeContext\",\n    \"NudgeEngine\",\n    \"NudgeRule\",\n    \"ToolCallRecord\",\n    \"default_nudge_rules\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/permissions.py": [
+      "__all__ = (\n    \"PermissionDecision\",\n    \"PermissionPolicy\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/settings.py": [
+      "__all__ = (\n    \"apply_hooks_from_settings\",\n    \"load_settings\",\n    \"parse_external_hooks\",\n)"
+    ],
+    "lionhub/src/lionhub/agent/spec.py": [
+      "__all__ = (\"AgentSpec\", \"HooksMixin\")"
+    ],
+    "lionhub/src/lionhub/agent/subscription_accounts.py": [
+      "__all__ = (\n    \"ACCOUNTS_FILE\",\n    \"ACCOUNT_PROVIDERS\",\n    \"KEYCHAIN_TIMEOUT_S\",\n    \"LOGINS_DIR_ENV\",\n    \"LegAccount\",\n    \"SubscriptionAccount\",\n    \"SubscriptionAccountError\",\n    \"account_child_env\",\n    \"account_provider\",\n    \"codex_home_child_env\",\n    \"credential_paths\",\n    \"leg_account_reached\",\n    \"list_accounts\",\n    \"logins_dir\",\n    \"resolve_account\",\n    \"resolve_leg_account\",\n    \"validate_account_name\",\n    \"validate_codex_home\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionhub/src/lionhub/agent/_email_in_headers.py": [
+      "find_leak",
+      "find_leak_with_allowed"
+    ],
+    "lionhub/src/lionhub/agent/casts/catalog.py": [
+      "build_catalog"
+    ],
+    "lionhub/src/lionhub/agent/casts/emission.py": [
+      "AnalysisResult",
+      "ArtifactProduced",
+      "ComplexityScore",
+      "ComplianceVerdict",
+      "Conflict",
+      "DesignSpec",
+      "Diagnosis",
+      "Document",
+      "ExecutionPlan",
+      "Finding",
+      "Gap",
+      "Objection",
+      "OperationOutcome",
+      "Postmortem",
+      "Proposal",
+      "Recommendation",
+      "RiskAssessment",
+      "Synthesis",
+      "TaskAssignment",
+      "Verdict",
+      "VerificationResult",
+      "build_emission_operable",
+      "field_name_for"
+    ],
+    "lionhub/src/lionhub/agent/casts/pack.py": [
+      "Pack",
+      "RoleConfig",
+      "RolePolicy"
+    ],
+    "lionhub/src/lionhub/agent/casts/pattern.py": [
+      "Mode",
+      "Pattern",
+      "PatternKind",
+      "Role",
+      "list_modes",
+      "list_roles"
+    ],
+    "lionhub/src/lionhub/agent/casts/profile.py": [
+      "Profile"
+    ],
+    "lionhub/src/lionhub/agent/casts/surfaces.py": [
+      "add_casts_subparser",
+      "get_casts",
+      "run_casts"
+    ],
+    "lionhub/src/lionhub/agent/child_sandbox.py": [
+      "ChildSandboxPolicy",
+      "check_claude_cli_floor",
+      "check_sandbox_backend",
+      "claude_settings_argument",
+      "claude_settings_for",
+      "configured_deny_read",
+      "credential_deny_read",
+      "default_allow_write",
+      "effective_policy",
+      "lionagi_home_config_paths",
+      "policy_from_dict",
+      "profile_deny_read",
+      "profile_deny_read_for",
+      "profile_deny_read_refusal",
+      "resolve_child_sandbox",
+      "run_state_paths",
+      "warn_project_child_sandbox",
+      "with_profile_deny_read"
+    ],
+    "lionhub/src/lionhub/agent/context_fold.py": [
+      "ContextFold",
+      "estimate_next_request_tokens",
+      "install_context_fold"
+    ],
+    "lionhub/src/lionhub/agent/factory.py": [
+      "apply_forwarded_mcp_servers",
+      "create_agent",
+      "forwarded_set_ignores_user_config",
+      "provider_accepts_forwarded_mcp",
+      "register_profile_injection",
+      "request_carries_forwarded_mcp",
+      "request_kwargs_carry_forwarded_mcp"
+    ],
+    "lionhub/src/lionhub/agent/hooks.py": [
+      "auto_format_python",
+      "guard_destructive",
+      "guard_email_in_headers",
+      "guard_paths",
+      "log_tool_call",
+      "log_tool_use"
+    ],
+    "lionhub/src/lionhub/agent/khive_actor.py": [
+      "attribute_khive_servers",
+      "child_khive_actor",
+      "is_khive_server",
+      "minted_child_actor",
+      "run_khive_actor"
+    ],
+    "lionhub/src/lionhub/agent/nudge.py": [
+      "NudgeContext",
+      "NudgeEngine",
+      "NudgeRule",
+      "ToolCallRecord",
+      "default_nudge_rules"
+    ],
+    "lionhub/src/lionhub/agent/permissions.py": [
+      "PermissionDecision",
+      "PermissionPolicy"
+    ],
+    "lionhub/src/lionhub/agent/settings.py": [
+      "apply_hooks_from_settings",
+      "parse_external_hooks"
+    ],
+    "lionhub/src/lionhub/agent/spec.py": [
+      "AgentSpec",
+      "HooksMixin"
+    ],
+    "lionhub/src/lionhub/agent/subscription_accounts.py": [
+      "LegAccount",
+      "SubscriptionAccount",
+      "SubscriptionAccountError",
+      "account_child_env",
+      "account_provider",
+      "codex_home_child_env",
+      "credential_paths",
+      "leg_account_reached",
+      "list_accounts",
+      "logins_dir",
+      "resolve_account",
+      "resolve_leg_account",
+      "validate_account_name",
+      "validate_codex_home"
+    ]
+  }
+}

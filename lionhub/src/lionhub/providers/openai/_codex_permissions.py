@@ -63,14 +63,41 @@ PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 #: The record format this module reads. A record of another format is no record. Format 2 adds
 #: the SHA-256 of the binary's bytes to the record's key and to the record itself. Format 3 adds
 #: the ``read_only_cwd_write_refused`` arm, so a record made before that arm existed no longer
-#: satisfies a launch.
-_RECORD_FORMAT = 3
+#: satisfies a launch. Format 4 measures the unix-socket check once per network state, in place
+#: of the one ``unix_socket_refused`` arm, and adds ``read_only_write_root`` (ADR-0133, "the
+#: socket arm per network state"): a record of format 3 or earlier has no socket arm for either
+#: state, so it admits no launch. Format 5 reads each socket connect by the token the child prints
+#: (``connect=ok`` or ``connect=<errno name>``), brackets each listener run with the probe's own
+#: connects from outside the sandbox, and passes a network-off run whose control connect the
+#: sandbox refused as well as one whose control connect reached its listener, naming which
+#: (ADR-0133, "the network-off socket rule"): a format 4 record measured no such case, so it
+#: admits no launch. Format 6 adds the ``scratch_env`` arm (ADR-0041 Amendment 6): a run whose
+#: command line hands the child a scratch directory through ``shell_environment_policy.set``, as
+#: a launch with a scratch directory does. A format 5 record measured no such run, so it admits
+#: no launch.
+_RECORD_FORMAT = 6
 
-#: Arms every passing record carries, each of which must have passed, except the arms named in
-#: ``CONDITIONAL_ARMS``.
+#: The socket arm a launch needs, by its table's ``network.enabled``.
+SOCKET_ARMS: Mapping[bool, str] = {
+    True: "unix_socket_refused_network_on",
+    False: "unix_socket_refused_network_off",
+}
+
+#: The arm a read-only table that grants a write entry needs.
+READ_ONLY_WRITE_ROOT_ARM = "read_only_write_root"
+
+#: The arm a launch with a scratch directory needs: the child's commands saw ``TMPDIR``, ``TMP``
+#: and ``TEMP`` name the directory and wrote a file there.
+SCRATCH_ENV_ARM = "scratch_env"
+
+#: Arms every record carries. A launch needs each to have passed, except the socket arm of the
+#: other network state, ``READ_ONLY_WRITE_ROOT_ARM`` unless its table is read-only with a write
+#: entry, ``SCRATCH_ENV_ARM`` unless it has a scratch directory (``launch_arms``), and the arms
+#: named in ``CONDITIONAL_ARMS``.
 REQUIRED_ARMS: tuple[str, ...] = (
     "deny_canary",
-    "unix_socket_refused",
+    "unix_socket_refused_network_on",
+    "unix_socket_refused_network_off",
     "own_codex_home",
     "read_control",
     "write_cwd",
@@ -82,6 +109,8 @@ REQUIRED_ARMS: tuple[str, ...] = (
     "heavy_network_on",
     "user_layer_sandbox_mode",
     "read_only_cwd_write_refused",
+    "read_only_write_root",
+    "scratch_env",
 )
 
 #: Arms of ``REQUIRED_ARMS`` that apply only when an environment variable is set: arm name to
@@ -104,6 +133,8 @@ def permission_profile_table(
     network: bool,
     exclude_slash_tmp: bool = False,
     exclude_tmpdir: bool = False,
+    read_only_write: Iterable[str] = (),
+    read_roots: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """The ``[permissions.PERMISSION_PROFILE]`` table for one launch.
 
@@ -117,17 +148,33 @@ def permission_profile_table(
     directory included. ``exclude_slash_tmp`` and ``exclude_tmpdir`` make ``/tmp`` and
     ``$TMPDIR`` read-only for a heavy request, as the legacy workspace-write settings
     ``exclude_slash_tmp`` and ``exclude_tmpdir_env_var`` did; a light request has both anyway.
+    ``read_only_write`` are write entries a read-only table grants all the same: a read-only
+    launch's scratch directory, and the probe's run for that arm; a launch needs
+    ``READ_ONLY_WRITE_ROOT_ARM`` for such a table.
+
+    ``read_roots``, when given (an empty sequence included), denies reads by default: ``/`` is
+    denied, each read root is granted for reading, and ``/tmp`` and ``$TMPDIR`` are denied
+    whatever ``light`` and the exclusions say. Write and deny entries keep their own access.
+    Whether a codex binary lets the narrower entries win over the denial of ``/`` is what
+    ``codex_read_probe`` measures; no launch passes ``read_roots`` yet.
     """
     filesystem: dict[str, str] = {}
-    if not read_only:
-        for path in write:
-            filesystem[path] = "write"
+    if read_roots is not None:
+        filesystem["/"] = "deny"
+        for path in read_roots:
+            filesystem[path] = "read"
+    for path in write if not read_only else read_only_write:
+        filesystem[path] = "write"
     for path in deny:
         filesystem[path] = "deny"
-    if light or exclude_tmpdir:
-        filesystem[":tmpdir"] = "read"
-    if light or exclude_slash_tmp:
-        filesystem[":slash_tmp"] = "read"
+    if read_roots is not None:
+        filesystem[":tmpdir"] = "deny"
+        filesystem[":slash_tmp"] = "deny"
+    else:
+        if light or exclude_tmpdir:
+            filesystem[":tmpdir"] = "read"
+        if light or exclude_slash_tmp:
+            filesystem[":slash_tmp"] = "read"
     return {
         "extends": ":read-only" if read_only else ":workspace",
         "filesystem": filesystem,
@@ -601,17 +648,50 @@ def refuse_write_roots_on_denied_paths(
                     )
 
 
-def _failed_arms(record: Mapping[str, Any], env: Mapping[str, str]) -> list[str]:
-    """The arms of ``REQUIRED_ARMS`` that did not pass for a launch with environment ``env``.
+def launch_arms(table: Mapping[str, Any] | None, *, scratch: bool = False) -> tuple[str, ...]:
+    """The arms of ``REQUIRED_ARMS`` a launch rendering ``table`` needs to have passed.
+
+    Every arm except the socket arm of the network state the table does not have,
+    ``READ_ONLY_WRITE_ROOT_ARM`` unless the table extends ``:read-only`` and grants a write
+    entry, and ``SCRATCH_ENV_ARM`` unless ``scratch`` says the launch hands its child a scratch
+    directory. A table whose ``network.enabled`` is not a bool, or no table at all, needs every
+    arm, so leaving the table out can only refuse more.
+    """
+    if not isinstance(table, Mapping):
+        return REQUIRED_ARMS
+    network = table.get("network")
+    enabled = network.get("enabled") if isinstance(network, Mapping) else None
+    if not isinstance(enabled, bool):
+        return REQUIRED_ARMS
+    skip = {SOCKET_ARMS[not enabled]}
+    files = table.get("filesystem")
+    grants_write = isinstance(files, Mapping) and "write" in files.values()
+    if not (table.get("extends") == ":read-only" and grants_write):
+        skip.add(READ_ONLY_WRITE_ROOT_ARM)
+    if not scratch:
+        skip.add(SCRATCH_ENV_ARM)
+    return tuple(name for name in REQUIRED_ARMS if name not in skip)
+
+
+def _failed_arms(
+    record: Mapping[str, Any],
+    env: Mapping[str, str],
+    table: Mapping[str, Any] | None = None,
+    *,
+    scratch: bool = False,
+) -> list[str]:
+    """The arms of ``launch_arms(table, scratch=scratch)`` that did not pass for a launch with
+    environment ``env``.
 
     A conditional arm recorded as skipped counts as satisfied only when ``env`` leaves its
     variable unset or empty; a launch that sets it needs the arm to have passed.
     """
+    needed = launch_arms(table, scratch=scratch)
     arms = record.get("arms")
     if not isinstance(arms, Mapping):
-        return list(REQUIRED_ARMS)
+        return list(needed)
     failed = []
-    for name in REQUIRED_ARMS:
+    for name in needed:
         arm = arms.get(name)
         if not isinstance(arm, Mapping):
             failed.append(name)
@@ -639,19 +719,54 @@ def _launch_binary(binary: str, env: Mapping[str, str], cwd: str | os.PathLike[s
     return found or binary
 
 
+def _socket_refusal(arm: str, version: str, resolved: str, *, other_passed: bool) -> str:
+    """Why a launch is refused when its network state's socket arm did not pass, and what the
+    remedies are: the binary, the arm, and either the settings that turn the network off or
+    the fact that no setting admits the launch on this binary. ``other_passed`` says whether
+    the record shows the other network state's socket arm as passed: when a network-on launch
+    is refused and the network-off arm did not pass either, turning the network off admits
+    nothing, so no setting is offered."""
+    head = (
+        f"codex {version} at {resolved!r} did not pass {arm}: the probe did not show a child of a "
+        f"run with the network {'on' if arm == SOCKET_ARMS[True] else 'off'} refused by the "
+        "sandbox when it connects to a unix socket inside a denied directory, so a listener there "
+        "(a credential agent, a local daemon) may answer it."
+    )
+    if arm == SOCKET_ARMS[True] and not other_passed:
+        return (
+            f"{head} It did not pass {SOCKET_ARMS[False]} either, so no setting admits a profiled "
+            f"launch on this binary; probe another codex version with "
+            f"`{PROBE_COMMAND} --binary <path>`."
+        )
+    if arm == SOCKET_ARMS[True]:
+        return (
+            f"{head} Set `sandbox_workspace_write.network_access = false` in the codex config, or "
+            "run the role with `workload: light`, so the launch runs with the network off."
+        )
+    return (
+        f"{head} No setting admits a launch with the network off on this binary; probe another "
+        f"codex version with `{PROBE_COMMAND} --binary <path>`."
+    )
+
+
 def require_passing_probe_record(
     binary: str,
     env: Mapping[str, str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
+    *,
+    table: Mapping[str, Any] | None = None,
+    scratch: bool = False,
 ) -> Path:
     """Refuse a profiled launch on a codex binary without a passing probe record.
 
     ``binary`` is resolved against the ``PATH`` in ``env`` (the child's final environment, the
     process environment when None) with the lookup the spawn uses, and ``cwd`` is the child's
-    working directory. The record must name the resolved binary's path, its version and the
-    SHA-256 of its bytes, be of the current format, and hold every arm in ``REQUIRED_ARMS`` as
-    passed, a conditional arm being allowed to be skipped as ``CONDITIONAL_ARMS`` says. Returns
-    the record's path.
+    working directory. ``table`` is the permission profile table the launch renders, and
+    ``scratch`` says whether the launch hands its child a scratch directory. The record must
+    name the resolved binary's path, its version and the SHA-256 of its bytes, be of the
+    current format, and hold every arm of ``launch_arms(table, scratch=scratch)`` as passed, a
+    conditional arm being allowed to be skipped as ``CONDITIONAL_ARMS`` says. Nothing but the
+    record, the table and ``scratch`` decides the answer. Returns the record's path.
     """
     launch_env = os.environ if env is None else env
     binary = _launch_binary(binary, launch_env, cwd)
@@ -661,15 +776,32 @@ def require_passing_probe_record(
         problem = f"the version of {binary!r} cannot be read"
     elif record is None:
         problem = f"there is no probe record for codex {version} at {resolved!r} ({str(path)!r})"
+    elif record.get("format") != _RECORD_FORMAT:
+        problem = (
+            f"the probe record {str(path)!r} is of format {record.get('format')!r}, and a launch "
+            f"reads format {_RECORD_FORMAT} only"
+        )
     elif (
-        record.get("format") != _RECORD_FORMAT
-        or record.get("binary") != resolved
+        record.get("binary") != resolved
         or record.get("version") != version
         or record.get("sha256") != binary_sha256(resolved)
     ):
         problem = f"the probe record {str(path)!r} is not for codex {version} at {resolved!r}"
     else:
-        failed = _failed_arms(record, launch_env)
+        failed = _failed_arms(record, launch_env, table, scratch=scratch)
+        sockets = [name for name in failed if name in SOCKET_ARMS.values()]
+        if failed and len(sockets) == len(failed) == 1:
+            # The one arm a setting may answer: its own remedies, and no others. The record also
+            # says whether the other state's arm passed, which decides whether a setting helps.
+            network_on = sockets[0] == SOCKET_ARMS[True]
+            arms = record.get("arms")
+            other = arms.get(SOCKET_ARMS[not network_on]) if isinstance(arms, Mapping) else None
+            other_passed = isinstance(other, Mapping) and other.get("passed") is True
+            raise CLIInputRefusedError(
+                "a codex child runs under lionagi's permission profile while the child sandbox "
+                "is enabled, and only on a codex binary shown to enforce it; "
+                + _socket_refusal(sockets[0], version, resolved, other_passed=other_passed)
+            )
         if failed:
             problem = (
                 f"the probe record {str(path)!r} has arms that did not pass: {', '.join(failed)}"

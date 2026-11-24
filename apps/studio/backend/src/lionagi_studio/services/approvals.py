@@ -11,8 +11,10 @@ import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request
@@ -21,16 +23,60 @@ from pydantic import BaseModel, Field, field_validator
 from lionagi.ln import compute_hash
 from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.orchestration.state_store import require_file_store, store_path
+from lionhub.serve.daemon.launch_access import (
+    DECISION_TOKEN_HEADER,
+    DecisionPrincipal,
+    daemon_epoch,
+    resolve_decision_capability,
+)
 
 from ..registry import studio_route
 
 APPROVAL_TTL_SECONDS = 5 * 60
+"""Lifetime of a proposed approval when the server and the request set none."""
+
+APPROVAL_MAX_TTL_SECONDS = 60 * 60
+"""Longest lifetime a request may ask for when the server sets no cap."""
+
+# Server settings, read at each proposal so a restart is not needed to change them.
+_TTL_ENV = "LIONAGI_STUDIO_APPROVAL_TTL_SECONDS"
+_MAX_TTL_ENV = "LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS"
 
 _STATUSES = frozenset({"pending", "granted", "consumed", "expired", "denied"})
 
 # Header identifying an operator/service principal. Mere presence (any non-empty value)
 # disqualifies the caller from grant/deny -- there is no "correct" value that passes.
 _SERVICE_PRINCIPAL_HEADER = "x-lionagi-operator-principal"
+
+# Who decided an approval: the five fields the Operator records on its proposals, taken from a
+# verified decision capability or, for a grant or deny the bearer token admitted without one,
+# from the credential (``_CredentialPrincipal``). NULL means an in-process decision that named
+# no principal, and rows written before these columns existed stay NULL.
+_PRINCIPAL_COLUMNS = (
+    "decision_principal_id",
+    "decision_epoch",
+    "decision_method",
+    "decision_origin",
+    "decision_scope",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _CredentialPrincipal:
+    """Who decided a grant or deny that the configured bearer token admitted and that carried
+    no decision capability this daemon verifies: the credential, by its role.
+
+    It names the credential, never its text or any digest of it, so everyone holding the one
+    configured token is this one principal. ``epoch`` is the daemon start that admitted it.
+    Its method is not ``pairing``, so a reader tells it from a paired page's decision.
+    """
+
+    id: str = "studio-credential"
+    epoch: str = field(default_factory=daemon_epoch)
+    method: str = "credential"
+    origin: str | None = None
+    scope: str | None = None
+
 
 # Mirrors the approvals table in schema.sql -- a defensive fallback so direct
 # callers of this module (outside the studio app's lifespan, which applies
@@ -46,7 +92,12 @@ CREATE TABLE IF NOT EXISTS approvals (
   proposed_at   REAL    NOT NULL,
   granted_at    REAL,
   consumed_at   REAL,
-  expires_at    REAL    NOT NULL
+  expires_at    REAL    NOT NULL,
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status
   ON approvals(status) WHERE status IN ('pending', 'granted');
@@ -77,7 +128,12 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
   content_hash          TEXT    NOT NULL,
   previous_hash         TEXT    NOT NULL,
   chain_hash            TEXT    NOT NULL,
-  hmac_sig              TEXT
+  hmac_sig              TEXT,
+  decision_principal_id TEXT,
+  decision_epoch        TEXT,
+  decision_method       TEXT,
+  decision_origin       TEXT,
+  decision_scope        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence
   ON approval_evidence(sequence);
@@ -88,10 +144,27 @@ CREATE INDEX IF NOT EXISTS idx_approval_evidence_approval
 
 async def _ensure_table(db: Any) -> None:
     await db.executescript(_ENSURE_TABLE_SQL)
+    await _add_principal_columns(db, "approvals")
 
 
 async def _ensure_evidence_table(db: Any) -> None:
     await db.executescript(_ENSURE_EVIDENCE_TABLE_SQL)
+    await _add_principal_columns(db, "approval_evidence")
+
+
+async def _add_principal_columns(db: Any, table: str) -> None:
+    """Give a table created before the decision principal columns those columns, as NULL."""
+    rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+    present = {row[1] for row in rows}
+    for name in _PRINCIPAL_COLUMNS:
+        if name in present:
+            continue
+        try:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
+        except sqlite3.OperationalError as exc:
+            # Another connection added it between the read above and this statement.
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 
 def compute_params_hash(params: dict[str, Any]) -> str:
@@ -142,6 +215,77 @@ def _require_human_principal(request: Request) -> None:
         )
 
 
+def _require_daemon_credential(request: Request) -> None:
+    """Consume requires the caller to PRESENT the configured bearer token.
+
+    Without one, every local process reaches the daemon, so a granted approval could be
+    spent by a caller holding no credential at all; consuming is refused on an open daemon,
+    as granting is. Checked here as well as by the admission middleware, so the route does
+    not depend on the middleware's order or on the token mode it runs in.
+    """
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "consuming an approval requires a configured auth token "
+                "(set LIONAGI_STUDIO_AUTH_TOKEN); refusing on an open daemon"
+            ),
+        )
+    presented = (request.headers.get("authorization") or "").encode("utf-8", "surrogateescape")
+    if not hmac.compare_digest(presented, f"Bearer {token}".encode("utf-8", "surrogateescape")):
+        raise HTTPException(
+            status_code=403, detail="consuming an approval requires the daemon's bearer token"
+        )
+
+
+def _decision_principal(request: Request) -> DecisionPrincipal | None:
+    """Who a grant or deny request's decision capability resolves to, or None.
+
+    Resolved as the Operator's decision routes resolve it: the ``X-Studio-Decision-Token``
+    capability ``li studio`` paired the page with, presented from exactly one ``Origin``.
+    None covers a request without one and a capability this daemon cannot verify (unknown,
+    expired, revoked, from another start, origin or scope); the route then records the
+    credential (:func:`_route_principal`). It admits and refuses nothing: the bearer check in
+    :func:`_require_human_principal` is what admits a grant or deny.
+    """
+    presented = request.headers.get(DECISION_TOKEN_HEADER)
+    if not presented:
+        return None
+    origins = request.headers.getlist("origin")
+    if len(origins) != 1:
+        return None
+    return resolve_decision_capability(presented, origin=origins[0])
+
+
+def _route_principal(request: Request) -> DecisionPrincipal | _CredentialPrincipal:
+    """Who decided a grant or deny the bearer check admitted: the verified decision
+    capability's principal, else the configured credential."""
+    return _decision_principal(request) or _CredentialPrincipal()
+
+
+def _principal_values(
+    principal: DecisionPrincipal | _CredentialPrincipal | None,
+) -> tuple[str | None, ...]:
+    """The decision principal columns for *principal*, all None for an unattributed decision."""
+    if principal is None:
+        return (None,) * len(_PRINCIPAL_COLUMNS)
+    return (principal.id, principal.epoch, principal.method, principal.origin, principal.scope)
+
+
+def _principal_payload(values: tuple[Any, ...]) -> dict[str, Any] | None:
+    """The hashed evidence payload's view of the recorded principal columns.
+
+    None when every column is empty, and the payload then leaves the key out, so an
+    unattributed row hashes exactly as rows written before principals were recorded and
+    those chains still verify. Any non-empty column puts all five in the payload, so
+    adding, changing or clearing one afterwards breaks the row's content hash.
+    """
+    if all(value is None for value in values):
+        return None
+    return dict(zip(("id", "epoch", "method", "origin", "scope"), values, strict=True))
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -153,6 +297,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "granted_at": row["granted_at"],
         "consumed_at": row["consumed_at"],
         "expires_at": row["expires_at"],
+        **{name: row[name] for name in _PRINCIPAL_COLUMNS},
     }
 
 
@@ -162,7 +307,9 @@ async def _fetch_row(approval_id: str) -> dict[str, Any] | None:
         await _ensure_table(db)
         cur = await db.execute(
             "SELECT id, action_kind, params_hash, session_id, status, "
-            "proposed_at, granted_at, consumed_at, expires_at "
+            "proposed_at, granted_at, consumed_at, expires_at, "
+            "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+            "decision_scope "
             "FROM approvals WHERE id = ?",
             (approval_id,),
         )
@@ -181,8 +328,9 @@ async def _write_evidence(
     params_hash: str,
     justification_class: str | None = None,
     justification_reason: str | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> None:
-    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free."""
+    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free. *principal* is who decided a grant or deny: a verified decision capability's principal or the admitting credential, None for an in-process decision that named none."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
     )
@@ -205,6 +353,10 @@ async def _write_evidence(
         "justification_reason": justification_reason,
         "created_at": created_at,
     }
+    principal_values = _principal_values(principal)
+    principal_payload = _principal_payload(principal_values)
+    if principal_payload is not None:
+        payload["decision_principal"] = principal_payload
     content_hash = _compute_content_hash(payload)
     chain_hash = _compute_chain_hash(content_hash, previous_hash)
 
@@ -215,8 +367,10 @@ async def _write_evidence(
         "INSERT INTO approval_evidence "
         "(id, sequence, event_type, approval_id, action_kind, status_from, status_to, "
         "params_hash, justification_class, justification_reason, created_at, "
-        "content_hash, previous_hash, chain_hash, hmac_sig) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "content_hash, previous_hash, chain_hash, hmac_sig, "
+        "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+        "decision_scope) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             evidence_id,
             sequence,
@@ -233,6 +387,7 @@ async def _write_evidence(
             previous_hash,
             chain_hash,
             hmac_sig,
+            *principal_values,
         ),
     )
 
@@ -247,7 +402,9 @@ async def verify_evidence_chain() -> dict[str, Any]:
         cur = await db.execute(
             "SELECT id, sequence, event_type, approval_id, action_kind, status_from, "
             "status_to, params_hash, justification_class, justification_reason, "
-            "created_at, content_hash, previous_hash, chain_hash, hmac_sig "
+            "created_at, content_hash, previous_hash, chain_hash, hmac_sig, "
+            "decision_principal_id, decision_epoch, decision_method, decision_origin, "
+            "decision_scope "
             "FROM approval_evidence ORDER BY sequence ASC"
         )
         rows = await cur.fetchall()
@@ -276,6 +433,9 @@ async def verify_evidence_chain() -> dict[str, Any]:
             "justification_reason": row["justification_reason"],
             "created_at": row["created_at"],
         }
+        principal_payload = _principal_payload(tuple(row[name] for name in _PRINCIPAL_COLUMNS))
+        if principal_payload is not None:
+            payload["decision_principal"] = principal_payload
         recomputed_content = _compute_content_hash(payload)
         if recomputed_content != row["content_hash"]:
             errors.append(f"sequence {row['sequence']}: content hash mismatch")
@@ -303,6 +463,35 @@ async def verify_evidence_chain() -> dict[str, Any]:
     }
 
 
+async def _expire_if_due(db: Any, approval_id: str, *, now: float) -> bool:
+    """Move a pending or granted row that is past its expiry to 'expired', with its evidence row.
+
+    The caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`), so the
+    row read here is the row the move applies to. Returns True when this call expired it.
+    """
+    cur = await db.execute(
+        "SELECT status, action_kind, params_hash, expires_at FROM approvals WHERE id = ?",
+        (approval_id,),
+    )
+    row = await cur.fetchone()
+    if row is None or row["status"] not in ("pending", "granted") or now <= row["expires_at"]:
+        return False
+    await db.execute(
+        "UPDATE approvals SET status = 'expired' WHERE id = ? AND status = ?",
+        (approval_id, row["status"]),
+    )
+    await _write_evidence(
+        db,
+        event_type="expired",
+        approval_id=approval_id,
+        action_kind=row["action_kind"],
+        status_from=row["status"],
+        status_to="expired",
+        params_hash=row["params_hash"],
+    )
+    return True
+
+
 async def _lazy_expire(approval_id: str, row: dict[str, Any], *, now: float) -> dict[str, Any]:
     """CAS the row to 'expired' if it is past its TTL and still pending/granted."""
     if row["status"] not in ("pending", "granted") or now <= row["expires_at"]:
@@ -310,20 +499,7 @@ async def _lazy_expire(approval_id: str, row: dict[str, Any], *, now: float) -> 
     async with _open_db(store_path()) as db:
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
-        cur = await db.execute(
-            "UPDATE approvals SET status = 'expired' WHERE id = ? AND status = ?",
-            (approval_id, row["status"]),
-        )
-        if cur.rowcount == 1:
-            await _write_evidence(
-                db,
-                event_type="expired",
-                approval_id=approval_id,
-                action_kind=row["action_kind"],
-                status_from=row["status"],
-                status_to="expired",
-                params_hash=row["params_hash"],
-            )
+        await _expire_if_due(db, approval_id, now=now)
         await db.commit()
     refreshed = await _fetch_row(approval_id)
     return refreshed if refreshed is not None else row
@@ -337,11 +513,72 @@ async def get_approval(approval_id: str) -> dict[str, Any] | None:
     return await _lazy_expire(approval_id, row, now=time.time())
 
 
+def _env_seconds(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{name} must be a positive whole number of seconds, got {raw!r}",
+        )
+    return value
+
+
+def approval_ttl_bounds() -> tuple[int, int]:
+    """The server's default approval lifetime and the cap on a requested one, in seconds.
+
+    ``LIONAGI_STUDIO_APPROVAL_TTL_SECONDS`` sets the default (five minutes when unset) and
+    ``LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS`` the cap (one hour when unset, or the default
+    when that is longer). A value that is not a positive whole number, or a default above an
+    explicit cap, is refused with a 500 rather than replaced, so a misconfigured server
+    proposes nothing instead of approvals that live longer or shorter than intended.
+    """
+    default = _env_seconds(_TTL_ENV, APPROVAL_TTL_SECONDS)
+    explicit_cap = os.getenv(_MAX_TTL_ENV)
+    if explicit_cap is None or not explicit_cap.strip():
+        return default, max(default, APPROVAL_MAX_TTL_SECONDS)
+    cap = _env_seconds(_MAX_TTL_ENV, APPROVAL_MAX_TTL_SECONDS)
+    if default > cap:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{_TTL_ENV} ({default}) is longer than {_MAX_TTL_ENV} ({cap})",
+        )
+    return default, cap
+
+
 async def create_approval(
-    *, action_kind: str, params: dict[str, Any], session_id: str | None = None
+    *,
+    action_kind: str,
+    params: dict[str, Any],
+    session_id: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
-    """Propose a mutating action; returns the pending approval row."""
+    """Propose a mutating action; returns the pending approval row.
+
+    *ttl_seconds* asks for a lifetime other than the server's default; a value above the
+    server's cap (see :func:`approval_ttl_bounds`) is refused with a 422, never shortened.
+    """
     require_file_store()
+    default_ttl, max_ttl = approval_ttl_bounds()
+    if ttl_seconds is None:
+        ttl = default_ttl
+    elif isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ttl_seconds must be a positive whole number, got {ttl_seconds!r}",
+        )
+    elif ttl_seconds > max_ttl:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ttl_seconds {ttl_seconds} exceeds this server's cap of {max_ttl} seconds",
+        )
+    else:
+        ttl = ttl_seconds
     now = time.time()
     approval_id = uuid.uuid4().hex
     params_hash = compute_params_hash(params)
@@ -353,7 +590,7 @@ async def create_approval(
             "INSERT INTO approvals "
             "(id, action_kind, params_hash, session_id, status, proposed_at, expires_at) "
             "VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            (approval_id, action_kind, params_hash, session_id, now, now + APPROVAL_TTL_SECONDS),
+            (approval_id, action_kind, params_hash, session_id, now, now + ttl),
         )
         await _write_evidence(
             db,
@@ -370,8 +607,14 @@ async def create_approval(
     return row
 
 
-async def grant_approval(approval_id: str) -> dict[str, Any]:
-    """CAS pending -> granted. Raises HTTPException on any non-pending state."""
+async def grant_approval(
+    approval_id: str, *, principal: DecisionPrincipal | _CredentialPrincipal | None = None
+) -> dict[str, Any]:
+    """CAS pending -> granted. Raises HTTPException on any non-pending state.
+
+    *principal* is who granted it, recorded on the approval and its evidence row; None
+    records an unattributed grant.
+    """
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -386,10 +629,18 @@ async def grant_approval(approval_id: str) -> dict[str, Any]:
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
-            "UPDATE approvals SET status = 'granted', granted_at = ? WHERE id = ? AND status = 'pending'",
-            (now, approval_id),
+            "UPDATE approvals SET status = 'granted', granted_at = ?, "
+            "decision_principal_id = ?, decision_epoch = ?, decision_method = ?, "
+            "decision_origin = ?, decision_scope = ? "
+            "WHERE id = ? AND status = 'pending' AND expires_at >= ?",
+            (now, *_principal_values(principal), approval_id, now),
         )
         if cur.rowcount != 1:
+            # Expiry is part of the move: a row that passed its expiry after the read above
+            # is expired here, in the same transaction, rather than granted.
+            if await _expire_if_due(db, approval_id, now=now):
+                await db.commit()
+                raise HTTPException(status_code=409, detail=f"approval {approval_id!r} has expired")
             await db.rollback()
             raise HTTPException(
                 status_code=409,
@@ -403,6 +654,7 @@ async def grant_approval(approval_id: str) -> dict[str, Any]:
             status_from=row["status"],
             status_to="granted",
             params_hash=row["params_hash"],
+            principal=principal,
         )
         await db.commit()
     updated = await _fetch_row(approval_id)
@@ -415,8 +667,13 @@ async def deny_approval(
     *,
     justification_class: str | None = None,
     justification_reason: str | None = None,
+    principal: DecisionPrincipal | _CredentialPrincipal | None = None,
 ) -> dict[str, Any]:
-    """CAS pending -> denied. Raises HTTPException on any non-pending state."""
+    """CAS pending -> denied. Raises HTTPException on any non-pending state.
+
+    *principal* is who denied it, recorded on the approval and its evidence row; None
+    records an unattributed deny.
+    """
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -430,8 +687,11 @@ async def deny_approval(
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
-            "UPDATE approvals SET status = 'denied' WHERE id = ? AND status = 'pending'",
-            (approval_id,),
+            "UPDATE approvals SET status = 'denied', "
+            "decision_principal_id = ?, decision_epoch = ?, decision_method = ?, "
+            "decision_origin = ?, decision_scope = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (*_principal_values(principal), approval_id),
         )
         if cur.rowcount != 1:
             await db.rollback()
@@ -449,6 +709,7 @@ async def deny_approval(
             params_hash=row["params_hash"],
             justification_class=justification_class,
             justification_reason=justification_reason,
+            principal=principal,
         )
         await db.commit()
     updated = await _fetch_row(approval_id)
@@ -459,7 +720,7 @@ async def deny_approval(
 async def require_approval(
     approval_id: str, *, action_kind: str, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate a granted approval for exactly this action_kind/params and consume it atomically. Not wired into any route yet; consumed only when every check passes."""
+    """Validate a granted approval for exactly this action_kind/params and consume it atomically; consumed only when every check passes. Served over HTTP as ``POST /approvals/{id}/consume`` for an executor outside this process."""
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")
@@ -490,10 +751,15 @@ async def require_approval(
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
             "UPDATE approvals SET status = 'consumed', consumed_at = ? "
-            "WHERE id = ? AND status = 'granted'",
-            (now, approval_id),
+            "WHERE id = ? AND status = 'granted' AND expires_at >= ?",
+            (now, approval_id, now),
         )
         if cur.rowcount != 1:
+            # As in grant_approval: a row that passed its expiry after the read above is
+            # expired here rather than consumed.
+            if await _expire_if_due(db, approval_id, now=now):
+                await db.commit()
+                raise HTTPException(status_code=409, detail=f"approval {approval_id!r} has expired")
             await db.rollback()
             raise HTTPException(
                 status_code=409,
@@ -523,6 +789,16 @@ class _CreateApprovalBody(BaseModel):
     action_kind: str = Field(..., min_length=1, max_length=128)
     params: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = None
+    # Strict so a string or a float is refused rather than coerced; the server's cap is
+    # checked in create_approval, which owns the configured bounds.
+    ttl_seconds: int | None = Field(default=None, gt=0, strict=True)
+
+
+class _ConsumeBody(BaseModel):
+    """The action an executor is about to run; it must match the granted approval exactly."""
+
+    action_kind: str = Field(..., min_length=1, max_length=128)
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class _DenyBody(BaseModel):
@@ -545,7 +821,10 @@ class _DenyBody(BaseModel):
 @studio_route("/approvals/", method="POST", area="approvals", name="create_approval")
 async def create_approval_route(body: _CreateApprovalBody) -> dict[str, Any]:
     return await create_approval(
-        action_kind=body.action_kind, params=body.params, session_id=body.session_id
+        action_kind=body.action_kind,
+        params=body.params,
+        session_id=body.session_id,
+        ttl_seconds=body.ttl_seconds,
     )
 
 
@@ -571,8 +850,27 @@ async def get_approval_route(approval_id: str) -> dict[str, Any]:
     "/approvals/{approval_id}/grant", method="POST", area="approvals", name="grant_approval"
 )
 async def grant_approval_route(approval_id: str, request: Request) -> dict[str, Any]:
+    """Grant a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
-    return await grant_approval(approval_id)
+    return await grant_approval(approval_id, principal=_route_principal(request))
+
+
+@studio_route(
+    "/approvals/{approval_id}/consume", method="POST", area="approvals", name="consume_approval"
+)
+async def consume_approval_route(
+    approval_id: str, body: _ConsumeBody, request: Request
+) -> dict[str, Any]:
+    """Use a granted approval once, for exactly the action and params it was granted for.
+
+    Unlike grant and deny this takes no human principal: the executor that runs the
+    action consumes it, and the params hash, the single-use status move and the expiry
+    are what bind the consumption to the human's grant. It does take the daemon's bearer
+    token, and is refused on a daemon with none configured.
+    """
+    _require_daemon_credential(request)
+    return await require_approval(approval_id, action_kind=body.action_kind, params=body.params)
 
 
 @studio_route(
@@ -581,6 +879,8 @@ async def grant_approval_route(approval_id: str, request: Request) -> dict[str, 
 async def deny_approval_route(
     approval_id: str, request: Request, body: _DenyBody | None = None
 ) -> dict[str, Any]:
+    """Deny a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s
+    principal, else the configured credential."""
     _require_human_principal(request)
     justification_class = body.reason_class if body is not None else None
     justification_reason = body.reason if body is not None else None
@@ -588,4 +888,5 @@ async def deny_approval_route(
         approval_id,
         justification_class=justification_class,
         justification_reason=justification_reason,
+        principal=_route_principal(request),
     )

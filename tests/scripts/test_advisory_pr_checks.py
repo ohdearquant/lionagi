@@ -1303,6 +1303,7 @@ def test_what_a_required_workflow_may_hold(text: str) -> None:
 CI_GATE_HARD_GATES = [
     "lint",
     "core-install",
+    "studio-wheel",
     "docs",
     "test",
     "frontend",
@@ -1321,6 +1322,7 @@ CI_GATE_CONDITIONAL_GATES = {
     "compat-deps": "compat",
     "lionrs": "lionrs",
     "lion1": "lion1",
+    "core-without-hub": "code",
 }
 
 # The aggregate job's own keys, its one step's keys, and the path filters the
@@ -1377,9 +1379,11 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/console.py",
         "lionhub/src/lionhub/orchestration/flow/__init__.py",
         "lionhub/src/lionhub/orchestration/flow/checkpoint.py",
+        "lionhub/src/lionhub/orchestration/flow/graph.py",
         "lionhub/src/lionhub/orchestration/flow/parsing.py",
         "lionhub/src/lionhub/orchestration/inspection.py",
         "lionhub/src/lionhub/orchestration/job.py",
+        "lionhub/src/lionhub/orchestration/json_file.py",
         "lionhub/src/lionhub/orchestration/mcp_config.py",
         "lionhub/src/lionhub/orchestration/patterns.py",
         "lionhub/src/lionhub/orchestration/project.py",

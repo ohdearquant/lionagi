@@ -219,7 +219,8 @@ process's; an environment naming neither falls back to the OS account's home.
 
 When the caller sets no effort, the request emits the global config's
 `model_reasoning_effort` clamped to the resolved model
-(`codex_unset_effort_default`). Otherwise codex would apply the global value
+(`codex_unset_effort_default`; the codex endpoint class supplies that policy
+through the provider catalog). Otherwise codex would apply the global value
 unclamped, and a value above the model's ceiling is rejected by the API. A
 profile that pins `model_reasoning_effort` keeps its pin, and a model the
 ceiling tables don't know gets nothing emitted.
@@ -283,11 +284,14 @@ what makes the guard against double-reporting reachable or not:
   divergence.
 
 Codex also yields an `error`-type chunk when a resumed session ends
-normally. That is not a violation of assertion 3: the chunk carries
-`is_error=False` and `benign_eos=True`, both set deliberately, and codex's
-healthy fixtures use `turn.completed` so the two cases never collide. A
-consumer keying on chunk type alone still can't distinguish this from a
-failure, but the discriminator fields exist for one that reads them.
+normally after its turn wrote text. That is not a violation of assertion 3:
+the chunk carries `is_error=False` and `benign_eos=True`, both set
+deliberately, and codex's healthy fixtures carry the turn's text and end with
+`turn.completed` so the two cases never collide. A consumer keying on chunk
+type alone still can't distinguish this from a failure, but the
+discriminator fields exist for one that reads them. After a turn that wrote
+no text the sentinel is not yielded: the stream's end reports an empty turn
+(next section).
 
 The non-streaming path (`_call()`) drives the same generator and then raises
 a classified provider error when the session ended with `is_error`. The call
@@ -311,6 +315,78 @@ built this way cannot reveal a CLI that signals failure through a channel
 nobody reads, and would pass cleanly forever if it did. Only a recorded
 transcript is evidence about the real CLI; an authored one is evidence
 about the model of it encoded in the parser.
+
+## A CLI turn with nothing in it
+
+**`providers/_empty_turn.py`, `providers/openai/codex.py`,
+`providers/_cli_subprocess.py`**
+
+A CLI can end a turn the way a finished turn ends (exit status 0, a turn-end
+event, no error event) having written no assistant text and called no tool.
+Read as a completed run, that is an empty answer with no reason attached, and
+a caller that reads only the status takes it for success.
+
+Codex fails such a turn. Where its stream ends, `is_empty_turn` reads the
+session the parser built: no failure, no tool call or tool result, and no text
+chunk or result holding a character other than whitespace. Reasoning and
+notices are not text. A completed item of any type the parser counts as a call
+or a call's result (`_CALL_ITEM_TYPES`: command executions, file changes, MCP
+tool calls, web searches, function calls and their output) also makes the turn
+not empty, whether or not the parser keeps it as a tool use. When the turn is empty, `empty_turn_chunk` marks the
+session failed and yields one `error` chunk carrying `is_error`,
+`empty_turn: true` and `stderr_tail`, so the error-chunk contract above holds
+for it. A benign end-of-stream sentinel after an empty turn is not yielded;
+the stream's end decides.
+
+The failure quotes the end of the CLI's stderr, at most 2,000 characters,
+because nothing else says why the turn was empty. `ndjson_from_cli` hands that
+stderr to an `on_clean_exit` sink after a status-0 exit, with credentials
+removed exactly as for every message it logs or raises. That removal matches
+both known values and shapes. The known values are the secrets in the child's
+environment and command line, the values a caller declares secret, and any
+long environment value, which is replaced by its variable's name. The shapes
+are bearer tokens, `Authorization` and API-key headers, common provider token
+prefixes (`sk-`, `ghp_`, `xox`, `AKIA`), JSON web tokens, URL passwords, and
+values after a query parameter, assignment or flag whose name reads as a
+credential. A secret the child never received from lionagi and that has none
+of these shapes can still appear in the tail. It waits at most two
+seconds for the stderr reader and says when the stderr may be incomplete. The
+message then says one of four things: what stderr ended with, that it was
+empty, why it could not be read, or that none was captured.
+
+Each surface ends the same way:
+
+| Surface | What it sees |
+| --- | --- |
+| a stream consumer | one `error` chunk with `empty_turn: true` |
+| `_call()` | `ProviderEmptyTurnError`, carrying `stderr_tail` |
+| `run()` | raises `ProviderEmptyTurnError` on the marked chunk, without classifying its text |
+| the run record | reason `run.failed.empty_turn` |
+| a job submitted through the MCP server | `failure_cause` names the class, and its text (at most 2,400 characters) is the job's `reason_detail` |
+
+`ProviderEmptyTurnError` is not retryable, and nothing in the library runs the
+turn again on its own: a flow resumed with `--retry-failed` runs it again
+because an operator asked. Its text is the one provider-error text the terminal
+cause file carries. Every other class records only its class, retry hint and
+status, because a provider message can quote a credential back.
+
+The causes of an empty turn have not been measured as a population. One case
+has: codex 0.162.1 ends a prompt that a `UserPromptSubmit` hook refused with exit
+status 0, `thread.started`, `turn.started`, and `turn.completed` whose usage
+counts are all zero, with no item event. The hook's message is on neither its
+stdout nor its stderr. When an empty Codex turn's last `turn.completed` reported
+usage whose every count is zero and the stream had no item event, the failure
+says, before the stderr sentence, that the prompt did not reach the model, that a
+prompt refused by a hook before the turn started ends this way, and that codex
+does not report the hook's message. The stderr tail in that case need not bear on
+why. An empty turn with any non-zero count, any value in its usage that is not a
+number, any item event, or no `turn.completed` keeps the text above unchanged.
+The reason stays `run.failed.empty_turn` in both cases.
+
+A provider joins the rule by calling `empty_turn_chunk` where its stream ends
+and adding one pair of event streams, the turn with its text and the same turn
+without, to `EMPTY_TURN_PAIRS` in the conformance test. Codex is the only
+provider in it today.
 
 ## Codex call markup in a turn's final message
 

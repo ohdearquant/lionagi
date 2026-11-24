@@ -1,0 +1,319 @@
+{
+  "environment_lookups": {
+    "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_AUTH_TOKEN\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
+      "os.getenv:\"LIONAGI_STUDIO_EVIDENCE_HMAC_KEY\"",
+      "os.getenv:_MAX_TTL_ENV",
+      "os.getenv:name"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/leo.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_MODEL\"",
+      "os.environ.get:\"LIONAGI_STUDIO_LEO_PROVIDER\""
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/redaction.py": [
+      "os.environ.get:\"LIONAGI_STUDIO_DEMO_MODE\""
+    ]
+  },
+  "package_exports": {
+    "apps/studio/backend/src/lionagi_studio/services/workflow_compile.py": [
+      "__all__ = (\n    \"StudioExprCondition\",\n    \"UnsafeExpressionError\",\n    \"WorkflowCompileError\",\n    \"EXECUTABLE_NODE_KINDS\",\n    \"DROPPED_NODE_KINDS\",\n    \"compile_workflow_def\",\n    \"build_early_graph\",\n    \"make_engine_operation\",\n)"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_run.py": [
+      "__all__ = (\"run_workflow_def\", \"WorkflowNotFoundError\")"
+    ]
+  },
+  "public_definitions": {
+    "apps/studio/backend/src/lionagi_studio/services/agents.py": [
+      "AgentExistsError",
+      "AgentProtectedError",
+      "create_agent",
+      "create_agent_route",
+      "delete_agent",
+      "delete_agent_route",
+      "get_agent",
+      "get_agent_route",
+      "list_agents",
+      "list_agents_route",
+      "update_agent",
+      "update_agent_route",
+      "validate_agent"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/approvals.py": [
+      "approval_ttl_bounds",
+      "compute_params_hash",
+      "consume_approval_route",
+      "create_approval",
+      "create_approval_route",
+      "deny_approval",
+      "deny_approval_route",
+      "get_approval",
+      "get_approval_route",
+      "grant_approval",
+      "grant_approval_route",
+      "require_approval",
+      "verify_approval_evidence_route",
+      "verify_evidence_chain"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/attention.py": [
+      "delete_attention_disposition_route",
+      "delete_disposition",
+      "disposition_history",
+      "get_attention_disposition_history_route",
+      "list_attention_dispositions_route",
+      "list_dispositions",
+      "put_attention_disposition_route",
+      "upsert_disposition"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/casts.py": [
+      "get_casts"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/definitions.py": [
+      "HistoryUnavailableError",
+      "SaveBody",
+      "get_definition",
+      "get_definition_route",
+      "get_version",
+      "get_version_route",
+      "list_definitions",
+      "list_definitions_route",
+      "rollback_definition",
+      "rollback_definition_route",
+      "save_definition",
+      "save_definition_route",
+      "snapshot_current",
+      "snapshot_current_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/engine_defs.py": [
+      "CreateEngineDefRequest",
+      "NameConflictError",
+      "UpdateEngineDefRequest",
+      "create_engine_def",
+      "create_engine_def_route",
+      "delete_engine_def",
+      "delete_engine_def_route",
+      "engine_catalog_blueprints",
+      "engine_catalog_blueprints_route",
+      "get_engine_catalog_preset",
+      "get_engine_catalog_preset_route",
+      "get_engine_def_route",
+      "list_engine_catalog_presets",
+      "list_engine_catalog_presets_route",
+      "list_engine_defs",
+      "list_engine_defs_route",
+      "update_engine_def",
+      "update_engine_def_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/hooks_library.py": [
+      "HookLibraryError",
+      "delete_hook",
+      "delete_hook_def_route",
+      "list_hook_library_route",
+      "materialize_claude_hooks",
+      "put_hook_def_route",
+      "read_library",
+      "upsert_hook",
+      "validate_attachments",
+      "validate_hook_def"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/leo.py": [
+      "LeoSession",
+      "build_branch",
+      "create_leo_session_route",
+      "create_session",
+      "get_session",
+      "send_leo_message_route",
+      "tool_create_playbook",
+      "tool_get_playbook",
+      "tool_launch_playbook",
+      "tool_list_invocations",
+      "tool_list_playbooks",
+      "tool_list_runs",
+      "tool_list_schedules",
+      "tool_list_sessions",
+      "tool_prefill_schedule",
+      "tool_run_maintenance",
+      "tool_show_in_ui",
+      "tool_studio_doctor"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/mcp_servers.py": [
+      "DuplicateServerError",
+      "McpRegistryUnreadableError",
+      "McpServerError",
+      "check_mcp_server_route",
+      "check_server_connection",
+      "delete_mcp_server_route",
+      "disable_mcp_server_route",
+      "enable_mcp_server_route",
+      "get_mcp_server_route",
+      "get_server",
+      "list_mcp_servers_route",
+      "list_servers",
+      "register_mcp_server_route",
+      "register_server",
+      "remove_server",
+      "set_enabled",
+      "update_mcp_server_route",
+      "update_server",
+      "validate_config",
+      "validate_mcp_server_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/operator.py": [
+      "acknowledge_operator_effect",
+      "cancel_operator_turn",
+      "confirm_operator_proposal",
+      "create_operator_conversation",
+      "decide_operator_proposal",
+      "delete_operator_conversation",
+      "fork_operator_conversation",
+      "get_operator_conversation",
+      "list_operator_conversations",
+      "list_operator_models",
+      "operator_shutdown",
+      "operator_startup",
+      "report_operator_view",
+      "stream_operator_conversation",
+      "submit_operator_turn",
+      "update_operator_conversation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/operator_hooks.py": [
+      "OperatorHooksError",
+      "get_operator_hooks_route",
+      "materialize_settings_file",
+      "put_operator_hooks_route",
+      "read_config",
+      "validate_config",
+      "write_config"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/playbooks.py": [
+      "create_playbook",
+      "create_playbook_route",
+      "delete_playbook",
+      "fingerprint_playbook",
+      "get_builtin_playbook",
+      "get_builtin_playbook_route",
+      "get_playbook",
+      "get_playbook_route",
+      "install_builtin_playbook",
+      "install_builtin_playbook_route",
+      "list_builtin_playbooks",
+      "list_builtin_playbooks_route",
+      "list_playbooks",
+      "list_playbooks_route",
+      "run_playbook",
+      "update_playbook",
+      "update_playbook_route",
+      "validate_playbook",
+      "validate_playbook_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/plugins.py": [
+      "get_plugin",
+      "get_plugin_agent",
+      "get_plugin_agent_endpoint",
+      "get_plugin_endpoint",
+      "get_plugin_skill",
+      "get_plugin_skill_endpoint",
+      "list_plugins",
+      "list_plugins_endpoint"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/projects.py": [
+      "AssignProjectRequest",
+      "CreateProjectRequest",
+      "NameConflictError",
+      "UpdateProjectRequest",
+      "assign_project",
+      "assign_sessions_to_project",
+      "create_project",
+      "create_project_route",
+      "delete_project",
+      "delete_project_route",
+      "get_project_route",
+      "list_projects",
+      "list_projects_route",
+      "update_project",
+      "update_project_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/redaction.py": [
+      "RedactedPayloadError",
+      "abbreviate_path",
+      "demo_mode_enabled",
+      "is_placeholder_text",
+      "project_agent_fields",
+      "redact_agent_markdown",
+      "reject_if_redacted_payload"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/run_tags.py": [
+      "TagBody",
+      "add_run_tag",
+      "remove_run_tag"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/shows.py": [
+      "get_show",
+      "get_show_route",
+      "import_shows",
+      "import_shows_route",
+      "list_gated_plays",
+      "list_gated_plays_route",
+      "list_shows",
+      "list_shows_route",
+      "stream_show",
+      "watch_show"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/skills.py": [
+      "SkillValidateBody",
+      "get_skill",
+      "get_skill_route",
+      "list_skills",
+      "list_skills_route",
+      "validate_skill_content",
+      "validate_skill_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/stats.py": [
+      "get_activity_stats",
+      "get_activity_stats_route",
+      "get_db_stats",
+      "get_spend_rollup",
+      "get_spend_rollup_route",
+      "get_spend_stats",
+      "get_spend_stats_route",
+      "get_stats",
+      "get_stats_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/teams.py": [
+      "get_team",
+      "get_team_route",
+      "list_teams",
+      "list_teams_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_compile.py": [
+      "StudioExprCondition",
+      "UnsafeExpressionError",
+      "WorkflowCompileError",
+      "build_early_graph",
+      "compile_workflow_def",
+      "make_engine_operation"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_defs.py": [
+      "CreateWorkflowDefRequest",
+      "NameConflictError",
+      "RunWorkflowDefRequest",
+      "UpdateWorkflowDefRequest",
+      "create_workflow_def",
+      "create_workflow_def_route",
+      "delete_workflow_def",
+      "delete_workflow_def_route",
+      "get_workflow_def",
+      "get_workflow_def_route",
+      "list_workflow_defs",
+      "list_workflow_defs_route",
+      "run_workflow_def_route",
+      "update_workflow_def",
+      "update_workflow_def_route"
+    ],
+    "apps/studio/backend/src/lionagi_studio/services/workflow_run.py": [
+      "WorkflowNotFoundError",
+      "run_workflow_def"
+    ]
+  }
+}

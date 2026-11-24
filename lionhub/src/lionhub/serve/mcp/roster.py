@@ -46,6 +46,20 @@ def _scope(lionagi_dir: Path) -> str:
     return "global" if lionagi_dir == Path.home() / ".lionagi" else "project"
 
 
+def _trust_mark(lionagi_dir: Path, mark: bool) -> dict[str, bool]:
+    """``{"trusted": ...}`` for a project entry while the gate is on, else nothing.
+
+    With ``lionagi_dir_trust.gate`` set to ``mcp`` a submitted run refuses a project profile from
+    an untrusted directory (ADR-0088 Amendment 2), so the catalog says which ones it would refuse.
+    With the gate off the field is absent and the output is what it was.
+    """
+    if not mark or _scope(lionagi_dir) != "project":
+        return {}
+    from lionagi._lionagi_dir_trust import is_trusted
+
+    return {"trusted": is_trusted(lionagi_dir)}
+
+
 def _roots() -> list[dict[str, Any]]:
     """The agent directories the resolver would search, in the order it searches them.
 
@@ -79,11 +93,13 @@ def _placement(name: str) -> dict[str, Any]:
     name under both separators, with neither spelled as asked, raises instead
     of picking a winner; those files are listed unordered and the walk stops.
     """
+    from lionagi._lionagi_dir_trust import gate_setting
     from lionagi._paths import find_lionagi_dirs
     from lionhub.orchestration.spawn import _profile_path_candidates, _resolve_plugin_profile_path
 
-    found: list[dict[str, str]] = []
-    ambiguous: list[dict[str, str]] = []
+    mark = gate_setting() == "mcp"
+    found: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
     refused = False
     if "/" not in name:
         for d in find_lionagi_dirs():
@@ -96,13 +112,18 @@ def _placement(name: str) -> dict[str, Any]:
                     declared.setdefault(path.stem, []).append(path)
             if name in declared:
                 found.extend(
-                    {"path": str(path), "scope": _scope(d), "match": "exact"}
+                    {
+                        "path": str(path),
+                        "scope": _scope(d),
+                        "match": "exact",
+                        **_trust_mark(d, mark),
+                    }
                     for path in declared[name]
                 )
                 continue
             if len(declared) > 1:
                 ambiguous.extend(
-                    {"path": str(path), "scope": _scope(d)}
+                    {"path": str(path), "scope": _scope(d), **_trust_mark(d, mark)}
                     for paths in declared.values()
                     for path in paths
                 )
@@ -111,7 +132,12 @@ def _placement(name: str) -> dict[str, Any]:
                     break
                 continue
             found.extend(
-                {"path": str(path), "scope": _scope(d), "match": "separator_fallback"}
+                {
+                    "path": str(path),
+                    "scope": _scope(d),
+                    "match": "separator_fallback",
+                    **_trust_mark(d, mark),
+                }
                 for paths in declared.values()
                 for path in paths
             )

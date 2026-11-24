@@ -21,6 +21,10 @@
     "invoke start",
     "kill",
     "lifecycle",
+    "lionagi-dir",
+    "lionagi-dir list",
+    "lionagi-dir trust",
+    "lionagi-dir untrust",
     "mcp",
     "mirror",
     "monitor",
@@ -84,12 +88,13 @@
     "team send",
     "team show"
   ],
-  "available_path_count": 83,
+  "available_path_count": 87,
   "catalog": {
-    "verb_count": 71,
-    "available_count": 45,
+    "verb_count": 73,
+    "available_count": 46,
     "max_ops": 8,
     "verb_names": [
+      "account.list",
       "agent.submit",
       "casts",
       "dispatch.ack",
@@ -113,6 +118,7 @@
       "job.wait",
       "kill",
       "lifecycle",
+      "lionagi-dir.list",
       "mcp",
       "mirror",
       "monitor",
@@ -163,6 +169,7 @@
       "team.show"
     ],
     "available_verb_names": [
+      "account.list",
       "agent.submit",
       "dispatch.ack",
       "dispatch.ls",
@@ -217,7 +224,7 @@
           "summary",
           "verb"
         ],
-        26
+        27
       ],
       [
         [
@@ -261,7 +268,7 @@
           "summary",
           "verb"
         ],
-        17
+        18
       ]
     ]
   },
@@ -820,6 +827,20 @@
             "description": "Record trust without an interactive confirmation prompt.",
             "default": false,
             "x-flag": "--yes"
+          },
+          "from_path": {
+            "type": "string",
+            "description": "Absolute path of a Claude Code settings.json or Codex hooks.json that was never imported, such as a file an agent submission names as hooks_from. Its hook commands are listed and approved as they resolve from `cwd`, the directory the leg will run in. Requires `from_format`.",
+            "x-flag": "--from"
+          },
+          "from_format": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "description": "The shape of the `from_path` file: claude for settings.json, codex for hooks.json.",
+            "x-flag": "--format"
           }
         },
         "additionalProperties": false
@@ -1018,6 +1039,61 @@
         ],
         "x-positional-order": [
           "run_id"
+        ]
+      }
+    },
+    "lionagi-dir list": {
+      "path": "lionagi-dir list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "lionagi-dir list",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "lionagi-dir trust": {
+      "path": "lionagi-dir trust",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "lionagi-dir trust",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Directory holding the .lionagi to trust (default: the working directory).",
+            "x-positional": true
+          },
+          "yes": {
+            "type": "boolean",
+            "description": "Record trust without an interactive confirmation prompt.",
+            "default": false,
+            "x-flag": "--yes"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Lists every agent profile and playbook in DIR/.lionagi and every notify and dispatch.notify_template entry in its settings.yaml, then asks before recording the directory, by its resolved path, in ~/.lionagi/settings.yaml. Use `yes` to skip the prompt.",
+        "x-positional-order": [
+          "dir"
+        ]
+      }
+    },
+    "lionagi-dir untrust": {
+      "path": "lionagi-dir untrust",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "lionagi-dir untrust",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Directory holding the .lionagi to stop trusting (default: the working directory).",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "x-positional-order": [
+          "dir"
         ]
       }
     },
@@ -1524,6 +1600,11 @@
             "x-aliases": [
               "-p"
             ]
+          },
+          "graph": {
+            "type": "string",
+            "description": "Run a written graph instead of a planned one: an absolute path to a JSON file whose one key, nodes, lists objects with id, agent (a profile name), prompt, needs (a list of ids) and optionally exit_criteria. No planner call, no reactive growth and no synthesis pass. Cannot be combined with `playbook`, `file`, `resume`, `with_synthesis`, `bare` or `reactive` other than off.",
+            "x-flag": "--graph"
           },
           "agent": {
             "type": "string",
@@ -2866,7 +2947,7 @@
       }
     }
   },
-  "projection_count": 64,
+  "projection_count": 67,
   "projection_errors": {
     "dispatch": {
       "kind": "SchemaProjectionError",
@@ -2887,6 +2968,11 @@
       "kind": "SchemaProjectionError",
       "class": "unresolved_subcommand",
       "message": "cannot project 'invoke' action 'invoke_command': path stops at an unresolved subcommand; name one of ['end', 'list', 'start']"
+    },
+    "lionagi-dir": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'lionagi-dir' action 'lionagi_dir_command': path stops at an unresolved subcommand; name one of ['list', 'trust', 'untrust']"
     },
     "mirror": {
       "kind": "SchemaProjectionError",
@@ -2964,7 +3050,7 @@
       "message": "cannot project 'team' action 'team_command': path stops at an unresolved subcommand; name one of ['create', 'list', 'ls', 'receive', 'recv', 'send', 'show']"
     }
   },
-  "projection_error_count": 19,
+  "projection_error_count": 20,
   "absent_verbs": [
     {
       "name": "casts",
@@ -3001,6 +3087,12 @@
       "summary": "Terminate a run, session, play or show by id.",
       "reason": "job.kill covers the jobs this server spawned, where the record carries the pid to correlate against; this path reaches entities this server never spawned and holds no identity for",
       "cli_path": "kill"
+    },
+    {
+      "name": "lionagi-dir.list",
+      "summary": "The project .lionagi directories trusted for runs this server starts.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "lionagi-dir list"
     },
     {
       "name": "mcp",
@@ -3123,7 +3215,7 @@
       "cli_path": "studio start"
     }
   ],
-  "absent_verb_count": 26,
+  "absent_verb_count": 27,
   "errors": [
     {
       "input": "",

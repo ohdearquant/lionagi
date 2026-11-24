@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import iModel
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, RequireHooksRefusedError
 from lionagi._paths import (
     AmbiguousProfileNameError,
     _name_spellings,
@@ -69,7 +69,10 @@ __all__ = (
     "add_common_cli_args",
     "build_chat_model",
     "build_imodel_from_spec",
+    "chat_model_ignores_user_config",
     "parse_model_spec",
+    "refuse_require_hooks",
+    "refuse_require_hooks_at_submit",
     "resolve_account_integrations",
     "resolve_codex_config_profile",
     "resolve_persisted_effort",
@@ -129,6 +132,166 @@ def strip_connector_grant(kwargs: dict) -> None:
     """
     if kwargs.pop("account_connectors", None):
         kwargs["contain_account_integrations"] = True
+
+
+def refuse_require_hooks(
+    name: str | None,
+    profile: Any | None,
+    model: iModel,
+    *,
+    required: bool | None = None,
+    carried: Iterable[str] = (),
+) -> None:
+    """Refuse a leg that requires its hooks when a hook declared for it will not run.
+
+    The requirement is the profile's ``require_hooks``, or *required* when given: a resumed
+    branch keeps the requirement its launch recorded, whatever profile the resume names
+    (ADR-0048 Amendment 2 R3). A codex leg is checked by its own request, which carries
+    ``require_hooks``, so nothing is decided here for it. A leg on an API model is spawned
+    with ``load_settings=False`` and gets no profile hooks assembly, so any lionagi hook
+    declared for it, in the global settings or in its profile, would not run. lionagi reads
+    no other CLI provider's hook rules, so the key cannot be met there. The refusal is a
+    ``RequireHooksRefusedError``, whose text a job record carries as the reason.
+
+    *carried* names, by its place in the file, each hook entry a ``hooks_from`` file carries
+    onto the leg. Those are hooks declared for the leg too, and they count (ADR-0048
+    Amendment 2 R3): an API-model
+    leg runs them, since each has passed the trust and writable-directory checks before this
+    one, and every other leg runs none of them, so on any other leg they refuse.
+    """
+    if required is None:
+        required = bool(getattr(profile, "require_hooks", False))
+    if not required:
+        return
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    who = (
+        f"agent profile {name!r} sets require_hooks"
+        if getattr(profile, "require_hooks", False)
+        else "this branch was launched with require_hooks"
+    )
+    carried = list(carried)
+    endpoint = model.endpoint
+    provider = EndpointRegistry.canonical_provider(endpoint.config.provider)
+    if endpoint.is_cli:
+        if carried:
+            raise RequireHooksRefusedError(
+                f"{who}, and its leg runs on the CLI provider {provider!r}, which does not run "
+                "the hook entries a hooks_from file carries, so these would not run: "
+                f"{'; '.join(carried)}. Run the role on an API model, or carry only the file's "
+                "deny and ask rules."
+            )
+        if provider == "codex":
+            return
+        raise RequireHooksRefusedError(
+            f"{who}, which is checked for codex and API-model legs only: lionagi does not "
+            f"read the hook rules of {provider!r}, so it cannot say whether a hook declared "
+            "for this leg will run. Remove require_hooks, or run the role on codex or an API "
+            "model."
+        )
+    declared = _declared_lionagi_hooks(profile)
+    if declared:
+        runs = (
+            f" It does run the hook entries its hooks_from file carries: {'; '.join(carried)}."
+            if carried
+            else ""
+        )
+        raise RequireHooksRefusedError(
+            f"{who}, and its leg runs on the API model provider {provider!r}, which applies "
+            "no lionagi hooks from the settings or the agent profile to a leg spawned from the "
+            f"command line, so these would not run: {'; '.join(declared)}.{runs} Remove "
+            "require_hooks or those hooks."
+        )
+
+
+def _declared_lionagi_hooks(profile: Any) -> list[str]:
+    """The lionagi hooks declared for a leg of *profile*, one label each: the global settings'
+    ``hooks_external`` and ``hooks`` blocks, and the profile's own ``hooks``."""
+    from lionagi._settings import load_settings
+
+    settings = load_settings(include_project=False)
+    declared: list[str] = []
+    for key in ("hooks_external", "hooks"):
+        if isinstance(settings, dict) and settings.get(key):
+            declared.append(f"{key} in ~/.lionagi/settings.yaml")
+    if (getattr(profile, "extra", None) or {}).get("hooks"):
+        declared.append("hooks in the agent profile")
+    return declared
+
+
+def refuse_require_hooks_at_submit(
+    name: str,
+    profile: Any | None,
+    model_spec: str,
+    *,
+    account: str | None = None,
+    mcp_servers: dict | None = None,
+    mcp_exclusive: bool = False,
+    cwd: str | os.PathLike[str],
+    carried: Iterable[str] = (),
+) -> None:
+    """Refuse a submitted agent run whose profile sets ``require_hooks`` when a hook declared
+    for it will not run, before the run is recorded (ADR-0048 Amendment 2).
+
+    *carried* names the hook entries the submission's ``hooks_from`` file carries, as
+    ``refuse_require_hooks`` takes them.
+
+    The leg's model is built by the builder ``li agent`` uses for a new branch
+    (``build_chat_model``), with the key, in the codex home the run will read: the named
+    *account*'s, else the profile's ``codex_home``, else this process's. *mcp_servers* and
+    *mcp_exclusive* are the MCP set the run will resolve (``McpResolution.servers`` and
+    ``.exclusive``). Of that set, only whether it makes the request ignore the user config
+    reaches the model built here, answered by ``chat_model_ignores_user_config``, so no
+    server's own settings are written to disk at submit. A codex leg then runs the check
+    its launch runs, over the request that model makes, in *cwd*; every other leg gets
+    ``refuse_require_hooks``'s answer. The launch checks again and decides, since trust can
+    change in between.
+    """
+    if profile is None or not getattr(profile, "require_hooks", False):
+        return
+    from lionhub.agent.factory import _parse_agent_model_spec
+
+    origin = "profile" if model_spec == getattr(profile, "model", None) else "explicit"
+    # Split as `li agent` splits the spec it parses.
+    provider, _, model = _parse_agent_model_spec(model_spec, origin=origin).model.partition("/")
+    model = model or provider
+    env = None
+    account_name = account if account is not None else getattr(profile, "account", None)
+    # A named account wins over the profile's codex_home, as in `li agent`.
+    codex_home = None if account_name is not None else getattr(profile, "codex_home", None)
+    if account_name is not None or codex_home is not None:
+        from lionhub.agent.subscription_accounts import account_provider, resolve_leg_account
+
+        if account_provider(provider) == "codex":
+            env = resolve_leg_account(provider, account=account_name, codex_home=codex_home).env
+    ignore = chat_model_ignores_user_config(mcp_servers, mcp_exclusive)
+    chat_model = build_chat_model(
+        provider,
+        model,
+        False,
+        False,
+        None,
+        workload=getattr(profile, "workload", None) or DEFAULT_WORKLOAD,
+        env=env,
+        require_hooks=True,
+        # The declared-empty set stands in for the run's own: it sets the same flag and
+        # writes nothing, where a server's env or headers would write a codex profile.
+        **({"mcp_servers": {}, "mcp_exclusive": True} if ignore else {}),
+    )
+    # As `li agent` turns what the builder returns into the model it spawns.
+    if not isinstance(chat_model, str) and not chat_model.is_cli:
+        chat_model = f"{provider}/{model}"
+    if isinstance(chat_model, str):
+        chat_model = iModel(model=chat_model)
+    refuse_require_hooks(name, profile, chat_model, carried=carried)
+    endpoint = chat_model.endpoint
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    if endpoint.is_cli and EndpointRegistry.canonical_provider(endpoint.config.provider) == "codex":
+        from lionhub.providers.openai.codex import check_require_hooks
+
+        payload, _ = endpoint.create_payload({"prompt": "require_hooks check"})
+        check_require_hooks(payload["request"], cwd)
 
 
 def _profile_names_codex(profile: AgentProfile) -> bool:
@@ -253,8 +416,13 @@ def build_imodel_from_spec(
     tool_settings: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     secret_fill_skip: frozenset[str] | None = None,
+    require_hooks: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
+
+    ``require_hooks`` is a profile's key (ADR-0048 Amendment 2): on a codex request it sets the
+    request's own ``require_hooks``, whose check refuses the launch; other providers are refused
+    by ``refuse_require_hooks``, which the caller runs once the model is built.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
     effort is derived from that config either. ``tool_settings`` is a profile's tool set
@@ -308,6 +476,8 @@ def build_imodel_from_spec(
         extra["cli_display_theme"] = theme
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
+    if require_hooks and provider == "codex":
+        extra["require_hooks"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
         effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides, env)
     if effort is not None:
@@ -363,6 +533,27 @@ def build_imodel_from_spec(
     return model_instance
 
 
+def _forwarded_mcp_exclusive(mcp_servers: dict | None, mcp_exclusive: bool) -> bool | None:
+    """How ``build_chat_model`` hands an MCP set on: None when it hands none, else whether
+    the set is the whole set. An empty set states the whole set; a non-empty one adds to
+    what the provider finds unless *mcp_exclusive* says it is the whole set."""
+    if mcp_servers is None and not mcp_exclusive:
+        return None
+    return mcp_exclusive or not mcp_servers
+
+
+def chat_model_ignores_user_config(mcp_servers: dict | None, mcp_exclusive: bool) -> bool:
+    """Whether a codex model ``build_chat_model`` builds with this MCP set ignores the user
+    config, answered before any request exists by the predicate the build sets the flag on
+    (``factory.forwarded_set_ignores_user_config``). The build passes no allowlist."""
+    from lionhub.agent.factory import forwarded_set_ignores_user_config
+
+    exclusive = _forwarded_mcp_exclusive(mcp_servers, mcp_exclusive)
+    return exclusive is not None and forwarded_set_ignores_user_config(
+        mcp_servers or {}, exclusive=exclusive
+    )
+
+
 def build_chat_model(
     provider: str,
     model: str,
@@ -380,8 +571,12 @@ def build_chat_model(
     tool_settings: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     secret_fill_skip: frozenset[str] | None = None,
+    require_hooks: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
+
+    ``require_hooks`` sets a codex request's own ``require_hooks`` (ADR-0048 Amendment 2); on
+    any other provider it adds nothing here, and the caller runs ``refuse_require_hooks``.
 
     Returns the bare spec string only when no flag is set and no effort was
     given or derived (a codex request may derive one from the global config);
@@ -413,7 +608,8 @@ def build_chat_model(
             profile_name = model
             model, codex_profile_overrides = resolved_profile
             progress(f"codex profile {profile_name!r} resolves to model {model!r}")
-    if mcp_servers is not None or mcp_exclusive:
+    forwarded_exclusive = _forwarded_mcp_exclusive(mcp_servers, mcp_exclusive)
+    if forwarded_exclusive is not None:
         from lionhub.agent.factory import apply_forwarded_mcp_servers
 
         # Whether/how this provider accepts a server set (e.g. codex via config
@@ -427,7 +623,7 @@ def build_chat_model(
             extra,
             mcp_servers,
             provider=provider,
-            exclusive=mcp_exclusive or not mcp_servers,
+            exclusive=forwarded_exclusive,
             # The codex config the child reads, and the home a generated profile goes in,
             # are the ones its own environment names.
             env=env,
@@ -442,6 +638,8 @@ def build_chat_model(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
+        if require_hooks:
+            extra["require_hooks"] = True
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -734,6 +932,17 @@ class AgentProfile:
     """Named subscription account the leg runs on (``lionhub.agent.subscription_accounts``)."""
     codex_home: str | None = None
     """Codex home a codex leg of this role runs under, as an absolute path."""
+    scratch: str | None = None
+    """'remove' or 'keep': each ``li agent`` run of this role gets a writable scratch directory,
+    removed or kept at run end (profile ``scratch: true`` or ``scratch: keep``); None for none."""
+    deny_read: tuple[str, ...] = ()
+    """Paths a child of this role may not read, added to the child sandbox's list after every
+    exemption (``lionhub.agent.child_sandbox.profile_deny_read``)."""
+    require_hooks: bool = False
+    """Refuse a leg of this role when a hook declared for it will not run: checked against the
+    codex home's hook trust on codex, refused when any lionagi hook is declared on an API model
+    (a CLI-spawned API leg applies none), and refused on every other CLI provider (ADR-0048
+    Amendment 2)."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -841,6 +1050,12 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["account"] = profile.account
     if profile.codex_home is not None:
         config["codex_home"] = profile.codex_home
+    if profile.scratch is not None:
+        config["scratch"] = profile.scratch
+    if profile.deny_read:
+        config["deny_read"] = list(profile.deny_read)
+    if profile.require_hooks:
+        config["require_hooks"] = True
     return config
 
 
@@ -849,10 +1064,12 @@ def build_agent_profile_catalog(
 ) -> dict[str, dict[str, Any]]:
     """Index discoverable profiles by name and resolved runtime configuration.
 
-    A profile refused because it chooses an account it may not choose is left out, so one such
-    file does not hide every other role; its reason, which names the file and the key, goes in
+    A profile refused because it chooses an account it may not choose, or because a gated run may
+    not take it from an untrusted project directory, is left out, so one such file does not hide
+    every other role; its reason, which names the file and the key, goes in
     *refused* when given, and is printed as a warning either way. Any other load error raises.
     """
+    from lionagi._lionagi_dir_trust import UntrustedLionagiDirError
     from lionhub.agent.subscription_accounts import SubscriptionAccountError
     from lionhub.orchestration.console import warn
 
@@ -860,7 +1077,7 @@ def build_agent_profile_catalog(
     for name in list_agents():
         try:
             catalog[name] = profile_config(load_agent_profile(name))
-        except SubscriptionAccountError as exc:
+        except (SubscriptionAccountError, UntrustedLionagiDirError) as exc:
             warn(f"left out of the profile list: {exc}")
             if refused is not None:
                 refused[name] = str(exc)
@@ -935,6 +1152,11 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
                 unreadable_symlinks=unreadable_symlinks,
             )
             if path is not None:
+                # Before the file is read: a run the MCP server started takes a profile
+                # only from a trusted directory (ADR-0088 Amendment 2).
+                from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+                check_lionagi_dir("agent profile", path, d)
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
                 profile = _parse_profile(name, text)
@@ -962,6 +1184,67 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
     if available:
         msg += f"\nAvailable: {', '.join(available)}"
     raise AgentProfileNotFoundError(msg)
+
+
+def _profile_files_naming_deny_read(name: str, *, cwd: Path | None = None) -> tuple[str, ...]:
+    """The files ``load_agent_profile(name)`` would read that name ``deny_read``, or whose
+    entries cannot be ruled out, one line each; empty when there are none.
+
+    For a caller that runs a role on its other settings when the role's profile fails to load:
+    that caller must not drop the profile's ``deny_read`` with the rest. The files are found the
+    way the loader finds them and searched for the key as text, whatever else in them is
+    malformed. Where the loader refuses to choose (two spellings of the name in one agents
+    directory), each file it refuses between is searched. A file that cannot be read is listed,
+    and so is a symlink whose target cannot be read when no other file resolves the name: the
+    entries of either cannot be ruled out. A name the loader refuses outright has no file.
+    """
+    plugin_token = "/" in name
+    try:
+        if plugin_token:
+            plugin_part, _, agent_part = name.partition("/")
+            _validate_bare_name(plugin_part)
+            _validate_bare_name(agent_part)
+        else:
+            _validate_bare_name(name)
+    except (ValueError, ConfigurationError):
+        # The loader refuses this name before it reads any file.
+        return ()
+    candidates: list[Path] = []
+    unreadable_symlinks: list[tuple[Path, str]] = []
+    if not plugin_token:
+        for d in _find_lionagi_dirs() if cwd is None else _find_lionagi_dirs(cwd):
+            agents_dir = d / "agents"
+            try:
+                path = _resolve_profile_path(
+                    agents_dir, name, unreadable_symlinks=unreadable_symlinks
+                )
+            except AmbiguousProfileNameError:
+                candidates.extend(
+                    p for p in _profile_path_candidates(agents_dir, name) if p.is_file()
+                )
+                break
+            if path is not None:
+                candidates.append(path)
+                break
+    if not candidates:
+        plugin_path = _resolve_plugin_profile_path(name)
+        if plugin_path is not None:
+            candidates.append(plugin_path)
+    if not candidates:
+        return tuple(
+            f"{path} is a symlink whose target cannot be read ({target})"
+            for path, target in unreadable_symlinks
+        )
+    found: list[str] = []
+    for path in candidates:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            found.append(f"{path} cannot be read ({exc})")
+            continue
+        if b"deny_read" in data:
+            found.append(f"{path} names deny_read")
+    return tuple(found)
 
 
 #: The largest whole number of seconds a timeout may name: the largest a float holds exactly,
@@ -1034,6 +1317,20 @@ def _parse_profile_contain_user_settings(name: str, frontmatter: dict) -> bool:
     from lionhub.orchestration.console import warn
 
     warn(f"agent profile {name!r}: contain_user_settings {raw!r} is not true or false; containing")
+    return True
+
+
+def _parse_profile_require_hooks(name: str, frontmatter: dict) -> bool:
+    """Validate the profile flag. Absent, it is off; a value other than true or false, an
+    empty one included, warns and defaults to requiring."""
+    if "require_hooks" not in frontmatter:
+        return False
+    raw = frontmatter["require_hooks"]
+    if isinstance(raw, bool):
+        return raw
+    from lionhub.orchestration.console import warn
+
+    warn(f"agent profile {name!r}: require_hooks {raw!r} is not true or false; requiring")
     return True
 
 
@@ -1234,6 +1531,26 @@ def _parse_profile_mcp(name: str, frontmatter: dict) -> str | None:
     if isinstance(raw, str) and raw == "none":
         return raw
     raise ConfigurationError(f"agent profile {name!r}: mcp must be 'none'")
+
+
+def _parse_profile_scratch(name: str, frontmatter: dict) -> str | None:
+    """Read the profile's per-run scratch request: ``true`` -> 'remove', ``keep`` -> 'keep'.
+
+    Absent or ``false`` asks for none. Any other value is refused: a scratch request read as
+    absent would leave a read-only agent without the directory it was declared to have.
+    """
+    if "scratch" not in frontmatter:
+        return None
+    raw = frontmatter["scratch"]
+    if raw is False:
+        return None
+    if raw is True:
+        return "remove"
+    if raw == "keep":
+        return "keep"
+    raise ConfigurationError(
+        f"agent profile {name!r}: scratch must be true, false or keep, not {raw!r}"
+    )
 
 
 # The deepest nesting of collections a profile's frontmatter may have. The YAML loaders
@@ -1442,6 +1759,8 @@ _CONTAINMENT_KEYS = (_CONTAIN_KEY, _CONTAIN_ACCOUNT_KEY)
 _FLAG_KEY_LINE = re.compile(
     rf"^[ \t]*(?:-[ \t]+)*[\"']?({'|'.join(_CONTAINMENT_KEYS)})[\"']?[ \t]*:", re.M
 )
+# A line that sets deny_read as a key, in a mapping or a list item, quoted or not.
+_DENY_READ_KEY_LINE = re.compile(r"^[ \t]*(?:-[ \t]+)*[\"']?(deny_read)[\"']?[ \t]*:", re.M)
 _LIGHT_WORKLOAD_LINE = re.compile(
     r"""^(?:workload|"workload"|'workload')[ \t]*:[ \t]+(?:light|"light"|'light')"""
     r"(?:[ \t]+(?:#[^\r\n]*)?)?\r?$",
@@ -1721,6 +2040,13 @@ def _check_readable_profile_settings(
     for opening_line, block in _profile_body_blocks(
         name, text[closing.end() :].splitlines(), line_offset=body_line_offset
     ):
+        if _DENY_READ_KEY_LINE.search(block):
+            # Read as prompt text, a deny_read here would deny nothing.
+            raise ConfigurationError(
+                f"agent profile {name!r}: the --- block on line "
+                f"{body_line_offset + opening_line + 1} sets deny_read outside the leading "
+                "frontmatter, where it would be ignored; move it to the top of the file"
+            )
         reads, document = _read_profile_settings(block)
         if reads:
             _refuse_readable_tool_settings(
@@ -1771,6 +2097,19 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
                 "fix the frontmatter to proceed"
             )
 
+    def refuse_unread_deny_read(block: str, *, key_lines_only: bool = False) -> None:
+        """Refuse a block whose deny_read cannot be applied.
+
+        Ignoring it would let the child read what the profile denies, so a block that opens
+        the file refuses on any mention, and a span after prompt text on a line that sets it
+        as a key.
+        """
+        if _DENY_READ_KEY_LINE.search(block) if key_lines_only else "deny_read" in block:
+            raise ConfigurationError(
+                f"agent profile {name!r}: deny_read could not be read, and the child would "
+                "read what it denies; fix the frontmatter to proceed"
+            )
+
     def refuse_misplaced_tools(block: str, reads: bool, document: Any, opening: int) -> None:
         if reads:
             _refuse_readable_tool_settings(
@@ -1791,7 +2130,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     def refuse_misplaced_settings(block: str, opening: int) -> None:
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, opening + 1)
-        declared = set(_FLAG_KEY_LINE.findall(block))
+        declared = set(_FLAG_KEY_LINE.findall(block)) | set(_DENY_READ_KEY_LINE.findall(block))
         refuse_misplaced_tools(block, reads, document, opening)
         if not reads or isinstance(document, dict):
             declared.update(containment_settings(block, document))
@@ -1819,6 +2158,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         if reads and document is None:
             return {}
         refuse_unread_tool_settings(block)
+        refuse_unread_deny_read(block)
         settings = containment_settings(block, document)
         if _CONTAIN_KEY in block:
             # Keep containment for mentions in an unclosed user-settings block.
@@ -1845,6 +2185,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, 1)
         refuse_misplaced_tools(block, reads, document, 0)
+        refuse_unread_deny_read(block, key_lines_only=True)
         if closing is not None and closing != delimiters[-1]:
             # The closing rule opens a later span only if another rule bounds it.
             # The final fence has already been checked.
@@ -1882,6 +2223,8 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
+    from lionhub.agent.child_sandbox import profile_deny_read
+
     original = text
     text = _strip_frontmatter_prefix(original)
     line_offset = _profile_line_offset(original, len(original) - len(text))
@@ -1954,6 +2297,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         mcp=_parse_profile_mcp(name, frontmatter),
         account=account,
         codex_home=codex_home,
+        scratch=_parse_profile_scratch(name, frontmatter),
+        deny_read=profile_deny_read(name, frontmatter.get("deny_read")),
+        require_hooks=_parse_profile_require_hooks(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -1977,6 +2323,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "mcp",
                 "account",
                 "codex_home",
+                "scratch",
+                "deny_read",
+                "require_hooks",
             )
         },
     )

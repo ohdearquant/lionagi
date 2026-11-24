@@ -1,0 +1,39 @@
+{
+  "package_exports": {
+    "lionhub/src/lionhub/hooks/external.py": [
+      "__all__ = (\n    \"BLOCKING_EVENTS\",\n    \"PROFILE_VERSION\",\n    \"SUPPORTED_EVENTS\",\n    \"ExternalHookConfigError\",\n    \"HookVerdict\",\n    \"build_envelope\",\n    \"compute_command_hash\",\n    \"compute_executable_digest\",\n    \"compute_trust_record\",\n    \"external_hook_adapter\",\n    \"is_command_trusted\",\n    \"match_hook\",\n    \"resolve_hook_executable\",\n    \"validate_argv\",\n)"
+    ],
+    "lionhub/src/lionhub/hooks/hooks_from.py": [
+      "__all__ = (\n    \"HOOKS_FROM_CARRY\",\n    \"HOOKS_FROM_FORMATS\",\n    \"MAX_HOOKS_FROM_BYTES\",\n    \"CarryPlan\",\n    \"HooksFile\",\n    \"HooksFromError\",\n    \"carry_refusal\",\n    \"hook_command_refusals\",\n    \"hook_entries\",\n    \"plan_carry\",\n    \"read_hooks_file\",\n    \"read_snapshot\",\n    \"render_permission_rule\",\n    \"writable_roots\",\n    \"write_snapshot\",\n)"
+    ]
+  },
+  "public_definitions": {
+    "lionhub/src/lionhub/hooks/external.py": [
+      "ExternalHookConfigError",
+      "HookVerdict",
+      "build_envelope",
+      "compute_command_hash",
+      "compute_executable_digest",
+      "compute_trust_record",
+      "external_hook_adapter",
+      "is_command_trusted",
+      "match_hook",
+      "resolve_hook_executable",
+      "validate_argv"
+    ],
+    "lionhub/src/lionhub/hooks/hooks_from.py": [
+      "CarryPlan",
+      "HooksFile",
+      "HooksFromError",
+      "carry_refusal",
+      "hook_command_refusals",
+      "hook_entries",
+      "plan_carry",
+      "read_hooks_file",
+      "read_snapshot",
+      "render_permission_rule",
+      "writable_roots",
+      "write_snapshot"
+    ]
+  }
+}

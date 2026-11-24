@@ -1,15 +1,27 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
-  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) are Proposed
+  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
-  finder in #3752 and the D5 class paths in ADR-0001 Amendment 2. `integrations` is held (D6).
+  finder in #3752 and the D5 class paths in ADR-0001 Amendment 2. `integrations` moved to
+  `lionhub.integrations` with its tests, README row and callers (Amendment 4).
   Wave 2 has moved MCP to `lionhub.serve.mcp` (#3769), the CLI to `lionhub.serve.cli` (#4342, #4343),
   the scheduler (#4290), and shared daemon services and routes (#4531, #4548–#4550). The providers-first
-  change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3). Studio attachment and
-  extraction, later package moves and the removal release (D4) remain. See `lionhub/tests` and `lionhub/README.md`.
+  change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3); the discovery contract
+  replaced the 46 interim module strings with `lionhub.providers.manifest`, read through
+  `lionagi/service/connections/_provider_compat.py`, and the three hub imports C2 deferred to
+  before 2.0 are gone (`service/providers.py`'s in #4745). `service` is the only core package that
+  imports the hub, through `_provider_compat`. Two root modules hold hub paths as data, resolved only
+  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths, and
+  `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
+  until 2.0.0. Other mentions of the hub under `lionagi/` are comments and docstrings. The Studio
+  application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
+  `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is
+  `tests/test_studio_frozen_inventory.py`; G4's fresh-install tests from the built wheel outside the
+  checkout are not yet written. Later package moves and
+  the removal release (D4) remain. See `lionhub/tests` and `lionhub/README.md`.
 - **Area**: governance
 - **Date**: 2026-10-25
 - **Relations**: follows ADR-0122 D1 (layer order), D7's interim single-distribution rule and
@@ -18,15 +30,15 @@
   decision that ADR-0125 D4 requires before a public import path is removed; amends ADR-0001
   (Amendment 2: the new prefixes of moved packages join the class-path allow-list); updates
   ADR-0120's citations of the dispatch outbox to its new file; ADR-0138 records the Studio backend's
-  form (D7, Amendment 2); Amendment 3 (Proposed) amends D6 row 3 and replaces Amendment 1 A5's
-  providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 (Proposed) fixes
+  form (D7, Amendment 2); Amendment 3 amends D6 row 3 and replaces Amendment 1 A5's
+  providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 fixes
   D7's `integrations/` slot as that package's destination and states when D6's hold on it ends;
-  Amendment 5 (Proposed) moves the Studio application to its own import root before 1.0, bundled in the
+  Amendment 5 moves the Studio application to its own import root before 1.0, bundled in the
   one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step
 
 ## Amendment 5 (2026-11-13): the Studio application gets its own import root before 1.0, bundled through 1.x
 
-**Status**: Proposed.
+**Status**: Accepted (2026-11-23).
 
 Amendment 2 keeps the Studio application at its `lionagi.studio` paths through 1.x and moves it at 2.0.
 This amendment moves it before 1.0 instead, to its own import root, while the one distribution keeps
@@ -175,7 +187,7 @@ outside these records.
 
 ## Amendment 4 (2026-11-10): where `lionagi.integrations` goes, and when its hold ends
 
-**Status**: Proposed.
+**Status**: Accepted (2026-11-23).
 
 D6 holds `integrations` (548 lines) out of wave 1, so that open outside contributions that edit it
 land or close before it moves, and their authors do not rebase across a move. D7 already gives it a
@@ -219,7 +231,13 @@ maintainer merges or closes them.
 If an outside pull request opens after the move has merged, its author rebases onto the new path.
 `lionhub/README.md` and the table row are where that author finds it.
 
+Note (2026-11-23): the move merged as #4533 on 2026-11-15, while #3454 and #3455 were still open
+drafts, so it did not wait for them as this section requires. The paragraph above now applies to
+both: each rebases onto the new path.
+
 ## Amendment 3 (2026-10-31): providers move first, with finite interim imports
+
+**Status**: Accepted (2026-11-23).
 
 Amendment 5 (G4) replaces this amendment's Studio timing: C1's reference to Amendment 2's retained
 application holds until the application moves to its own import root, and in C2 `studio` and its
@@ -261,7 +279,7 @@ In the move change, add `test_provider_interim_edge_inventory` and rename D2's p
 | `agent/factory.py` | Existing references to `lionhub.providers.openai._codex_profile`, `lionhub.providers.openai.codex`, and `lionhub.providers._cli_subprocess`; all lazy after the preparatory change | Remove these core edges and `agent` from the set in the tools/agent/casts move. References then belong to the hub. The shared schema reference already points down into core. |
 | `operations/run/run.py` | Existing lazy `lionhub.providers.google.gemini_code` request/print-timeout behavior | Before 2.0, replace the import with an endpoint-supplied request-preparation port; remove `operations` from the set in that change. The operation stays in core. |
 | `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
-| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. |
+| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. Done in #4745: the default comes from `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog's `codex` declaration, and the file names no hub module. |
 | `lionhub/src/lionhub/orchestration/spawn.py` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |

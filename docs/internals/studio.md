@@ -788,7 +788,12 @@ an absolute path even when `manifest_dir` is itself relative.
   `approval_evidence` in the same transaction as the status change
   (`chain_hash = sha256(content_hash + previous_hash)`, genesis = `"0"*64`).
   Evidence rows never store raw params. Optional HMAC-SHA256 signing is off
-  by default (`LIONAGI_STUDIO_EVIDENCE_HMAC_KEY`).
+  by default (`LIONAGI_STUDIO_EVIDENCE_HMAC_KEY`). A grant or deny row, like
+  its approval, records who decided: a verified decision capability's
+  principal (method `pairing`), else the admitting credential (id
+  `studio-credential`, method `credential`); the hashed payload carries the
+  five principal fields only when one is set, so unattributed rows hash as
+  rows did before the fields existed.
 - **Service-principal header** — Presence alone (any non-empty value)
   disqualifies grant/deny; there is no "correct" value, so a caller can't
   guess past the check.

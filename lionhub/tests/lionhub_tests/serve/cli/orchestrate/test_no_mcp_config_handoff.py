@@ -2065,3 +2065,39 @@ async def test_a_codex_worker_refuses_a_server_whose_secrets_it_could_not_carry(
 
     assert secret not in str(refused.value)
     assert not list(codex_home.path.glob("lionagi-mcp-*.config.toml"))
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_carries_its_role_require_hooks_to_its_request(
+    tmp_run, codex_home, monkeypatch
+):
+    """A role's ``require_hooks`` reaches the codex worker's request, whose launch check
+    refuses a hook that will not run (ADR-0048 Amendment 2); a role without it carries none."""
+    codex_home.write_config({})
+    roles = {
+        "guarded": AgentProfile(name="guarded", model="codex/gpt-5", require_hooks=True),
+        "plain": AgentProfile(name="plain", model="codex/gpt-5"),
+    }
+    monkeypatch.setattr(orch_mod, "load_agent_profile", lambda name: roles[name])
+    env = await _setup(no_mcp_config=True)
+
+    carried = []
+    for role in ("guarded", "plain"):
+        branch, _, _, _ = await build_worker_branch(env, agent_id=role, role=role)
+        request = branch.chat_model.endpoint.create_payload({"prompt": "hi"})[0]["request"]
+        carried.append(request.require_hooks)
+    assert carried == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_whose_role_sets_require_hooks_is_refused(tmp_run, monkeypatch):
+    """lionagi reads no Claude Code hook rules, so the key cannot be met on a claude_code
+    worker and the worker is refused when it is built; a bare worker applies no role."""
+    monkeypatch.setattr(
+        orch_mod, "load_agent_profile", _claude_roles(guarded={"require_hooks": True}, plain={})
+    )
+    env = await _setup(no_mcp_config=True)
+
+    with pytest.raises(ConfigurationError, match="checked for codex and API-model legs only"):
+        await build_worker_branch(env, agent_id="guarded", role="guarded")
+    await build_worker_branch(env, agent_id="plain", role="plain")

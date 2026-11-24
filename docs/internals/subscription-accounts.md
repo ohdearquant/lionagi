@@ -30,6 +30,8 @@ The directory holds two kinds of entry:
 | `[claude_code.<name>]` in `accounts.toml` | Claude Code | Exactly one of `keychain = { service = "...", account = "..." }` or `dotenv = { file = "/abs/path/.env", var = "NAME" }`. |
 | `[codex.<name>]` in `accounts.toml` | Codex | `home = "/abs/path"`. |
 
+Any of the three may also set `max_concurrent = N`, a whole number of 1 or more: at most `N` CLI agents on that account run at once on this machine, on top of the machine-wide caps (ADR-0133, account pool amendment). A `claude-<name>` file takes its cap from a `[claude_code.<name>]` table that holds only `max_concurrent`; any other key in that table defines the account a second time and is refused. A `max_concurrent` that is not a whole number of at least 1 refuses the account when it is resolved, so it never reads as no cap. Without the key the account has no cap of its own.
+
 **(design choice)** One name may serve both providers: a `claude-work` file and a `[codex.work]` table can coexist. A name defined twice for the same provider (a file and a table) is refused.
 
 A `claude-<name>` file holds a token, so the directory is as private as any login store. `accounts.toml` holds no secret, and no config, profile or run record ever holds a token:
@@ -102,6 +104,8 @@ For a codex agent, `create_agent(agent_env={"CODEX_HOME": ...})` follows the sam
 - `codex_home` and `account_provider` for a home named directly.
 
 No token is recorded.
+
+A background job submitted through the MCP server records, in its job record and in `job.status` and `job.list`, the `account` and `account_provider` its submission asked for: the `account` argument, else the profile's `account`, with the account table its model's provider uses. A profile `codex_home` with no name records `account_provider` `codex` and no `account`. A resumed submission that names no model records no provider, because the branch decides it. What the run then resolved is in its `run.json`, as above. The MCP verb `account.list` reads both: one row per declared account with its source kind, `max_concurrent`, the slots its admission pool holds, and the running jobs, the jobs ended in the last 24 hours and the last usage-limit refusal recorded on it, never where its credential is kept. Job records written before jobs carried an account count for none.
 
 A resume runs on the account the branch last ran on.
 

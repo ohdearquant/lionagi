@@ -10,13 +10,18 @@ appended under the matching heading of the ``## [Unreleased]`` block, in ascendi
 number order, a missing heading is created in the order above, and the folded fragments are
 deleted. Every fragment is validated before anything is written, so a refusal leaves
 CHANGELOG.md and every fragment untouched.
+
+``--check`` validates the fragments and the fold without writing anything. ``--help`` prints the
+usage, and an argument the script does not know is refused; neither writes anything.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,8 +183,32 @@ def _fold_text(text: str, merged: dict[str, list[list[str]]]) -> str:
     return folded + "\n" if text.endswith("\n") else folded
 
 
-def main(root: Path | None = None) -> int:
-    """Fold the fragments under ``root`` (the working directory by default); return an exit code."""
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fold_changelog_fragments.py",
+        description=(
+            f"Fold {FRAGMENT_DIR}/<pull request number>.md into the '{_UNRELEASED}' block of "
+            f"{CHANGELOG} and delete the folded fragments. Run from the repository root."
+        ),
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate the fragments and the fold, and write nothing",
+    )
+    return parser
+
+
+def main(root: Path | None = None, argv: Sequence[str] | None = None) -> int:
+    """Fold the fragments under ``root`` (the working directory by default); return an exit code.
+
+    ``argv`` is the command line after the script's name, none when None. ``--help`` and an
+    unknown argument return argparse's exit code before any file is read.
+    """
+    try:
+        args = _parser().parse_args([] if argv is None else list(argv))
+    except SystemExit as exit_:
+        return exit_.code if isinstance(exit_.code, int) else 2
     root = Path.cwd() if root is None else Path(root)
     try:
         fragments = _discover(root)
@@ -196,6 +225,11 @@ def main(root: Path | None = None) -> int:
     except FoldRefusedError as refusal:
         print(f"fold_changelog_fragments: {refusal}", file=sys.stderr)
         return 1
+    if args.check:
+        print(
+            f"{len(fragments)} changelog fragment(s) would fold into {CHANGELOG}; nothing written."
+        )
+        return 0
     staging = changelog.with_name(CHANGELOG + ".tmp")
     staging.write_bytes(folded.encode("utf-8"))
     os.replace(staging, changelog)
@@ -206,4 +240,4 @@ def main(root: Path | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(argv=sys.argv[1:]))

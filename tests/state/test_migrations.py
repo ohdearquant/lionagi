@@ -210,6 +210,8 @@ async def test_migration_columns_constant_is_importable():
         "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
         "attention_dispositions",  # revision fencing column
         "attention_disposition_history",  # sequence append-order column
+        "approvals",  # who granted or denied
+        "approval_evidence",  # who granted or denied, on the evidence row
     }
     assert set(MIGRATION_COLUMNS.keys()) == expected_tables
 

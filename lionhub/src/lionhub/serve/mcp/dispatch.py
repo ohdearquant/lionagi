@@ -24,12 +24,13 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
+from lionagi import _lionagi_dir_trust as lionagi_dir_trust
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 
-from . import config, jobs, projection, roster
+from . import accounts, config, jobs, projection, roster
 from .verbs import (
     ABSENT,
     MAX_OPS,
@@ -117,6 +118,7 @@ _PRELOAD_MODULES = (
     "lionhub.agent.settings",
     "lionhub.agent.subscription_accounts",
     "lionhub.hooks.external",
+    "lionhub.hooks.hooks_from",
     "lionhub.orchestration",
     "lionhub.orchestration.console",
     "lionhub.orchestration.job",
@@ -138,6 +140,7 @@ _PRELOAD_MODULES = (
     "lionhub.orchestration.spawn",
     "lionhub.providers.anthropic.claude_code",
     "lionhub.providers.google.gemini_code",
+    "lionhub.providers.openai._codex_hook_trust",
     "lionhub.providers.openai._codex_profile",
     "lionhub.providers.openai._codex_project_layers",
     "lionhub.providers.openai.codex",
@@ -149,6 +152,7 @@ _PRELOAD_MODULES = (
     "lionhub.serve.cli.orchestrate",
     "lionhub.serve.cli.orchestrate._common",
     "lionhub.serve.cli.orchestrate._control",
+    "lionhub.serve.cli.orchestrate._github_pr",
     "lionhub.serve.cli.orchestrate._orchestration",
     "lionhub.serve.cli.team",
     "lionhub.serve.cli.wait",
@@ -388,8 +392,10 @@ def catalog() -> dict[str, Any]:
         "help_usage": (
             "help='<verb>' returns that verb's full parameter schema, and for an "
             "unavailable one the reason it is not served here. "
-            "help={'verb': '<verb>', 'playbook': '<name>'} resolves a playbook's own "
-            "declared arguments into the schema. An entry omits 'available' and "
+            "help={'verb': '<verb>', 'playbook': '<name>', 'cwd': '<dir>'} resolves a "
+            "playbook's own declared arguments into the schema, finding the playbook "
+            "under 'cwd' as the submitted run will (this server's directory when "
+            "omitted). An entry omits 'available' and "
             "'required' when they are true and empty. A schema_fingerprint must be "
             "repeated on that verb's ops as a sibling of 'args': "
             "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from this entry>'}; "
@@ -459,6 +465,7 @@ def _require_fingerprint(
     supplied: Any,
     *,
     playbook: str | None = None,
+    cwd: str | None = None,
 ) -> None:
     """Spawn ops carry the current fingerprint from help or the refusal.
 
@@ -477,7 +484,11 @@ def _require_fingerprint(
     if supplied == current:
         return
     if playbook is not None:
+        # The playbook resolved under *cwd*, so the help call that reproduces this
+        # fingerprint has to name the same directory.
         source: Any = {"verb": name, "playbook": playbook}
+        if cwd is not None:
+            source["cwd"] = cwd
     elif verb.playbook_aware:
         source = {"verb": name}
     else:
@@ -902,7 +913,15 @@ def _has_prompt_source(kind: str, args: dict[str, Any], prompt: str | None) -> b
     too. Flow (and play, which requires a playbook) also accept a spec file or
     playbook that may carry its own ``prompt`` key this doesn't read, so their
     presence settles the question too; fanout has only the two routes.
+
+    A resume names a saved run, and the command's resume path replays that run's
+    checkpoint without reading a prompt (``li o flow --resume``), so a resume is a
+    complete submission with or without one. Only flow and play declare it. A written
+    graph gives each node its own prompt, so it is a complete submission too; only flow
+    takes one.
     """
+    if args.get("resume") or args.get("graph"):
+        return True
     query = args.get("query") or []
     last_positional = prompt if prompt is not None else (query[-1] if query else None)
     if last_positional:
@@ -980,6 +999,41 @@ def _refuse_unknown_profile(
             raise OpError("invalid_input", str(exc)) from exc
 
 
+def _refuse_invalid_graph(verb: Verb, args: dict[str, Any], cwd: str | None) -> Any:
+    """Load and check a flow's written graph before any job record or directory exists.
+
+    The same loader and checks ``li o flow --graph`` runs (ADR-0069 Amendment 4 G3), with
+    profiles resolved from the run's ``cwd``, so one file gets one answer on both paths
+    and a refused graph leaves nothing on ``job.list``. Returns the accepted graph, or
+    None when the submission names none.
+    """
+    if verb.job_kind != "flow" or args.get("graph") is None:
+        return None
+    from lionhub.orchestration.flow.graph import (
+        FlowGraphError,
+        check_graph,
+        graph_flag_refusal,
+        load_graph,
+    )
+
+    refusal = graph_flag_refusal(
+        playbook=args.get("playbook"),
+        file=args.get("file"),
+        reactive=args.get("reactive"),
+        resume=args.get("resume"),
+        with_synthesis=args.get("with_synthesis"),
+        bare=args.get("bare"),
+    )
+    if refusal is not None:
+        raise OpError("invalid_input", refusal)
+    try:
+        source = load_graph(args["graph"])
+        check_graph(source, cwd=cwd, max_ops=args.get("max_ops") or 0)
+    except FlowGraphError as exc:
+        raise OpError("invalid_input", str(exc)) from None
+    return source
+
+
 def _resolve_cwd(args: dict[str, Any]) -> str | None:
     """The caller's working directory, resolved the way it will be used.
 
@@ -997,6 +1051,18 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
     if not resolved.is_dir():
         raise OpError("invalid_input", f"cwd {cwd!r} is not a directory")
     return str(resolved)
+
+
+def _playbook_cwd(args: dict[str, Any]) -> str | None:
+    """The directory a named playbook resolves under: the run's ``cwd`` when one is given.
+
+    The submitted run starts there and resolves the playbook there, so the schema and
+    fingerprint checked here must come from the same file. A ``cwd`` that is not a
+    string is left to schema validation, which reports it against the parameter.
+    """
+    if not isinstance(args.get("cwd"), str):
+        return None
+    return _resolve_cwd(args)
 
 
 def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
@@ -1035,7 +1101,178 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
     )
 
 
-def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+def _agent_model_spec(args: dict[str, Any], profile: Any, prompt: str | None) -> Any:
+    """The model an agent submission names: the first positional when a prompt follows it, else
+    the profile's model. ``None`` when neither names one (a resumed run's model comes from its
+    branch)."""
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    return bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+
+
+def _requested_account(
+    verb: Verb, args: dict[str, Any], profile: Any, prompt: str | None
+) -> tuple[str | None, str | None]:
+    """The subscription account an agent submission asks for, as ``(name, provider)``.
+
+    Read the way ``li agent`` reads it: the ``account`` argument wins over the profile's
+    ``account``, and a profile ``codex_home`` with neither names no account on a codex run.
+    The provider is the account table the model's provider uses (``claude_code`` or
+    ``codex``), or None when no model is named here (a resumed run's model comes from its
+    branch) or its provider takes no account. Nothing is resolved or read: the run resolves
+    the account itself, and refuses one it cannot use. Other job kinds pick accounts per
+    worker while they run, so they ask for none here.
+    """
+    if verb.job_kind != "agent":
+        return None, None
+    name = args.get("account") or getattr(profile, "account", None)
+    if name is None and getattr(profile, "codex_home", None) is None:
+        return None, None
+    model = _agent_model_spec(args, profile, prompt)
+    provider = None
+    if isinstance(model, str) and model:
+        from lionhub.agent.subscription_accounts import account_provider
+
+        provider = account_provider(model.split("/", 1)[0])
+    if name is None:
+        # A Codex home with no name: a codex run, on no named account.
+        return None, "codex"
+    return str(name), provider
+
+
+def _resolve_hooks_from(
+    args: dict[str, Any], profile: Any, prompt: str | None, cwd: str | None
+) -> dict[str, Any] | None:
+    """Read and plan the hooks file an agent submission names (ADR-0048 Amendment 1).
+
+    Returns what ``jobs.submit`` snapshots, or None when no file is named. The file is read
+    once here, under the H2 rules, and planned for the leg's working directory; a guard the
+    leg cannot apply refuses the submission (H3, H5). The leg's model is picked the way
+    ``_requested_account`` picks it: the first of two positionals, else the profile's model.
+    The leg reads its copy and checks the same refusals again when it starts.
+    """
+    path = args.get("hooks_from")
+    fmt = args.get("hooks_from_format")
+    carry = args.get("hooks_from_carry")
+    if path is None:
+        if fmt is not None or carry is not None:
+            raise OpError("invalid_input", "hooks_from_format and hooks_from_carry need hooks_from")
+        return None
+    if args.get("resume") or args.get("continue_last"):
+        raise OpError(
+            "invalid_input",
+            "hooks_from cannot be combined with resume or continue_last: a resumed run keeps "
+            "the guards it started with; start a fresh run to carry a hooks file",
+        )
+    if fmt is None:
+        raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.connections.registry import EndpointRegistry
+    from lionagi.service.providers import CLI_PROVIDERS
+    from lionhub.agent.subscription_accounts import account_provider
+    from lionhub.hooks.hooks_from import (
+        HOOKS_FROM_CARRY,
+        HooksFromError,
+        carry_refusal,
+        hook_command_refusals,
+        plan_carry,
+        read_hooks_file,
+        writable_roots,
+    )
+
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+    provider = model.split("/", 1)[0] if isinstance(model, str) and "/" in model else None
+    claude_code = provider is not None and account_provider(provider) == "claude_code"
+    api = (
+        provider is not None and EndpointRegistry.canonical_provider(provider) not in CLI_PROVIDERS
+    )
+    carried = list(HOOKS_FROM_CARRY) if carry is None else carry
+    leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    try:
+        hooks_file = read_hooks_file(path)
+        plan = plan_carry(
+            hooks_file.document,
+            fmt=fmt,
+            carry=carried,
+            source_path=hooks_file.resolved_path,
+            leg_cwd=leg_cwd,
+        )
+    except HooksFromError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
+    if reason is not None:
+        raise OpError("invalid_input", f"cannot submit this leg with hooks_from: {reason}")
+    if plan.hooks:
+        try:
+            refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        except ConfigurationError as exc:
+            raise OpError(
+                "invalid_input", f"cannot submit this leg with hooks_from: {exc}"
+            ) from exc
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise OpError(
+                "invalid_input",
+                f"cannot submit this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}",
+            )
+    return {"file": hooks_file, "plan": plan, "format": fmt, "carry": list(carried)}
+
+
+def _refuse_untrusted_settings_layer(cwd: str | None) -> None:
+    """Load the project settings layer the job will load, so an untrusted one refuses here.
+
+    Called only for a gated submission. Anything else wrong with the file is left to the run to
+    report, as it is with the gate off.
+    """
+    from lionagi._settings import load_settings
+
+    try:
+        load_settings(project_dir=cwd)
+    except lionagi_dir_trust.UntrustedLionagiDirError:
+        raise
+    except Exception:  # noqa: BLE001, S110 — a malformed file is the run's to report, as before
+        pass
+
+
+def _refuse_untrusted_playbook_agent(
+    schema: dict[str, Any], args: dict[str, Any], cwd: str | None
+) -> None:
+    """Resolve the profile a named playbook's ``agent`` field selects, for a gated submission.
+
+    ``_refuse_unknown_profile`` reads only the submission's own ``agent``. A playbook that names
+    one the submission does not override is resolved here the same way, and only a refusal of an
+    untrusted directory stops the submission; a name that does not resolve is the run's to
+    report, as it is with the gate off.
+    """
+    path = schema.get("x-playbook-path")
+    if path is None or args.get("agent"):
+        return
+    from lionagi._flow_spec import load_flow_spec
+    from lionhub.orchestration.spawn import (
+        AgentProfileNotFoundError,
+        AmbiguousProfileNameError,
+        load_agent_profile,
+    )
+
+    try:
+        name = load_flow_spec(path).get("agent")
+    except ValueError:
+        return
+    if not isinstance(name, str) or not name:
+        return
+    with roster._resolving_under(cwd):
+        try:
+            load_agent_profile(name)
+        except (AgentProfileNotFoundError, AmbiguousProfileNameError, ValueError):
+            return
+
+
+def _run_spawn(
+    verb: Verb, schema: dict[str, Any], args: dict[str, Any], *, trust_gate: bool = False
+) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     resumes = bool(args.get("resume") or args.get("continue_last"))
     if resumes:
@@ -1056,6 +1293,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
+    if trust_gate:
+        _refuse_untrusted_settings_layer(cwd)
+        _refuse_untrusted_playbook_agent(schema, args, cwd)
     default_name = None
     if (
         verb.job_kind in {"flow", "fanout"}
@@ -1073,7 +1313,10 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         if defaulted:
             default_name = selected
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
+    graph_source = _refuse_invalid_graph(verb, args, cwd)
     write_capable = _write_capable(verb, args, profile)
+    account, account_provider = _requested_account(verb, args, profile, prompt)
+    hooks_from = _resolve_hooks_from(args, profile, prompt, cwd)
     assert verb.job_kind is not None
     resume_id = None
     try:
@@ -1094,7 +1337,19 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
             profile=profile,
+            account=account,
+            account_provider=account_provider,
+            # Read for the profile's require_hooks before the run is recorded; a resumed run's
+            # model comes from its branch, so its launch answers instead.
+            model=(
+                _agent_model_spec(args, profile, prompt)
+                if verb.job_kind == "agent" and not resumes
+                else None
+            ),
+            **({"hooks_from": hooks_from} if hooks_from is not None else {}),
             **({"replay_mcp_choice": True} if resumes else {}),
+            **({"graph_source": graph_source} if graph_source is not None else {}),
+            **({"lionagi_dir_gate": True} if trust_gate else {}),
         )
     except NestedAgentRefusedError as exc:
         # Well-formed, and refused for where the caller runs, which no retry changes.
@@ -1149,7 +1404,18 @@ _JOB_EXECUTORS = {
     "job.kill": lambda a: jobs.kill(a["run_id"]),
     "job.list": lambda a: {"jobs": jobs.list_jobs(a.get("limit", 50), a.get("status"))},
     "server.info": lambda a: _server_info(),
+    "account.list": lambda a: _account_list(),
 }
+
+
+def _account_list() -> dict[str, Any]:
+    from lionhub.agent.subscription_accounts import SubscriptionAccountError
+
+    try:
+        return accounts.account_list()
+    except SubscriptionAccountError as exc:
+        # The machine's account configuration, which no change to the call corrects.
+        raise OpError("unavailable", str(exc)) from exc
 
 
 async def _run_job(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
@@ -1306,14 +1572,28 @@ def _help(target: Any) -> dict[str, Any]:
     if target is True:
         return catalog()
     playbook: str | None = None
+    cwd: str | None = None
     if isinstance(target, dict):
         name = target.get("verb")
         playbook = target.get("playbook")
-        unknown = sorted(set(target) - {"verb", "playbook"})
+        unknown = sorted(set(target) - {"verb", "playbook", "cwd"})
         if unknown:
-            raise ValueError(f"help object takes 'verb' and 'playbook'; got {unknown}")
+            raise ValueError(f"help object takes 'verb', 'playbook' and 'cwd'; got {unknown}")
         if not isinstance(name, str):
             raise ValueError("help object needs a 'verb' string")
+        if "cwd" in target:
+            raw_cwd = target["cwd"]
+            if playbook is None:
+                raise ValueError(
+                    "help's 'cwd' names the directory a playbook resolves under; "
+                    "pass it together with 'playbook'"
+                )
+            if not isinstance(raw_cwd, str):
+                raise ValueError(f"help's 'cwd' is a directory path, got {raw_cwd!r}")
+            try:
+                cwd = _resolve_cwd({"cwd": raw_cwd})
+            except OpError as exc:
+                raise ValueError(str(exc)) from exc
     else:
         name = target
         if not isinstance(name, str):
@@ -1324,7 +1604,8 @@ def _help(target: Any) -> dict[str, Any]:
     if playbook is not None and not verb.playbook_aware:
         raise ValueError(f"{name!r} takes no playbook")
     try:
-        schema = verb_schema(verb, playbook=playbook)
+        with roster._resolving_under(cwd):
+            schema = verb_schema(verb, playbook=playbook)
     except projection.SchemaProjectionError as exc:
         raise ValueError(f"{name!r} has no describable schema: {exc}") from exc
     answer: dict[str, Any] = {"verb": name, "schema": schema}
@@ -1455,18 +1736,29 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     schema: dict[str, Any] | None = None
     try:
         playbook = args.get("playbook") if verb.playbook_aware else None
-        schema = verb_schema(verb, playbook=playbook if isinstance(playbook, str) else None)
-        if verb.executor == "spawn":
-            _require_fingerprint(
-                name,
-                verb,
-                schema,
-                entry.get("schema_fingerprint"),
-                playbook=playbook if isinstance(playbook, str) else None,
-            )
+        playbook = playbook if isinstance(playbook, str) else None
+        # A named playbook resolves where the run will, under the submitted cwd (the
+        # spawned child starts there), not under this server's own working directory.
+        playbook_cwd = _playbook_cwd(args) if playbook is not None else None
+        # With lionagi_dir_trust.gate set to mcp, a submission resolves project .lionagi files
+        # the way its gated job will, so one project gets one answer at both (ADR-0088
+        # Amendment 2).
+        trust_gate = verb.executor == "spawn" and lionagi_dir_trust.gate_setting() == "mcp"
+        with roster._resolving_under(playbook_cwd), lionagi_dir_trust.enforced(trust_gate):
+            schema = verb_schema(verb, playbook=playbook)
+            if verb.executor == "spawn":
+                _require_fingerprint(
+                    name,
+                    verb,
+                    schema,
+                    entry.get("schema_fingerprint"),
+                    playbook=playbook,
+                    cwd=playbook_cwd,
+                )
         _validate(schema, args, verb)
         if verb.executor == "spawn":
-            result = _run_spawn(verb, schema, args)
+            with lionagi_dir_trust.enforced(trust_gate):
+                result = _run_spawn(verb, schema, args, trust_gate=trust_gate)
         elif verb.executor == "job":
             result = await _run_job(verb, args)
         elif verb.executor == "roster":
@@ -1475,6 +1767,10 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             result = _run_machine(verb, schema, args)
     except OpError as exc:
         return _op_error(name, exc, schema)
+    except lionagi_dir_trust.UntrustedLionagiDirError as exc:
+        return _op_error(name, OpError("invalid_input", str(exc)), schema)
+    except lionagi_dir_trust.LionagiDirTrustSettingError as exc:
+        return _op_error(name, OpError("unavailable", str(exc)), schema)
     except jobs.SpawnError as exc:
         # `unavailable`, not `invalid_input`: arguments were already accepted
         # by the schema; what failed is this machine's ability to start a

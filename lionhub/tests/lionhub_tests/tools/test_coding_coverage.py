@@ -7,7 +7,9 @@ import builtins
 import errno
 import io
 import os
+import select
 import stat
+import types
 from pathlib import Path
 
 import pytest
@@ -438,6 +440,41 @@ def test_subprocess_sync_hands_the_child_a_private_group_marker(monkeypatch, cal
     child_env = dict(captured["env"])
     assert child_env.pop("LIONAGI_INTERNAL_PROCESS_GROUP_TOKEN")
     assert child_env == (dict(os.environ) if caller_env is None else caller_env)
+
+
+def test_subprocess_sync_does_not_read_a_refused_exit_watch_as_an_exit(monkeypatch):
+    """kqueue reports a refused watch as an event with EV_ERROR set and the errno in its data.
+    Only ESRCH says the child has exited; after any other errno the child is waited on, so a
+    command that closed its output early still reports its own exit status."""
+    for name, value in {
+        "KQ_FILTER_PROC": -5,
+        "KQ_EV_ADD": 0x1,
+        "KQ_EV_ONESHOT": 0x10,
+        "KQ_EV_ERROR": 0x4000,
+        "KQ_NOTE_EXIT": 0x80000000,
+    }.items():
+        if not hasattr(select, name):
+            monkeypatch.setattr(select, name, value, raising=False)
+    calls: list[float] = []
+
+    class RefusingKqueue:
+        def control(self, changes, max_events, timeout):
+            calls.append(timeout)
+            return [
+                types.SimpleNamespace(flags=select.KQ_EV_ADD | select.KQ_EV_ERROR, data=errno.EPERM)
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(select, "kqueue", RefusingKqueue, raising=False)
+    monkeypatch.setattr(select, "kevent", lambda *args, **kwargs: None, raising=False)
+    result = _subprocess_sync(
+        ["/bin/sh", "-c", "exec >/dev/null 2>&1; /bin/sleep 2; exit 3"], False, 30.0, None
+    )
+    assert result["returncode"] == 3
+    assert result.get("timed_out") is not True
+    assert len(calls) == 1
 
 
 def test_subprocess_sync_timeout_returns_timed_out():

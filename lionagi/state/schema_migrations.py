@@ -247,6 +247,23 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("expires_at", "REAL"),
         ("updated_at", "REAL"),
     ],
+    # Who granted or denied an approval, recorded on the approval and on its granted or
+    # denied evidence row. NULL on rows written before the columns and on an unattributed
+    # decision.
+    "approvals": [
+        ("decision_principal_id", "TEXT"),
+        ("decision_epoch", "TEXT"),
+        ("decision_method", "TEXT"),
+        ("decision_origin", "TEXT"),
+        ("decision_scope", "TEXT"),
+    ],
+    "approval_evidence": [
+        ("decision_principal_id", "TEXT"),
+        ("decision_epoch", "TEXT"),
+        ("decision_method", "TEXT"),
+        ("decision_origin", "TEXT"),
+        ("decision_scope", "TEXT"),
+    ],
 }
 
 # metadata.create_all() skips indexes when their table already exists, so

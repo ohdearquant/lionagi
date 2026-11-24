@@ -601,6 +601,177 @@ Limits added by this part:
 - The profile's deny entry and the write-root refusal keep a Codex child from writing the record directory. They do not stop another process of the same account from writing it, and the write-root refusal compares the spellings it sees when the command line is built, so a link made afterwards is not seen.
 - A launch whose `PATH` names a different binary than the one probed needs its own record.
 
+## Amendment: the socket arm per network state, and a read-only arm with one write root
+
+Status: Proposed
+
+Why it matters: a process that listens on a unix socket inside a denied directory, a credential
+agent or a local daemon for one, would answer a child that connects to it, so a denied directory
+is closed to the child only when the codex binary also refuses that connection.
+
+Measured on codex 0.162.1, a child in a run with the network on connected to a socket inside a
+denied directory. The probe's one `unix_socket_refused` arm runs only in the network-on run and is
+in `REQUIRED_ARMS`, so today every profiled launch on that binary is refused, network-off launches
+included, though no network-off run was shown to connect. This amendment measures the socket
+check once per network state and asks each launch for the arm that matches its own. It replaces
+the unix-socket bullet and the format bullet of "Probe arms and the probe record" above; the other
+bullets there stand.
+
+- **Two socket arms.** `unix_socket_refused_network_on` is the existing check, run in the heavy
+  run with the network on. `unix_socket_refused_network_off` runs the same two connects in the
+  light run and in the read-only run, both of which have the network off, and passes only when
+  both runs refuse the connect to the socket inside the denied directory and both reach the
+  control socket outside every denied path. A listener that cannot be bound fails the arm in
+  either case, as now.
+- **A launch needs the arm for its own network state.** The state is the `network.enabled` value
+  of the permission profile table the launch renders: off for `light` and for a read-only table,
+  and for a `heavy` table whatever the user config's `sandbox_workspace_write.network_access`
+  makes it. A launch whose state has no passing socket arm in the record is refused before the
+  process starts.
+- **A read-only arm with one write root** (`read_only_write_root`). One run starts from
+  `:read-only` with a single write entry granted by the table. Its child writes a file into the
+  entry, writes a file into its own working directory, and reads a file the profile leaves
+  readable. The arm passes only when the entry write lands, the working-directory write is refused
+  and no file lands there, and the read succeeds. It is what a codex scratch directory
+  (ADR-0041 Amendment 6) needs. It is required only for a launch whose table is read-only with a
+  write entry, which a read-only codex launch with a scratch directory renders.
+- **The record is of format 4.** It carries the three arms above in place of
+  `unix_socket_refused`. A record of format 3 or earlier is no record, so it has no socket arm for
+  either network state and admits no launch: nothing passes on a stale record, and the probe is
+  run again.
+- **The refusal** names the codex version, the binary's resolved path and the arm that did not
+  pass. For `unix_socket_refused_network_on` it names two remedies: set
+  `sandbox_workspace_write.network_access = false` in the codex config, or run the role with
+  `workload: light`. For `unix_socket_refused_network_off` no setting admits the launch on that
+  binary, and the refusal says so and names the probe command for another codex version.
+- **No override.** No flag, request field, settings key or environment variable turns the refusal
+  into a warning. The gate reads only the record and the table the launch renders.
+
+What each launch does, by what the format 4 probe records on a binary:
+
+| Launch | Network | Arm it needs | network-off arm passes, network-on fails | network-on arm passes, network-off fails | both fail | both pass |
+| --- | --- | --- | --- | --- | --- | --- |
+| `light` | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| read-only | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| `heavy`, `network_access` false or unset | off | `unix_socket_refused_network_off` | runs | refused | refused | runs |
+| `heavy`, `network_access` true | on | `unix_socket_refused_network_on` | refused, naming both remedies | runs | refused | runs |
+
+On codex 0.162.1 the network-on arm is known to fail, and whether the network-off arm passes is
+not yet measured. If both fail there, every profiled codex launch on that binary stays refused, as
+it is today; network-off launches open only on a binary whose record passes the network-off arm.
+
+Required checks:
+
+- A format 3 record admits no launch, with the network on or off.
+- A record whose network-off arm passed and network-on arm failed admits a `light`, a read-only
+  and a network-off `heavy` launch, and refuses a network-on `heavy` launch with a message naming
+  the version, the path, `unix_socket_refused_network_on` and both remedies.
+- A record whose network-on arm passed and network-off arm failed refuses every network-off
+  launch and admits a network-on `heavy` launch.
+- The probe's light and read-only runs carry the two connects; an unbound listener fails the
+  network-off arm; a connect that reaches the denied socket in either run fails it.
+- The read-only arm with one write root fails when the entry write does not land, when the
+  working-directory write lands, and when the control read fails.
+- No request field, settings key or environment variable changes the gate's answer for a record.
+
+Limits added by this amendment:
+
+- The network-off arm is measured in a `:workspace` run and a `:read-only` run. A heavy table with
+  the network off is `:workspace` too, so it rests on the first of those.
+- The arms are measured on the host that runs the probe, for the binary it probes, as every arm
+  is; a record does not carry to another binary or another machine.
+
+## Amendment: the network-off socket rule
+
+Status: Proposed
+
+Why it matters: on codex 0.162.1 a run with the network off refuses every unix-socket connect,
+the control socket's included. The network-off arm above needs the control reached, so it fails on
+a binary that closes local sockets more widely than the arm asks, and every network-off launch
+stays refused though no denied socket was reached. The check also read a refusal from the child's
+exit status alone, so a connect that found no socket read as a refusal, and it read the listeners'
+counts at a moment that could precede the count of a connection the kernel had already queued.
+
+This amendment changes how a socket connect is read, how a listener's count for a run is taken,
+and what passes the network-off arm. It changes the network-on arm's denied connect, and moves the
+record to format 5. The rest of the amendment above stands.
+
+- **A connect prints its token.** The connect code sets a 3 second timeout, connects, and prints
+  one line: `connect=ok`, `connect=<errno name>` from Python's errno table, `connect=timeout`, or
+  `connect=<exception name>` for an error without an errno. Each verdict reads the token. A
+  refusal by the sandbox is `connect=EPERM` and nothing else: `ENOENT`, `ECONNREFUSED`, a timeout
+  or any other token is not a refusal.
+- **An outside control brackets each run.** Before and after each run that carries the two
+  connects (heavy, light and read-only), the probe runs the same connect code itself, outside the
+  sandbox, to both sockets; each of those connects sends a mark of its own once connected. Each must
+  print `connect=ok` and its mark must reach its listener. When one does not, no count is read for
+  that run and every socket arm resting on it fails.
+- **A listener's count for a run** is the after-run mark's place in the order the listener counted
+  connections, less the before-run mark's place, less 1. It is read once the after-run mark is
+  recorded and at no earlier moment. A listener counts connections in the order the kernel queued
+  them, so by then every connection queued before the after-run mark has been counted, a child's
+  included.
+- **The network-on arm** passes when the child's denied connect prints `connect=EPERM` and the
+  denied listener's count is 0, and the child's control connect prints `connect=ok` and the control
+  listener's count is at least 1. This replaces "refuses the connect" for that arm.
+- **The network-off arm** passes when both its runs pass. A run passes when the child's denied
+  connect prints `connect=EPERM` with the denied listener's count 0, and its control connect either
+  prints `connect=ok` with the control listener's count at least 1 ("control reached") or prints
+  `connect=EPERM` with the control listener's count 0 ("control refused"). Every other outcome fails
+  the run. The record names the case for each run.
+- **The record is of format 5.** Each socket arm keeps, for each of its runs, the token each
+  connect printed (the child's two and the probe's four outside ones) and each listener's count for
+  the run. A record of format 4 or earlier is no record and admits no launch. ADR-0041
+  Amendment 6 moves the record to format 6 with its `scratch_env` arm.
+- **The refusal** keeps the wording of the amendment above, with its first sentence saying the
+  probe did not show the child refused by the sandbox, since the arm now also fails when a count
+  could not be read.
+
+Required checks:
+
+- A format 3 and a format 4 record admit no launch.
+- A denied connect that prints `connect=ENOENT` fails the network-on arm and the network-off arm.
+- A run that refuses every connect with the network off passes the network-off arm as "control
+  refused"; the network-on arm still needs its control reached and fails when it is refused.
+- A control connect that prints `connect=EPERM` while its listener counts it fails the run.
+- An outside connect that does not print `connect=ok`, or whose mark is not recorded, before or
+  after the run, fails every socket arm.
+- A listener whose accept thread is held until after the child exits still reports the child's
+  connection in the run's count, and the denied arm fails on it.
+- A passing record names each network-off run's case and keeps every token and count.
+
+Limits added by this amendment:
+
+- A binary that refuses a denied connect with an errno other than `EPERM` fails both arms. The
+  record keeps the token it printed, so a later amendment can name that errno from evidence.
+- No launch declares that its child needs a local socket, so a network-off launch on a binary
+  whose record shows "control refused" runs, and a child that needs a local socket there fails at
+  its own connect. The record says which case a binary showed.
+
+## Amendment: a pool per subscription account
+
+Status: Proposed
+
+A subscription account's provider limits how many sessions it serves at once, and that limit belongs to the account, not to the engine or the machine: two Claude Code accounts on one machine each have their own.
+
+This amendment serves issue #4720. It adds a fourth kind of pool to D2. It changes nothing for an agent that runs on no named account, or on an account with no cap.
+
+| Pool | Counts | Cap |
+|------|--------|-----|
+| `account.<provider>.<name>` | agents on one named subscription account | the account row's `max_concurrent` in `accounts.toml` |
+
+- **Where the cap comes from.** A `[claude_code.<name>]` or `[codex.<name>]` row may set `max_concurrent = N`, a whole number of 1 or more; a token-file account takes it from a `[claude_code.<name>]` table holding only that key. A value that is not a whole number of at least 1 refuses the row when the account is resolved, so a cap never reads as unlimited. Without the key the account takes no account pool.
+- **How it reaches the spawn site.** D1's single spawn site is unchanged. The account's child environment carries two names, `LIONAGI_SUBAGENT_ACCOUNT=<provider>.<name>` and `LIONAGI_SUBAGENT_ACCOUNT_CAP=<N>`; the spawn site reads them only from an environment its caller built, removes both before the child's environment is final, and passes the account and its cap to the same all-or-none admission as the other pools. Both names are dropped from every child environment lionagi builds by copying a process environment: a named account's own environment, a profile's `agent_env` overlay, the environment of a run moved from an API model to a Claude Code subscription, and the pi environment. Values inherited from the launching process's own environment are therefore never read, so an agent cannot put itself, or a child, into another account's pool, or out of its own. A profile's `agent_env` cannot set them either: an agent is admitted into an account pool only through a named account. A marker that does not parse (a malformed name, a cap that is missing, `0` or not a whole number) refuses the spawn before the child starts, naming the variable and never echoing its value.
+- **The pool name** is built from the provider and the account's name in `accounts.toml` only, never from a path, so a Codex home moved to another directory keeps its pool and two names for one home are two pools.
+- **Recorded cap.** Each holder records the cap it was admitted under, and an admission enforces the smallest cap a current holder recorded, as for the variable caps (D3): a lowered `max_concurrent` applies at once, a raised one as the holders admitted under the lower one release. `subagent_admission_status` reports an account pool's cap as that smallest recorded cap, `0` when no slot is held, and each holder's account.
+- **Who counts.** Every CLI agent the spawn site starts on the account counts, however it was started. An agent on a Codex home named directly (`codex_home`, no name) takes no account pool.
+- **What a person sees.** The MCP verb `account.list` lists each declared account with its `max_concurrent`, the slots its pool holds and the cap the pool enforces, beside counts this server's job records support.
+
+Limits added by this amendment:
+
+- The cap counts agents on this machine that share one `LIONAGI_HOME`, as every pool does. Sessions on the same account from another machine, or from the provider's own client outside lionagi, are not counted.
+- An account pool is created on the first admission to it, so an account that has never run an agent shows no pool and `0` held slots.
+
 ## Notes
 
 The engine pool name is the engine string lower-cased (`codex`, `claude`, `gemini`, `pi`); the

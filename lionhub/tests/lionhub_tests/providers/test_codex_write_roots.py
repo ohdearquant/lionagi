@@ -27,7 +27,7 @@ def _child_sandbox_on(monkeypatch):
     monkeypatch.setattr(
         codex_module,
         "require_passing_probe_record",
-        lambda binary, env=None, cwd=None: "probe-record",
+        lambda binary, env=None, cwd=None, table=None, scratch=False: "probe-record",
     )
 
 

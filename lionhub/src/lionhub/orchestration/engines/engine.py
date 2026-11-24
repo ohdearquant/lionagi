@@ -323,6 +323,69 @@ def role_profile_injection(role: str) -> Any:
     return value
 
 
+def _refuse_unloaded_stage_profile(role: str, failure: Exception | None) -> None:
+    """Refuse a stage whose role's profile did not load when the profile's file names
+    ``deny_read`` or cannot be read; return otherwise, leaving the stage on its other settings.
+    ``failure`` is the load error, or None when no profile was found."""
+    from lionhub.orchestration.spawn import _profile_files_naming_deny_read  # noqa: PLC0415
+
+    named = _profile_files_naming_deny_read(role)
+    if not named:
+        # role_profile_route logs a load failure; the stage runs on its other settings.
+        return
+    why = f" ({failure})" if failure is not None else ""
+    raise ConfigurationError(
+        f"agent profile {role!r} did not load{why}, and " + "; ".join(named) + ": an engine "
+        "stage whose profile does not load runs on its other settings, so the profile's "
+        "deny_read entries could not be shown to hold. Fix the profile so it loads, or remove "
+        "deny_read from it."
+    )
+
+
+def _refuse_stage_deny_read(role: str) -> None:
+    """Refuse an engine stage whose role's agent profile declares ``deny_read``.
+
+    A stage takes only the model and effort from its role's profile (:func:`role_profile_route`),
+    so nothing carries the profile's ``deny_read`` entries to the stage's child, and building it
+    would drop them (ADR-0041 Amendment 7). A profile whose ``deny_read`` does not read is refused
+    too, since the loader's refusal names the key. A profile that fails to load for any other
+    reason leaves the stage on its other settings, so it is refused when the file the loader
+    would read names ``deny_read`` at all, or cannot be read; otherwise, and when there is no
+    profile, the stage keeps the handling :func:`role_profile_route` gives it.
+
+    Raises:
+        ConfigurationError: the role's profile declares ``deny_read``; its ``deny_read`` is
+            malformed, unreadable or misplaced; or it fails to load and its file names
+            ``deny_read`` or cannot be read.
+    """
+    if not isinstance(role, str) or not role:
+        return
+    from lionhub.orchestration.spawn import load_agent_profile  # noqa: PLC0415
+
+    try:
+        profile = load_agent_profile(role)
+    except FileNotFoundError:
+        # No profile, unless a symlink names one whose target cannot be read.
+        _refuse_unloaded_stage_profile(role, None)
+        return
+    except ConfigurationError as exc:
+        # Every loader refusal about the key names it; read as absent, the entries would drop.
+        if "deny_read" in str(exc):
+            raise
+        _refuse_unloaded_stage_profile(role, exc)
+        return
+    except Exception as exc:
+        _refuse_unloaded_stage_profile(role, exc)
+        return
+    if getattr(profile, "deny_read", ()):
+        raise ConfigurationError(
+            f"agent profile {role!r} declares deny_read, which this run cannot hold: an engine "
+            "stage takes only the model and effort from its role's profile, so nothing carries "
+            "the entries to the stage's child. Run the profile where its entries hold, or remove "
+            "deny_read from it."
+        )
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -776,6 +839,8 @@ class EngineRun:
         _effort_origin: str | None = None,
         _model_origin: str | None = None,
     ) -> Branch:
+        # Before the budget is spent: a stage that cannot hold its role's deny_read never builds.
+        _refuse_stage_deny_read(role)
         # exempt = terminal stages (synthesis/verdict) that must run even when
         # the expansion budget is gone — degrade, don't lose the run.
         if not exempt and not self.budget_left():
@@ -1885,6 +1950,19 @@ class EngineResult(str):
 _JUDGE_CHAIN_LIMIT = 100
 
 
+def _explicit_cause(error: BaseException) -> BaseException | None:
+    """The explicit cause of *error*, or None when reading it fails.
+
+    A refusal subclass may make its cause unreadable; the refusal itself must still be
+    raised, so a failed read is skipped. An interrupt, an exit or a cancellation raised
+    by the read is not caught.
+    """
+    try:
+        return error.__cause__
+    except Exception:  # noqa: BLE001 — an unreadable cause is skipped
+        return None
+
+
 def _judge_refusal(
     error: BaseException,
 ) -> tuple[BaseException | None, BaseException | None, bool]:
@@ -1932,10 +2010,7 @@ def _judge_refusal(
         except Exception:  # noqa: S110 — unreadable group members are skipped
             pass
     if refusal is not None:
-        try:
-            return refusal, refusal.__cause__, False
-        except Exception:  # noqa: BLE001 — unreadable links are skipped
-            return refusal, None, False
+        return refusal, _explicit_cause(refusal), False
     return None, None, False
 
 
@@ -2124,7 +2199,7 @@ class Engine:
             # separate frame so this traceback does not retain the outer error's links.
             refusal, refusal_cause, containment_refusal = _judge_refusal(exc)
             if containment_refusal:
-                raise refusal from refusal.__cause__
+                raise refusal from _explicit_cause(refusal)
             if refusal is None:
                 # No refusal on the chain. A chain that loops back on itself, or one longer than
                 # the limit, lands here too, instead of walking forever. Under containment the

@@ -15,7 +15,20 @@ except ModuleNotFoundError:  # Python 3.10
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SNAPSHOT = ROOT / "tests/contracts/data/boundary_compatibility.json"
+# The record is split into pieces so that no file grows toward the data-file size limit as
+# exports are added: the sections keyed by module path go into one piece per package and
+# first-level subpackage (`lionhub.providers.json`, with a package's own top-level modules in
+# `lionhub.json`), and the sections about the project as a whole go into `project.json`.
+# Regenerate with `python tests/contracts/test_boundary_compatibility.py`.
+SNAPSHOT_DIR = ROOT / "tests/contracts/data/boundary_compatibility"
+_PATH_SECTIONS = ("package_exports", "public_definitions", "environment_lookups")
+_PROJECT_SECTIONS = ("moved_modules", "settings_declarations", "extras", "console_scripts")
+_PROJECT_PIECE = "project"
+_PACKAGE_ROOTS = (
+    ("lionagi/", "lionagi"),
+    ("lionhub/src/lionhub/", "lionhub"),
+    ("apps/studio/backend/src/lionagi_studio/", "lionagi_studio"),
+)
 
 
 def _getattr_alias_mappings(tree):
@@ -195,8 +208,158 @@ def _surface(root):
     }
 
 
+def _piece_name(path):
+    """Name the piece that records *path*: its package, and its first subpackage if any."""
+    for prefix, package in _PACKAGE_ROOTS:
+        if path.startswith(prefix):
+            rest = path[len(prefix) :]
+            return f"{package}.{rest.split('/')[0]}" if "/" in rest else package
+    raise ValueError(f"{path} is under no package root the snapshot knows")
+
+
+def _split(surface):
+    """Divide *surface* into the pieces the snapshot directory holds, keyed by piece name."""
+    if set(surface) != {*_PATH_SECTIONS, *_PROJECT_SECTIONS}:
+        raise ValueError(f"the surface has sections {sorted(surface)}")
+    pieces = {_PROJECT_PIECE: {section: surface[section] for section in _PROJECT_SECTIONS}}
+    for section in _PATH_SECTIONS:
+        for path, value in surface[section].items():
+            pieces.setdefault(_piece_name(path), {}).setdefault(section, {})[path] = value
+    return pieces
+
+
+def _join(pieces):
+    """Assemble *pieces* into the one surface mapping; a piece out of shape fails."""
+    if _PROJECT_PIECE not in pieces:
+        raise ValueError(f"the snapshot has no {_PROJECT_PIECE} piece")
+    project = pieces[_PROJECT_PIECE]
+    if set(project) != set(_PROJECT_SECTIONS):
+        raise ValueError(f"the {_PROJECT_PIECE} piece holds {sorted(project)}")
+    surface = {**project, **{section: {} for section in _PATH_SECTIONS}}
+    for name, piece in pieces.items():
+        if name == _PROJECT_PIECE:
+            continue
+        if not piece or not set(piece) <= set(_PATH_SECTIONS):
+            raise ValueError(f"piece {name} holds {sorted(piece)}")
+        for section, entries in piece.items():
+            if not entries:
+                raise ValueError(f"piece {name} holds an empty {section}")
+            for path, value in entries.items():
+                if _piece_name(path) != name:
+                    raise ValueError(
+                        f"{path} is recorded in piece {name}, which is not {_piece_name(path)}"
+                    )
+                surface[section][path] = value
+    return surface
+
+
+def _read_snapshot(directory=SNAPSHOT_DIR):
+    """Read every piece in *directory*, keyed by its file name without `.json`."""
+    pieces = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.glob("*.json"))
+    }
+    if not pieces:
+        raise FileNotFoundError(f"no snapshot pieces in {directory}")
+    return pieces
+
+
+def _write_snapshot(surface, directory=SNAPSHOT_DIR):
+    """Write *surface* as pieces into *directory*, removing pieces it no longer has."""
+    pieces = _split(surface)
+    directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.glob("*.json"):
+        if stale.stem not in pieces:
+            stale.unlink()
+    for name, piece in pieces.items():
+        text = json.dumps(piece, indent=2, sort_keys=True) + "\n"
+        (directory / f"{name}.json").write_text(text, encoding="utf-8")
+
+
 def test_declared_compatibility_surface_is_recorded():
-    assert _surface(ROOT) == json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    surface = _surface(ROOT)
+    recorded = _read_snapshot()
+    # A piece missing or left over is named here, before the contents are compared.
+    missing = sorted(set(_split(surface)) - set(recorded))
+    extra = sorted(set(recorded) - set(_split(surface)))
+    assert not missing and not extra, (
+        f"snapshot pieces missing: {missing}; pieces the surface no longer has: {extra}; "
+        "regenerate with `python tests/contracts/test_boundary_compatibility.py`"
+    )
+    assert _join(recorded) == surface
+
+
+def test_the_pieces_assemble_into_the_surface_they_were_split_from():
+    surface = _surface(ROOT)
+    assert _join(_split(surface)) == surface
+    assert _join(json.loads(json.dumps(_split(surface)))) == surface
+
+
+def test_a_module_goes_to_its_package_and_first_subpackage():
+    assert _piece_name("lionagi/__init__.py") == "lionagi"
+    assert _piece_name("lionagi/ln/concurrency/primitives.py") == "lionagi.ln"
+    assert _piece_name("lionhub/src/lionhub/providers/openai/codex.py") == "lionhub.providers"
+    assert _piece_name("apps/studio/backend/src/lionagi_studio/api/app.py") == "lionagi_studio.api"
+    with pytest.raises(ValueError, match="no package root"):
+        _piece_name("scripts/ci.py")
+
+
+def _small_surface():
+    return {
+        "package_exports": {"lionagi/__init__.py": ["__all__ = ['a']"]},
+        "public_definitions": {
+            "lionagi/ln/core.py": ["run"],
+            "lionhub/src/lionhub/providers/codex.py": ["stream"],
+        },
+        "environment_lookups": {"lionhub/src/lionhub/providers/codex.py": ["os.getenv:'X'"]},
+        "moved_modules": None,
+        "settings_declarations": [],
+        "extras": {},
+        "console_scripts": {"li": "a:b"},
+    }
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["no-project", "project-section-missing", "wrong-piece", "unknown-section", "empty-section"],
+)
+def test_a_piece_out_of_shape_fails_the_assembly(damage):
+    pieces = _split(_small_surface())
+    if damage == "no-project":
+        del pieces[_PROJECT_PIECE]
+    elif damage == "project-section-missing":
+        del pieces[_PROJECT_PIECE]["extras"]
+    elif damage == "wrong-piece":
+        pieces["lionagi"]["public_definitions"] = pieces.pop("lionagi.ln")["public_definitions"]
+    elif damage == "unknown-section":
+        pieces["lionagi"]["extras"] = {"lionagi/x.py": []}
+    else:
+        pieces["lionagi"]["public_definitions"] = {}
+    with pytest.raises(ValueError):
+        _join(pieces)
+
+
+def test_a_missing_or_extra_piece_on_disk_is_named(tmp_path):
+    surface = _small_surface()
+    _write_snapshot(surface, tmp_path)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "lionagi.json",
+        "lionagi.ln.json",
+        "lionhub.providers.json",
+        "project.json",
+    ]
+    assert _join(_read_snapshot(tmp_path)) == surface
+    (tmp_path / "lionagi.ln.json").unlink()
+    (tmp_path / "lionagi.old.json").write_text("{}\n", encoding="utf-8")
+    assert sorted(_read_snapshot(tmp_path)) != sorted(_split(surface))
+    _write_snapshot(surface, tmp_path)
+    assert not (tmp_path / "lionagi.old.json").exists()
+    assert sorted(_read_snapshot(tmp_path)) == sorted(_split(surface))
+
+
+def test_an_empty_snapshot_directory_is_not_an_empty_record(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        _read_snapshot(tmp_path)
 
 
 @pytest.mark.parametrize("mapping_name", ["_OLD_NAMES", "FORWARDS"])
@@ -328,3 +491,7 @@ def test_surface_extraction_reads_hub_modules(tmp_path):
     assert surface["public_definitions"][key] == ["run"]
     module.write_text('def run():\n    return os.environ.get("OTHER_ROOT")\n', encoding="utf-8")
     assert _surface(tmp_path)["environment_lookups"] != surface["environment_lookups"]
+
+
+if __name__ == "__main__":
+    _write_snapshot(_surface(ROOT))

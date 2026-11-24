@@ -667,9 +667,9 @@ def _apply_operator_effort(
         # effort, which is tuned for that config's own model and 400s when it
         # exceeds this one's ceiling.
         if provider == "codex":
-            from lionagi.service.connections._provider_compat import codex_unset_effort_1x
+            from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
 
-            effort = codex_unset_effort_1x(model_name)
+            effort = codex_unset_effort_from_config(model_name)
         if not effort:
             return model_name
 

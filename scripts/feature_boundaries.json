@@ -45,6 +45,10 @@
       "layer": "contracts",
       "owner": "flow_contracts"
     },
+    "lionagi._lionagi_dir_trust": {
+      "layer": "sdk",
+      "owner": "configuration"
+    },
     "lionagi._log_channels": {
       "layer": "foundation",
       "owner": "logging_channels"

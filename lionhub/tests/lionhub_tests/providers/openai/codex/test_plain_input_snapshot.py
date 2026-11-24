@@ -316,8 +316,36 @@ FIELD_CASES: dict[str, tuple[object, object, object]] = {
 # The reduced fields whose plain value cannot be compared the same way for a request built
 # by construction and one carried by a copy: pydantic coerces an ``env`` mapping (and its
 # keys and values) to plain text at construction, so a hostile value only reaches the
-# reduction through ``model_copy``. Each has its own test below.
-EXTRA_REDUCED_FIELDS: tuple[str, ...] = ("env", "exclusive_mcp_names")
+# reduction through ``model_copy``. ``profile_deny_read`` renders only into a permission
+# profile, so its command line is tested with the child sandbox's own tests. ``scratch_dir`` is
+# runtime state that renders only with a permission profile, so its command line is tested
+# with the codex scratch tests. Each has its own test below.
+EXTRA_REDUCED_FIELDS: tuple[str, ...] = (
+    "env",
+    "exclusive_mcp_names",
+    "profile_deny_read",
+    "scratch_dir",
+)
+
+
+def test_scratch_dir_reduces_hostile_copy_values(tmp_path):
+    request = _contained(tmp_path).model_copy(
+        update={"scratch_dir": _TextWhoseStrLies("/runs/r1/scratch")}
+    )
+    assert codex_mod._plain_request(request).scratch_dir == "/runs/r1/scratch"
+    request = request.model_copy(update={"scratch_dir": 1})
+    with pytest.raises(TypeError, match="scratch_dir"):
+        codex_mod._plain_request(request)
+
+
+def test_profile_deny_read_reduces_hostile_copy_values(tmp_path):
+    request = _contained(tmp_path).model_copy(
+        update={"profile_deny_read": [_TextWhoseStrLies("/opt/keys")]}
+    )
+    assert codex_mod._plain_request(request).profile_deny_read == ("/opt/keys",)
+    request = request.model_copy(update={"profile_deny_read": [1]})
+    with pytest.raises(TypeError, match="profile_deny_read entry 0"):
+        codex_mod._plain_request(request)
 
 
 def test_exclusive_names_reduce_hostile_copy_values(tmp_path):
@@ -339,6 +367,7 @@ BOOLEAN_FIELDS: tuple[str, ...] = (
     "fast_mode",
     "contain_account_integrations",
     "ignore_user_config",
+    "require_hooks",
 )
 
 

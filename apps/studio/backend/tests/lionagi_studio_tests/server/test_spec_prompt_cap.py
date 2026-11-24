@@ -48,6 +48,7 @@ VALID_FIELD_VALUES = {
     "description": "Review a target",
     "dry_run": False,
     "effort": "high",
+    "github_pr": {"pr": "{input}", "repo": "{repo}", "comment": "{comment}"},
     "links": [],
     "max_agents": 0,
     "max_ops": 0,

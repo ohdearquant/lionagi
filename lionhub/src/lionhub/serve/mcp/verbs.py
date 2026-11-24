@@ -30,13 +30,16 @@ __all__ = (
 )
 
 # Operations that grant privilege to the caller (every caller is an agent, so
-# trusting a plugin/hook bundle would let the grantee also be the granter), and
+# trusting a plugin/hook bundle or a project .lionagi directory would let the
+# grantee also be the granter; `lionagi-dir untrust` writes the same record), and
 # `li remote`, which would let an agent start further agents on another machine.
 # No verb resolves to these paths and none accepts opaque argv, so unreachable.
 FENCED_PATHS = (
     "state migrate",
     "plugin trust",
     "hooks trust",
+    "lionagi-dir trust",
+    "lionagi-dir untrust",
     "remote run",
     "remote status",
     "remote output",
@@ -197,6 +200,50 @@ _SPAWN_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     "exclude_mcp_servers": _EXCLUDE_MCP_SERVERS,
 }
 
+_HOOKS_FROM = {
+    "type": "string",
+    "description": (
+        "Absolute path to a Claude Code settings.json or a Codex hooks.json whose guards this "
+        "one leg carries. The server reads it once now, under a size cap and with symbolic "
+        "links refused, and the leg reads only its own copy, so an edit to the file afterwards "
+        "reaches no leg. Deny and ask rules are carried as deny rules by a claude_code leg; "
+        "hook entries are run by an API-model leg, each only when a person has approved its "
+        "command with `li hooks trust` and neither its program nor a file it names lies in a "
+        "directory the leg can write. A guard the leg cannot apply refuses the submit. "
+        "Requires hooks_from_format; refused with resume or continue_last."
+    ),
+    "x-server-owned": True,
+}
+
+_HOOKS_FROM_FORMAT = {
+    "type": "string",
+    "enum": ["claude", "codex"],
+    "description": (
+        "The shape of the hooks_from file: claude for a Claude Code settings.json, codex for a "
+        "Codex hooks.json. Required whenever hooks_from is given."
+    ),
+    "x-server-owned": True,
+}
+
+_HOOKS_FROM_CARRY = {
+    "type": "array",
+    "items": {"type": "string", "enum": ["hooks", "deny"]},
+    "maxItems": 2,
+    "uniqueItems": True,
+    "description": (
+        "Which guard kinds to carry from hooks_from: hooks, deny (which covers ask rules too), "
+        "or both, the default. A kind left out is not carried and the result says so."
+    ),
+    "x-server-owned": True,
+}
+
+_AGENT_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
+    **_SPAWN_SERVER_PARAMS,
+    "hooks_from": _HOOKS_FROM,
+    "hooks_from_format": _HOOKS_FROM_FORMAT,
+    "hooks_from_carry": _HOOKS_FROM_CARRY,
+}
+
 _FLOW_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     **_SPAWN_SERVER_PARAMS,
     "playbook_fingerprint": _PLAYBOOK_FINGERPRINT,
@@ -228,6 +275,11 @@ _FLOW_REFUSALS: Mapping[str, str] = {
         "the run is already detached; re-detaching orphans it and job.status would "
         "lose the run it was given"
     ),
+}
+
+_PLAY_REFUSALS: Mapping[str, str] = {
+    **_FLOW_REFUSALS,
+    "graph": "a playbook's plan comes from its prompt; run a written graph with flow.submit",
 }
 
 
@@ -348,6 +400,8 @@ _JOB_WAIT_SCHEMA = _own(
 
 _SERVER_INFO_SCHEMA = _own({})
 
+_ACCOUNT_LIST_SCHEMA = _own({})
+
 _ROSTER_CWD = {
     "type": "string",
     "description": (
@@ -417,7 +471,7 @@ _REGISTERED: tuple[Verb, ...] = (
         cli_path="agent",
         job_kind="agent",
         refuses=_AGENT_REFUSALS,
-        server_params=_SPAWN_SERVER_PARAMS,
+        server_params=_AGENT_SERVER_PARAMS,
     ),
     Verb(
         name="flow.submit",
@@ -446,7 +500,7 @@ _REGISTERED: tuple[Verb, ...] = (
         job_kind="play",
         # flow.submit is the same command with the playbook optional.
         requires=("playbook",),
-        refuses=_FLOW_REFUSALS,
+        refuses=_PLAY_REFUSALS,
         server_params=_FLOW_SERVER_PARAMS,
         playbook_aware=True,
     ),
@@ -512,6 +566,26 @@ _REGISTERED: tuple[Verb, ...] = (
         ),
         executor="roster",
         own_schema=_PROFILE_SHOW_SCHEMA,
+    ),
+    Verb(
+        name="account.list",
+        summary=(
+            "The subscription accounts accounts.toml and the token files declare, one row "
+            "each: name, provider, source (file, keychain, dotenv or home) and "
+            "max_concurrent from the row; slots_held and enforced_cap from the machine-wide "
+            "admission pools, which count every CLI agent on the account however it started; "
+            "running, completed_24h (terminal with finished_at inside window_hours of read_at) "
+            "and last_limit from this server's agent job records, each counted for the account "
+            "its run resolved or, before the run says, the one its submission asked for. "
+            "last_limit is the newest codex ProviderQuotaError with the reset time in the "
+            "provider's own words, which carry no time zone; claude_code limits are "
+            "not_recorded. Never returns a token, a token file path, a keychain item, a .env "
+            "file or a Codex home. Job records written before jobs carried an account count "
+            "for none and are not backfilled; names that do not resolve are listed under "
+            "unresolved."
+        ),
+        executor="job",
+        own_schema=_ACCOUNT_LIST_SCHEMA,
     ),
     Verb(
         name="server.info",
@@ -887,7 +961,13 @@ ABSENT: tuple[AbsentVerb, ...] = (
     ),
     # `plugin trust`/`hooks trust` are deliberately absent from this list too:
     # they're accounted for by FENCED_PATHS, and naming them here would
-    # advertise the capability to the caller it's fenced from.
+    # advertise the capability to the caller it's fenced from. So are
+    # `lionagi-dir trust`/`lionagi-dir untrust`.
+    *_absent(
+        "lionagi-dir",
+        ("list",),
+        "The project .lionagi directories trusted for runs this server starts.",
+    ),
     *_absent(
         "plugin",
         ("enable", "disable"),

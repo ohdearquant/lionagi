@@ -30,6 +30,8 @@ FENCED_PATHS = (
     "state migrate",
     "plugin trust",
     "hooks trust",
+    "lionagi-dir trust",
+    "lionagi-dir untrust",
     "remote run",
     "remote status",
     "remote output",

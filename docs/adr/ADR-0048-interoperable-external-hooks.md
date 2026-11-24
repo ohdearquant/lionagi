@@ -1,6 +1,6 @@
 # ADR-0048: Interoperable external hooks (Claude Code / Codex hook contract)
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-11-23 (Amendment 1); Amendment 2 Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial
 - **Area**: hooks
@@ -9,7 +9,12 @@
   cross-harness contract on top of the mechanisms ADR-0047 ratified; it does not move
   their ownership boundaries); builds on ADR-0095 (its D3 no-shell executable-adapter
   posture is adopted verbatim for hook commands); revisited by ADR-0120 (interception,
-  observation, and durable-delivery planes) and ADR-0121 (authoritative action execution)
+  observation, and durable-delivery planes) and ADR-0121 (authoritative action execution);
+  Amendment 1 adds a per-leg `hooks_from` input to `agent.submit` and leaves hook
+  rendering for CLI legs to ADR-0134; Amendment 2 adds a `require_hooks` profile key,
+  checked at submit and at spawn for codex and API-model legs and refused for other
+  providers until ADR-0134; ADR-0088 Amendment 2 makes D7's `li hooks trust`
+  refuse inside a run the MCP server started with the `.lionagi` trust gate on
 
 ## Amendment note (2026-08-16)
 
@@ -17,6 +22,420 @@ The Context and problem statements below describe the 2026-07-12 baseline. They 
 motivation, not current-state claims: `lionagi/hooks/external.py`, configuration import/trust, and
 conformance tests now exist as recorded in the implementation-status section. Residual design is
 governed by ADR-0120/ADR-0121; no reader should implement the old “only external path” premise.
+
+## Amendment 1 (2026-11-23): a leg takes its parent's deny rules and hooks from a file named at submit
+
+**Status**: Accepted (2026-11-23).
+
+Issue #4546 asks for "`hooks.import` over MCP, or `agent.submit(hooks_from=\"<config path>\")`,
+snapshotted at submit like `mcp_config`", because "A deployment that delegates only through the MCP
+server cannot give a leg its parent's deny rules without a shell step outside the server." A
+caller-named `mcp_config` is not snapshotted today: `agent.submit` passes the named path through to
+the child's `--mcp-config` (`lionhub/src/lionhub/serve/mcp/jobs.py::submit`, its branch for a
+caller-named config), and only a config discovered from the launch directory is copied into the run
+directory (the same function, through `_write_mcp_server_snapshot`). This amendment gives
+`hooks_from` the snapshot the request asks for, with `prompt_file` as the precedent
+(`lionhub/src/lionhub/serve/mcp/dispatch.py::_resolve_prompt`: an absolute path, read once at
+submit, capped, empty refused). It does not change `mcp_config`.
+
+Note (2026-11-23): `agent.submit` still passes a caller-named file through. The leg now copies the
+set it was handed into its own run directory, and a resume replays that copy (ADR-0041
+Amendment 8).
+
+It adds to D6 and D7 and replaces nothing in them: `li hooks import`, the `hooks_external` block, the
+D7 tiers and the loader rule stay as written.
+
+### H1. Surface
+
+`agent.submit` gains three inputs. Two name the file: `hooks_from`, the path of a hooks
+configuration, and `hooks_from_format`, `claude` for a Claude Code `settings.json` shape or `codex`
+for a Codex `hooks.json` shape, required whenever `hooks_from` is given. They mirror the source
+argument of `li hooks import`. `li agent` gains no flag a person types: the submit hands the child its snapshot
+through a flag hidden from help, as it hands `--mcp-submit-snapshot` today.
+
+The third, `hooks_from_carry`, is a list drawn from `hooks` and `deny`, and defaults to both. `deny`
+covers the file's `permissions.ask` rules too, which H3 carries as deny rules. A kind the caller
+leaves out is not carried, and the submit result says it was left out at the caller's request. A
+kind that is carried and cannot be applied still refuses the submit (H3, H5). Nothing is dropped
+unless the caller names it, so D2's fail-loud rule holds, and the caller gains no access it lacked:
+it could already submit the leg without `hooks_from`.
+
+`hooks.import` and `hooks trust` stay unreachable from the MCP server
+(`lionhub/src/lionhub/serve/mcp/verbs.py::FENCED_PATHS` and the absent `hooks import` entry in the
+same file). Serving `hooks.import` would write the project's `.lionagi/settings.yaml`, a lasting
+change that reaches the parent and every later run, and its entries still could not run without the
+fenced trust step. `hooks_from` changes one leg only.
+
+Schedules do not take `hooks_from` in this change. A schedule fire does not call `agent.submit`: it
+starts `li agent` with only the agent, project, model and prompt
+(`lionhub/src/lionhub/orchestration/scheduler/subprocess.py::build_argv`), and
+`action_extra_args` refuses any token that begins with `-`
+(`lionhub/src/lionhub/orchestration/schedule/action_validation.py::_validate_extra_args`), so no
+schedule can carry the input. A schedule field for it, and the point at which a fire would read it, is a later decision.
+
+### H2. Reading the file
+
+The file is read once, at submit, under these rules. Every refusal names the rule it broke and the
+path as given, and carries no bytes from the file: no parser excerpt and no offending value.
+
+1. The path is absolute. `-` and relative paths are refused.
+2. The server opens it once with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC` and calls `fstat`
+   on that descriptor. A symbolic link as the last component is refused by the open. Links in parent
+   directories are resolved, and the resolved path is recorded. `O_NONBLOCK` keeps a FIFO or a
+   device at the path from holding the server before rule 3 refuses it.
+3. The descriptor must be a regular file.
+4. At most 256 KiB is accepted. The server reads at most the cap plus one byte from the descriptor,
+   and a file that yields more than the cap is refused, never truncated. The size `fstat` reported
+   is not used for this.
+5. The bytes are UTF-8 JSON whose top level is an object. `NaN`, `Infinity` and `-Infinity` are
+   refused, as `mcp_config` refuses them
+   (`lionhub/src/lionhub/orchestration/mcp_config.py::_read_config`).
+   A name repeated inside any object is refused: a parser that kept the last one would let a later
+   entry replace a deny rule with no trace.
+6. The accepted bytes are written into the run directory as a new file, created exclusively with
+   owner-only mode. The run record carries the copy's sha256, the path as given and the resolved
+   path. The leg reads only the copy. The leg and every resume hash the copy and refuse to start on a
+   mismatch with the record. An edit to the original after submit reaches no leg.
+7. There is no containment root: the path is the caller's, and the server can already read it. H3's
+   report, which names only known keys, keeps the result from listing the keys of an arbitrary JSON
+   file.
+
+### H3. What is carried, what is reported, what refuses
+
+Three keys are guards: `hooks`, `permissions.deny` and `permissions.ask` (the last two in a Claude
+Code file only; a Codex `hooks.json` has no permission rules). Every other key is not a guard.
+
+- A key that is not a guard is not carried, and the submit result reports it. The result names a key
+  only when it is in a fixed list of Claude Code settings keys kept beside the parser (among them
+  `model`, `env`, `apiKeyHelper`, `sandbox`, `disableAllHooks`, `permissions.allow`,
+  `permissions.additionalDirectories` and `permissions.defaultMode`); any other key is counted, not
+  named. Nothing that widens a leg's access is carried.
+- An ask rule is carried as a deny rule. D5 already settles what `ask` means where no one can
+  answer: it fails closed and is treated as `deny`. Each ask rule is rendered through H6 like a deny
+  rule, and the submit result reports the count: "N ask rules rendered as deny: a leg has no one to
+  ask".
+- A guard that cannot be carried refuses the submit. That is a hook entry the D6 translator would
+  reject (an event with no seam under D2, a command that cannot become an argv vector under Dv1-3,
+  an empty argv under D4, a handler type other than `command`); a hook entry, deny rule or ask rule
+  for a provider that cannot apply it (H5); and a deny or ask rule that H6 refuses. The refusal
+  names the entry by event or list and its index and gives the reason; it quotes no content. A leg
+  that starts without a guard its caller believes attached is the failure D2 exists to stop.
+- A guard kind the caller leaves out through `hooks_from_carry` (H1) is neither carried nor refused,
+  and the result names it as left out at the caller's request.
+
+`li hooks import` keeps its own behaviour, reporting a rejected entry and importing the rest; the
+refusal above applies to `hooks_from` only.
+
+### H4. Trust
+
+A deny rule only narrows what a leg may do, so it needs no trust record. A hook command runs code
+with the account's authority, so every hook entry carried from a `hooks_from` file is tagged
+`source: imported:<format>` and falls in D7's `imported` tier: it runs only when a
+`trusted_hook_commands` record matches its argv hash, resolved executable path and content digest,
+as the loader checks today (`lionhub/src/lionhub/hooks/external.py::_trust_status`).
+
+- The submit checks every hook command against the records and refuses on any command without a
+  match, naming `li hooks trust` as the step and quoting nothing from the file. Execution checks
+  again through the private-copy binding that D7's implementation already uses.
+- `li hooks trust` gains `--from <path> --format claude|codex`. It reads the named file under the
+  H2 rules and through the same translator, lists the commands that have no matching record, and
+  records approval on confirmation, so a person can trust a file that was never imported. It is a
+  CLI step only: `hooks trust` stays in the MCP server's fenced set, and the MCP path never records
+  trust. An agent can attach only commands a person has already approved.
+- A hook command is refused at submit when its resolved executable, or any argument that names an
+  existing file, lies inside a directory the leg can write: its working directory, the child
+  sandbox's `allow_write` roots and the run's scratch directory. The digest check at execution does
+  not stop a leg that rewrites its own guard during the run, and an interpreter argument
+  (`uv run guards/check.py`) would otherwise put the guard's code outside what the record pins.
+  A relative argument is resolved, like a relative executable
+  (`lionhub/src/lionhub/hooks/external.py::resolve_hook_executable`), against the directory the
+  hook runs in: for a leg, its working directory `AgentSpec.cwd`, which
+  `lionhub/src/lionhub/agent/factory.py::_wire_external_hooks` passes to each hook (the process's
+  own directory when it is unset). So a relative argument naming an existing file in that tree is
+  always refused. The check narrows what a leg can rewrite under its own guard; it does not prove
+  the guard's code pinned: a guard that imports a module from a writable directory, or reads one at
+  run time, is not caught by it.
+
+### H5. Per provider
+
+- **API-model legs.** Hook entries go onto `AgentSpec.external_hooks` and are wired by the existing
+  seam (`lionhub/src/lionhub/agent/factory.py::_wire_external_hooks`). Deny and ask rules refuse
+  the submit: lionagi's tool loop has no executor for Claude Code permission-rule syntax, and this
+  amendment does not invent a mapping.
+- **claude_code legs.** Deny and ask rules are carried; hook entries refuse the submit. The rules join
+  the leg's settings through the additive merge `claude_settings_argument` uses
+  (`lionhub/src/lionhub/agent/child_sandbox.py::_merge` and `claude_settings_argument`: lists gain
+  entries, a `sandbox` block and `disableAllHooks` are refused). With the child sandbox on, that
+  merge produces the one `--settings` value; with it off, the merged value is the leg's own
+  `settings` and is rendered as the one `--settings` flag
+  (`lionhub/src/lionhub/providers/anthropic/claude_code.py::ClaudeCodeRequest.as_cmd_args`). Hook
+  entries reach CLI legs when ADR-0134 is decided: that record designs the Claude hook render as one
+  registry compiled at the spawn seam, and a second, per-leg render written ahead of it would fork
+  it. Issue #4546 stays open for that part.
+- **codex, gemini and every other CLI provider.** A snapshot that carries any hook entry, deny
+  rule or ask rule refuses the submit until ADR-0134 gives the provider a renderer. Nothing is dropped silently.
+
+The first two bullets have a consequence. Most Claude Code settings files hold both hooks and deny
+rules, and until ADR-0134 such a file, carried whole, is accepted by no provider: an API-model leg
+refuses its deny rules and a claude_code leg refuses its hooks. `hooks_from_carry` (H1) is the way
+through. A caller that names only `deny` starts a claude_code leg with the file's deny and ask rules,
+and one that names only `hooks` starts an API-model leg with its hooks; each result names the kind
+left out.
+
+### H6. Rule paths
+
+A rule written for the parent must name, in the leg, the files it named for the parent. Claude Code's
+documentation (https://code.claude.com/docs/en/permissions, the sections from "Read and Edit" through
+"Special characters and ! negation", read 2026-11-23) gives four spellings for `Read` and `Edit`
+rules: `//path` from the filesystem root, `~/path` from the home directory, `/path` relative to the
+settings source, and `path` or `./path` relative to the current directory. A `/path` rule anchors at
+the primary working directory in project and local settings, at `~/.claude` in user settings, and at
+the file's own directory for a file passed with `--settings`. On depth it says: "Bare filenames follow
+gitignore semantics and match at any depth, so `Read(.env)` and `Read(**/.env)` are equivalent";
+"Deny and ask rules: `Read(secrets/**)` matches a directory named `secrets` at any depth under the
+current directory"; and "`Edit(/src/**)` and `Edit(src/components/**)` match only at their anchored
+location". A `!` pattern is a gitignore negation read relative to the current directory.
+
+The submit renders each `Read` or `Edit` deny or ask rule as follows. `<dir>` stands for each of two
+directories, the source project directory and the leg's working directory, so a rule rendered
+"twice" appears once for each; `x` is the pattern with any leading `./` removed.
+
+| Spelling in the source file | Rendered for the leg |
+| --- | --- |
+| `//x`, `~/x` | as written |
+| `/x` in a project or local settings file | twice: `//<dir>/x` |
+| `/x` in a user settings file | `~/.claude/x` |
+| a relative pattern with two or more directory segments before its last part and no leading `./` (`src/components/**`) | twice: `//<dir>/x` |
+| every other relative pattern: a bare name (`.env`, `*.env`), one directory segment (`secrets/**`, `src/**`), and any `./` pattern | twice: `//<dir>/**/x` |
+| any `!` pattern | refused |
+
+A `/x` rule is never left as written: in the settings value lionagi hands the child it would anchor
+somewhere else. The source file is a project or local settings file when it is
+`.claude/settings.json` or `.claude/settings.local.json` under a directory, which is then the source
+project directory, and a user settings file when it is `~/.claude/settings.json`. A `/x` rule in any
+other file refuses, and so does a relative pattern in a file that is not a project or local settings
+file: the directory it was written against is not known at submit. A relative rule names the parent
+tree's file and, in a leg's worktree, the leg's own copy. Both are files the rule's author meant to
+deny, and a deny only narrows, so both are rendered. Where the documentation gives a shape any-depth
+matching, or the shape is in doubt, the rule takes the any-depth form: a rule rendered deeper than
+the parent applied it denies more, never less, while the anchored form of `Read(secrets/**)` would
+let the leg read `vendor/secrets/x`, which the parent could not.
+
+Each `<dir>` is pasted into the rule as written, so it must be an absolute path holding no character
+the rule syntax reads as a pattern: `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)` or a backslash. A rule
+that would render with any other directory names something else in the leg, so it refuses at submit,
+naming whether the source project directory or the leg's working directory was the cause and quoting
+neither.
+
+Rules for other tools:
+
+- A rule carries as written only when it has no path anchor to lose: a bare tool name, a `*` form,
+  and rules for `Bash`, `PowerShell`, `WebFetch`, MCP tools and `Agent`.
+- A `Cd` rule carries when it is written `//x` or `~/x`. The documentation says "Path patterns share
+  the `//`, `~/`, and `/` anchors from Read and Edit rules", so a `/x` or relative `Cd` rule would
+  anchor somewhere else in the leg. It refuses, naming the `//` spelling.
+- A rule for `Write`, `Glob`, `Grep`, `NotebookEdit` or `MultiEdit` with a path other than `*`
+  refuses. Claude Code "accepts a rule with a path other than `*` for one of the tools below but
+  doesn't match a read, search, or edit against it", so such a rule guards nothing in the parent
+  either, and whoever wrote it believes a guard is attached. The refusal names the `Edit` spelling
+  for `Write`, `NotebookEdit` and `MultiEdit`, and the `Read` spelling for `Glob` and `Grep`.
+- A rule with a specifier for any other tool refuses, naming the tool.
+
+The tests show that the rendered rule text reaches the child's settings. The implementation merges
+with a probe record, made with the probe harness of #4750, that shows the child refuse a scripted
+read or command under each rendered shape, beside a control with no rule: `//<dir>/x`,
+`//<dir>/**/<name>`, `~/x`, one ask rule rendered as deny, and one `Bash` rule. A shape the record
+does not show refused is refused at submit.
+
+### H7. Tests the implementation carries
+
+- A deny rule reaches a claude_code child's `--settings`, with the child sandbox on and with it off.
+- An ask rule reaches the child's `--settings` as a deny rule and the result reports the count; an
+  ask rule that H6 refuses refuses the submit.
+- A relative deny rule, with a leg working directory different from the source file's directory,
+  renders both absolute forms.
+- A bare name (`.env`) renders `//<dir>/**/.env` for both directories.
+- `secrets/**` and `./secrets/**` render the any-depth form for both directories, and
+  `src/components/**` the anchored form. A `!` pattern refuses, and so does a relative pattern in a
+  file that is not a project or local settings file.
+- `Cd(//x)` and `Cd(~/x)` carry as written, and `Cd(/x)` and `Cd(x)` refuse. `Write(src/x)` refuses
+  naming the `Edit` spelling, and `Grep(src/x)` naming the `Read` spelling. A `Bash` rule, a
+  `WebFetch` rule and a bare tool name carry as written.
+- A file holding both hooks and deny rules, submitted with `hooks_from_carry` naming only `deny`,
+  starts a claude_code leg with the deny rules in its settings, and the result names `hooks` as left
+  out at the caller's request. The same file with the default refuses.
+- A rejected hook entry refuses the submit, naming event and index and no content.
+- An untrusted hook command refuses, and the same file with that hook removed starts.
+- A hook program inside the leg's working directory refuses, and so does a relative argument naming
+  an existing file there.
+- An API-model leg with deny rules refuses; a claude_code leg with a hook entry refuses; a codex leg
+  with any entry refuses.
+- An unknown top-level key is counted and not named; `permissions.allow`, `env` and `sandbox` are
+  absent from the child's settings and named in the result.
+- Each H2 rule refuses on its own fixture (a relative path, a link as the last component, a FIFO, a
+  file one byte over the cap, `NaN`, a repeated name), and no refusal carries bytes from the file.
+- A copy changed between submit and start refuses, and an edit to the original after submit does not
+  reach the leg.
+- `li hooks trust --from` records trust for a file that was never imported, and `hooks trust` stays
+  unreachable from the MCP server.
+
+## Amendment 2 (2026-11-24): a profile can require that its leg's declared hooks run
+
+**Status**: Proposed.
+
+Issue #4721 asks for `require_hooks: true` "to refuse the job before spawn if a declared hook is
+untrusted". `CodexCodeRequest.require_hooks` already refuses at spawn
+(`lionhub/src/lionhub/providers/openai/codex.py::_refuse_hooks_that_will_not_run`), but no job
+surface sets it. This amendment adds the profile key and a check at submit. It adds to D7 and
+Amendment 1 and replaces nothing in them.
+
+### R1. Surface
+
+An agent profile gains `require_hooks`, true or false, absent meaning false. A value that is not a
+boolean warns and is read as true, as `contain_account_integrations` and `contain_user_settings` are
+read (`lionhub/src/lionhub/orchestration/spawn.py`). The key is carried to the leg's request wherever
+the profile is used: `li agent -a`, `agent.submit`, and a flow, fanout or play worker. `li agent`
+gains no flag, and `agent.submit` gains no argument: the key belongs to the profile.
+
+### R2. Where it is met, where it is checked
+
+The key asks that the hooks declared for the leg will run. On codex these are the hooks of the codex
+home's `hooks.json` and of the `[hooks]` table of its `config.toml`. On an API-model leg they are
+lionagi's own hooks. On every other provider lionagi sees no hooks, and the key refuses.
+
+- **codex.** Codex runs a hook only once its `[hooks.state]` entry under the declaring home records
+  the hook's current hash. The key is carried as `require_hooks=True` on the request. The answer at
+  submit and at spawn comes from one function over the same three inputs: the codex home the run
+  will read, the hook state the run's command line writes, and whether the launch reads the user
+  config. That function is `_refuse_hooks_that_will_not_run`, which takes the hook state from the
+  command-line layer and leaves out the `[hooks]` table of the config when the launch ignores the
+  user config. A launch that ignores the user config while that table declares hooks is refused
+  earlier, whatever `require_hooks` says (`lionhub/src/lionhub/providers/openai/codex.py::_ignored_user_config_carry`).
+  `lionhub/src/lionhub/providers/openai/codex.py::check_require_hooks` runs those two checks on a request, in the launch's order, without
+  starting codex. `agent.submit` builds the leg's model with the builder `li agent` uses for a new
+  branch (`lionhub/src/lionhub/orchestration/spawn.py::build_chat_model`), in the codex home the run
+  resolves, and calls `check_require_hooks` on the request that model makes, before it writes the job
+  record. Whether that request ignores the user config is decided by the predicate the launch uses
+  (`lionhub/src/lionhub/agent/factory.py::forwarded_set_ignores_user_config`, reached through
+  `lionhub/src/lionhub/orchestration/spawn.py::chat_model_ignores_user_config`), over the MCP set the run will resolve: the submit
+  resolves it with the run's own call (`lionhub/src/lionhub/orchestration/mcp_config.py::resolve_spawn_mcp_servers`) over
+  what the run's command line hands it, which is the named config, `--no-mcp-config`, or the snapshot
+  the submission wrote. The `li agent` builder passes no server allowlist, so on `agent.submit` the
+  flag never depends on one. The home is
+  the one the run resolves, in the order `li agent` reads it (`serve/cli/agent.py`, through
+  `resolve_leg_account`): the submit's `account` argument, else the profile's `account`, else the
+  profile's `codex_home`, else the server's environment. The submit is refused naming each hook and
+  its status. The spawn check stays, because trust can change between submit and spawn, and because
+  the other surfaces in R1 reach the leg without `agent.submit`.
+- **API-model legs.** On the surfaces in R1 an API-model leg runs none of the lionagi hooks the
+  settings or a profile declare. Each run path creates its agent with `load_settings=False`
+  (`serve/cli/agent.py`,
+  `serve/cli/orchestrate/_orchestration.py` twice, `serve/cli/orchestrate/fanout.py`,
+  `orchestration/engines/engine.py`, `orchestration/patterns.py`, and the sub-agent of
+  `tools/coding.py`), so no `hooks_external` or `hooks` entry of the settings reaches the leg. No
+  launch path applies a profile's hooks assembly either: Studio saves one on a profile
+  (`apps/studio/backend/src/lionagi_studio/services/agents.py::_validate_hooks_key`), and the Studio
+  Operator applies only its own assembly, read from `LIONAGI_HOME/operator_hooks.json`
+  (`lionagi_studio/services/operator_hooks.py`, `lionagi_studio/operator/engine.py`). The warning
+  `li agent` prints for a profile with a hooks assembly said Operator turns apply it; it is corrected
+  in the same change. A hook declared for such a leg therefore does not run, whether D7 would trust
+  it or not. The key refuses, at submit and at spawn, when `~/.lionagi/settings.yaml` declares a
+  `hooks_external` or `hooks` entry or the profile declares a hooks assembly, naming each and saying
+  that a CLI-spawned API-model leg applies no lionagi hooks from the settings or a profile. With
+  none declared, the key is met. The hook entries a `hooks_from` file carries are the exception,
+  and the bullet on that file below says how the key counts them.
+- **claude_code, gemini and every other CLI provider.** lionagi reads none of their hook rules (R3),
+  so it cannot say whether a declared hook will run. A profile with `require_hooks: true` on such a
+  provider refuses at submit and at spawn, naming the provider and saying the key is checked for
+  codex and API-model legs only. For claude_code this holds until ADR-0134 gives lionagi a hooks
+  render for Claude legs, as Amendment 1 H5 holds hook entries for a claude_code leg.
+- **A hooks file named at submit (Amendment 1).** Its hook entries are hooks declared for the leg,
+  and the key counts them (R3). An API-model leg runs them, each only once it has passed Amendment
+  1 H4's trust and writable-directory checks
+  (`lionhub/src/lionhub/hooks/hooks_from.py::hook_command_refusals`); no other leg runs them, and H5
+  refuses them there. Its deny and ask rules are Claude Code permission rules, applied by a
+  claude_code leg only (`lionhub/src/lionhub/hooks/hooks_from.py::carry_refusal`). The file's
+  refusals are raised before the key's, at submit and at the leg's start, and the key's check is
+  handed each carried hook entry by its place in the file (the `carried` argument of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks`). A leg with the key and a
+  `hooks_from` file gets:
+  - on codex, H5's refusal when the file carries hook entries or deny or ask rules; a file that
+    carries neither leaves the key's codex answer as it was;
+  - on an API model, H5's refusal when the file carries deny or ask rules, and H4's when a hook
+    entry is untrusted or its program, or a file it names, lies where the leg can write. Otherwise
+    the file's hook entries run, so they meet the key, and the key's answer is the one it gives
+    without the file, read from the settings and the profile. When that answer is a refusal, its
+    text also names each carried hook entry as one that runs;
+  - on claude_code, H5's refusal when the file carries hook entries; a file that carries only deny
+    and ask rules passes H5, and the key then refuses, naming claude_code.
+
+  Were a carried hook entry to reach a CLI leg past H5, the key would refuse it there too, naming
+  it.
+
+### R3. Limits
+
+- On codex, hooks in project layers, plugins and managed configuration are not checked, as the
+  request field already says.
+- lionagi does not read Claude Code's or gemini's settings, so on those providers it cannot see
+  whether a hook is declared, disabled or trusted. That is why R2 refuses there rather than
+  accepting.
+- Applying lionagi's hooks to a CLI-spawned API-model leg is outside this amendment. When a later
+  change applies them, the API arm of R2 becomes D7's own check: the key is met when
+  `lionhub/src/lionhub/hooks/external.py::_trust_status` trusts every imported or plugin entry the
+  leg carries. A `hooks_from` file's hook entries already run on an API-model leg (Amendment 1
+  H4, H5): they are hooks declared for that leg, which the key counts and the refusal text of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks` describes (R2).
+- A flow, fanout or play does not pass through `agent.submit`'s check for each worker. Its workers
+  are refused at spawn.
+- An `agent.submit` that resumes or continues a branch takes its model from that branch, which the
+  server does not read, so the submit is accepted and the resumed run is checked at spawn. With the
+  hooks, their trust and the settings unchanged between submit and spawn, this is the only case
+  where the submit accepts and the spawn refuses; everywhere else the submit gives the spawn's
+  answer.
+- The requirement stays with the branch. When `li agent` launches a branch under a profile with the
+  key, it records the key in the branch's metadata, and a resume or continue is checked when that
+  record or the profile the resume names sets it, whatever profile the resume names, or none. A
+  resumed codex request is given `require_hooks` again; any other resumed leg gets R2's answer for
+  its provider, with an API-model leg's declared hooks read at the resume (the settings, and the
+  profile the resume names).
+- A refusal at spawn is raised once the run is allocated and before its first turn, so no provider
+  process is started. The job ends `failed`; the run records the cause class
+  `RequireHooksRefusedError` with the refusal's text, and the job record's `reason_detail`, read
+  through `job.status`, and the terminal notice carry that text.
+- The key is not a 1.0 condition. A profile without it behaves as in 0.x.
+
+### R4. Tests the implementation carries
+
+- A codex profile with the key and an untrusted hook in the account home refuses the submit before
+  any job record exists, naming the hook. The same profile with the hook trusted is accepted.
+- The home checked at submit is the named account's home, not the server's, when both are set and
+  differ. With no account named, it is the profile's `codex_home`.
+- A codex profile whose launch ignores the user config gets the same answer at submit and at spawn,
+  for a `[hooks]` table that declares hooks and for one that declares none.
+- An API-model profile with the key refuses at submit and at spawn when `~/.lionagi/settings.yaml`
+  declares a `hooks_external` entry (trusted and untrusted both), and when the profile declares a
+  hooks assembly. With neither declared, it is accepted.
+- A claude_code profile with the key refuses at submit, naming claude_code. A gemini profile with
+  the key refuses at submit, naming gemini.
+- A profile whose key is the string "yes" warns and is read as true.
+- A profile with the key and a `hooks_from` file, each refused before any job record: on codex,
+  with a trusted home, a file with hook entries and a file with deny rules are refused by H5, and a
+  file carrying neither leaves the home's answer (an untrusted hook refuses, a trusted one is
+  accepted); on an API model, a file with an untrusted hook entry is refused by H4, a file of
+  trusted hook entries is accepted, and with a hook also declared in the settings the key refuses,
+  naming the settings hook as one that does not run and the carried entry as one that does; on
+  claude_code, a file of deny rules alone is refused by the key, naming
+  claude_code, and a file with hook entries is refused by H5.
+- `li agent -a` with the key on codex refuses at spawn (the existing request check is reached).
+- A run refused at spawn ends failed with the refusal's class and text recorded, and takes no turn;
+  `job.status` and the notice carry the text as `reason_detail`.
+- A branch launched under the key and resumed with no profile is refused at spawn when a declared
+  hook cannot run, and the same resume of a branch launched without the key runs. A resumed codex
+  branch launched under the key carries `require_hooks` on its request.
+- The user-config flag on the request the submit check builds equals the flag on the request
+  `li agent` builds from the spawned command line, for a profile with `mcp: none`, a caller's
+  `no_mcp_config`, a named config that lists no servers, a snapshot every server was excluded from, a
+  snapshot with a server, and no config found.
 
 ## Context
 

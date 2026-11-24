@@ -60,7 +60,11 @@ async def test_turn_failed_empty_payload_has_self_describing_content():
 
 async def test_error_event_empty_payload_benign_eos_still_applies():
     """'error' event with err={} is the benign-EOS sentinel; the empty-payload fallback must NOT override the benign_eos tagging path."""
-    events = [{"type": "error", "error": {}}]
+    # After the turn's text: with none, the stream's end reports an empty turn instead.
+    events = [
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+        {"type": "error", "error": {}},
+    ]
     chunks = await _chunks_from_events(events)
 
     error_chunks = [c for c in chunks if c.type == "error"]

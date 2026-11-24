@@ -9,6 +9,7 @@ needs its coordination or operational guarantees.
 | Continue prior terminal work | `li agent -c` or `li agent -r BRANCH_ID` | Reuses saved conversation state |
 | Independent perspectives | `li o fanout` | Parallel workers, optional synthesis |
 | Work with dependencies | `li o flow` | Plans and executes a dependency-aware graph |
+| Legs whose dependencies you already know | `li o flow --graph FILE` | Runs a written graph of agent legs as written, with no planning turn |
 | The same planned flow repeatedly | `li play NAME` | Named, parameterized, versionable playbook |
 | A shipped domain pipeline | `li engine run KIND` | Prebuilt coding, research, review, planning, or hypothesis engine |
 | Run later or repeatedly | `li schedule create` | Cron, interval, GitHub, and threshold triggers through Studio |

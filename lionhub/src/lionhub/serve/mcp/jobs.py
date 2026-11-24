@@ -316,7 +316,17 @@ _RUN_ID_ATTEMPTS = 8
 # writes and the cleanup that removes them can't drift apart.
 _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
-_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+# The leg's own copy of the hooks file its submission named (ADR-0048 Amendment 1 H2).
+_HOOKS_FROM_SNAPSHOT_FILENAME = "hooks-from.json"
+# The copy of a written graph a flow submission accepted (ADR-0069 Amendment 4); the same
+# name the run gives its own copy.
+_GRAPH_SNAPSHOT_FILENAME = "graph.json"
+_RESERVATION_CONTENTS = (
+    _PROMPT_FILENAME,
+    _MCP_SNAPSHOT_FILENAME,
+    _HOOKS_FROM_SNAPSHOT_FILENAME,
+    _GRAPH_SNAPSHOT_FILENAME,
+)
 # Written into a reservation directory only when its giveback could not remove
 # it, never as part of a submission's own state — kept out of
 # _RESERVATION_CONTENTS so a later giveback attempt doesn't try to unlink it
@@ -1331,6 +1341,67 @@ def _validate_notify_sender(
         )
 
 
+def _carried_hook_labels(hooks_from: dict[str, Any] | None) -> list[str]:
+    """Each hook entry a submission's ``hooks_from`` file carries, labelled by its place in
+    the file; empty with no file."""
+    if hooks_from is None:
+        return []
+    from lionhub.hooks.hooks_from import hook_entries
+
+    return [entry["where"] for entry in hook_entries(hooks_from["plan"])]
+
+
+def _refuse_require_hooks(
+    profile: Any | None,
+    model: str,
+    *,
+    account: str | None,
+    cwd: str,
+    mcp_config: str | None,
+    no_mcp_config: bool,
+    submit_snapshot: str | None,
+    carried: list[str],
+) -> None:
+    """Refuse the submission when its profile's ``require_hooks`` is not met, as the run's
+    launch would refuse it (``spawn.refuse_require_hooks_at_submit``).
+
+    The MCP set is resolved by the call the run makes on start, with the arguments this
+    submission hands it: the named config, ``--no-mcp-config``, or the snapshot written
+    above. *carried* labels the hook entries the submission's ``hooks_from`` file carries,
+    which the key counts. The launch checks again and decides; this answer may only be as
+    strict.
+    """
+    if profile is None or not getattr(profile, "require_hooks", False):
+        return
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
+    from lionhub.orchestration.spawn import refuse_require_hooks_at_submit
+
+    try:
+        resolution = resolve_spawn_mcp_servers(
+            mcp_config,
+            launch_dir=cwd,
+            disabled=no_mcp_config,
+            submit_snapshot=submit_snapshot,
+        )
+    except McpConfigError as exc:
+        # The run would refuse the same file on start.
+        raise SubmitInputError(f"cannot submit this agent run: {exc}") from exc
+    try:
+        refuse_require_hooks_at_submit(
+            profile.name,
+            profile,
+            model,
+            account=account,
+            mcp_servers=resolution.servers,
+            mcp_exclusive=resolution.exclusive,
+            cwd=cwd,
+            carried=carried,
+        )
+    except ConfigurationError as exc:
+        raise SubmitInputError(str(exc)) from exc
+
+
 def submit(
     kind: str,
     flags: list[str],
@@ -1347,6 +1418,12 @@ def submit(
     write_capable: bool = False,
     profile: Any | None = None,
     replay_mcp_choice: bool = False,
+    account: str | None = None,
+    account_provider: str | None = None,
+    hooks_from: dict[str, Any] | None = None,
+    model: str | None = None,
+    graph_source: Any | None = None,
+    lionagi_dir_gate: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1372,9 +1449,36 @@ def submit(
     `--flag=value` form) since this function must decide whether to resolve its
     own server set. *profile* is the already-resolved submitting agent profile,
     so its MCP policy is applied before any ambient config is read.
+
+    *account* and *account_provider* are the subscription account the submission asks the
+    run to use, as names only (``accounts.toml``'s name and its provider table); they are
+    recorded and returned as given. The run resolves the account itself and writes what it
+    resolved to its ``run.json``.
+
+    *hooks_from*, for an agent run only, is the hooks file the submission named, already read
+    and planned: ``file`` (a ``HooksFile``), ``plan`` (a ``CarryPlan``), ``format`` and
+    ``carry``. Its accepted bytes are written into the run directory as a new owner-only file,
+    the leg is pointed at that copy with the digest it must match, and the record and the
+    handle carry the path as given, the resolved path, the digest and the plan's report
+    (ADR-0048 Amendment 1 H2, H3).
+
+    *model* is an agent run's model spec when the submission names one. It is read only to
+    answer the profile's ``require_hooks`` before anything is recorded (ADR-0048 Amendment 2);
+    a resumed run's model comes from its branch, so the run's own launch answers for it.
+
+    *graph_source* is a flow's written graph, already loaded and checked. Its accepted bytes
+    are written into this run's directory and the run is pointed at that copy, so the run
+    reads only the bytes that were checked here.
+
+    *lionagi_dir_gate* starts the run with ``LIONAGI_DIR_TRUST_GATE`` set, so it and every process
+    it starts take project ``.lionagi`` files only from trusted directories (ADR-0088
+    Amendment 2). The caller passes it when ``lionagi_dir_trust.gate`` is ``mcp``; otherwise the
+    variable is not set here.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
+    if hooks_from is not None and kind != "agent":
+        raise SubmitInputError("hooks_from is taken by agent runs only")
     # Checked in this server, which is alive and inside the tree of whatever started it: the
     # detached run checks again, but a server that exits first leaves it outside that tree
     # (ADR-0133 D7).
@@ -1555,8 +1659,48 @@ def submit(
                 )  # readable order; child reads the snapshot file, not this list
                 options = ["--mcp-submit-snapshot", mcp_config_path, *options]
 
+        # The leg reads only this copy, and refuses to start unless it hashes to the digest
+        # named on its own command line, which the job record keeps (ADR-0048 Amendment 1 H2).
+        hooks_from_path: Path | None = None
+        hooks_from_record: dict[str, Any] | None = None
+        if hooks_from is not None:
+            hooks_file, plan = hooks_from["file"], hooks_from["plan"]
+            hooks_from_path = d / _HOOKS_FROM_SNAPSHOT_FILENAME
+            snapshot_spec = {
+                "copy": str(hooks_from_path),
+                "sha256": hooks_file.sha256,
+                "format": hooks_from["format"],
+                "carry": list(hooks_from["carry"]),
+                "source": hooks_file.resolved_path,
+            }
+            options = [
+                "--hooks-from-snapshot",
+                json.dumps(snapshot_spec, sort_keys=True),
+                *options,
+            ]
+            hooks_from_record = {
+                "path": hooks_file.path,
+                "resolved_path": hooks_file.resolved_path,
+                "sha256": hooks_file.sha256,
+                "copy": str(hooks_from_path),
+                "format": hooks_from["format"],
+                "carry": list(hooks_from["carry"]),
+                "report": plan.report(),
+            }
+
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.
+        graph_snapshot_path = None
+        if graph_source is not None:
+            graph_snapshot_path = d / _GRAPH_SNAPSHOT_FILENAME
+            options = [
+                "--graph-submit-snapshot",
+                str(graph_snapshot_path),
+                "--graph-submit-resolved",
+                graph_source.resolved,
+                *options,
+            ]
+
         options = [
             "--notify",
             _notify_template(run_id, notify_target, notify_command, notify_sender),
@@ -1584,6 +1728,10 @@ def submit(
         env.pop(MINTED_CHILD_ACTOR_ENV, None)
         if minted is not None:
             env[MINTED_CHILD_ACTOR_ENV] = minted.actor
+        if lionagi_dir_gate:
+            from lionagi._lionagi_dir_trust import GATE_ENV_VAR
+
+            env[GATE_ENV_VAR] = "1"
 
         # Checked before anything is written: Popen raising this late would
         # leave a job recorded "running" for a run that never started.
@@ -1591,12 +1739,32 @@ def submit(
 
         if prompt_path is not None:
             prompt_path.write_text(prompt)
+        if hooks_from_path is not None:
+            from lionhub.hooks.hooks_from import write_snapshot
+
+            write_snapshot(hooks_from_path, hooks_from["file"])
+        if graph_snapshot_path is not None:
+            from lionhub.orchestration.flow.graph import write_graph_copy
+
+            write_graph_copy(d, graph_source)
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(
                 Path(mcp_config_path),
                 mcp_servers,
                 source=mcp_config_source or "",
                 searched_from=mcp_config_searched_from or "",
+            )
+        if kind == "agent" and isinstance(model, str) and model and not replay_mcp_choice:
+            _refuse_require_hooks(
+                profile,
+                model,
+                account=account,
+                cwd=cwd or os.getcwd(),
+                mcp_config=mcp_config,
+                # A profile declaring mcp: none puts --no-mcp-config on the run's line above.
+                no_mcp_config=no_mcp_config or profile_disables_mcp,
+                submit_snapshot=mcp_config_path if mcp_servers is not None else None,
+                carried=_carried_hook_labels(hooks_from),
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
@@ -1644,6 +1812,10 @@ def submit(
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
+        # The account the submission asked for, names only; null when it named none. What
+        # the run resolved is in its run.json.
+        "account": account,
+        "account_provider": account_provider,
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
@@ -1651,6 +1823,8 @@ def submit(
         "excluded_mcp_servers": recorded_exclusions,
         # Deprecated response/record alias; keep equal to the truthful name.
         "mcp_config_servers": declared_mcp_servers,
+        # The hooks file this leg carries guards from, or null when the submission named none.
+        "hooks_from": hooks_from_record,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -1739,6 +1913,9 @@ def submit(
         "child_actor": minted.actor if minted else None,
         "child_actor_config": minted.config_path if minted else None,
         "submitting_actor": minted.submitting_actor if minted else None,
+        "account": account,
+        "account_provider": account_provider,
+        "hooks_from": hooks_from_record,
     }
 
 
@@ -2596,6 +2773,10 @@ def status(run_id: str) -> dict[str, Any]:
         "child_actor": (job or {}).get("child_actor"),
         "child_actor_config": (job or {}).get("child_actor_config"),
         "submitting_actor": (job or {}).get("submitting_actor"),
+        # Null on records written before these fields existed, as on a submission that
+        # named no account.
+        "account": (job or {}).get("account"),
+        "account_provider": (job or {}).get("account_provider"),
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
@@ -3179,6 +3360,31 @@ def _notify_delivery_state(outcome: Any) -> str:
     return "failed"
 
 
+def job_run_ids() -> list[str]:
+    """Run ids that have a job record, newest first (run_id sorts by timestamp).
+
+    A directory without a job record is not a job: a submission reserves its directory
+    before `job.json` publishes it. A record that cannot even be stat'ed is kept, for
+    ``status`` to classify. A missing jobs directory is no jobs; an unreadable one raises.
+    """
+    try:
+        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
+    except FileNotFoundError:
+        return []
+    run_ids: list[str] = []
+    for d in entries:
+        if not d.is_dir():
+            continue
+        try:
+            (d / "job.json").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # let status() classify an inaccessible record
+        run_ids.append(d.name)
+    return run_ids
+
+
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
 
@@ -3196,21 +3402,9 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     field to say "could not be read" and reporting empty would falsely mean
     "no jobs at all".
     """
-    try:
-        entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
-    except FileNotFoundError:
-        return []
     out: list[dict[str, Any]] = []
-    for d in entries:
-        if not d.is_dir():
-            continue
-        try:
-            (d / "job.json").stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            pass  # let status() classify an inaccessible record
-        st = status(d.name)
+    for run_id in job_run_ids():
+        st = status(run_id)
         if status_filter and st["status"] != status_filter:
             continue
         out.append(
@@ -3229,6 +3423,8 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "finished_at_precision": st["finished_at_precision"],
                 "terminal_source": st["terminal_source"],
                 "record_state": st["record_state"],
+                "account": st["account"],
+                "account_provider": st["account_provider"],
                 _PERSISTENCE_DEGRADED_REASON_FIELD: st[_PERSISTENCE_DEGRADED_REASON_FIELD],
                 "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
             }
@@ -3489,12 +3685,19 @@ def record_failure_cause(run_id: str, cause: dict[str, Any]) -> WriteResult:
     Only called with a cause that was actually read. A run whose cause file is
     absent leaves this field off the record entirely, so a caller can tell a run
     that reported no typed cause from one that predates the field.
+
+    A cause carrying ``detail`` (an empty turn's text and the CLI's stderr tail)
+    also becomes the record's ``reason_detail`` when the record has none, which is
+    where the job status reads it.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
             return WriteResult(None, guard.state)
         job["failure_cause"] = cause
+        detail = cause.get("detail")
+        if isinstance(detail, str) and detail and not job.get("reason_detail"):
+            job["reason_detail"] = detail
         return WriteResult(job, guard.state)
 
 

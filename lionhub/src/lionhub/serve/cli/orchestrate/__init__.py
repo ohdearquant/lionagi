@@ -234,6 +234,9 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
     playbooks join the search only after a project/global miss (bare name),
     or via an explicit ``<plugin>/<name>`` token, and only for a plugin that
     is trusted + enabled + version-compatible (see ``lionagi.plugins``).
+
+    In a gated run, a project playbook from an untrusted ``.lionagi`` directory raises
+    ``UntrustedLionagiDirError`` (``lionagi._lionagi_dir_trust``) instead of returning.
     """
     from lionagi._paths import find_lionagi_dirs
     from lionagi.libs.path_safety import validate_path_component
@@ -285,6 +288,11 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
                     None,
                     f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
                 )
+            # Raised, not returned as a message: it is a refusal of a file that resolved,
+            # never a reason to look for another (ADR-0088 Amendment 2).
+            from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+            check_lionagi_dir("playbook", candidate, d)
             _warn_if_shadowing_plugin_playbook(name)
             _warn_if_shadowing_global_playbook(name, d)
             return candidate, None
@@ -466,6 +474,48 @@ def _warn_resume_on_timeout_is_inert(args: argparse.Namespace) -> None:
     warn(message)
 
 
+def _load_checked_graph(args: argparse.Namespace):
+    """Load and check ``--graph`` the way ``flow.submit`` does, or log the refusal.
+
+    Returns the graph, or None after logging why it is refused. A run the server submitted
+    reads the copy the server accepted (``--graph-submit-snapshot``) and records the path
+    the caller named and where it resolved, never the copy's own path.
+    """
+    from lionhub.orchestration.flow.graph import (
+        FlowGraphError,
+        check_graph,
+        graph_flag_refusal,
+        load_graph,
+    )
+
+    refusal = graph_flag_refusal(
+        playbook=getattr(args, "playbook", None),
+        file=getattr(args, "file", None),
+        reactive=getattr(args, "reactive", None),
+        resume=getattr(args, "resume", None),
+        with_synthesis=getattr(args, "with_synthesis", False),
+        bare=getattr(args, "bare", False),
+    )
+    if refusal is not None:
+        log_error(refusal)
+        return None
+    snapshot = getattr(args, "graph_submit_snapshot", None)
+    try:
+        if snapshot is not None:
+            source = load_graph(
+                snapshot,
+                given_path=args.graph,
+                resolved=getattr(args, "graph_submit_resolved", None),
+            )
+        else:
+            source = load_graph(args.graph)
+        check_graph(source, cwd=getattr(args, "cwd", None), max_ops=args.max_ops or 0)
+    except FlowGraphError as exc:
+        log_error(str(exc))
+        return None
+    return source
+
+
 @auto_register(
     area="orchestrate",
     cli=CliDeclaration(seed="orchestrate", parser_factory=add_orchestrate_subparser),
@@ -541,6 +591,18 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         return EXIT_CODE_BY_STATUS.get(fanout_terminal_status, 0)
 
     if args.orch_command == "flow":
+        graph_source = None
+        if getattr(args, "graph", None) is not None:
+            graph_source = _load_checked_graph(args)
+            if graph_source is None:
+                return 1
+        elif (
+            getattr(args, "graph_submit_snapshot", None) is not None
+            or getattr(args, "graph_submit_resolved", None) is not None
+        ):
+            log_error("--graph-submit-snapshot and --graph-submit-resolved need --graph")
+            return 1
+
         resume_target = getattr(args, "resume", None)
         if resume_target:
             flow_result, rc = _run_orch_command(
@@ -570,6 +632,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
+        github_pr = None
         file_spec = getattr(args, "file", None)
         if playbook_name and file_spec:
             log_error("pass either -p/--playbook or -f/--file, not both")
@@ -621,6 +684,19 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.model = spec["model"]
             if args.agent is None and spec.get("agent"):
                 args.agent = spec["agent"]
+            if spec.get("github_pr") is not None:
+                # Fetched here, under this process's GitHub sign-in, so the run's agents
+                # get the pull request as text and never need GitHub access themselves.
+                from ._github_pr import GithubPrError, fetch_pull_request, resolve_target
+
+                try:
+                    github_pr = resolve_target(spec["github_pr"], args.prompt, playbook_ctx)
+                    pr_meta, pr_diff = fetch_pull_request(github_pr)
+                except GithubPrError as exc:
+                    log_error(str(exc))
+                    return 1
+                playbook_ctx["pr_meta"] = pr_meta
+                playbook_ctx["pr_diff"] = pr_diff
             if spec.get("prompt"):
                 args.prompt = _interpolate_prompt(spec["prompt"], args.prompt, playbook_ctx)
             if args.max_concurrent == 0 and spec.get("workers"):
@@ -657,12 +733,13 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.model = None
 
         # Naming neither model nor agent defaults to the orchestrator profile
-        # (setup_orchestration); a prompt is still required regardless.
-        if not args.prompt:
+        # (setup_orchestration); a prompt is still required, unless a written graph
+        # gives every node its own.
+        if not args.prompt and graph_source is None:
             log_error("prompt is required (positional or via -f spec file)")
             return 1
 
-        prompt_err = _check_assembled_prompt(args.prompt)
+        prompt_err = _check_assembled_prompt(args.prompt) if args.prompt else None
         if prompt_err is not None:
             log_error(prompt_err)
             return 1
@@ -742,7 +819,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         flow_result, rc = _run_orch_command(
             _run_flow(
                 model_spec=args.model or "",
-                prompt=args.prompt,
+                prompt=args.prompt or "",
                 with_synthesis=with_synthesis,
                 synthesis_model=synthesis_model,
                 max_concurrent=args.max_concurrent,
@@ -764,7 +841,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 max_ops=args.max_ops,
                 dry_run=args.dry_run,
                 show_graph=getattr(args, "show_graph", False),
-                reactive_spec=getattr(args, "reactive", None) or "all",
+                # A written graph's topology is fixed at submit, so it grows nothing.
+                reactive_spec=(
+                    "off" if graph_source is not None else getattr(args, "reactive", None) or "all"
+                ),
                 fast=getattr(args, "fast", False),
                 playbook_name=playbook_name,
                 playbook_artifacts=playbook_artifacts,
@@ -780,6 +860,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     if getattr(args, "mcp_submit_snapshot", None) is not None
                     else {}
                 ),
+                **({"graph_source": graph_source} if graph_source is not None else {}),
             ),
             verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message
@@ -790,6 +871,21 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         output, terminal_status = flow_result
         if not args.verbose:
             print(output)
+        if github_pr is not None and github_pr.comment != "none" and not args.dry_run:
+            if terminal_status != "completed":
+                log_error(
+                    f"github-pr: the run ended {terminal_status}; nothing was posted to "
+                    f"{github_pr.pr}"
+                )
+            else:
+                from ._github_pr import GithubPrError, post_review
+
+                try:
+                    post_review(github_pr, output)
+                except GithubPrError as exc:
+                    log_error(str(exc))
+                    return EXIT_CODE_BY_STATUS["failed"]
+                hint(f"Review posted to pull request {github_pr.pr}")
         return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
 
     if args.orch_command == "ctl":

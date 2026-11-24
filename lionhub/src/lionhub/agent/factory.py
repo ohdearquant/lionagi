@@ -45,6 +45,57 @@ logger = logging.getLogger("lionagi.agent.factory")
 _MAX_TOKENS_PROVIDERS = frozenset({"anthropic"})
 
 
+def _hold_profile_deny_read(
+    models: list,
+    spec: Any,
+    sandbox_profile: str | None,
+    entries: tuple[str, ...] | None = None,
+) -> None:
+    """Hand the agent profile's ``deny_read`` entries to every model that runs a child.
+
+    ``entries`` are the loaded profile's; ``None`` loads the profile named ``sandbox_profile``
+    for them. A CLI endpoint (Claude Code, codex, the Antigravity CLI) takes them as
+    ``profile_deny_read`` in its config kwargs, so a restored model keeps them. An API model
+    holds them only when ``spec`` is the write tool set whose seatbelt policy was built with
+    them. Any other model refuses the build, naming what is missing.
+
+    Raises:
+        ConfigurationError: the profile declares entries that a model here cannot hold, or the
+            child sandbox is switched off.
+    """
+    from .child_sandbox import (
+        profile_deny_read_for,
+        profile_deny_read_refusal,
+        resolve_child_sandbox,
+        with_profile_deny_read,
+    )
+
+    if entries is None:
+        entries = profile_deny_read_for(sandbox_profile)
+    elif entries:
+        # Raises while the sandbox is switched off: nothing would hold the entries.
+        with_profile_deny_read(resolve_child_sandbox(None), entries, profile=sandbox_profile)
+    if not entries:
+        return
+    for model in models:
+        endpoint = model.endpoint
+        # Only an API model's tools run under the spec's seatbelt policy.
+        held = not model.is_cli and set(entries) <= set(getattr(spec, "_profile_deny_read", ()))
+        reason = profile_deny_read_refusal(
+            _canonical_provider(endpoint.config.provider),
+            is_cli=bool(model.is_cli),
+            api_tools="write" if held else None,
+        )
+        if reason is not None:
+            raise ConfigurationError(
+                f"agent profile {sandbox_profile!r} declares deny_read, which this run cannot "
+                f"hold: {reason}. Run the profile where its entries hold, or remove deny_read "
+                "from it."
+            )
+        if model.is_cli:
+            endpoint.config.kwargs["profile_deny_read"] = list(entries)
+
+
 class _AgentSettingError(ConfigurationError):
     """The resolved agent or model cannot carry a requested setting."""
 
@@ -68,9 +119,9 @@ def _api_effort_kwargs(provider: str, model: str, effort: str, *, origin: str = 
     if provider == "anthropic":
         return {"output_config": {"effort": effort}}
     if provider == "openai":
-        from lionagi.service.connections._chat_schemas import CHAT_MODELS, REASONING_MODELS
+        from lionagi.service.connections._chat_schemas import classify_openai_chat_model
 
-        if model not in CHAT_MODELS or model in REASONING_MODELS:
+        if classify_openai_chat_model(model) != "non_reasoning":
             return {"reasoning_effort": effort}
     if origin in ("profile", "stored"):
         if origin == "profile":
@@ -481,7 +532,12 @@ async def create_agent(
                 extra[repo_kwarg] = spec.cwd
 
         if agent_env:
-            extra["env"] = {**os.environ, **agent_env}
+            from lionagi.service._subagent_admission import without_account_names
+
+            # The spawn reads an account and its cap from the environment it is handed; only a
+            # named account's own environment may name one, so neither an inherited value nor
+            # the overlay can put this agent into an account's pool.
+            extra["env"] = without_account_names({**os.environ, **agent_env})
 
         chat_model = iModel(
             provider=provider,
@@ -590,6 +646,7 @@ async def create_agent(
         policy = resolve_child_sandbox(sandbox_profile)
         for endpoint in claude_endpoints:
             endpoint.config.kwargs["child_sandbox"] = policy.to_dict()
+    _hold_profile_deny_read(models, spec, sandbox_profile)
     branch.metadata[CREATE_AGENT_BRANCH_ORIGIN_KEY] = True
 
     system_message = spec.build_system_message()
@@ -698,7 +755,17 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
     See docs/internals/agent-runtime.md#external-hook-wiring for the
     attach/queue/reparent contract.
     """
-    if not spec.external_hooks:
+    _wire_external_hook_entries(branch, spec.external_hooks, cwd=spec.cwd)
+
+
+def _wire_external_hook_entries(
+    branch: Branch, entries: list[dict[str, Any]], *, cwd: str | None
+) -> None:
+    """Attach parsed ``hooks_external`` *entries* to *branch*, each hook running in *cwd*.
+
+    The entries are the dicts :func:`lionhub.agent.settings.parse_external_hooks` returns.
+    """
+    if not entries:
         return
 
     from lionagi.hooks.bus import HookPoint
@@ -712,14 +779,14 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
         "PostToolUseFailure": HookPoint.TOOL_ERROR,
     }
 
-    for entry in spec.external_hooks:
+    for entry in entries:
         handler = external_hook_adapter(
             event=entry["event"],
             command=entry["command"],
             timeout=entry["timeout"],
             matcher=entry.get("matcher"),
             source=entry.get("source"),
-            cwd=spec.cwd,
+            cwd=cwd,
             session_id=session_id,
         )
         if entry["event"] == "PreToolUse":
@@ -1300,6 +1367,23 @@ def request_carries_forwarded_mcp(branch: Branch) -> bool:
     return request_kwargs_carry_forwarded_mcp(getattr(config, "kwargs", None))
 
 
+def forwarded_set_ignores_user_config(
+    servers: Mapping[str, Any] | None,
+    *,
+    exclusive: bool,
+    allowed_names: Collection[str] | None = None,
+) -> bool:
+    """Whether handing codex this MCP set makes its request ignore the user config.
+
+    The empty set, as the whole set, with an empty allowlist is the hermetic codex run: the
+    user config, and every server, hook and profile it declares, is not loaded at all. An
+    allowlist can name a server from any later-loaded config layer, so only an empty one
+    takes this path. ``apply_forwarded_mcp_servers`` sets the flag on exactly this answer,
+    and a caller that must know the flag before a request exists asks here.
+    """
+    return bool(exclusive and not servers and not allowed_names)
+
+
 def apply_forwarded_mcp_servers(
     kwargs: dict[str, Any],
     servers: dict[str, Any] | None,
@@ -1409,12 +1493,11 @@ def apply_forwarded_mcp_servers(
             pass
 
     flag = kwargs.get("ignore_user_config")
-    if exclusive and not servers and not allowed_names and (flag is None or flag is False):
-        # The empty set is the hermetic codex run: the user config, and every server,
-        # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag. An allowlist can name a server
-        # from any later-loaded config layer, so only an empty allowlist takes
-        # this path.
+    if forwarded_set_ignores_user_config(
+        servers, exclusive=exclusive, allowed_names=allowed_names
+    ) and (flag is None or flag is False):
+        # The hermetic codex run (see forwarded_set_ignores_user_config). Codex keeps its
+        # own authentication store under the flag.
         # A profile the caller named is user config too, so under the flag the codex
         # provider refuses that request. A flag value the request refuses is not
         # replaced here: it is left for the request to refuse.

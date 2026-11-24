@@ -24,7 +24,12 @@ from pydantic import BaseModel, field_validator
 from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
-from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
+from lionagi._errors import (
+    ConfigurationError,
+    FailedRoundError,
+    InputTokenCapError,
+    RequireHooksRefusedError,
+)
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
@@ -236,6 +241,14 @@ def _subscription_read_rules(
 _NO_PERSISTED_EXECUTION = object()
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
+# The config file a branch was named with, kept as provenance once the record points at the
+# run directory's copy of the set it handed (ADR-0041 Amendment 8).
+_MCP_CONFIG_NAMED_KEY = "mcp_config_named"
+# The name of that copy inside a run directory.
+_MCP_CONFIG_COPY_NAME = "mcp-config.json"
+# Branch metadata naming the hooks file copy a leg started with, so a resume checks it again.
+_HOOKS_FROM_KEY = "hooks_from"
+_HOOKS_FROM_SPEC_FIELDS = ("copy", "sha256", "format", "carry", "source")
 # The subscription account a branch was launched on (names and paths only, never a token); a
 # resume runs on the same one unless a Claude Code resume names another.
 _SUBSCRIPTION_ACCOUNT_KEY = "subscription_account"
@@ -255,6 +268,9 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
+# Set when a branch was launched under a profile's require_hooks; a resume is checked against
+# it whatever profile the resume names, as it keeps the approval mode it was launched with.
+_REQUIRE_HOOKS_KEY = "require_hooks"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -661,11 +677,24 @@ def _make_api_agent_spec(
     tools: str,
     network: bool = False,
     _command_env_names: frozenset[str] | None = None,
+    profile_deny_read: tuple[str, ...] = (),
 ):
     """The AgentSpec for an API-model leg: the named tool set, path-guarded to cwd, and for
-    the write set the Seatbelt policy its editor and bash run under."""
+    the write set the Seatbelt policy its editor and bash run under.
+
+    ``profile_deny_read`` holds the agent profile's ``deny_read`` entries. The write set's
+    policy makes them unreadable too; the read set has no sandbox to hold them, so it refuses.
+    """
     from lionhub.agent.spec import AgentSpec, _wire_secure_guards
 
+    if profile_deny_read and tools not in _API_CONFINED_TOOL_SETS:
+        from lionhub.agent.child_sandbox import _PROFILE_DENY_READ_REFUSAL_API_READ
+
+        raise ConfigurationError(
+            "the agent profile declares deny_read, which this run cannot hold: "
+            f"{_PROFILE_DENY_READ_REFUSAL_API_READ}. Run it with 'api_tools: write' or on a CLI "
+            "model, or remove deny_read from the profile."
+        )
     spec = AgentSpec.compose(
         role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
     )
@@ -675,15 +704,18 @@ def _make_api_agent_spec(
         from lionhub.tools._seatbelt import SeatbeltPolicy
 
         # The locations a CLI child may not read, the settings' child_sandbox.deny_read entries
-        # included, are unreadable to this loop's bash and editor too, and its commands get a
-        # uv cache of their own.
+        # and the agent profile's own included, are unreadable to this loop's bash and editor
+        # too, and its commands get a uv cache of their own.
+        deny_read = configured_deny_read()
         spec.seatbelt = SeatbeltPolicy.for_workspace(
             cwd or Path.cwd(),
             network=network,
-            deny_read=configured_deny_read(),
+            deny_read=(*deny_read, *(p for p in profile_deny_read if p not in deny_read)),
             per_leg_uv_cache=True,
             _command_env_names=_command_env_names,
         )
+        # Read by create_agent, which refuses an API model whose spec does not hold them.
+        spec._profile_deny_read = tuple(profile_deny_read)
         from lionhub.tools import seatbelt_link_probe
 
         # On a volume where Seatbelt does not judge a hard link's source, a link out of the roots
@@ -1866,6 +1898,223 @@ def _attributed_resolution(
     )
 
 
+def _servers_as_read(resolution: McpResolution) -> dict[str, Any] | None:
+    """A copy of the servers *resolution* read, detached from anything that later changes it."""
+    if resolution.servers is None:
+        return None
+    return json.loads(json.dumps(resolution.servers))
+
+
+def _write_mcp_config_copy(state_root: Path, servers: dict[str, Any] | None) -> Path:
+    """Write the server set a named config handed this run into its run directory.
+
+    The file is created, never replaced, and readable by its owner alone: a resume reads this
+    copy rather than the named file, so the set it replays is the set this run was handed.
+    """
+    path = Path(state_root) / _MCP_CONFIG_COPY_NAME
+    content = json.dumps({"mcpServers": servers or {}}, indent=2) + "\n"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:
+        raise McpConfigError(
+            f"could not copy the named MCP config into the run directory ({path}): "
+            f"{exc.strerror or type(exc).__name__}"
+        ) from None
+    return path
+
+
+#: Why a run whose profile declares ``scratch`` is refused on a provider other than a Claude Code
+#: CLI child (ADR-0041 Amendment 6). Each names what is missing, not a preference.
+_SCRATCH_REFUSAL_API = (
+    "an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch "
+    "root yet"
+)
+_SCRATCH_REFUSAL_CODEX_BYPASS = (
+    "bypass_approvals turns codex's sandbox off, so the scratch directory would not be the one "
+    "place the child writes beyond its permission profile"
+)
+_SCRATCH_REFUSAL_CODEX_NO_SANDBOX = (
+    "the child sandbox is switched off, so a codex child has no permission profile to add the "
+    "scratch directory to"
+)
+_SCRATCH_REFUSAL_GEMINI = (
+    "the Gemini CLI's sandbox does not bound reads and grants no single writable directory this "
+    "launcher can verify"
+)
+
+
+def _hooks_from_spec(
+    snapshot: str | None, branch: Any, is_resumed_branch: bool
+) -> dict[str, Any] | None:
+    """The hooks file copy this leg carries guards from, or None (ADR-0048 Amendment 1).
+
+    A fresh leg reads it from ``--hooks-from-snapshot``, which the MCP server sets when a
+    submission names ``hooks_from``. A resumed branch reads the one it started with from its
+    metadata and takes no new one, so a resume can neither drop nor swap its guards.
+    """
+    if is_resumed_branch:
+        if snapshot is not None:
+            raise ConfigurationError(
+                "--hooks-from-snapshot cannot be given to a resumed branch: a resumed run keeps "
+                "the guards it started with"
+            )
+        spec: Any = branch.metadata.get(_HOOKS_FROM_KEY)
+        if spec is None:
+            return None
+        where = "the branch's hooks_from record"
+    else:
+        if snapshot is None:
+            return None
+        where = "--hooks-from-snapshot"
+        try:
+            spec = json.loads(snapshot)
+        except ValueError:
+            raise ConfigurationError(f"{where} is not valid JSON") from None
+    if (
+        not isinstance(spec, dict)
+        or not all(
+            isinstance(spec.get(field), str)
+            for field in _HOOKS_FROM_SPEC_FIELDS
+            if field != "carry"
+        )
+        or not isinstance(spec.get("carry"), list)
+    ):
+        raise ConfigurationError(f"{where} must name {', '.join(_HOOKS_FROM_SPEC_FIELDS)}")
+    return {field: spec[field] for field in _HOOKS_FROM_SPEC_FIELDS}
+
+
+def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> list[str]:
+    """Check this leg's hooks file copy and apply what it carries.
+
+    The copy must hash to the digest recorded at submit (H2 rule 6). It is planned again for
+    this process's working directory, and a guard no model of this leg can apply refuses the
+    leg before the run exists (H3, H5). Deny rules go to the leg's Claude Code models; hook
+    entries are wired onto an API-model leg's branch after each command passes the trust and
+    writable-directory checks again from this directory (H4). Returns the place in the file of
+    each hook entry wired, which ``require_hooks`` counts (ADR-0048 Amendment 2 R3).
+    """
+    from lionhub.agent.factory import _wire_external_hook_entries
+    from lionhub.agent.subscription_accounts import account_provider
+    from lionhub.hooks.hooks_from import (
+        HooksFromError,
+        carry_refusal,
+        hook_command_refusals,
+        hook_entries,
+        plan_carry,
+        read_snapshot,
+        writable_roots,
+    )
+
+    leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    try:
+        snapshot = read_snapshot(spec["copy"], spec["sha256"])
+        plan = plan_carry(
+            snapshot.document,
+            fmt=spec["format"],
+            carry=spec["carry"],
+            source_path=spec["source"],
+            leg_cwd=leg_cwd,
+        )
+    except HooksFromError as exc:
+        raise ConfigurationError(f"cannot start this leg with hooks_from: {exc}") from exc
+    present = [m for m in (branch.chat_model, branch.parse_model) if m is not None]
+    models = [m for m in present if m.is_cli]
+    claude_code = branch.chat_model in models and all(
+        account_provider(m.endpoint.config.provider or "") == "claude_code" for m in models
+    )
+    api = bool(present) and not models
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
+    if reason is not None:
+        raise ConfigurationError(f"cannot start this leg with hooks_from: {reason}")
+    if plan.hooks:
+        refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise ConfigurationError(
+                f"cannot start this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}"
+            )
+    wired = hook_entries(plan) if plan.hooks else []
+    if wired:
+        _wire_external_hook_entries(branch, wired, cwd=leg_cwd)
+    if plan.deny_rules:
+        for model in models:
+            model.endpoint.config.kwargs["carried_deny"] = list(plan.deny_rules)
+    return [entry["where"] for entry in wired]
+
+
+def _scratch_refusal(
+    provider: str,
+    *,
+    api_launch: bool,
+    is_cli: bool,
+    endpoint_kwargs: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Why a run on *provider* cannot have a scratch directory, or None when it can.
+
+    For codex this is what can be known before the run exists: ``bypass_approvals`` in the
+    endpoint's settings, or the child sandbox switched off. What depends on the scratch path
+    itself (a denied path or the probe record directory over it, a read-only temp directory
+    holding it, a link in its place) and the probe record's ``scratch_env`` arm are refused when
+    the codex command line is built, after the run directory exists.
+    """
+    if api_launch or not is_cli:
+        return _SCRATCH_REFUSAL_API
+    if provider == "claude_code":
+        return None
+    if provider == "codex":
+        if (endpoint_kwargs or {}).get("bypass_approvals") is True:
+            return _SCRATCH_REFUSAL_CODEX_BYPASS
+        from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+        if not resolve_child_sandbox(None).enabled:
+            return _SCRATCH_REFUSAL_CODEX_NO_SANDBOX
+        return None
+    if provider == "gemini_code":
+        return _SCRATCH_REFUSAL_GEMINI
+    return f"the {provider or 'unknown'} provider has no scratch directory support"
+
+
+def _finish_run_scratch(scratch: Any) -> dict[str, Any]:
+    """End a run's scratch directory and return its run.json entry; nothing it raises escapes.
+
+    The removal walks a tree the child wrote, and it runs first in the run's shielded teardown,
+    ahead of the final reply, the terminal notice and the model shutdown that teardown exists to
+    reach. Whatever leaves it becomes the entry's ``removal_error``, and ``removed`` says whether
+    the directory is still there.
+    """
+    try:
+        return scratch.finish()
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return {
+            **scratch.record(),
+            "removed": not os.path.lexists(scratch.path),
+            "removal_error": f"scratch removal raised {type(exc).__name__}: {exc}",
+        }
+
+
+def _bind_run_scratch(chat_model: Any, scratch: Any) -> None:
+    """Hand the run's scratch directory to its CLI endpoint, or take away one left from before.
+
+    The path lives in the endpoint's runtime state, never in its config, so no saved branch or
+    run record carries it into a later run.
+    """
+    endpoint = chat_model.endpoint
+    state = getattr(endpoint, "_runtime_state", None)
+    takes_it = "scratch_dir" in getattr(endpoint, "_runtime_state_fields", ())
+    if scratch is None:
+        if isinstance(state, dict):
+            state.pop("scratch_dir", None)
+        return
+    if not takes_it or not isinstance(state, dict):
+        raise ConfigurationError(
+            "this run's endpoint cannot take a scratch directory, so the run is not started"
+        )
+    state["scratch_dir"] = str(scratch.path)
+
+
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -1898,6 +2147,7 @@ async def _run_agent(
     *,
     notify_sender: str | None = None,
     mcp_submit_snapshot: str | None = None,
+    hooks_from_snapshot: str | None = None,
     account: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
@@ -2002,14 +2252,14 @@ async def _run_agent(
                 resume_on_timeout = True
             if (getattr(profile, "extra", None) or {}).get("hooks"):
                 # A saved guard the leg silently does not run is worse than no
-                # guard: say so at launch until CLI runs consume the assembly.
+                # guard: say so at launch until a run consumes the assembly.
                 from lionhub.orchestration.console import warn
 
                 warn(
                     f"agent profile {agent_name!r} declares a hooks assembly; "
-                    "CLI-spawned runs do not apply profile hook assemblies yet "
-                    "(Studio Operator turns do), so those hooks are NOT active "
-                    "for this run"
+                    "no run applies a profile's hooks assembly yet (the Studio "
+                    "Operator applies only its own, from operator_hooks.json), so "
+                    "those hooks are NOT active for this run"
                 )
 
         # The line's --account wins over the role's account or codex_home.
@@ -2146,6 +2396,15 @@ async def _run_agent(
                     or recorded_launch.get("no_mcp_config") is not False
                 ):
                     raise McpConfigError("this branch has an invalid recorded MCP snapshot origin")
+                if _MCP_CONFIG_NAMED_KEY in recorded_launch and (
+                    origin != "explicit"
+                    or not isinstance(recorded_launch[_MCP_CONFIG_NAMED_KEY], str)
+                    or not os.path.isabs(recorded_launch[_MCP_CONFIG_NAMED_KEY])
+                ):
+                    raise McpConfigError(
+                        "this branch has an invalid record of the MCP config it was named; "
+                        "start a fresh run"
+                    )
                 if (
                     "no_mcp_config" in recorded_launch
                     and type(recorded_launch["no_mcp_config"]) is not bool
@@ -2178,6 +2437,9 @@ async def _run_agent(
                 f"this branch has an invalid recorded MCP config "
                 f"{_format_recorded_mcp_path(recorded_launch['mcp_config'])}; start a fresh run"
             )
+        # The servers a named config handed this run, as read from it and before the run's own
+        # actor is attributed to them: what the run directory's copy holds (ADR-0041 Amendment 8).
+        handed_servers: dict[str, Any] | None = None
         if not replay_recorded_choice:
             mcp_resolution = resolve_spawn_mcp_servers(
                 mcp_config,
@@ -2185,6 +2447,7 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
+            handed_servers = _servers_as_read(mcp_resolution)
             mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
 
         # A resume that names no MCP flag replays the choice its branch was launched
@@ -2232,6 +2495,7 @@ async def _run_agent(
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
+                    handed_servers = _servers_as_read(mcp_resolution)
                     mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.
@@ -2299,6 +2563,11 @@ async def _run_agent(
         # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
         canonical = _canonical_provider(provider)
 
+        # A require_hooks refusal is held until the run is under way and raised there, so the
+        # job ends failed with the refusal's text and no provider child is started
+        # (ADR-0048 Amendment 2 R3).
+        _require_hooks_refusal: RequireHooksRefusedError | None = None
+        _requires_hooks = bool(getattr(profile, "require_hooks", False))
         if branch is None:
             # Codex blocks tool calls until file access is enabled. Surface this
             # even without verbose output; CLI or profile approval flags suppress it.
@@ -2333,13 +2602,14 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                mcp_exclusive=mcp_resolution.exclusive,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
                 tool_settings=tool_settings,
                 env=leg_account.env if leg_account is not None else None,
                 secret_fill_skip=leg_account.secret_fill_skip if leg_account is not None else None,
+                require_hooks=bool(getattr(profile, "require_hooks", False)),
             )
             if leg_account is not None:
                 from lionhub.agent.subscription_accounts import leg_account_reached
@@ -2364,6 +2634,14 @@ async def _run_agent(
                 from lionagi.service.imodel import iModel
 
                 chat_model = iModel(model=chat_model)
+            # A codex request carries the key and refuses at its own launch; the rest is
+            # decided here, once the model's kind is known (ADR-0048 Amendment 2).
+            from lionhub.orchestration.spawn import refuse_require_hooks
+
+            try:
+                refuse_require_hooks(agent_name, profile, chat_model)
+            except RequireHooksRefusedError as exc:
+                _require_hooks_refusal = exc
             if not chat_model.is_cli and effort is not None:
                 from lionhub.agent.factory import _set_api_effort
 
@@ -2449,6 +2727,7 @@ async def _run_agent(
                         tools=api_launch["tools"],
                         network=api_launch["network"],
                         _command_env_names=command_names,
+                        profile_deny_read=tuple(getattr(profile, "deny_read", ()) or ()),
                     )
                 else:
                     spec = _make_coding_preset(
@@ -2803,7 +3082,7 @@ async def _run_agent(
                 # own servers are left out too. A set found by search joins what the provider finds
                 # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
                 # leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                exclusive=mcp_resolution.exclusive,
             )
             missing_profile = _missing_generated_codex_profile(
                 cfg, leg_account.env if leg_account is not None else None
@@ -2830,6 +3109,22 @@ async def _run_agent(
                     cwd=cwd,
                     forwarded=forwarded,
                 )
+            # The requirement a branch was launched with stays with it: a resume naming no
+            # profile, or one without the key, is checked as its launch was (ADR-0048
+            # Amendment 2 R3). A codex request carries it and refuses at its own launch.
+            _requires_hooks = _requires_hooks or bool(branch.metadata.get(_REQUIRE_HOOKS_KEY))
+            if _requires_hooks:
+                from lionhub.orchestration.spawn import refuse_require_hooks
+
+                if (
+                    _canonical_provider(branch.chat_model.endpoint.config.provider) == "codex"
+                    and branch.chat_model.endpoint.is_cli
+                ):
+                    cfg["require_hooks"] = True
+                try:
+                    refuse_require_hooks(agent_name, profile, branch.chat_model, required=True)
+                except RequireHooksRefusedError as exc:
+                    _require_hooks_refusal = exc
 
         # A branch launched onto the tool loop records the tool set and bound it was
         # launched with, and a resume runs the loop again from that record. A branch
@@ -2893,6 +3188,7 @@ async def _run_agent(
                         tools=api_launch["tools"],
                         network=api_launch["network"],
                         _command_env_names=command_names,
+                        profile_deny_read=tuple(getattr(profile, "deny_read", ()) or ()),
                     ),
                 )
 
@@ -2909,6 +3205,101 @@ async def _run_agent(
         if account_switched_from is not None and leg_account is not None:
             account_switches.append(dict(leg_account.record))
             branch.metadata[_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY] = account_switches
+        if _requires_hooks:
+            branch.metadata[_REQUIRE_HOOKS_KEY] = True
+        if is_resumed_branch:
+            from lionhub.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+
+            composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
+        else:
+            composed_via_create_agent = took_create_agent_path
+        if profile and profile.system_prompt and not composed_via_create_agent:
+            branch.msgs.add_message(system=profile.system_prompt)
+
+        if timeout is not None:
+            preamble = build_deadline_preamble(timeout)
+            prompt = preamble + prompt
+
+        # Refused here, before the run exists, so a scratch request this run cannot honour leaves
+        # no run directory behind (ADR-0041 Amendment 6).
+        scratch_mode = getattr(profile, "scratch", None)
+        if scratch_mode is not None:
+            _scratch_reason = _scratch_refusal(
+                _canonical_provider(branch.chat_model.endpoint.config.provider),
+                api_launch=api_launch is not None,
+                is_cli=branch.chat_model.is_cli,
+                endpoint_kwargs=getattr(branch.chat_model.endpoint.config, "kwargs", None),
+            )
+            if _scratch_reason is not None:
+                raise ConfigurationError(
+                    f"agent profile {agent_name!r} declares scratch, which this run cannot "
+                    f"give it: {_scratch_reason}. Run the profile on a claude_code model or a "
+                    "sandboxed codex model, or remove scratch from it."
+                )
+        # The same for the profile's deny_read: refused before the run exists on a route with
+        # nothing to hold it (ADR-0041 Amendment 7), and handed to every CLI model otherwise.
+        profile_reads = tuple(getattr(profile, "deny_read", ()) or ())
+        if profile_reads:
+            from lionhub.agent.child_sandbox import (
+                profile_deny_read_refusal,
+                resolve_child_sandbox,
+                with_profile_deny_read,
+            )
+
+            # Raises while the child sandbox is switched off: nothing would hold the entries.
+            with_profile_deny_read(resolve_child_sandbox(None), profile_reads, profile=agent_name)
+            _reads_reason = profile_deny_read_refusal(
+                _canonical_provider(branch.chat_model.endpoint.config.provider),
+                is_cli=branch.chat_model.is_cli,
+                api_tools=api_launch["tools"] if api_launch is not None else None,
+            )
+            if _reads_reason is not None:
+                raise ConfigurationError(
+                    f"agent profile {agent_name!r} declares deny_read, which this run cannot "
+                    f"hold: {_reads_reason}. Run the profile where its entries hold, or remove "
+                    "deny_read from it."
+                )
+            for _model in (branch.chat_model, branch.parse_model):
+                if _model is not None and _model.is_cli:
+                    _model.endpoint.config.kwargs["profile_deny_read"] = list(profile_reads)
+
+        # A hooks file named at submit: checked against its recorded digest and applied before
+        # the run exists. A resumed branch checks the copy it started with again.
+        hooks_from_spec = _hooks_from_spec(hooks_from_snapshot, branch, is_resumed_branch)
+        if hooks_from_spec is not None:
+            carried_hooks = _apply_hooks_from(hooks_from_spec, branch, cwd)
+            if not is_resumed_branch:
+                branch.metadata[_HOOKS_FROM_KEY] = hooks_from_spec
+            if _require_hooks_refusal is not None and carried_hooks:
+                # The key's refusal was decided before the file was read; the entries it
+                # carries run on this leg, so the refusal is stated again counting them.
+                from lionhub.orchestration.spawn import refuse_require_hooks
+
+                try:
+                    refuse_require_hooks(
+                        agent_name, profile, branch.chat_model, required=True, carried=carried_hooks
+                    )
+                except RequireHooksRefusedError as exc:
+                    _require_hooks_refusal = exc
+
+        inherited_run_id = current_run_id()
+        job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)
+        run = allocate_run()
+        if isinstance(run, RunDir):
+            run = run.with_execution_provenance(
+                cwd=cwd or os.getcwd(),
+                mcp_resolution=mcp_resolution,
+                mcp_disabled=no_mcp_config,
+            )
+            # Descendants inherit the job marker. Only the first leg also consumes
+            # the matching launch ID when it allocates the job's run directory.
+            if not _auto_resumed and inherited_run_id == job_run_id == run.run_id:
+                _job_result_run = run
+        # Recorded once the run directory exists, because a named set is copied into it: no
+        # branch is persisted before this point, so none can carry a record without its copy.
+        # Whether this run's record now points at a copy it wrote; an automatic resume then
+        # replays that copy rather than reading the named file again.
+        mcp_copy_written = False
         if not is_resumed_branch:
             # The file on the line is what a resume reads again, named or not: a
             # leg submitted through the MCP server is pointed at a snapshot of the
@@ -2933,7 +3324,16 @@ async def _run_agent(
             elif mcp_submit_snapshot is not None and not no_mcp_config:
                 branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
             elif mcp_config is not None and not no_mcp_config:
-                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "explicit"
+                # A named file can change, or sit where the leg can write: the record points
+                # at the copy of the set this run was handed, and keeps the name as provenance.
+                branch.metadata[_MCP_LAUNCH_KEY].update(
+                    {
+                        "mcp_config": str(_write_mcp_config_copy(run.state_root, handed_servers)),
+                        "mcp_config_origin": "explicit",
+                        _MCP_CONFIG_NAMED_KEY: str(line_file),
+                    }
+                )
+                mcp_copy_written = True
         elif profile_disables_mcp:
             # Once a resumed leg is contained by its profile, later resumes
             # without that profile must not restore the earlier server set.
@@ -2943,33 +3343,17 @@ async def _run_agent(
                 "no_mcp_config_source": "profile",
                 "launch_dir": str(launch_dir),
             }
-
-        if is_resumed_branch:
-            from lionhub.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
-
-            composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
-        else:
-            composed_via_create_agent = took_create_agent_path
-        if profile and profile.system_prompt and not composed_via_create_agent:
-            branch.msgs.add_message(system=profile.system_prompt)
-
-        if timeout is not None:
-            preamble = build_deadline_preamble(timeout)
-            prompt = preamble + prompt
-
-        inherited_run_id = current_run_id()
-        job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)
-        run = allocate_run()
-        if isinstance(run, RunDir):
-            run = run.with_execution_provenance(
-                cwd=cwd or os.getcwd(),
-                mcp_resolution=mcp_resolution,
-                mcp_disabled=no_mcp_config,
-            )
-            # Descendants inherit the job marker. Only the first leg also consumes
-            # the matching launch ID when it allocates the job's run directory.
-            if not _auto_resumed and inherited_run_id == job_run_id == run.run_id:
-                _job_result_run = run
+        elif (
+            replay_recorded_choice
+            and isinstance(recorded_launch, dict)
+            and _MCP_CONFIG_NAMED_KEY in recorded_launch
+        ):
+            # A resume that replayed a copy copies the set again into its own run directory, so
+            # the set lasts as long as the branch's newest run rather than its first.
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                **recorded_launch,
+                "mcp_config": str(_write_mcp_config_copy(run.state_root, handed_servers)),
+            }
         branch_id = str(branch.id)
         resolved_model_spec = _provenance.resolve_model_spec(provider, model)
         run_manifest = {
@@ -3280,7 +3664,18 @@ async def _run_agent(
         # watchdog off instead.
         _idle = {"idle_timeout": idle_timeout} if idle_timeout is not None else {}
         _worker_spawn_teardown_cancel = None
+        _run_scratch = None
         try:
+            if _require_hooks_refusal is not None:
+                raise _require_hooks_refusal
+            if scratch_mode is not None:
+                from lionhub.orchestration.run_scratch import RunScratch
+
+                _run_scratch = RunScratch.create(run.state_root, keep=scratch_mode == "keep")
+                run_manifest["scratch"] = _run_scratch.record()
+                if _write_run_manifest is not None:
+                    _write_run_manifest(run_manifest)
+            _bind_run_scratch(branch.chat_model, _run_scratch)
             if _api_turn is not None:
                 _api_fold = _install_api_input_cap(
                     branch,
@@ -3360,6 +3755,7 @@ async def _run_agent(
                     # reference, read before the branch's model is replaced.
                     from lionagi._command_env import scrub_command_env
                     from lionagi._command_env_metadata import configured_command_env_names
+                    from lionagi.service._subagent_admission import without_account_names
 
                     # A settings file that cannot be read leaves the names to remove unknown, so
                     # the run does not move; it fails with the routing error.
@@ -3367,14 +3763,17 @@ async def _run_agent(
                     try:
                         api_key_reference = branch.chat_model.endpoint.config.api_key_env
                         parent_env = dict(os.environ)
-                        child_env = scrub_command_env(
-                            parent_env,
-                            declared_names=configured_command_env_names(
-                                active_reference_names=(api_key_reference,)
-                                if api_key_reference is not None
-                                else (),
-                            ),
-                            command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                        # An account name this process inherited is no account of the child's.
+                        child_env = without_account_names(
+                            scrub_command_env(
+                                parent_env,
+                                declared_names=configured_command_env_names(
+                                    active_reference_names=(api_key_reference,)
+                                    if api_key_reference is not None
+                                    else (),
+                                ),
+                                command_env_allowlist=_SUBSCRIPTION_ENV_ALLOWLIST,
+                            )
                         )
                         # Names only, never values.
                         env_removed = sorted(set(parent_env) - set(child_env))
@@ -3624,6 +4023,19 @@ async def _run_agent(
             # Shield teardown so iModel shutdown always runs (avoids leaked
             # rate-limit replenisher tasks that hang anyio.run forever).
             with CancelScope(shield=True):
+                if _run_scratch is not None:
+                    # The child's process group has ended by now, so nothing writes into the
+                    # directory while it goes. An automatic resume makes a scratch of its own.
+                    run_manifest["scratch"] = await run_sync(_finish_run_scratch, _run_scratch)
+                    if run_manifest["scratch"]["removal_error"]:
+                        log_error(run_manifest["scratch"]["removal_error"])
+                    if _write_run_manifest is not None:
+                        try:
+                            _write_run_manifest(run_manifest)
+                        except Exception as _manifest_exc:  # noqa: BLE001 — teardown goes on
+                            log_error(
+                                f"could not record the scratch directory's end: {_manifest_exc!r}"
+                            )
                 job_result_run = None if will_auto_resume else _job_result_run
                 if notify or job_result_run is not None:
                     replies = _new_assistant_replies(branch, before_leg)
@@ -3875,7 +4287,7 @@ async def _run_agent(
                     workload=workload,
                     notify=notify,
                     notify_sender=notify_sender,
-                    mcp_config=mcp_config,
+                    mcp_config=None if mcp_copy_written else mcp_config,
                     no_mcp_config=no_mcp_config,
                     **(
                         {"mcp_submit_snapshot": mcp_submit_snapshot}
@@ -4073,6 +4485,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     agent.add_argument("--mcp-submit-snapshot", default=None, help=argparse.SUPPRESS)
+    agent.add_argument("--hooks-from-snapshot", default=None, help=argparse.SUPPRESS)
     agent.add_argument(
         "--mcp-config",
         dest="mcp_config",
@@ -4272,6 +4685,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 **(
                     {"mcp_submit_snapshot": args.mcp_submit_snapshot}
                     if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
+                **(
+                    {"hooks_from_snapshot": args.hooks_from_snapshot}
+                    if getattr(args, "hooks_from_snapshot", None) is not None
                     else {}
                 ),
             )

@@ -26,12 +26,12 @@ def codex_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def refuse_codex_compatibility_lookup(monkeypatch):
-    from lionagi.service.connections import _provider_compat
+    from lionagi.service import providers
 
     def unexpected_lookup(*args, **kwargs):
-        pytest.fail("A selected Codex adapter called the compatibility lookup")
+        pytest.fail("A selected Codex adapter called the adapter-less default")
 
-    monkeypatch.setattr(_provider_compat, "codex_unset_effort_1x", unexpected_lookup)
+    monkeypatch.setattr(providers, "codex_unset_effort_default", unexpected_lookup)
 
 
 def _write_global(codex_home, body: str) -> None:

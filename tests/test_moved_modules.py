@@ -1568,6 +1568,50 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
+_STUDIO_NAME = re.compile(r"lionagi_studio(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _studio_names(path: Path, source: str | None = None) -> list[str]:
+    """Every import of the Studio backend, or string naming one of its modules, in ``path``."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    hits = []
+    for node in ast.walk(ast.parse(text, filename=str(path))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names = [node.module or ""]
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names = [node.value]
+        else:
+            continue
+        hits += [f"{path}:{node.lineno}: {n}" for n in names if _STUDIO_NAME.fullmatch(n)]
+    return hits
+
+
+def test_the_core_names_no_studio_backend_module():
+    # The Studio application lives in apps/studio/backend and imports the core; the core
+    # never imports it back. _moved.py names it as data: the table that serves the old
+    # lionagi.studio path from it until 2.0.0.
+    lionagi = SOURCE_ROOTS[0]
+    paths = sorted(lionagi.rglob("*.py"))
+    assert len(paths) > 100, "the core tree was not found, so this checks nothing"
+    hits = [hit for path in paths if path.name != "_moved.py" for hit in _studio_names(path)]
+    assert hits == []
+    assert _studio_names(lionagi / "_moved.py"), "_moved.py names no Studio module"
+
+
+def test_the_studio_check_sees_each_form_of_reference():
+    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    source = (
+        "import lionagi_studio.operator\n"
+        "from lionagi_studio.operator import store\n"
+        "importlib.import_module('lionagi_studio.services.agents')\n"
+        "PREFIXES = ('lionagi_studio.', 'lionagi_studiox.app')\n"
+    )
+    hits = _studio_names(probe, source)
+    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
 # The hub's provider modules, as dotted names. A reference is an import, a from-import or a
 # string that is exactly one such name: ``lionhub.providersx`` is another package, and a
 # prefix such as ``lionhub.providers.`` names no module.
@@ -1634,8 +1678,6 @@ PROVIDER_INTERIM_EDGES = {
     "service/connections/_provider_compat.py": [
         # ``_MANIFEST_MODULE`` loads the default provider catalog on its first use.
         "lionhub.providers.manifest",
-        # Temporary 1.x adapter for Codex's configured default effort.
-        "lionhub.providers.openai._codex_profile",
     ],
 }
 
@@ -1645,37 +1687,13 @@ def test_provider_interim_edge_inventory():
     assert _provider_inventory() == expected
 
 
-# Studio's temporary 1.x Codex profile access is indirect through the compatibility module.
-# The path is relative to the Studio application's package.
-STUDIO_PROVIDER_COMPAT_INTERIM_USE = (
-    "operator/engine.py",
-    "lionagi.service.connections._provider_compat.codex_unset_effort_1x",
-)
-
-
-def test_studio_codex_effort_uses_the_temporary_compatibility_edge():
-    path, qualified_name = STUDIO_PROVIDER_COMPAT_INTERIM_USE
-    module, _, helper = qualified_name.rpartition(".")
-    engine = APP_ROOT / path
-    tree = ast.parse(engine.read_text(encoding="utf-8"), filename=str(engine))
-    apply_effort = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_apply_operator_effort"
-    )
-    local_nodes = list(ast.walk(apply_effort))
-    imports = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and _absolute(node.module, node.level, engine) == module
-    ]
-    assert [ast.unparse(node) for node in imports] == [f"from {module} import {helper}"]
-    assert imports[0] in local_nodes
-    assert [
-        ast.unparse(node)
-        for node in local_nodes
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == helper
-    ] == [f"{helper}(model_name)"]
+def test_the_studio_engine_does_not_use_the_provider_compatibility_module():
+    # Studio reads the codex effort default from the hub itself; the compatibility module is
+    # the core's automatic provider source and nothing an application calls.
+    source = (APP_ROOT / "operator" / "engine.py").read_text(encoding="utf-8")
+    assert "lionhub.serve.daemon.services.redact" in source, "the engine file was not read"
+    assert "codex_unset_effort_from_config" in source
+    assert "_provider_compat" not in source
 
 
 def test_the_agent_factory_imports_the_hub_providers_only_inside_functions():

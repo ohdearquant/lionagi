@@ -1,5 +1,5 @@
 {
-  "count": 151,
+  "count": 152,
   "routes": [
     {
       "ordinal": 0,
@@ -5968,11 +5968,59 @@
         "approvals"
       ],
       "summary": null,
-      "description": null,
+      "description": "Grant a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s\nprincipal, else the configured credential.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi_studio.services.approvals",
         "qualname": "grant_approval_route"
+      }
+    },
+    {
+      "ordinal": 149,
+      "path": "/api/approvals/{approval_id}/consume",
+      "methods": [
+        "POST"
+      ],
+      "name": "consume_approval",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Consume Approval Api Approvals  Approval Id  Consume Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "approvals"
+      ],
+      "summary": null,
+      "description": "Use a granted approval once, for exactly the action and params it was granted for.\n\nUnlike grant and deny this takes no human principal: the executor that runs the\naction consumes it, and the params hash, the single-use status move and the expiry\nare what bind the consumption to the human's grant. It does take the daemon's bearer\ntoken, and is refused on a daemon with none configured.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi_studio.services.approvals",
+        "qualname": "consume_approval_route"
       }
     },
     {
@@ -6016,7 +6064,7 @@
         "approvals"
       ],
       "summary": null,
-      "description": null,
+      "description": "Deny a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s\nprincipal, else the configured credential.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi_studio.services.approvals",
@@ -7640,12 +7688,67 @@
           }
         }
       },
+      "/api/approvals/{approval_id}/consume": {
+        "post": {
+          "tags": [
+            "approvals"
+          ],
+          "summary": "Consume Approval",
+          "description": "Use a granted approval once, for exactly the action and params it was granted for.\n\nUnlike grant and deny this takes no human principal: the executor that runs the\naction consumes it, and the params hash, the single-use status move and the expiry\nare what bind the consumption to the human's grant. It does take the daemon's bearer\ntoken, and is refused on a daemon with none configured.",
+          "parameters": [
+            {
+              "name": "approval_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Approval Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_ConsumeBody"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Consume Approval Api Approvals  Approval Id  Consume Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/approvals/{approval_id}/deny": {
         "post": {
           "tags": [
             "approvals"
           ],
           "summary": "Deny Approval",
+          "description": "Deny a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s\nprincipal, else the configured credential.",
           "parameters": [
             {
               "name": "approval_id",
@@ -7706,6 +7809,7 @@
             "approvals"
           ],
           "summary": "Grant Approval",
+          "description": "Grant a pending approval and record who did: a verified ``X-Studio-Decision-Token``'s\nprincipal, else the configured credential.",
           "parameters": [
             {
               "name": "approval_id",
@@ -13941,7 +14045,7 @@
         }
       }
     },
-    "path_count": 117,
+    "path_count": 118,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {
@@ -15968,6 +16072,27 @@
         ],
         "title": "ValidationError"
       },
+      "_ConsumeBody": {
+        "properties": {
+          "action_kind": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Action Kind"
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action_kind"
+        ],
+        "title": "_ConsumeBody",
+        "description": "The action an executor is about to run; it must match the granted approval exactly."
+      },
       "_CreateApprovalBody": {
         "properties": {
           "action_kind": {
@@ -15991,6 +16116,18 @@
               }
             ],
             "title": "Session Id"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
           }
         },
         "type": "object",
@@ -16095,6 +16232,6 @@
         "title": "_DispositionBody"
       }
     },
-    "schema_count": 36
+    "schema_count": 37
   }
 }

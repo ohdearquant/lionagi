@@ -60,6 +60,7 @@ from lionhub.orchestration.spawn import (
     list_agents,
     load_agent_profile,
     parse_model_spec,
+    refuse_require_hooks,
     resolve_account_integrations,
     resolve_persisted_effort,
 )
@@ -469,6 +470,21 @@ def team_history_context(
     }
 
 
+def _refuse_orchestrated_scratch(profile: AgentProfile | None) -> None:
+    """Refuse a profile that declares ``scratch`` as an orchestrator or worker.
+
+    Only a direct ``li agent`` run on a claude_code model makes a scratch directory (ADR-0041
+    Amendment 6); a flow, fan-out or play running such a role would leave it without the
+    directory it was declared to have.
+    """
+    if profile is not None and getattr(profile, "scratch", None) is not None:
+        raise ConfigurationError(
+            f"agent profile {profile.name!r} declares scratch, which a flow, fan-out or play "
+            "does not give its orchestrator or workers yet; only a direct `li agent` run on a "
+            "claude_code model has one. Remove scratch from the profile to use it here."
+        )
+
+
 def resolve_worker_spec(
     token: str,
 ) -> tuple[str, AgentProfile | None]:
@@ -484,6 +500,7 @@ def resolve_worker_spec(
     """
     try:
         profile = load_agent_profile(token)
+        _refuse_orchestrated_scratch(profile)
         # No hardcoded fallback — callers apply their own default so it doesn't rot.
         return profile.model or token, profile
     except FileNotFoundError:
@@ -1108,6 +1125,8 @@ async def setup_orchestration(
                 "was found. Create one in .lionagi/agents/ or ~/.lionagi/agents/, "
                 "or name an agent or a model on this call."
             ) from exc
+        # Before the run is allocated, so the refusal leaves no run directory behind.
+        _refuse_orchestrated_scratch(orc_profile)
         if orc_profile.model and not model_spec:
             model_spec = orc_profile.model
         if orc_profile.effort and not effort:
@@ -1236,6 +1255,14 @@ async def setup_orchestration(
     if effort_requested:
         effort = orc_effort
 
+    if orc_profile and getattr(orc_profile, "deny_read", ()):
+        from lionhub.agent.factory import _hold_profile_deny_read
+
+        # Before the run exists, so a profile whose deny_read this model cannot hold leaves no
+        # run directory behind (ADR-0041 Amendment 7).
+        _hold_profile_deny_read(
+            [orc_imodel], None, orc_profile.name, entries=tuple(orc_profile.deny_read)
+        )
     run = allocate_run(save_dir=save_dir)
     if isinstance(run, RunDir):
         provenance = mcp_resolution
@@ -1604,7 +1631,12 @@ async def build_worker_branch(
         tool_settings=None if env.bare else _profile_tool_settings(w_profile),
         env=worker_account.env if worker_account is not None else None,
         secret_fill_skip=worker_account.secret_fill_skip if worker_account is not None else None,
+        # A codex worker refuses at launch when a hook declared for it will not run
+        # (ADR-0048 Amendment 2); a bare worker has no role to ask for that.
+        require_hooks=bool(not env.bare and getattr(w_profile, "require_hooks", False)),
     )
+    if not env.bare:
+        refuse_require_hooks(role, w_profile, w_imodel)
     if worker_account is not None:
         from lionhub.agent.subscription_accounts import leg_account_reached
 
@@ -1645,6 +1677,14 @@ async def build_worker_branch(
     if is_cli:
         w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
         _confine_claude_worker(w_imodel, None if env.bare else getattr(w_profile, "name", None))
+    if not env.bare and getattr(w_profile, "deny_read", ()):
+        from lionhub.agent.factory import _hold_profile_deny_read
+
+        # A worker built here rather than by create_agent gets its profile's deny_read the
+        # same way; a model that cannot hold it refuses the worker.
+        _hold_profile_deny_read(
+            [w_imodel], None, w_profile.name, entries=tuple(w_profile.deny_read)
+        )
     env.worker_artifact_dirs[agent_id] = artifact_dir
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())

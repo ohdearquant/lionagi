@@ -36,6 +36,7 @@ worker.
 | `li skill {NAME,list,show}` | Read installed static skill instructions |
 | `li plugin {list,info,trust,enable,disable}` | Inspect and activate trusted plugin bundles |
 | `li hooks {import,trust}` | Import Claude Code / Codex hook configs and trust the imported commands |
+| `li lionagi-dir {trust,untrust,list}` | Trust a project's `.lionagi` directory for runs the MCP server starts |
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
@@ -190,6 +191,14 @@ records the design.
 | `LIONAGI_MAX_SUBAGENTS_HEAVY` | workers whose workload is `heavy` | unset (no cap) |
 | `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | one engine's workers: `CODEX`, `CLAUDE`, `GEMINI`, `PI` | unset (no cap) |
 | `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | how long a worker waits for a slot | `600`; `0` refuses at once |
+
+A subscription account can carry its own cap: `max_concurrent = N` on its row in `accounts.toml`
+(see [subscription accounts](internals/subscription-accounts.md)) puts every worker on that
+account into the pool `account.<provider>.<name>`, capped at `N`, beside the pools above. lionagi
+passes the account and its cap to the slot as `LIONAGI_SUBAGENT_ACCOUNT` and
+`LIONAGI_SUBAGENT_ACCOUNT_CAP` in the worker's own environment and removes both before the worker
+starts; setting them in your shell has no effect. The MCP verb `account.list` shows each account's
+cap and the slots its pool holds.
 
 `0`, empty or unset means no cap. A value that is not a whole number refuses the worker rather
 than letting it start uncounted. A worker that waits out the whole window is refused with one
@@ -862,6 +871,41 @@ li hooks trust --yes                     # record trust without the prompt
 
 ---
 
+## `li lionagi-dir`
+
+A project's `.lionagi` directory supplies agent profiles, playbooks and a settings
+layer. With this in `~/.lionagi/settings.yaml`:
+
+```yaml
+lionagi_dir_trust:
+  gate: mcp
+```
+
+every job the MCP server starts takes those files only from a `.lionagi` directory
+recorded with `li lionagi-dir trust`. An untrusted one is refused, naming the file;
+the run never skips the file and carries on without it. Trust is of the resolved
+path, so files added or edited there later are used as they are. The user-level
+`~/.lionagi` is never gated. Without the setting (or with `gate: off`) nothing is
+checked. Source: `cli/lionagi_dir.py`.
+
+```bash
+li lionagi-dir trust                # list what ./.lionagi supplies, then ask
+li lionagi-dir trust ../other --yes # record without the prompt
+li lionagi-dir untrust              # remove ./.lionagi from the record
+li lionagi-dir list                 # the trusted directories
+```
+
+| Subcommand | Flags | Notes |
+|------------|-------|-------|
+| `trust [DIR]` | `--yes` | Lists every profile (with its model, bypass, MCP, account and containment fields), playbook and notify setting in `DIR/.lionagi`, then records its resolved path |
+| `untrust [DIR]` | | Removes `DIR/.lionagi` from the record |
+| `list` | | Prints each trusted directory, marking any that no longer exist |
+
+`trust` refuses inside a job the MCP server started, so a run cannot trust its own
+files; `li hooks trust` and `li plugin trust` refuse there too.
+
+---
+
 ## `li mcp`
 
 Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
@@ -1254,7 +1298,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `yolo` | Auto-approve tool calls. For Codex, `yolo: true` enables sandboxed file access. |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
 | `mcp` | Set to `none` to launch the agent or worker with no MCP servers, as with `--no-mcp-config`. Any other value is refused. An explicit `--mcp-config` conflicts with this setting and is refused before that agent starts. A resumed branch retains profile-origin containment and refuses `--mcp-config`, whether or not a profile is named on resume; a resumed flow retains its orchestrator's recorded choice. The flow planner runs under the orchestrator's profile and its containment; each worker uses its own profile. |
-| `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`); `false` leaves them as the account and config set them. When the key is omitted, a codex launch is contained unless the profile names `account_connectors`, and a launch with no profile, or a bare worker, is contained. Contained by default: `li agent` new runs and resumes, orchestration planners and workers, and branches cloned from the orchestrator (spawned nodes, fanout synthesis, retried nodes). Opt-in only, until #4267 changes their default: `AgentSpec` / `create_agent`, `OrchestrationEngine`, and a codex request built directly, which take `contain_account_integrations=True`. A branch cloned from the orchestrator does not carry its `account_connectors`; it is contained unless the orchestrator opted out with `false` and named no connectors, in which case the clone keeps that opt-out. A codex profile's resolved view in the agent roster reports the containment it gets, including when the key is omitted |
+| `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`); `false` leaves them as the account and config set them. A codex launch that is not contained fetches the plugin catalog into its codex home at startup (measured on codex-cli 0.162.1). When the key is omitted, a codex launch is contained unless the profile names `account_connectors`, and a launch with no profile, or a bare worker, is contained. Contained by default: `li agent` new runs and resumes, orchestration planners and workers, and branches cloned from the orchestrator (spawned nodes, fanout synthesis, retried nodes). Opt-in only, until #4267 changes their default: `AgentSpec` / `create_agent`, `OrchestrationEngine`, and a codex request built directly, which take `contain_account_integrations=True`. A branch cloned from the orchestrator does not carry its `account_connectors`; it is contained unless the orchestrator opted out with `false` and named no connectors, in which case the clone keeps that opt-out. A codex profile's resolved view in the agent roster reports the containment it gets, including when the key is omitted |
 | `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `contain_user_settings` | Claude only, for this role's workers in `li o flow` and `li o fanout`, and for every Claude agent such a worker spawns, whatever role it names: a codex one runs with `--ignore-user-config`, as every codex worker does, under its own role's sandbox and approval settings, and a spawn on any other CLI is refused. `true` has the CLI load no settings files for the worker (`--setting-sources ""`): your user, project and local settings do not apply to it, so **your own hooks, PreToolUse guards included, and your permission rules stop gating that worker**, and its plugins, subagent definitions and slash commands are gone too. The files stay on disk, where the worker's own Read and Bash tools can still open them. In their place the worker gets the built-in tools Read, Glob, Grep, Edit, Write, Bash, WebFetch and WebSearch and only the MCP servers the run hands it, none when the run resolves no set, runs those without asking (`--permission-mode dontAsk`, which also replaces `yolo`), and cannot start Agent or Task subagents. The role's tool fields can narrow that and never widen it: its `tools` replace the list of eight and must all lie within it, and `tools: none` leaves the worker no built-in tool, only the servers' tools; its `allowed_tools` may name only those tools or the tools of the servers the run hands the worker (`mcp__<name>` or `mcp__<name>__...`), each entry as one rule, which is a tool name with no whitespace, comma or parenthesis, optionally followed by one parenthesised argument pattern that closes at the end of the entry (`Bash(git status:*)` is judged by `Bash`); its `disallowed_tools` are denied beside Agent and Task. Anything else is refused when the worker is built, naming the tool or entry, the role and the contained set, and the worker is granted only the tools it has. An agent such a worker spawns with no role named takes none of the orchestrator profile's tool fields (see below), so it gets the eight tools and the run's servers. The flag is read from the block's top-level keys as YAML parses them, its key matched as written, so a key nested under another setting, or spelled in another letter case or with dashes, is not the flag, and when no top-level key sets the flag such a key warns that it does not: an indented block, a quoted or `?` key and a `<<` merge key all count, an explicit key wins over a merged one, and a key given more than once, of which YAML keeps the last, warns and leaves the flag off only when every one reads `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0` and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does not read as YAML warns that every setting in it is ignored, and contains when the block names `contain_user_settings` anywhere; a block with no closing `---` runs to the end of the file. A block with no settings in it, empty or comments only, neither warns nor contains, even when a comment names the flag. A byte-order mark or another invisible format character ahead of the frontmatter does not hide it. Any other character on the delimiter's line hides the block and every setting in it, with a warning when the block reads as settings, names the flag, or does not read and ends at a closing `---`. Such a block contains when it sets the flag, whatever value it gives, or names it anywhere while reading as a list or a line of text or not reading at all, as a frontmatter that does not read does: a block that opens the profile was written as its frontmatter and none of its settings apply, so the worker is contained rather than run on your settings, and your own hooks and permission rules do not gate it until the profile is fixed. Text on lines of its own ahead of the first line that is exactly `---` leaves the profile all prompt, as before, and no block after it applies, the flag included. So that a containment request is never lost in silence, a profile is refused, naming the block's line and asking for the block to be moved to the top of the file, when any block after that text, closed or not, has a line setting the flag as a key, reads as settings that set it, or does not read and names it. Every span between two lines of three or more dashes counts as a block there, the one after a closing line included, so a rule in the prompt cannot hide a declaration; an unclosed one runs to the end. Lines inside code fences are examples and stay prompt. Containment is unchanged for `li agent -a`, which prints the same profile warnings. Default `false` |
 | `tools` | Claude Code only. List of the built-in tools the agent has at all, for example `[Read, Grep, Glob]`; it becomes `--tools`. Each entry is a non-empty string and the list must name at least one tool: an empty list is refused rather than read as "no tools" or "no restriction". The one other value is the word `none`, written with no list around it (`tools: none`): the agent has no built-in tool at all (`--tools ""`) and works only through the MCP servers it is handed, so a role that also names its servers with `--mcp-config` reads, writes and runs commands nowhere but through them. A list that names `none` as a tool is refused. Leave the field out to keep every built-in tool |
@@ -1263,6 +1307,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `timeout` | Default hard timeout in seconds |
 | `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `workload` | `light` or `heavy` (default). Sets how the role's CLI workers count against the agent caps and how they are confined; see [Agent caps and workload](#agent-caps-and-workload). Any other value reads as `heavy` with a warning. `--workload` overrides it, and orchestration workers take their own profile's value |
+| `scratch` | `true` or `keep` gives each `li agent` run of the role a writable directory of its own, `scratch` in the run's state directory; see [Scratch directory](#scratch-directory). `false` or no key gives none, and any other value refuses the profile |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |
@@ -1280,6 +1325,37 @@ no role does, with the contained tools and the run's servers when the worker tha
 is run with `contain_user_settings`, and with none of the three fields otherwise. The denials
 of a `light` workload do not depend on these fields: the copy takes the workload of the worker
 that asked for it.
+
+#### Scratch directory
+
+A role whose sandbox is otherwise read-only, a reviewer for one, still needs somewhere to write
+while it runs the project's tests. `scratch: true` gives each `li agent` run of the role a
+directory, `scratch` inside the run's state directory, made with mode 0700 before the first turn
+and removed when the run ends. `scratch: keep` leaves it in place for you to read. The directory
+is the one place the child's sandbox may write beyond what the role already grants, and the
+child's `TMPDIR`, `TMP` and `TEMP` name it. run.json records it under `scratch`: its `path` and
+`keep`, and at the end whether it was `removed` and any `removal_error`.
+
+Removal goes by the recorded path and touches nothing else. A symbolic link inside is removed as
+a link and what it points to is left alone. When the directory itself has become a symbolic link,
+is no longer a directory, or is not where it was made, it is left exactly as it is and
+`removal_error` says why. A directory left read-only inside, a module cache for one, is opened up
+to its owner without following a link and removed. What could not be removed is named there too:
+a file a process the child left running is still writing, what is inside a directory its owner
+cannot open for reading, or, before Python 3.13, a tree deeper than the open-file limit.
+
+Only a direct `li agent` run on a Claude Code model gets a scratch directory, and that covers
+`agent.submit`, agent schedules and a leg host's launches, which start `li agent`. Each other
+run refuses the profile before its run directory is made, naming the reason: a codex model, a
+Gemini CLI model, an API model, and the orchestrator's role in `li o flow`, `li o fanout` and `li play`. A worker's role
+in a flow, fan-out or play is refused when the worker is resolved, after the orchestrator's run
+directory exists. Remove `scratch` from a profile to use it there.
+
+Claude Code's own sandbox handling of a hard link from the scratch directory to a file outside
+the writable roots has not been measured, as it has not been for the working directory.
+
+macOS limits a unix socket path to 104 bytes. A tool that makes a socket under `TMPDIR` can pass
+that limit when the run directory is deep; a shorter `LIONAGI_HOME` shortens every run's path.
 
 When `lion_system: true`, the global Lion system preamble is prepended to the body
 to form the system prompt. Set it to `false` for a verbatim body (e.g. when the

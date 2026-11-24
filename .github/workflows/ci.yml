@@ -153,6 +153,46 @@ jobs:
         print("core surface imported with base dependencies only")
         PY
 
+  # ADR-0138's proof that local schedule validation and export need no backend,
+  # run against the built wheel: installed with the studio extra into a new
+  # environment outside the checkout, with the application's imports refused
+  # (tests/packaging/test_studio_backend_boundary.py, installed arm). The test
+  # runner is the checkout's environment; the assertions run in the new one, and
+  # the test fails unless lionagi and lionhub load from it and its package files
+  # match the RECORD of the wheel built here.
+  studio-wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Build the wheel
+      run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+    - name: Install the wheel with the studio extra into a new environment
+      working-directory: ${{ runner.temp }}
+      run: |
+        set -- "$RUNNER_TEMP"/dist/lionagi-*.whl
+        test "$#" -eq 1
+        test -f "$1"
+        uv venv "$RUNNER_TEMP/wheel-env"
+        uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" "lionagi[studio] @ file://$1"
+        echo "LIONAGI_STUDIO_WHEEL=$1" >> "$GITHUB_ENV"
+        echo "LIONAGI_STUDIO_WHEEL_PYTHON=$RUNNER_TEMP/wheel-env/bin/python" >> "$GITHUB_ENV"
+    - name: Install the test runner
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Schedule validate and export from the installed wheel
+      run: |
+        test -f "$LIONAGI_STUDIO_WHEEL"
+        test -x "$LIONAGI_STUDIO_WHEEL_PYTHON"
+        uv run --no-sync python -m pytest tests/packaging/test_studio_backend_boundary.py -p no:cacheprovider -n0 -rA
+
   docs:
     needs: changes
     # The `needs: changes` edge exists only so the ADR steps below can read
@@ -623,6 +663,7 @@ jobs:
             # sources and fails when this one differs.
             - 'lionagi/__init__.py'
             - 'lionagi/_cli_worker_context.py'
+            - 'lionagi/_lionagi_dir_trust.py'
             - 'lionagi/_log_channels.py'
             - 'lionagi/_moved.py'
             - 'lionagi/_paths.py'
@@ -659,9 +700,11 @@ jobs:
             - 'lionhub/src/lionhub/orchestration/console.py'
             - 'lionhub/src/lionhub/orchestration/flow/__init__.py'
             - 'lionhub/src/lionhub/orchestration/flow/checkpoint.py'
+            - 'lionhub/src/lionhub/orchestration/flow/graph.py'
             - 'lionhub/src/lionhub/orchestration/flow/parsing.py'
             - 'lionhub/src/lionhub/orchestration/inspection.py'
             - 'lionhub/src/lionhub/orchestration/job.py'
+            - 'lionhub/src/lionhub/orchestration/json_file.py'
             - 'lionhub/src/lionhub/orchestration/mcp_config.py'
             - 'lionhub/src/lionhub/orchestration/patterns.py'
             - 'lionhub/src/lionhub/orchestration/project.py'
@@ -1046,19 +1089,77 @@ jobs:
     - name: Lint marketplace
       run: scripts/ci.sh lint-marketplace
 
+  # The core suite (tests/) with every lionhub import refused. lionhub still ships
+  # in the lionagi wheel and core finds its providers through it, so part of the
+  # core suite needs it. That part is named in tests/hub_dependent_modules.txt,
+  # which may only shrink: the job fails when a module not on the list fails
+  # because lionhub was refused, when a listed module no longer needs it, and on
+  # a pull request whose list gained a module over its base. Each run also checks
+  # the check: taking a listed module off the list, and adding an unlisted module
+  # that needs the hub, must each be caught. Failures with any other cause are the
+  # test job's to report.
+  core-without-hub:
+    name: Core suite without lionhub
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      UV_PYTHON: "3.10"
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+        fetch-depth: 2
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv sync --all-extras
+    - name: Run the core suite with lionhub refused
+      # Failures are expected here; the next step judges them from the report the
+      # plugin writes. A run that ends early or writes no report fails that step.
+      env:
+        LIONAGI_HUBLESS_REPORT: ${{ runner.temp }}/hubless.json
+      run: |
+        uv run --no-sync python -m pytest tests -p scripts.hubless_pytest_plugin \
+          -p no:cacheprovider --continue-on-collection-errors --maxfail=0 \
+          -m "not performance and not flaky_quarantine" -q --disable-warnings -rN || true
+    - name: Compare the run with the list
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        list=tests/hub_dependent_modules.txt
+        args=(--report "$RUNNER_TEMP/hubless.json" --list "$list" --control)
+        if [ "$EVENT_NAME" = pull_request ]; then
+          # HEAD is the merge commit, so its first parent is the base branch.
+          git rev-parse --verify --quiet 'HEAD^1^{commit}' >/dev/null
+          if git cat-file -e "HEAD^1:$list" 2>/dev/null; then
+            git show "HEAD^1:$list" > "$RUNNER_TEMP/base-list.txt"
+            args+=(--base-list "$RUNNER_TEMP/base-list.txt")
+          else
+            echo "The base has no $list yet, so growth of the list is not checked."
+          fi
+        fi
+        uv run --no-sync python scripts/check_core_without_hub.py "${args[@]}"
+
   # Single aggregate context for branch protection. Required status checks must
   # reference this job, never the matrix legs directly: matrix names shift with
   # the event (a manual run can ask for a subset of Python versions) and a renamed leg would
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
   # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,
-  # compat-deps, lionrs, lion1) may
+  # compat-deps, lionrs, lion1, core-without-hub) may
   # skip only when the changes path-filter job itself succeeded and reported
   # their inputs unchanged; any other skip, failure, or cancellation fails the
   # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, compat-deps, lionrs, lion1, vscode, marketplace]
+    needs: [lint, core-install, studio-wheel, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, compat-deps, lionrs, lion1, vscode, marketplace, core-without-hub]
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -1075,6 +1176,7 @@ jobs:
         hard_gates = [
             "lint",
             "core-install",
+            "studio-wheel",
             "docs",
             "test",
             "frontend",
@@ -1099,6 +1201,7 @@ jobs:
             "compat-deps": "compat",
             "lionrs": "lionrs",
             "lion1": "lion1",
+            "core-without-hub": "code",
         }
         for job, flag in conditional_gates.items():
             changed = needs["changes"].get("outputs", {}).get(flag)

@@ -21,6 +21,14 @@ channel with whatever exposure it already has. Copying it into the job record �
 a file that gets read, quoted, and passed on by the observer verbs — would open a
 second one onto the same secret for no classification value: the class and the
 retry hint are the parts a caller branches on.
+
+Two classes are the exception. A ``ProviderEmptyTurnError`` has no provider message: its
+text is this library's own sentence plus the end of the CLI's stderr, which passed the
+same credential redaction as every message the CLI subprocess layer logs or raises, and
+that stderr is the only evidence of why the turn was empty. A ``RequireHooksRefusedError``
+is a refusal lionagi writes before any provider is started, naming the profile and the
+hooks that would not run (ADR-0048 Amendment 2). Each one's text is carried as ``detail``,
+bounded to ``DETAIL_CHARS``, and the job record shows it as ``reason_detail``.
 """
 
 from __future__ import annotations
@@ -31,10 +39,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lionagi._provider_errors import ProviderError
+from lionagi._errors import RequireHooksRefusedError
+from lionagi._provider_errors import ProviderEmptyTurnError, ProviderError
 from lionhub.serve.mcp import config
 
 __all__ = [
+    "DETAIL_CHARS",
     "STATUS_SOURCES",
     "allowed_cause_classes",
     "provider_status",
@@ -58,10 +68,17 @@ _STATUS_CODE_RE = re.compile(r"\(code\s+(?P<code>\d{3})\)")
 # not a provider error" tells a caller to stop looking for one.
 UNKNOWN_CAUSE = "unknown"
 
-# Bounds the read. The file this module writes is two short fields; a larger one
-# was written by something else, and parsing it would be answering about a
-# different file.
-_MAX_CAUSE_BYTES = 4096
+#: The most of an empty turn's text the cause carries as ``detail``, in characters.
+DETAIL_CHARS = 2400
+
+# The classes whose text is carried; see the module docstring.
+_DETAIL_CLASSES = frozenset({ProviderEmptyTurnError.__name__, RequireHooksRefusedError.__name__})
+
+# Bounds the read. The file this module writes is a few short fields and at most
+# DETAIL_CHARS of detail, six bytes a character at worst once JSON escapes it; a
+# larger one was written by something else, and parsing it would be answering
+# about a different file.
+_MAX_CAUSE_BYTES = 4096 + 6 * DETAIL_CHARS
 
 
 def allowed_cause_classes() -> frozenset[str]:
@@ -78,7 +95,7 @@ def allowed_cause_classes() -> frozenset[str]:
             names |= walk(sub)
         return names
 
-    return frozenset(walk(ProviderError) | {UNKNOWN_CAUSE})
+    return frozenset(walk(ProviderError) | walk(RequireHooksRefusedError) | {UNKNOWN_CAUSE})
 
 
 def provider_status(exc: BaseException) -> tuple[str, int | None]:
@@ -113,16 +130,21 @@ def provider_status(exc: BaseException) -> tuple[str, int | None]:
         return ("unreadable", None)
 
 
+# The classes a cause is recorded under by name; anything else is UNKNOWN_CAUSE.
+_RECORDED = (ProviderError, RequireHooksRefusedError)
+
+
 def _provider_error_in(exc: BaseException) -> BaseException:
-    """*exc*, or the provider error it wraps. iModel re-raises every stream failure as a
-    ``ValueError`` whose ``__cause__`` is the provider's typed error, so this is the same
-    walk the run row's reason takes (``lionhub.orchestration.runs``)."""
+    """*exc*, or the provider error (or require_hooks refusal) it wraps. iModel re-raises
+    every stream failure as a ``ValueError`` whose ``__cause__`` is the provider's typed
+    error, so this is the same walk the run row's reason takes
+    (``lionhub.orchestration.runs``)."""
     cause: BaseException | None = exc
     seen: set[int] = set()
-    while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:
+    while cause is not None and not isinstance(cause, _RECORDED) and id(cause) not in seen:
         seen.add(id(cause))
         cause = cause.__cause__
-    return cause if isinstance(cause, ProviderError) else exc
+    return cause if isinstance(cause, _RECORDED) else exc
 
 
 def write_terminal_cause(exc: BaseException) -> None:
@@ -146,7 +168,7 @@ def write_terminal_cause(exc: BaseException) -> None:
         # classification hint, and an instance attribute shadowing it would be
         # some other subsystem's runtime state, not this classification.
         cls = type(exc)
-        name = cls.__name__ if issubclass(cls, ProviderError) else UNKNOWN_CAUSE
+        name = cls.__name__ if issubclass(cls, _RECORDED) else UNKNOWN_CAUSE
         retryable = bool(getattr(cls, "retryable", False)) if name != UNKNOWN_CAUSE else False
         source, code = provider_status(exc)
         record: dict[str, Any] = {
@@ -158,6 +180,8 @@ def write_terminal_cause(exc: BaseException) -> None:
         # code and a code can never be confused with its own absence.
         if code is not None:
             record["provider_status"] = code
+        if isinstance(exc, (ProviderEmptyTurnError, RequireHooksRefusedError)):
+            record["detail"] = str(exc)[:DETAIL_CHARS]
         Path(target).write_text(json.dumps(record))
     except Exception:  # noqa: BLE001, S110 — see docstring: this must not raise
         pass
@@ -206,4 +230,9 @@ def read_terminal_cause(path: str | os.PathLike[str] | None) -> dict[str, Any] |
         cause["provider_status"] = code
     elif source == "received":
         cause["status_source"] = "unreadable"
+    # Detail is kept only for the one class whose text is carried, and only within
+    # the bound the writer applies, so no other value can arrive by this field.
+    detail = loaded.get("detail")
+    if name in _DETAIL_CLASSES and isinstance(detail, str) and 0 < len(detail) <= DETAIL_CHARS:
+        cause["detail"] = detail
     return cause

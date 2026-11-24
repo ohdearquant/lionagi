@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import unicodedata
 import warnings
@@ -36,6 +37,7 @@ from lionagi._errors import (
     CLIInputRefusedError,
     ConfigurationError,
     ContainmentRefusedError,
+    RequireHooksRefusedError,
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import classify_provider_error
@@ -73,6 +75,7 @@ from lionhub.providers._cli_subprocess import (
     reveal_redacted,
     validate_message_prompt,
 )
+from lionhub.providers._empty_turn import empty_turn_chunk, empty_turn_error, is_empty_turn
 
 from ._codex_permissions import (
     PERMISSION_PROFILE,
@@ -181,6 +184,7 @@ __all__ = (
     "stream_codex_cli",
     "CodexCLIEndpoint",
     "refuse_declaring_project_layer",
+    "check_require_hooks",
 )
 
 # The integrations Codex attaches from the signed-in account rather than from
@@ -268,11 +272,32 @@ _CALL_ITEM_TYPES = frozenset(
     }
 )
 
+# What an empty turn's failure says, before the stderr tail, when the turn's usage is all zero
+# and the stream had no item. codex 0.162.1 ends a prompt that a UserPromptSubmit hook refused
+# this way: exit 0, turn.completed with every count at 0, no item, and the hook's message
+# neither on stdout nor on stderr. Other causes of that shape have not been measured.
+_PROMPT_NOT_SENT = (
+    "The turn reported zero usage and no item, so the prompt did not reach the model. "
+    "A prompt a hook refused before the turn started ends this way; codex does not report "
+    "the hook's message."
+)
+
 # The failure recorded when the turn's last text carries call markup.
 _TOOL_CALL_MARKUP_FAILURE = (
     "The model wrote a tool call as text in its final message "
     "instead of making the call; the run stopped before the call ran."
 )
+
+
+def _reports_zero_usage(usage: object) -> bool:
+    """Whether a turn's usage holds counts and every one of them is zero.
+
+    A value that is not a number (a nested object, a flag) is not a zero count, so usage that
+    holds one does not qualify.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return False
+    return all(type(value) in (int, float) and value == 0 for value in usage.values())
 
 
 def _decode_references(text: str) -> str:
@@ -720,6 +745,7 @@ class _PlainRequest:
     fast_mode: bool
     contain_account_integrations: bool
     ignore_user_config: bool
+    require_hooks: bool
     exclusive_mcp_names: list[str] | None
     account_connectors: list[str]
     output_schema: str | None
@@ -728,6 +754,8 @@ class _PlainRequest:
     add_dir: list[str]
     env: dict[str, str] | None
     workload: str
+    profile_deny_read: tuple[str, ...] = ()
+    scratch_dir: str | None = None
 
     def contains_account_integrations(self) -> bool:
         # A light request is contained whatever it set: its sandbox keeps the network out,
@@ -840,6 +868,7 @@ def _plain_request(
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
         ignore_user_config=flag("ignore_user_config"),
+        require_hooks=flag("require_hooks"),
         exclusive_mcp_names=(
             None if request.exclusive_mcp_names is None else texts("exclusive_mcp_names")
         ),
@@ -850,6 +879,8 @@ def _plain_request(
         add_dir=paths["add_dir"],
         env=None if env is None else env_as_the_spawn_encodes_it(env),
         workload=text("workload") or DEFAULT_WORKLOAD,
+        profile_deny_read=tuple(texts("profile_deny_read")),
+        scratch_dir=text("scratch_dir"),
     )
 
 
@@ -967,7 +998,9 @@ def _refuse_oversized_cli_inputs(
     failure: ValueError | TypeError | None = None
     measured: list[tuple[str, bytes]] = []
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
-        raise ValueError(
+        # Not a ValueError, so a request copied after construction is refused with the same
+        # type as one refused at construction.
+        raise CLIInputRefusedError(
             f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
             f"{CODEX_MAX_TURN_INPUT_CHARS:,}. A long branch sends its rendered history as "
             "the input: start a new session and hand it the earlier result as a file."
@@ -1312,13 +1345,23 @@ def _permission_profile_policy(plain: _PlainRequest) -> ChildSandboxPolicy | Non
     While the child sandbox is enabled a codex child runs under a permission profile in place
     of a sandbox mode. A request that bypasses approvals and the sandbox is refused in that
     state, so it is left to those refusals here; with the child sandbox switched off the
-    command line is the one a codex child always had.
+    command line is the one a codex child always had. The agent profile's ``deny_read``
+    entries join the policy's unreadable list; a request that names any is refused where no
+    permission profile would hold them.
     """
-    if plain.bypass_approvals:
-        return None
-    from lionhub.agent.child_sandbox import resolve_child_sandbox
+    from lionhub.agent.child_sandbox import resolve_child_sandbox, with_profile_deny_read
 
+    if plain.bypass_approvals:
+        if plain.profile_deny_read:
+            raise ConfigurationError(
+                "bypass_approvals turns codex's sandbox off, so the agent profile's deny_read "
+                "entries would not hold; run without bypass_approvals or remove deny_read from "
+                "the profile"
+            )
+        return None
     policy = resolve_child_sandbox(None)
+    # Refuses entries while the sandbox is off: no permission profile would hold them.
+    policy = with_profile_deny_read(policy, plain.profile_deny_read)
     return policy if policy.enabled else None
 
 
@@ -1449,14 +1492,138 @@ def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     return write_roots
 
 
+#: The variables the commands a codex child runs read for their temporary directory, each set
+#: to the run's scratch directory when it has one.
+_SCRATCH_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
+
+#: The directory a profile's ``:slash_tmp`` entry names, compared against a scratch directory
+#: and never written.
+_SLASH_TMP = "/tmp"  # noqa: S108
+
+
+def _scratch_root(plain: _PlainRequest) -> str | None:
+    """The run's scratch directory as a resolved path, or None when there is none to add.
+
+    A scratch path that is a symbolic link, or not a directory, is refused: the profile would
+    grant writes wherever it points. A path that is gone is skipped with a warning, so a command
+    line built for a run that has ended grants no name another process could take.
+    """
+    if not plain.scratch_dir:
+        return None
+    path = os.path.abspath(os.path.expanduser(plain.scratch_dir))
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        log.warning("scratch directory %s is gone; the codex child gets no scratch directory", path)
+        return None
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise ConfigurationError(
+            f"scratch directory {path} is a symbolic link or not a directory; "
+            "the codex child is not started"
+        )
+    return os.path.realpath(path)
+
+
+def _profiled_scratch(plain: _PlainRequest, policy: ChildSandboxPolicy | None) -> str | None:
+    """The scratch directory a codex launch adds to its permission profile, or None.
+
+    A request that names one where no permission profile would hold it is refused:
+    ``bypass_approvals`` turns codex's sandbox off, and with the child sandbox switched off
+    there is no profile to add the entry to.
+    """
+    if not plain.scratch_dir:
+        return None
+    if plain.bypass_approvals:
+        raise ConfigurationError(
+            "bypass_approvals turns codex's sandbox off, so the run's scratch directory would not "
+            "be the one place the child writes beyond its profile; run without bypass_approvals "
+            "or remove scratch from the agent profile"
+        )
+    if policy is None:
+        raise ConfigurationError(
+            "the child sandbox is switched off, so a codex child has no permission profile to "
+            "add the run's scratch directory to; enable child_sandbox in "
+            "~/.lionagi/settings.yaml or remove scratch from the agent profile"
+        )
+    return _scratch_root(plain)
+
+
+def _scratch_env_overrides(scratch: str) -> list[str]:
+    """The ``-c`` overrides that set ``TMPDIR``, ``TMP`` and ``TEMP`` to ``scratch`` for the
+    commands a codex child runs.
+
+    The one rendering of that setting: a launch and the sandbox probe both emit it through
+    here, so a probe record vouches for the overrides a launch really carries. Each is a dotted
+    key under ``shell_environment_policy.set`` that names one variable and leaves any other
+    entry of a ``set`` table alone. Codex's own process keeps its environment, so the
+    ``:tmpdir`` entry of a profile still means the directory codex was started with.
+    """
+    rendered = _rendered_override_value(scratch, "The scratch directory")
+    args: list[str] = []
+    for name in _SCRATCH_ENV_NAMES:
+        args.extend(["-c", f"shell_environment_policy.set.{name}={rendered}"])
+    return args
+
+
+def _refuse_scratch_under_read_only_temp(
+    table: Mapping[str, Any], scratch: str, env: Mapping[str, str] | None
+) -> None:
+    """Refuse a scratch directory inside ``/tmp`` or ``$TMPDIR`` where ``table`` makes that
+    directory read-only.
+
+    A light table, and a heavy one under ``exclude_slash_tmp`` or ``exclude_tmpdir``, sets
+    ``:slash_tmp`` or ``:tmpdir`` to read. A scratch directory inside one would put a write
+    entry and a read entry on the same path, and which one holds is not measured. ``$TMPDIR``
+    is the one codex itself starts with: from ``env``, the child's environment, or from this
+    process's when ``env`` is None. The written and the resolved spelling of each are compared.
+    """
+    files = table.get("filesystem")
+    if not isinstance(files, Mapping):
+        return
+    temps: list[tuple[str, str]] = []
+    if files.get(":slash_tmp") == "read":
+        temps.append(("/tmp", _SLASH_TMP))  # noqa: S108 -- the name in the refusal
+    tmpdir = (os.environ if env is None else env).get("TMPDIR")
+    if files.get(":tmpdir") == "read" and tmpdir:
+        temps.append(("$TMPDIR", tmpdir))
+    roots = dict.fromkeys((Path(os.path.abspath(scratch)), Path(os.path.realpath(scratch))))
+    for name, temp in temps:
+        spellings = dict.fromkeys((Path(os.path.abspath(temp)), Path(os.path.realpath(temp))))
+        for temp_path in spellings:
+            for root in roots:
+                if root == temp_path or temp_path in root.parents:
+                    raise CLIInputRefusedError(
+                        f"the scratch directory {scratch!r} lies inside {name} ({temp!r}), which "
+                        "this launch's permission profile makes read-only; the profile would "
+                        "grant writes where it sets reads, and which one holds is not measured. "
+                        "Keep the run directory outside /tmp and $TMPDIR."
+                    )
+
+
 def _permission_profile_args(
     plain: _PlainRequest,
     cwd: Path,
     env: Mapping[str, str] | None,
     policy: ChildSandboxPolicy,
     carried: Any,
+    scratch: str | None = None,
 ) -> list[str]:
-    """The two ``-c`` overrides that put a codex child under the permission profile.
+    """The two ``-c`` overrides that put a codex child under the permission profile
+    ``_permission_profile_launch_table`` renders."""
+    return _permission_profile_overrides(
+        _permission_profile_launch_table(plain, cwd, env, policy, carried, scratch)
+    )
+
+
+def _permission_profile_launch_table(
+    plain: _PlainRequest,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    policy: ChildSandboxPolicy,
+    carried: Any,
+    scratch: str | None = None,
+) -> dict[str, Any]:
+    """The permission profile table a codex child runs under.
 
     ``env`` is the environment the child runs in: the ``CODEX_HOME`` it names is the one the
     profile denies, beside every ``deny_read`` entry of ``policy``. The profile starts from
@@ -1468,6 +1635,12 @@ def _permission_profile_args(
     profile honours the user config's ``exclude_slash_tmp``, ``exclude_tmpdir_env_var`` and
     ``network_access``; the network is off for a light request and for a read-only profile, as
     the read-only sandbox mode left it.
+
+    ``scratch`` is the run's resolved scratch directory, or None. It is one more write entry in
+    every mode, a read-only profile's included (ADR-0041 Amendment 6), and it is refused as
+    every other root is when it holds or lies inside the probe record directory or a denied
+    location, and when it lies inside ``/tmp`` or ``$TMPDIR`` where the table makes that
+    directory read-only.
     """
     light = plain.workload == "light"
     exclude_slash_tmp = exclude_tmpdir = network = False
@@ -1498,16 +1671,23 @@ def _permission_profile_args(
     if not read_only:
         refuse_write_roots_on_denied_paths([str(cwd)], deny, what="the working directory")
     refuse_write_roots_on_denied_paths(write_roots, deny)
+    scratch_entries = [] if scratch is None else [scratch]
+    if scratch is not None:
+        refuse_write_roots_on_probe_record_dir(scratch_entries, what="the scratch directory")
+        refuse_write_roots_on_denied_paths(scratch_entries, deny, what="the scratch directory")
     table = permission_profile_table(
         deny=deny,
-        write=[] if read_only else write_roots,
+        write=[] if read_only else [*write_roots, *scratch_entries],
         light=light,
         read_only=read_only,
         network=network and not read_only,
         exclude_slash_tmp=exclude_slash_tmp and not read_only,
         exclude_tmpdir=exclude_tmpdir and not read_only,
+        read_only_write=scratch_entries,
     )
-    return _permission_profile_overrides(table)
+    if scratch is not None:
+        _refuse_scratch_under_read_only_temp(table, scratch, env)
+    return table
 
 
 def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
@@ -1526,11 +1706,20 @@ def _permission_profile_overrides(table: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, str] | None) -> None:
+def _gate_a_profiled_launch(
+    plain: _PlainRequest,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    scratch: str | None = None,
+) -> None:
     """Refuse, before spawn, a profiled launch that another layer could weaken or that runs on
     a codex binary not shown to enforce the profile.
 
-    ``env`` is the child's final environment. When the user config sets a root
+    ``env`` is the child's final environment and ``scratch`` the run's resolved scratch
+    directory, or None. The probe record is read against the table the launch renders, so the
+    socket arm asked for is the one of the launch's own network state (ADR-0133, "the socket
+    arm per network state"), and a launch with a scratch directory needs the arm that measured
+    its delivery (ADR-0041 Amendment 6). When the user config sets a root
     ``sandbox_mode`` the profile governs over it; one line in the log says so, naming the config
     and the probe record the binary's check rests on.
     """
@@ -1542,7 +1731,15 @@ def _gate_a_profiled_launch(plain: _PlainRequest, cwd: Path, env: Mapping[str, s
         profile=plain.profile,
         ignore_user_config=plain.ignore_user_config,
     )
-    record = require_passing_probe_record(CODEX_CLI, env=env, cwd=cwd)
+    policy = _permission_profile_policy(plain)
+    table = None
+    if policy is not None:
+        carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
+        table = _permission_profile_launch_table(plain, cwd, env, policy, carried, scratch)
+    # With no policy there is no table, and the record is then asked for every arm.
+    record = require_passing_probe_record(
+        CODEX_CLI, env=env, cwd=cwd, table=table, scratch=scratch is not None
+    )
     if governed is not None:
         log.warning(
             "the command-line permission profile governs over the sandbox_mode set in %s, as the "
@@ -1649,6 +1846,16 @@ class CodexCodeRequest(BaseModel):
             "fill into this CLI process, in addition to the routed account key "
             "names. Names only, never values. Empty leaves the lookup's fill "
             "exactly as it is."
+        ),
+    )
+    scratch_dir: SkipJsonSchema[str | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "This run's scratch directory (an `li agent` run whose profile declares "
+            "`scratch`): one write entry in the permission profile, and TMPDIR, TMP and TEMP "
+            "for the commands the child runs. None adds nothing."
         ),
     )
 
@@ -1804,6 +2011,19 @@ class CodexCodeRequest(BaseModel):
             "codex then loads no profile."
         ),
         json_schema_extra=make_cli_flag("--ignore-user-config", 64, "bool"),
+    )
+    require_hooks: bool = Field(
+        default=False,
+        description=(
+            "Refuse to start when a hook declared in CODEX_HOME/hooks.json, or in the "
+            "`[hooks]` table of CODEX_HOME/config.toml, will not run: codex runs a hook only "
+            "once its `[hooks.state]` entry records the hook's current hash, and the entry is "
+            "named for the declaring file's path, so a hook trusted under one codex home is "
+            "untrusted under another. The home read is the one the child's environment names. "
+            "A hook whose recorded hash differs from the one computed here is refused too, and "
+            "so is a hooks file codex cannot read; a hook the state disables is not. Hooks in "
+            "project layers, plugins and managed configuration are not checked. Off by default."
+        ),
     )
 
     # ── feature flags (order 70–79) ───────────────────────────────
@@ -2020,6 +2240,15 @@ class CodexCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    profile_deny_read: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "The agent profile's deny_read entries, added to the permission profile's "
+            "unreadable list. A request that names any where no permission profile applies "
+            "(the child sandbox off, or bypass_approvals) is refused."
+        ),
+    )
     workload: SubagentWorkload = Field(
         default=DEFAULT_WORKLOAD,
         exclude=True,
@@ -2308,12 +2537,17 @@ class CodexCodeRequest(BaseModel):
         # With the child sandbox on (and no bypass, which is refused in that state) the child
         # runs under a permission profile instead of a sandbox mode.
         policy = _permission_profile_policy(plain)
+        # Read once here, so a gone directory warns once and the table and the environment
+        # keys below name one path.
+        scratch = _profiled_scratch(plain, policy)
         if policy is not None:
             # ``as_cmd_args`` reaches the same refusals as a spawn does.
-            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env)
+            _gate_a_profiled_launch(plain, cwd, plain.env if env is None else env, scratch)
         args: list[str] = ["exec", "--json"]
         args.extend(self._build_declarative_args(plain, cwd))
         carried = _ignored_user_config_carry(plain, cwd) if plain.ignore_user_config else None
+        if plain.require_hooks:
+            _refuse_hooks_that_will_not_run(plain, plain.env if env is None else env)
 
         # A light agent writes only its working directory, so a linked worktree's git
         # directory is not made writable for it.
@@ -2450,9 +2684,13 @@ class CodexCodeRequest(BaseModel):
             # codex, which keeps the last `-c` of a key, reads it whatever came before.
             args.extend(
                 _permission_profile_args(
-                    plain, cwd, plain.env if env is None else env, policy, carried
+                    plain, cwd, plain.env if env is None else env, policy, carried, scratch
                 )
             )
+            if scratch is not None:
+                # After every caller override and the profile, so codex, which keeps the last
+                # `-c` of a key, reads these three whatever came before.
+                args.extend(_scratch_env_overrides(scratch))
         elif light:
             # Pinned against the user's config, read by codex or carried above, which may
             # grant extra writable roots or the network to every workspace-write session, or
@@ -2868,6 +3106,60 @@ def _workspace_write_value(name: str, value: Any, config_path: Path) -> Any:
             roots,
         )
     return roots or None
+
+
+def _refuse_hooks_that_will_not_run(plain: _PlainRequest, env: Mapping[str, str] | None) -> None:
+    """Refuse a ``require_hooks`` run when a hook its codex home declares will not run.
+
+    The home is the one the child's environment names (ours when the request carries none).
+    The hook state is the user config's, then the `hooks.state` the run's overrides write. A
+    run that ignores the user config does not load the hooks of its `[hooks]` table, and is
+    refused before here when that table declares any.
+    """
+    from ._codex_hook_trust import UNCONFIRMED, hook_trust_for_env
+
+    hooks = _command_line_layer(plain).get("hooks")
+    report = hook_trust_for_env(
+        os.environ if env is None else env,
+        override_state=hooks.get("state") if isinstance(hooks, Mapping) else None,
+        include_config_hooks=not plain.ignore_user_config,
+    )
+    refused = report.refused()
+    if not refused and not report.problems:
+        return
+    reasons = [f"{hook.hook.name} ({hook.status})" for hook in refused]
+    reasons.extend(report.problems)
+    unconfirmed = (
+        " An unconfirmed hook has a recorded hash that differs from the one computed here, "
+        "which has not yet been checked against a hash codex wrote."
+        if any(hook.status == UNCONFIRMED for hook in refused)
+        else ""
+    )
+    raise RequireHooksRefusedError(
+        f"Codex is not started: require_hooks is set and the hooks of the codex home "
+        f"{str(report.codex_home)!r} cannot all run: {'; '.join(reasons)}. Codex runs a hook "
+        "only once it is trusted under the home that declares it, and a hook trusted under "
+        "another home does not count. Trust each one in codex under this home, or start "
+        f"without require_hooks.{unconfirmed}"
+    )
+
+
+def check_require_hooks(request: CodexCodeRequest, cwd: str | os.PathLike[str]) -> None:
+    """Run the hook checks a launch of *request* in *cwd* runs, without starting codex.
+
+    For a caller that answers before the launch, such as a job submission (ADR-0048
+    Amendment 2). The request is reduced as the launch reduces it; a run that ignores the
+    user config reads that config as the launch does, which refuses hooks declared in its
+    `[hooks]` table; then ``_refuse_hooks_that_will_not_run`` reads the codex home the
+    request's environment names (ours when it names none). A request without
+    ``require_hooks`` is not checked.
+    """
+    plain = _plain_request(request)
+    if not plain.require_hooks:
+        return
+    if plain.ignore_user_config:
+        _ignored_user_config_carry(plain, Path(cwd))
+    _refuse_hooks_that_will_not_run(plain, plain.env)
 
 
 def _hook_trust_records(state: Any) -> dict[str, dict[str, Any]]:
@@ -3331,7 +3623,11 @@ def _codex_auth_env(plain: _PlainRequest, env: Mapping[str, str]) -> frozenset[s
 
 
 # TODO: migrate create_subprocess_exec + wait_for to anyio
-async def _ndjson_from_cli(request: CodexCodeRequest):
+async def _ndjson_from_cli(
+    request: CodexCodeRequest,
+    *,
+    on_clean_exit: Callable[[str, str | None], None] | None = None,
+):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     # model_copy(update=...) skips validation, so the request is reduced again here, where
@@ -3381,6 +3677,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             secret_fill_skip=request.secret_fill_skip,
             workload=plain.workload,
             auth_env=functools.partial(_codex_auth_env, plain),
+            on_clean_exit=on_clean_exit,
             **({"_prepare_argv": prepare_argv} if prepare_argv is not None else {}),
         )
     ) as stream:
@@ -3392,13 +3689,28 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
 
 
 async def stream_codex_cli_events(request: CodexCodeRequest):
-    """Stream events from Codex CLI."""
+    """Stream events from Codex CLI.
+
+    The closing ``done`` event is this module's own, never the CLI's. After a clean exit it
+    carries the CLI's ``stderr`` (credentials removed) and ``stderr_unread``, why that stderr may
+    be incomplete, so the parser can quote it when the turn turns out empty.
+    """
     if not CODEX_CLI:
         raise RuntimeError("Codex CLI not found (npm i -g @openai/codex)")
-    async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+    exits: list[tuple[str, str | None]] = []
+
+    def on_clean_exit(stderr: str, unread: str | None) -> None:
+        exits.append((stderr, unread))
+
+    async with contextlib.aclosing(
+        _ndjson_from_cli(request, on_clean_exit=on_clean_exit)
+    ) as stream:
         async for obj in stream:
             yield obj
-    yield {"type": "done"}
+    done: dict[str, Any] = {"type": "done"}
+    if exits:
+        done["stderr"], done["stderr_unread"] = exits[-1]
+    yield done
 
 
 #: The most of one tool result this provider keeps, and of a command, a file change or a
@@ -3781,11 +4093,25 @@ async def stream_codex_cli(
     # call-markup check reads only the last one, when a turn completes or the
     # stream ends. Code regions of that text are removed before matching.
     _last_agent_text: str | None = None
+    # Whether a completed item was a call or a call's result, of any type in
+    # `_CALL_ITEM_TYPES`: some (an MCP tool call, a web search) are not kept as tool uses,
+    # and a turn that made one is not an empty turn.
+    _made_call = False
+    # Whether the stream had any item event, and whether the last turn.completed reported
+    # usage whose every count is zero. Both together mean the prompt never reached the model.
+    _saw_item = False
+    _zero_usage = False
+    # The CLI's stderr after a clean exit, as the closing ``done`` event carries it; None when
+    # the stream ended without one.
+    _stderr: str | None = None
+    _stderr_unread: str | None = None
 
     stream = stream_codex_cli_events(request)
     try:
         async for obj in stream:
             typ = obj.get("type", "unknown")
+            if isinstance(typ, str) and typ.startswith("item."):
+                _saw_item = True
 
             # -- thread / session start --
             if typ in ("thread.started", "system", "init", "session.start"):
@@ -3810,6 +4136,7 @@ async def stream_codex_cli(
                 # must not fail the turn. Other items leave the text as it was.
                 if item_type in _CALL_ITEM_TYPES:
                     _last_agent_text = None
+                    _made_call = True
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
@@ -3973,6 +4300,7 @@ async def stream_codex_cli(
             elif typ == "turn.completed":
                 turn_usage = obj.get("usage", {}) or {}
                 session.usage = turn_usage
+                _zero_usage = _reports_zero_usage(turn_usage)
                 turn_cost = obj.get("total_cost_usd", obj.get("cost"))
                 session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
@@ -4079,6 +4407,11 @@ async def stream_codex_cli(
                     if _has_tool_call_markup(_last_agent_text or ""):
                         yield _call_markup_error_chunk(session, obj)
                     _last_agent_text = None
+                    # A turn that is empty at the sentinel is not ended by it: the
+                    # stream runs on to its end, where the empty turn fails with the
+                    # CLI's stderr, which is read only once the CLI has exited.
+                    if is_empty_turn(session, made_call=_made_call):
+                        continue
                     sc = StreamChunk(
                         type="error",
                         content=_err_message,
@@ -4219,6 +4552,10 @@ async def stream_codex_cli(
                     yield rsc
 
             elif typ == "done":
+                _stderr = obj.get("stderr") if isinstance(obj.get("stderr"), str) else None
+                _stderr_unread = (
+                    obj.get("stderr_unread") if isinstance(obj.get("stderr_unread"), str) else None
+                )
                 break
     finally:
         await stream.aclose()
@@ -4230,6 +4567,14 @@ async def stream_codex_cli(
     if _has_tool_call_markup(_last_agent_text or ""):
         yield _call_markup_error_chunk(session, {})
         _last_agent_text = None
+
+    # A turn that ended with no text, no tool call and no failure fails here, quoting the CLI's
+    # stderr. Nothing retries it. When its usage was all zero and the stream had no item, the
+    # failure first says that the prompt did not reach the model, because the stderr tail then
+    # need not bear on why.
+    if is_empty_turn(session, made_call=_made_call):
+        cause = _PROMPT_NOT_SENT if _zero_usage and not _saw_item else None
+        yield empty_turn_chunk(session, _stderr, _stderr_unread, cause=cause)
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
@@ -4264,10 +4609,27 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CODEX_HANDLER_PARAMS
     _handler_kwarg = "codex_handlers"
     _request_model = CodexCodeRequest
-    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip")
+    _runtime_state_fields = ("env", "on_spawn", "secret_fill_skip", "scratch_dir")
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True
+
+    @classmethod
+    def unset_reasoning_effort(
+        cls,
+        model: str,
+        profile_overrides: dict | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> str | None:
+        """The effort to emit for a codex request that sets none, for a caller without one.
+
+        ``lionagi.service.providers.codex_unset_effort_default`` reaches this by name through
+        the provider catalog, so the core names no codex module. It reads the configuration a
+        request's own validation reads, from the codex home ``env`` names.
+        """
+        from ._codex_profile import codex_unset_effort_from_config
+
+        return codex_unset_effort_from_config(model, profile_overrides, env)
 
     def _carried_runtime_state(self, request, req_dict: dict) -> dict:
         carried = super()._carried_runtime_state(request, req_dict)
@@ -4392,6 +4754,9 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             named = [t for t in failures if not t.startswith(_EMPTY_ERROR_PAYLOAD)]
             if session.session_id:
                 self.session_id = session.session_id
+            empty = empty_turn_error(session)
+            if empty is not None:
+                raise empty
             raise classify_provider_error(
                 "\n".join(named or failures) or "Codex session failed",
                 status=session.error_status,

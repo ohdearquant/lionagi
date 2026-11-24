@@ -1,15 +1,350 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27 and 2026-11-20 (see Amendments
-  1 to 4); Amendment 5 (2026-11-21) is Proposed
+- **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
+  Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
+  Proposed; Amendment 8 (2026-11-23) Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
 
-## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
+## Amendment 8 (2026-11-23) — a resume runs the MCP servers its first run was handed
 
 **Status: Proposed.**
+
+A new `li agent` branch records its MCP choice once, in `branch.metadata["mcp_launch"]`. A
+resumed or continued leg that names neither `--mcp-config` nor `--no-mcp-config` replays that
+choice (`docs/internals/cli.md`, the `mcp_launch` paragraph). No decision record described this
+record until now. Its fields are:
+
+- `mcp_config`: the absolute path of the file whose servers the run was handed, or null.
+- `no_mcp_config`: whether the run was handed no servers.
+- `launch_dir`: the directory the run resolved from. A resume searches from here, not from where
+  it runs.
+- `no_mcp_config_source`: `profile` when an agent profile's `mcp: none` made the choice. A resume
+  cannot widen that choice with `--mcp-config`.
+- `mcp_config_origin`: `submit_snapshot` when the file is the copy `agent.submit` took of a config
+  it discovered, or `explicit` when the file was named on the command line.
+
+The feature request reports that a resume "resolves the recorded path again and reads the file as
+it is at that moment. Nothing compares it with what the first run read." Three kinds of record
+reach a resume. A config `agent.submit` discovered is replayed from the copy it took at submit. A
+person's `li agent` that names no flag records `mcp_config: null` and the launch directory, and its
+resume searches that directory again. A named config is read again from the named file, which can
+have changed since the first run and can sit where the leg itself can write. This amendment
+changes the third kind only.
+
+Decision:
+
+- **A named set is copied at launch.** This covers a new branch whose set was named on the command
+  line, whether by a person or by `agent.submit` passing its caller's `mcp_config` through. Once the
+  leg has allocated its run directory, it writes `mcp-config.json` there, created new and readable
+  by its owner alone (mode 0600). The copy holds the servers as read from the named file, before
+  the run's own khive actor is attributed to them, so a resume attributes its own actor as the first
+  run did. It is not a second read of the named file.
+- **The record points at the copy.** `mcp_config` names the copy, and `mcp_config_origin` stays
+  `explicit`. A new field, `mcp_config_named`, holds the absolute path the caller named. A resume
+  reads `mcp_config` as before and never reads `mcp_config_named`, which is provenance only. A
+  record whose `mcp_config_named` is not an absolute path, or whose origin is not `explicit`,
+  refuses the resume before any config is read.
+- **The copy is still a named set.** A resume hands it over as the whole set, as the first run had
+  it: Claude gets `--strict-mcp-config`, and codex is given only those servers.
+- **A resume copies it again.** A resume that replays a copy writes the set again into its own
+  run directory and points `mcp_config` there, keeping `mcp_config_named`. Nothing in lionagi
+  removes a run directory; a sweep outside it may, so the set lasts as long as the branch's newest
+  run directory rather than its first. An automatic resume after a timeout replays the copy the
+  same way rather than reading the named file again.
+- **A copy that is gone refuses the resume.** The refusal names the file and the flags to go on
+  with (`--mcp-config`, `--no-mcp-config`), as a recorded file that can no longer be read does
+  today.
+- **The record is written after the run directory exists.** The branch is persisted only after
+  that point, so no branch can carry a record that points at a copy that was never written. A launch
+  refused before its run directory exists (a profile's `scratch` or `deny_read` that the route
+  cannot hold) leaves neither a copy nor a branch, as before. A branch with no record at all reads
+  as before, and this amendment adds no way to reach that state.
+- **Where the copy sits.** At `<lionagi home>/runs/<run id>/mcp-config.json`. No default write
+  root holds the lionagi home, and the copy is among the run files a Claude Code child's file tools
+  are denied by name (beside `run.json`, `checkpoint.json`, `branches` and `stream`). A Claude Code
+  child's Bash is held to its working directory and `allowWrite`, and its file tools to the same
+  roots by a hook; a codex child writes under its working directory, its granted roots and its
+  scratch directory; an API model's write set under its working directory, the temporary directory,
+  the uv cache and its granted roots. None of these reaches the copy unless the working directory or a granted
+  root contains the lionagi home.
+- **Records written before this amendment.** A record with origin `explicit` and no
+  `mcp_config_named` keeps today's behaviour and reads the named file again.
+- **`li o flow`.** Its checkpoint records a named config the same way (`mcp_config` and
+  `mcp_config_origin: explicit`), and its resume reads the file again. The flow copies the set into
+  its own run directory under the same rules, and its checkpoint gains `mcp_config_named`. That half
+  is not implemented yet: until it is, a flow's resume reads the named file again.
+- **`agent.submit` takes no copy of a named config itself.** ADR-0048 Amendment 1's sentence on
+  this stays true of the submit layer, and the job record's `mcp_config` still names the caller's
+  file.
+
+Limits:
+
+- A set found by searching the launch directory is searched again on every resume, by design. It
+  is not pinned, and a config placed in that directory or above it after the first run reaches the
+  resume.
+- A branch recorded before this amendment has no copy. Its resumes read the named file as it is
+  then, until the branch is started fresh. A resume that names an MCP flag uses that flag for that
+  leg only and does not rewrite the record.
+- A leg with no filesystem boundary can rewrite the copy, as it can the run's other files: a child
+  whose sandbox is switched off, a codex child with `bypass_approvals`, and a Gemini CLI child,
+  whose sandbox grants no write set this launcher can verify.
+- The copy holds each server's `env` and headers as the named file did. They now also sit in the
+  run directory, as a discovered config's copy already does in the job directory.
+- A resume that names `--mcp-config` reads that file as it is then. The copy governs only a resume
+  that names no MCP flag.
+- A copy that cannot be written fails the launch after its run directory exists. No branch is
+  persisted, and the run's `run.json` keeps the `running` entry it was allocated with, as for any
+  other failure between allocating the run and starting the leg.
+
+## Amendment 7 (2026-11-23) — an agent profile adds paths its child may not read
+
+**Status: Proposed.**
+
+The ask, in the words of the feature request ("Agent profiles: confine a leg's reads to its
+working directory"): "`workload: heavy` keeps a Codex leg read-only and `light` gives
+workspace-write with no network, but in both, reads reach anything the user can read." What it
+wants: "A profile field (for example `read_roots: [cwd]` or `deny_read: [...]`) passed to each
+provider's sandbox where it can be enforced, and a refusal at submit where it cannot, as `light`
+already refuses for providers without a sandbox." This amendment answers the `deny_read` half.
+An allow-list such as `read_roots` needs reads denied by default, which no route here has been
+measured to do; it comes as its own amendment once that is measured, and the key is not added
+before then.
+
+Decision:
+
+- **The profile key.** `deny_read: [path, ...]` in an agent profile's frontmatter. Each entry is
+  an absolute path or starts with `~/`. A relative path, an entry with a `.` or `..` part, an
+  entry holding a pattern character (`* ? [ ] { }`), and a value that is not a list of non-empty
+  strings refuse the profile when it is loaded, and the message names the entry. Patterns are
+  refused on every route, including those that could match one, so an entry always means the one
+  path it names.
+- **Links.** An entry whose existing part passes through a symbolic link to another path is
+  refused, and the message prints the path it resolves to so the author can write that instead.
+  On macOS `/tmp`, `/var` and `/etc` are links into `/private`, so an entry under them is refused
+  this way. An entry that does not exist is accepted and denies the path if it appears. Doubled
+  and trailing slashes are dropped, and an entry given twice is kept once.
+- **Never read as absent.** A frontmatter the parser cannot read that names `deny_read`, and a
+  `deny_read` key in a `---` block after the leading frontmatter, refuse the profile.
+- **Tightening only, from any profile file.** The entries are added to the run's deny list after
+  the `profiles.<name>.allow_read` exemptions are applied, so no exemption lifts one, and they are
+  denied for editing too. They can stop a run and cannot widen one, so a profile file in a
+  project's agents folder may carry them; exemptions stay limited to the profile files in the
+  user's own agents folder, as before. What an exemption lifts is unchanged on every route.
+- **The sandbox switch.** With the child sandbox switched off in `~/.lionagi/settings.yaml`, a
+  run whose profile declares entries is refused, since nothing would hold them.
+- **The probe record.** A codex launch with the `lionagi_child` permission profile needs a probe
+  record for its binary. The record is keyed to the binary (resolved path, version and digest),
+  not to the profile's content, and a profile's entries render through the same deny entries the
+  probe measures, so they need no probe of their own.
+- **Where it applies.** One row per launch surface and provider. A refusal names the reason shown
+  here; a refusal "at launch" happens before the run directory exists.
+
+| Launch surface | Provider | What holds the entries | Reason given when refused |
+| --- | --- | --- | --- |
+| `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI, `heavy` or `light` | `sandbox.filesystem.denyRead` (Bash reads) and `Read` and `Edit` deny rules (the file tools) in the child's `--settings`; `light` removes the write tools and keeps the same sandbox | |
+| the same | codex, `heavy` or `light` | deny entries of the `lionagi_child` permission profile. A working directory or write root that is, holds or lies inside an entry refuses the launch, as it does for every denied path | with `bypass_approvals`: codex's sandbox is off, so the entries would not hold |
+| the same | Gemini CLI, on a host with `/usr/bin/sandbox-exec` | `DENY_READ_<n>` parameters of the macOS sandbox policy the CLI runs under | |
+| the same | Gemini CLI, on a host without it | refused at launch | the CLI is held to the unreadable list only by the macOS sandbox, and this host has none |
+| the same | an API model, `api_tools: write` | the macOS sandbox policy its commands run under | |
+| the same | an API model, `api_tools: read` | refused at launch | its tools run in lionagi's process with no sandbox, so nothing denies a read |
+| the same | any other CLI | refused at launch | the named provider has no child sandbox to hold them |
+| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | as the rows above for a CLI; an API model, whatever its tool set | as above; an API model is refused at launch | as above, at launch; an API model's tools are not built under a policy holding the entries |
+| a worker's role in a flow, fan-out or play | as the rows above for a CLI; an API model, whatever its tool set | as above; an API model is refused | as above, when the worker is built, after the orchestrator's run directory exists; an API model's tools are not built under a policy holding the entries |
+| an orchestration engine stage | any | refused when the stage's agent is built, before it counts against the engine's agent budget, when the role's profile declares `deny_read`, or fails to load and its file names `deny_read` or cannot be read | a stage takes only the model and effort from its role's profile, so nothing carries the entries to its child; a profile that does not load leaves the stage on its other settings |
+
+Required checks:
+
+- The key's accepted forms, each refused form naming its entry, a link refused with the resolved
+  path printed, and an entry under `/tmp` refused naming where `/tmp` resolves where it is a link.
+- A malformed, unreadable or misplaced `deny_read` refuses the profile; a project profile's
+  entries are taken.
+- Claude Code, the one route that reads exemptions: the rendered settings deny the entry while
+  `allow_read` for the same profile names the same path, `heavy` and `light`, with a control
+  showing that `allow_read` still lifts the path for a profile without the entry. Codex, the
+  Gemini CLI and API models read no exemption: on each the rendered permission profile, macOS
+  sandbox parameters or API-model policy contains the entry, with a control rendered without it.
+- Each refusing route refuses with its reason. `li agent` refuses before the run directory exists
+  for the Gemini CLI without the macOS sandbox and with the sandbox switched off, and so does an
+  orchestrator whose model is the Gemini CLI without it. A worker whose model cannot hold the
+  entries refuses when it is built, with a control showing the same worker builds when its role
+  declares none. An engine stage refuses when its agent is built if its role declares entries,
+  has a malformed `deny_read`, fails to load for another reason while its file names
+  `deny_read`, or is a link whose target cannot be read; a stage whose role declares none
+  builds, and so does one whose file fails to load the same way without naming `deny_read`. The sandbox switched off
+  refuses the profile resolver, a Claude Code request, a codex request and a model build; codex
+  refuses under `bypass_approvals`.
+- On a macOS host where the sandbox can be applied, a command reads a control file and then a
+  denied file in one run: the control read succeeds and the denied read fails.
+
+Limits:
+
+- Measured on codex 0.162.1 with the network on, a unix socket under a denied path accepted a
+  connection. A `heavy` codex run therefore holds file reads under an entry but not a connection
+  to a socket there. Which profiled codex launches may run on such a binary is decided in an
+  ADR-0133 amendment, which measures the socket check once per network state.
+- An engine stage is refused rather than given a role's entries, as the table says. Carrying the
+  entries to a stage's model is a later change with its own row here.
+- A macOS sandbox deny rule was measured, on a case-insensitive volume, to refuse a read by a
+  spelling in another letter case than the name on disk, beside a control read in the same run.
+  How Claude Code matches its `Read` and `Edit` deny rules against a path spelled in another
+  letter case is not measured.
+- The entries are checked when the profile is loaded for a launch. A link made at an entry's path
+  after that is not seen by the check; the sandbox then denies the spelling the entry names.
+
+## Amendment 6 (2026-11-22) — a per-run writable scratch directory for an agent
+
+**Status: Accepted (2026-11-23),** on a format-6 codex sandbox probe record from codex 0.162.1 in
+which `scratch_env` passed (the child's `TMPDIR`, `TMP` and `TEMP` each named the directory and the
+file written under `$TMPDIR` landed in it), with `read_only_write_root` and `write_entry` passed
+beside it.
+
+The ask, in the words of the feature request: "A reviewer profile's sandbox has no writable
+temporary folder, so a reviewer agent cannot run the project's tests to check a claim." What it
+wants: "A per-run scratch folder that is writable inside an otherwise read-only sandbox, declared
+in the profile and removed or kept per run."
+
+The directory is made whatever the role's workload or sandbox mode, a read-only one being only
+the case the request names: a light codex child has `/tmp` and `$TMPDIR` read-only as well, so a
+light reviewer has no temporary directory either.
+
+Decision:
+
+- **The profile key.** `scratch: true` or `scratch: keep` asks for one; `false` or no key asks
+  for none. Any other value refuses the profile, so a request is never read as absent.
+- **One directory per run.** An `li agent` run of such a role makes `<run state
+  directory>/scratch`, mode 0700, once its run directory exists and before its first turn, and
+  records `scratch: {path, keep}` in run.json. A name already there refuses the run. The path
+  reaches the Claude Code or codex request as the endpoint's runtime state, never its config, and
+  `scratch_dir` is one of `RUNTIME_STATE_NAMES`: no saved branch or stored config carries it into
+  a later run, and a run without scratch clears one left on its endpoint.
+- **The Claude Code child.** The path is the one write root the run adds to the child sandbox's
+  policy, in `sandbox.filesystem.allowWrite` and in the roots of the file-tool hook, added after a
+  stored policy is resolved again so the settings' own write list cannot drop it. It is also the
+  child's `TMPDIR`, `TMP` and `TEMP`. A scratch path that is a symbolic link, or not a directory,
+  refuses the launch; one that is gone adds nothing and warns.
+- **The codex child.** Under the child sandbox a codex child runs under the `lionagi_child`
+  permission profile (ADR-0133), and the resolved path is one write entry in that table in every
+  workload and mode: beside the other write entries of a light or heavy table, and as the only
+  write entry of a read-only one. The commands the child runs get `TMPDIR`, `TMP` and `TEMP` from
+  three `-c shell_environment_policy.set.<NAME>=<path>` overrides, dotted keys so that a `set`
+  table of the user's is merged and not replaced, placed after every caller override and the
+  profile because codex keeps the last `-c` of a key. Codex's own process keeps its environment,
+  so a light table's `:tmpdir = read` still names the directory codex started with, never the
+  scratch directory. A link or a non-directory refuses the launch and a gone path adds nothing
+  and warns, as for Claude Code. `scratch_dir` is runtime state of the codex request as well, in
+  no dump, schema or stored config of it.
+- **The codex gate.** A codex launch with a scratch directory needs the probe record's
+  `scratch_env` arm, beside the arms its table already needs: a read-only table with the entry
+  needs `read_only_write_root`, and a light or heavy one rests on `write_entry`. The probe's
+  `scratch_env` run starts from a light table with one write entry and carries the three
+  overrides. Its child prints `TMPDIR`, `TMP` and `TEMP` and writes one file under `"$TMPDIR"`.
+  The arm passes when all three equal the directory and the file is in it, and otherwise fails
+  with a note naming the values the child printed and whether the file landed in the directory.
+  The record moves to format 6, and a record of format 5 or earlier admits no launch. A record
+  whose `scratch_env` arm did not pass refuses a scratch launch with that arm named; the same
+  launch without a scratch directory still starts on that record.
+- **Codex refusals.** Each names its reason. Before the run directory exists: `bypass_approvals`,
+  which turns codex's sandbox off, and the child sandbox switched off, which leaves no permission
+  table to hold the entry. When the command is built, after the run directory and its scratch
+  exist: a scratch path that is, holds or lies inside a denied location or the probe record
+  directory; for a light table, or a heavy one under `exclude_slash_tmp` or
+  `exclude_tmpdir_env_var`, a scratch path inside `/tmp` or `$TMPDIR`, as written or resolved,
+  which that table makes read-only; and a record without a passed `scratch_env` arm. The run
+  state directory is under the lionagi home by default, so the `/tmp` and `$TMPDIR` case does not
+  arise in a default setup.
+- **Removal.** In the run's shielded teardown, after the child's process group has ended, `true`
+  removes the directory by its recorded path. It is refused, and left exactly as it is, when it is
+  a symbolic link, is not a directory, is not named `scratch`, or is not directly in the run
+  directory. A link inside is removed as a link and what it points to is left alone. When the
+  first removal leaves something, a directory inside being read-only for one, every directory
+  under scratch is opened with `O_DIRECTORY` and `O_NOFOLLOW` and given owner access through that
+  descriptor, so no link is followed on Linux or macOS, and removal runs once more. What is
+  inside a directory its owner cannot open for reading is left and named. Anything the
+  removal raises is recorded as its error, and the teardown after it still runs. run.json's
+  `scratch` then reads `removed` and `removal_error`; the error names what was refused or left.
+  `keep` leaves the directory and reads `removed: false` with no error.
+- **Sockets.** macOS limits a unix socket path to 104 bytes, and a tool that makes a socket under
+  `TMPDIR` in a deep run directory can pass it. The docs say so; no shorter directory is made in
+  its place.
+- **Where it applies.** One row per launch surface and provider. A refusal names the reason
+  shown here; a refusal "at launch" happens before the run directory exists.
+
+| Launch surface | Provider | Scratch | Reason given when refused |
+| --- | --- | --- | --- |
+| `li agent`, and `agent.submit`, an agent schedule and a leg host's launch, which start `li agent` | Claude Code CLI | made, as above | |
+| the same | codex | made: one write entry in the permission profile table, with `TMPDIR`, `TMP` and `TEMP` set for the child's commands through `shell_environment_policy.set`, on a record whose `scratch_env` arm passed; removed or kept by the removal above, unchanged, which already covers a directory the sandboxed child could write while the teardown runs outside the sandbox | under `bypass_approvals` or with the child sandbox off, refused at launch: no permission profile would hold the entry; a path over a denied location, the probe record directory, or a `/tmp` or `$TMPDIR` the table makes read-only, or a record without a passed `scratch_env` arm, refused when the command is built |
+| the same | Gemini CLI | refused at launch | the Gemini CLI's sandbox does not bound reads and grants no single writable directory this launcher can verify |
+| the same | an API model | refused at launch | an API-model run's tools run under lionagi's own seatbelt policy, which has no scratch root yet |
+| the same | any other CLI | refused at launch | the named provider has no scratch directory support |
+| `li o flow`, `li o fanout` and `li play`, the orchestrator's role | any | refused at launch | a flow, fan-out or play does not give its orchestrator or workers a scratch directory yet |
+| a worker's role in a flow, fan-out or play | any | refused when the worker's role is resolved, after the orchestrator's run directory exists | the same |
+| an orchestration engine stage | any | does not apply: a stage takes only the model and effort of a role's profile | |
+
+Required checks:
+
+- The key reads `true`, `keep`, `false` and no key, and refuses every other value it is tested
+  with; the roster reports it only when set.
+- A Claude Code run has the directory during its turn and records it; at run end `true` removed
+  it and `keep` kept it, and run.json says which.
+- A symbolic link inside scratch, to a file and to a directory outside, is removed and both
+  targets survive. A symbolic link put in place of scratch is left, its target survives, and
+  run.json carries the named error, both from the removal itself and from a run.
+- A path that is a file, is named otherwise, or is outside the run directory is refused and left.
+  A read-only directory inside is removed, a directory its owner cannot open is left and named,
+  and opening up a directory changes nothing a link inside it points to. A removal that raises
+  something other than an `OSError` is recorded in run.json, and the teardown after it still
+  runs.
+- The child's settings gain exactly the scratch path as a write root and in the hook's roots; a
+  scratch path that is a link refuses the launch; a gone one adds nothing. The child's three
+  temporary-directory variables name it, with an inherited and a given environment, and a run
+  without scratch leaves the environment as it was. The path is in no dump of the request or the
+  endpoint and reaches the rebuilt request.
+- A Gemini CLI run is refused with its reason and no run directory; the reason for an API model
+  is the one in the table. A codex run under `bypass_approvals`, and one with the child sandbox
+  off, is refused with its reason and no run directory. An orchestrator role is refused with no
+  run directory, and a worker role when it is resolved.
+- A codex launch's table holds the resolved scratch path as a write entry, and nothing else
+  changes, for a light, a heavy workspace-write, a heavy read-only and a heavy launch that names
+  no mode; a launch without scratch carries no entry. Only the read-only tables need
+  `read_only_write_root`, and only a scratch launch needs `scratch_env`.
+- The three `shell_environment_policy.set` overrides name the resolved path, after a caller's
+  override of the same key and after the profile; a launch without scratch carries none of them.
+- Each codex refusal above, with a control: a scratch path beside a denied location is granted,
+  and a heavy workspace-write table, which leaves `/tmp` writable, grants a path that a light one
+  refuses. A link or a file as the scratch path is refused; a gone one adds nothing.
+- The `scratch_env` verdict passes when the three variables equal the directory and the file is
+  in it, fails when any one variable differs, and fails when the file lands elsewhere. A record
+  of format 5 admits no launch.
+- A scratch launch on a record whose `scratch_env` arm did not pass is refused naming the arm,
+  and the same launch without scratch starts on that record; a passing record admits it.
+
+Limits:
+
+- The seatbelt policy that API models and the Gemini CLI run under gets the scratch root in a
+  later change to this same amendment, with Amendment 5's file-link rules covering the new root
+  and a probe arm proving that a hard link from scratch to a file outside the roots is refused.
+  Until then it is refused as the table says.
+- The handling of a hard link from the scratch directory to a file outside the writable roots has
+  not been measured, by Claude Code's own sandbox or by codex's, as it has not been for the
+  working directory.
+- `scratch_env` is measured on a light table. A heavy or read-only launch rests on it for the
+  variables and on `write_entry` or `read_only_write_root` for the write.
+- An automatic resume runs in a run directory of its own and makes its own scratch; the first
+  run's directory goes at that run's end unless kept.
+- A process the child left running after the run can still write into the directory while it is
+  removed. Removal reports what it could not remove, and nothing retries it.
+- Before Python 3.13, removal descends recursively and holds a descriptor per level, so a tree
+  deeper than the open-file limit (256 by default on macOS) is left and named.
+- A directory its owner cannot open for reading, mode 0300 for one, is not opened up, so what is
+  inside it is left and named.
+- A kept directory stays until its run directory is removed; nothing sweeps kept directories.
+
+## Amendment 5 (2026-11-21) — a hard link out of the roots is refused by name, measured per volume
+
+**Status: Accepted.**
 
 This amendment replaces the sentence of Amendment 2's Limits that reads "Making a hard link to a
 file outside the roots, or to a file in `.git`, is refused." It was measured on the internal disk

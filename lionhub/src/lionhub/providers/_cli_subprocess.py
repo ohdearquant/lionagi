@@ -58,8 +58,11 @@ from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.service._subagent_admission import (
+    ACCOUNT_CAP_ENV,
+    ACCOUNT_ENV,
     AGENT_DEPTH_ENV,
     DEFAULT_WORKLOAD,
+    account_admission,
     admit_subagent,
     child_agent_depth,
     refuse_nested_agent,
@@ -1470,6 +1473,7 @@ async def ndjson_from_cli(
     secret_fill_skip: frozenset[str] = frozenset(),
     auth_env: Iterable[str] | Callable[[Mapping[str, str]], Iterable[str]] | None = frozenset(),
     secret_values: Iterable[str] = (),
+    on_clean_exit: Callable[[str, str | None], None] | None = None,
     _prepare_argv: Callable[[dict[str, str]], list[str]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
@@ -1480,7 +1484,9 @@ async def ndjson_from_cli(
     propagates through the teardown below, which ends the child's group.
     Before the spawn the agent takes a machine-wide slot for ``engine`` and
     ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
-    has ended. ``secret_fill_skip`` names variables the configured secret lookup
+    has ended; a caller's ``env`` built for a named subscription account with a
+    ``max_concurrent`` also names that account's pool, and those two names are removed
+    before the child starts. ``secret_fill_skip`` names variables the configured secret lookup
     must not fill into this child, on top of the routed account key names; empty
     leaves the fill as it is. ``auth_env`` names the variables the provider reads its own
     login from; every other credential-named variable is removed from the child's environment,
@@ -1488,7 +1494,10 @@ async def ndjson_from_cli(
     environment after the secret fill, for a provider whose login names depend on what that
     environment holds. ``secret_values`` are literal values the caller knows to be secret and
     that no environment mapping or named argument holds; they are removed from every message
-    this function logs or raises. See
+    this function logs or raises. ``on_clean_exit``, when given, is called once the child has
+    exited with status 0 and its output is read, with the child's stderr, credentials removed as
+    for any message here, and a note saying why that stderr may be incomplete (``None`` when it was
+    read to its end); waiting for the stderr reader takes at most two seconds. See
     docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # An agent lionagi started cannot start another through lionagi, by its shell or by an
@@ -1497,10 +1506,15 @@ async def ndjson_from_cli(
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
     # encode error would hold the whole key or value, so the environment is read and
     # checked here, once, and that copy is what the fill and the spawn receive.
+    caller_built_env = env is not None
     if _prepare_argv is not None and env is None:
         env = dict(os.environ)
     if env is not None:
         env = env_as_the_spawn_encodes_it(env)
+    # The account pool is read from an environment the caller built for this child, never
+    # from this process's own: a name inherited from a shell is no account the caller chose.
+    # Read before any slot is waited for, so a malformed one refuses at once.
+    account, account_cap = account_admission(env if caller_built_env else None)
     # Every CLI provider spawns through here, so a secret the child must read
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a
@@ -1533,6 +1547,9 @@ async def ndjson_from_cli(
     # another (refuse_nested_agent). Set over whatever the environment held: only a
     # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
     spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
+    # Admission has read them; neither the child nor any command it runs is handed them.
+    spawn_env.pop(ACCOUNT_ENV, None)
+    spawn_env.pop(ACCOUNT_CAP_ENV, None)
     declared_values = _declared_secret_values(secret_values)
     redaction_env: Mapping[str, str] = {
         **_secret_candidates({**spawn_env, **withheld}, declared),
@@ -1560,7 +1577,9 @@ async def ndjson_from_cli(
 
     # Admission is synchronous after capacity is acquired, before a task can
     # attempt an OS spawn. A waiter waking after owner close starts no child.
-    lease = await admit_subagent(engine=engine, workload=workload)
+    lease = await admit_subagent(
+        engine=engine, workload=workload, account=account, account_cap=account_cap
+    )
     try:
         _require_cli_executable(cmd, cwd=cwd, env=spawn_env)
         recorder = _get_cli_worker_recorder()
@@ -1973,6 +1992,19 @@ async def ndjson_from_cli(
                 err += " [stderr drain timed out]"
             stderr_already_surfaced = True
             raise RuntimeError(err)
+        if on_clean_exit is not None:
+            unread: str | None = None
+            try:
+                await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                unread = "its stderr drain did not finish"
+            except asyncio.CancelledError:
+                raise
+            if stderr_drain_error is not None:
+                unread = f"reading its stderr failed with {stderr_drain_error}"
+            elif stderr_unavailable is not None:
+                unread = stderr_unavailable
+            on_clean_exit(captured_stderr(), unread)
 
     except BaseException as exc:
         primary_error = exc

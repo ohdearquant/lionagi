@@ -624,7 +624,7 @@ def capture_mcp() -> dict[str, Any]:
             ),
             # Which keys an entry carries is the contract every caller reads, and
             # names and counts alone are blind to it: fields can be added to or
-            # dropped from all 71 entries without moving anything above. Held as
+            # dropped from all 72 entries without moving anything above. Held as
             # the distinct key sets with their frequency, so the baseline moves on
             # a shape change without carrying a row per verb.
             # lists rather than tuples: this is compared against the JSON
@@ -781,7 +781,7 @@ def _run_compat_trace(module_name: str, timeout: float = 20.0) -> dict[str, Any]
 def capture_import_laziness() -> dict[str, Any]:
     """Fresh-process ``sys.modules`` traces proving selected-only CLI loading.
 
-    For each of the 22 canonical CLI seeds, launches a fresh subprocess that
+    For each of the 23 canonical CLI seeds, launches a fresh subprocess that
     imports only that seed through the registry (``load_cli_command``), never
     the whole CLI. In-process checks (``capture_imports`` below) cannot prove
     this: pytest itself has already imported most of the tree by the time a

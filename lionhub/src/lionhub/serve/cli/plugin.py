@@ -174,6 +174,13 @@ def _print_disclosure(disclosure: dict) -> None:
 
 
 def _run_trust(name: str, *, assume_yes: bool) -> int:
+    from lionagi._lionagi_dir_trust import trust_step_refusal
+
+    refusal = trust_step_refusal("plugin trust")
+    if refusal is not None:
+        log_error(refusal)
+        return 1
+
     from lionagi.plugins import PluginRegistry
     from lionagi.plugins.discovery import discover_plugins
     from lionagi.plugins.trust import build_trust_disclosure, trust_plugin

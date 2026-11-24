@@ -42,8 +42,10 @@ __all__ = ("AUTHORIZATION_KWARG_NAMES", "RUNTIME_STATE_NAMES", "EndpointConfig")
 # config has to pass through. ``secret_fill_skip`` holds only variable names, the
 # ones the configured secret lookup must not fill into that child's environment;
 # a request restored from a stored config would otherwise run under a skip set
-# that belongs to the run that wrote it.
-RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn", "secret_fill_skip")
+# that belongs to the run that wrote it. ``scratch_dir`` is one run's scratch directory, removed
+# when that run ends: a later run restored from the config would be handed a write root that is
+# gone or, worse, one another run made.
+RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn", "secret_fill_skip", "scratch_dir")
 
 # Kwargs that grant the call an authority, kept in ``kwargs`` for the live call
 # and never written down. ``account_connectors`` lets a codex request reach the
