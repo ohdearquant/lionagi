@@ -301,15 +301,15 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
   config. That function is `_refuse_hooks_that_will_not_run`, which takes the hook state from the
   command-line layer and leaves out the `[hooks]` table of the config when the launch ignores the
   user config. A launch that ignores the user config while that table declares hooks is refused
-  earlier, whatever `require_hooks` says (`codex.py::_ignored_user_config_carry`).
-  `codex.py::check_require_hooks` runs those two checks on a request, in the launch's order, without
+  earlier, whatever `require_hooks` says (`lionhub/src/lionhub/providers/openai/codex.py::_ignored_user_config_carry`).
+  `lionhub/src/lionhub/providers/openai/codex.py::check_require_hooks` runs those two checks on a request, in the launch's order, without
   starting codex. `agent.submit` builds the leg's model with the builder `li agent` uses for a new
   branch (`lionhub/src/lionhub/orchestration/spawn.py::build_chat_model`), in the codex home the run
   resolves, and calls `check_require_hooks` on the request that model makes, before it writes the job
   record. Whether that request ignores the user config is decided by the predicate the launch uses
   (`lionhub/src/lionhub/agent/factory.py::forwarded_set_ignores_user_config`, reached through
-  `spawn.py::chat_model_ignores_user_config`), over the MCP set the run will resolve: the submit
-  resolves it with the run's own call (`orchestration/mcp_config.py::resolve_spawn_mcp_servers`) over
+  `lionhub/src/lionhub/orchestration/spawn.py::chat_model_ignores_user_config`), over the MCP set the run will resolve: the submit
+  resolves it with the run's own call (`lionhub/src/lionhub/orchestration/mcp_config.py::resolve_spawn_mcp_servers`) over
   what the run's command line hands it, which is the named config, `--no-mcp-config`, or the snapshot
   the submission wrote. The `li agent` builder passes no server allowlist, so on `agent.submit` the
   flag never depends on one. The home is
