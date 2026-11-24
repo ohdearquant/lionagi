@@ -7,7 +7,20 @@ ADR-0041 Amendment 7 lets a profile name paths an agent's child may not read, an
 the paths it may read until some route has been measured denying reads by default. This probe
 measures Claude Code: settings whose ``sandbox.filesystem`` denies ``/`` for reading and allows
 reading a set of read roots. The read roots are one directory of the probe's own, the probe's
-working directory, and the system set lionagi's own Seatbelt policy reads from.
+working directory, the system set lionagi's own Seatbelt policy reads from, each link on the way
+to the interpreter the ``python`` step starts that lies outside those, and Claude Code's own temp
+directory for the run.
+
+Each run sets ``CLAUDE_CODE_TMPDIR`` to a directory of its own under the probe's root, and Claude
+Code keeps its internal temp files in ``claude-<uid>`` below it. The run with read rules grants
+that directory and no other temp directory. Without the grant a command cannot inspect its own
+output file, and ``/bin/cat``, which does so before copying, fails on every file it opens. The
+``tmpdir`` step prints the ``TMPDIR`` Bash gives a command, and ``bash_temp_in_granted_dir``
+passes only when it lies in the granted directory: Claude Code is documented to fall back to the
+system default under a long override path, so a long ``--scratch`` shows there. The links are
+granted one by one and never the directories they sit in, because a read root grants everything
+under it; a Claude Code that resolves a link entry to its target fails
+``python_starts_with_site``.
 
 The binary runs twice against a loopback stand-in for the Messages API, each time with a working
 directory, ``HOME`` and ``CLAUDE_CONFIG_DIR`` the probe made. The stand-in answers each request
@@ -15,7 +28,9 @@ with the next fixed step as a ``Bash`` or ``Read`` tool call and reads the tool 
 the next request. The first run's settings turn the sandbox on with no read rules. Its reads of a
 file outside the roots, through Bash and through the Read tool, must succeed. The second run
 differs only in the read rules, so a refusal there is theirs. A Bash read counts as refused only
-when the command ran, failed, printed ``Operation not permitted`` and printed none of the file. A
+when the command ran, failed, printed ``Operation not permitted`` after the path it was given,
+and printed none of the file. A refusal of the command's own output names no such path, and
+``/bin/cat`` meets it only after it has opened the file, so it never counts as a refused read. A
 Read-tool read counts as refused when the tool result is an error that shows none of the file;
 the control run, with the same tools and permissions, is what ties that refusal to the read rules
 and not to a permission rule. Claude Code's sandbox confines the commands Bash runs, so the Read
@@ -29,9 +44,10 @@ What the child is given, all of it in the record:
   ``--permission-prompts none`` and ``--settings``. Under ``--bare`` the CLI skips the hooks of
   settings and plugins, CLAUDE.md discovery and keychain reads, and authenticates only with
   ``ANTHROPIC_API_KEY``.
-- The environment, by name: ``PATH``, ``HOME``, ``CLAUDE_CONFIG_DIR``, ``TMPDIR`` when set,
-  ``ANTHROPIC_BASE_URL`` (the stand-in), ``ANTHROPIC_API_KEY`` (``PLACEHOLDER_API_KEY``, which no
-  service accepts), the proxy variables and ``NO_PROXY``. Nothing else is inherited.
+- The environment, by name: ``PATH``, ``HOME``, ``CLAUDE_CONFIG_DIR``, ``CLAUDE_CODE_TMPDIR``,
+  ``TMPDIR`` when set, ``ANTHROPIC_BASE_URL`` (the stand-in), ``ANTHROPIC_API_KEY``
+  (``PLACEHOLDER_API_KEY``, which no service accepts), the proxy variables and ``NO_PROXY``.
+  Nothing else is inherited.
 - The steps: fixed commands that read, list or write files the probe made, and print a marker.
 
 The stand-in keeps each request's method and path, and the tool results it needs for the arms.
@@ -120,6 +136,7 @@ REQUIRED_ARMS: tuple[str, ...] = (
     "read_via_var_link_refused",
     "read_users_shared_refused",
     "shell_runs_in_root",
+    "bash_temp_in_granted_dir",
     "python_starts_with_site",
     "read_tool_inside_root_works",
     "read_tool_outside_refused",
@@ -446,11 +463,14 @@ def _argv(binary: str, settings: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _env(base_url: str, proxy_url: str, home: Path, config: Path) -> dict[str, str]:
+def _env(
+    base_url: str, proxy_url: str, home: Path, config: Path, claude_tmp: Path
+) -> dict[str, str]:
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),
         "CLAUDE_CONFIG_DIR": str(config),
+        "CLAUDE_CODE_TMPDIR": str(claude_tmp),
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_API_KEY": PLACEHOLDER_API_KEY,
         "NO_PROXY": _NO_PROXY,
@@ -480,6 +500,7 @@ def _run(
     home: Path,
     config: Path,
     cwd: Path,
+    claude_tmp: Path,
 ) -> tuple[dict[str, tuple[str, bool] | None], dict[str, Any]]:
     """One claude run: step name to the tool result the child sent back (None when it never
     did), and what the run was given and what reached the two listeners."""
@@ -488,12 +509,13 @@ def _run(
     settings = _settings(read_roots)
     argv = _argv(binary, settings)
     with _serve(stand_in) as base_url, _serve(proxy) as proxy_url:
-        env = _env(base_url, proxy_url, home, config)
+        env = _env(base_url, proxy_url, home, config, claude_tmp)
         status = runner(argv, env, cwd)
     results = {name: stand_in.results.get(f"toolu_probe_{i}") for i, (name, _) in enumerate(steps)}
     run = {
         "argv": argv,
         "env_names": sorted(env),
+        "claude_tmp": str(claude_tmp),
         "exit_status": status,
         "requests": list(stand_in.seen),
         "proxied": list(proxy.seen),
@@ -521,13 +543,15 @@ def _bash_ok(result: tuple[str, bool] | None, marker: str | None = None) -> bool
     return result is not None and _rc(text) == 0 and (marker is None or marker in text)
 
 
-def _bash_refused(result: tuple[str, bool] | None, marker: str | None = None) -> bool:
-    """The command ran and failed with the sandbox's refusal, and printed no ``marker``."""
+def _bash_refused(result: tuple[str, bool] | None, path: str, marker: str | None = None) -> bool:
+    """The command ran and failed with the sandbox's refusal of ``path``, as the command was
+    given it, and printed no ``marker``. ``cat: stdout: Operation not permitted`` is a refusal of
+    the command's own output, which ``/bin/cat`` meets only after opening the file."""
     text = _text(result)
     return (
         result is not None
         and _rc(text) not in (None, 0, 127)
-        and _REFUSAL in text
+        and f"{path}: {_REFUSAL}" in text
         and (marker is None or marker not in text)
     )
 
@@ -570,6 +594,38 @@ def _child_python() -> str:
     return sys.executable or shutil.which("python3") or "python3"
 
 
+def _claude_temp(override: Path) -> Path:
+    """Where Claude Code keeps its internal temp files when ``CLAUDE_CODE_TMPDIR`` is
+    ``override``: it appends ``claude-<uid>`` on Unix."""
+    return override / f"claude-{os.getuid()}"
+
+
+def _python_links(python: str, read_roots: Sequence[str]) -> tuple[str, ...]:
+    """Each link on the way to ``python`` that lies outside every read root, as written.
+
+    The interpreter reads these to find its prefix, and the prefixes in the system set resolve
+    only the last of them. A directory on the way is never returned: a read root grants
+    everything under it.
+    """
+    from lionhub.tools._seatbelt import _lookup_paths
+
+    links = (
+        path
+        for path in _lookup_paths(python)
+        if os.path.islink(path) and not any(_within(Path(path), Path(r)) for r in read_roots)
+    )
+    return tuple(dict.fromkeys(links))
+
+
+def _reported_tmpdir(result: tuple[str, bool] | None) -> str | None:
+    """The ``TMPDIR`` the ``tmpdir`` step printed, or None when the step did not run."""
+    text = _text(result)
+    found = re.search(r"^tmpdir=(.+)$", text, re.MULTILINE)
+    if result is None or _rc(text) != 0 or found is None:
+        return None
+    return found.group(1).strip()
+
+
 def _probe(
     binary: str, runner: Runner, root: Path
 ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...], dict[str, Any]]:
@@ -578,7 +634,10 @@ def _probe(
     cwd, readroot, outside_dir = root / "cwd", root / "readroot", root / "outside"
     homes = {n: root / f"home-{n}" for n in ("control", "roots")}
     configs = {n: root / f"config-{n}" for n in ("control", "roots")}
-    for path in (cwd, readroot, outside_dir, *homes.values(), *configs.values()):
+    # Short names: Claude Code is documented to give Bash the system temp directory instead of
+    # an override path it finds too long.
+    temps = {n: root / f"t{n[0]}" for n in ("control", "roots")}
+    for path in (cwd, readroot, outside_dir, *homes.values(), *configs.values(), *temps.values()):
         path.mkdir(parents=True)
     inside, cwd_file = readroot / "inside.txt", cwd / "cwd.txt"
     outside, alias = outside_dir / "target.txt", readroot / "outside-alias"
@@ -587,7 +646,10 @@ def _probe(
     outside.write_text(marks["outside"] + "\n")
     alias.symlink_to(outside)
 
+    python = _child_python()
+    granted_temp = _claude_temp(temps["roots"])
     read_roots = (str(readroot), str(cwd), *_system_read_roots())
+    read_roots = (*read_roots, *_python_links(python, read_roots), str(granted_temp))
     for path in (root, outside_dir):
         for readable in read_roots:
             if _within(path, Path(readable)) and readable != str(cwd):
@@ -605,6 +667,7 @@ def _probe(
         home=homes["control"],
         config=configs["control"],
         cwd=cwd,
+        claude_tmp=temps["control"],
     )
 
     arms: dict[str, dict[str, Any]] = {}
@@ -629,7 +692,6 @@ def _probe(
                         f"the probe's file {made!r} lies inside the read root {readable!r}, so "
                         "no refusal can be measured there"
                     )
-        python = _child_python()
         steps = [
             ("inside", _bash(f"/bin/cat {q(str(inside))}")),
             ("cwd_read", _bash(f"/bin/cat {q(str(cwd_file))}")),
@@ -643,6 +705,7 @@ def _probe(
             ("list_parent", _bash(f"/bin/ls {q(str(root))}")),
             *((name, _bash(f"/bin/cat {q(str(made))}")) for name, made in planted),
             ("shell", _bash("/bin/ls")),
+            ("tmpdir", _bash('printf "tmpdir=%s\\n" "$TMPDIR"')),
             ("python", _bash(f"{q(python)} -I -c {q(_PYTHON_CODE)}")),
             ("read_tool_inside", _read(inside)),
             ("read_tool_outside", _read(outside)),
@@ -655,6 +718,7 @@ def _probe(
             home=homes["roots"],
             config=configs["roots"],
             cwd=cwd,
+            claude_tmp=temps["roots"],
         )
     finally:
         for _, made in planted:
@@ -679,19 +743,25 @@ def _probe(
         _bash_ok(run["cwd_write"]) and (cwd / "w").is_file(), run["cwd_write"]
     )
     arms["read_outside_refused"] = _arm(
-        _bash_refused(run["outside"], marks["outside"]), run["outside"]
+        _bash_refused(run["outside"], str(outside), marks["outside"]), run["outside"]
     )
     arms["read_through_symlink_refused"] = _arm(
-        _bash_refused(run["symlink"], marks["outside"]), run["symlink"]
+        _bash_refused(run["symlink"], str(alias), marks["outside"]), run["symlink"]
     )
-    arms["stat_outside_refused"] = _arm(_bash_refused(run["stat"]), run["stat"])
+    arms["stat_outside_refused"] = _arm(_bash_refused(run["stat"], str(outside)), run["stat"])
     arms["list_parent_refused"] = _arm(
-        _bash_refused(run["list_parent"], readroot.name), run["list_parent"]
+        _bash_refused(run["list_parent"], str(root), readroot.name), run["list_parent"]
     )
-    for name, _ in planted:
-        arms[name] = _arm(_bash_refused(run[name], marks["planted"]), run[name])
+    for name, made in planted:
+        arms[name] = _arm(_bash_refused(run[name], str(made), marks["planted"]), run[name])
     arms["shell_runs_in_root"] = _arm(
         _bash_ok(run["shell"]) and cwd_file.name in _text(run["shell"]).split(), run["shell"]
+    )
+    reported = _reported_tmpdir(run["tmpdir"])
+    arms["bash_temp_in_granted_dir"] = _arm(
+        reported is not None and _within(Path(os.path.realpath(reported)), granted_temp),
+        run["tmpdir"],
+        note=f"granted {granted_temp}",
     )
     arms["python_starts_with_site"] = _arm(_bash_ok(run["python"], "python=ok"), run["python"])
     arms["read_tool_inside_root_works"] = _arm(
