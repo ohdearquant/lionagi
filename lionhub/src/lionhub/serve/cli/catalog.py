@@ -27,7 +27,7 @@ __all__ = (
     "seed_for",
 )
 
-# Fixed CLI seed tuple: the 22 canonical commands in their existing order.
+# Fixed CLI seed tuple: the 23 canonical commands in their existing order.
 _CLI_SEEDS: tuple[CliSeed, ...] = (
     CliSeed(
         name="orchestrate",
@@ -120,6 +120,11 @@ _CLI_SEEDS: tuple[CliSeed, ...] = (
         name="hooks",
         help="Import Claude Code / Codex hook configs; trust imported hook commands.",
         module="lionhub.serve.cli.hooks",
+    ),
+    CliSeed(
+        name="lionagi-dir",
+        help="Trust a project's .lionagi directory for runs the MCP server starts.",
+        module="lionhub.serve.cli.lionagi_dir",
     ),
     CliSeed(
         name="handshake",

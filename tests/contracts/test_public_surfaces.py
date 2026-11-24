@@ -173,10 +173,10 @@ def test_http_openapi_has_full_operations_and_schemas():
     assert isinstance(sample_schema, dict) and sample_schema, "expected full schema definitions"
 
 
-def test_cli_registry_has_22_commands():
+def test_cli_registry_has_23_commands():
     live = _capture.capture_cli()
-    assert live["registry_count"] == 22
-    assert live["name_map_count"] == 24
+    assert live["registry_count"] == 23
+    assert live["name_map_count"] == 25
 
 
 def test_kill_quarantine_surface_counts_are_locked_by_hand():
@@ -359,7 +359,7 @@ def test_mcp_catalog_matches_baseline():
 def test_mcp_catalog_entry_shapes_are_locked_by_hand():
     """Second, independent lock on the shape of a catalog entry.
 
-    Every caller reads this listing, so a field added to or dropped from all 72
+    Every caller reads this listing, so a field added to or dropped from all 73
     entries changes what the whole surface says while leaving verb names and
     counts identical. Hand-typed rather than derived from the JSON, so the
     baseline and this test have to be wrong the same way to pass together.
@@ -372,7 +372,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
     assert shapes == {
         # a deliberately unavailable verb says so and routes the caller; its
         # reason is one targeted help call away, not in every read of the listing
-        ("available", "cli_path", "summary", "verb"): 26,
+        ("available", "cli_path", "summary", "verb"): 27,
         # a runnable verb with required parameters names them and nothing else
         ("required", "summary", "verb"): 24,
         # a runnable verb with no required parameters carries neither key
@@ -388,7 +388,7 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
             "verb",
         ): 1,
     }
-    assert sum(shapes.values()) == 72
+    assert sum(shapes.values()) == 73
     # No shape pairs cli_path with an inline reason. A verb whose schema failed
     # to build is the one entry that does carry a reason inline, and it has no
     # cli_path — that path reports a defect in this server and must stay
@@ -407,9 +407,9 @@ def test_mcp_projections_match_baseline():
 def test_mcp_projects_every_available_path():
     live = _capture.capture_mcp()
     assert live["projection_count"] + live["projection_error_count"] == live["available_path_count"]
-    assert live["available_path_count"] == 83
-    assert live["projection_count"] == 64
-    assert live["projection_error_count"] == 19
+    assert live["available_path_count"] == 87
+    assert live["projection_count"] == 67
+    assert live["projection_error_count"] == 20
 
 
 def test_mcp_terminal_consumer_exposes_only_list():
@@ -451,7 +451,7 @@ def test_mcp_aliases_derived_from_live_seed_table():
 
 def test_mcp_absent_verbs_are_captured_in_full():
     live = _capture.capture_mcp()
-    assert live["absent_verb_count"] == 26
+    assert live["absent_verb_count"] == 27
     by_name = {v["name"]: v for v in live["absent_verbs"]}
     assert "mirror" in by_name
     assert "casts" in by_name
@@ -564,11 +564,11 @@ _KNOWN_CROSS_SEED_IMPORTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def test_import_laziness_traces_all_22_seeds_cleanly():
+def test_import_laziness_traces_all_23_seeds_cleanly():
     live = _capture.capture_imports()
     trace = live["import_laziness"]
-    assert trace["seed_count"] == 22
-    assert len(trace["seed_names"]) == 22
+    assert trace["seed_count"] == 23
+    assert len(trace["seed_names"]) == 23
     for name, result in trace["traces"].items():
         assert not result.get("_error"), f"{name}: subprocess trace failed: {result.get('_error')}"
         assert not result["http_registry_realized"], (

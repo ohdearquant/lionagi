@@ -36,6 +36,7 @@ worker.
 | `li skill {NAME,list,show}` | Read installed static skill instructions |
 | `li plugin {list,info,trust,enable,disable}` | Inspect and activate trusted plugin bundles |
 | `li hooks {import,trust}` | Import Claude Code / Codex hook configs and trust the imported commands |
+| `li lionagi-dir {trust,untrust,list}` | Trust a project's `.lionagi` directory for runs the MCP server starts |
 | `li invoke {start,end,list}` | Group sessions under one higher-level invocation |
 | `li studio [start]` | Start the Studio backend and selected frontend mode |
 | `li schedule {list,get,limits,create,enable,disable,trigger,delete,runs}` | Manage schedules through the Studio API |
@@ -867,6 +868,41 @@ li hooks trust --yes                     # record trust without the prompt
 |------------|-------|-------|
 | `import SOURCE [PATH]` | `--cwd` | `SOURCE` is `claude` or `codex`; `PATH` defaults to `.claude/settings.json` or `.codex/hooks.json` |
 | `trust` | `--cwd`, `--yes` | Lists pending imported hook commands and records approval (content-hashed argv) |
+
+---
+
+## `li lionagi-dir`
+
+A project's `.lionagi` directory supplies agent profiles, playbooks and a settings
+layer. With this in `~/.lionagi/settings.yaml`:
+
+```yaml
+lionagi_dir_trust:
+  gate: mcp
+```
+
+every job the MCP server starts takes those files only from a `.lionagi` directory
+recorded with `li lionagi-dir trust`. An untrusted one is refused, naming the file;
+the run never skips the file and carries on without it. Trust is of the resolved
+path, so files added or edited there later are used as they are. The user-level
+`~/.lionagi` is never gated. Without the setting (or with `gate: off`) nothing is
+checked. Source: `cli/lionagi_dir.py`.
+
+```bash
+li lionagi-dir trust                # list what ./.lionagi supplies, then ask
+li lionagi-dir trust ../other --yes # record without the prompt
+li lionagi-dir untrust              # remove ./.lionagi from the record
+li lionagi-dir list                 # the trusted directories
+```
+
+| Subcommand | Flags | Notes |
+|------------|-------|-------|
+| `trust [DIR]` | `--yes` | Lists every profile (with its model, bypass, MCP, account and containment fields), playbook and notify setting in `DIR/.lionagi`, then records its resolved path |
+| `untrust [DIR]` | | Removes `DIR/.lionagi` from the record |
+| `list` | | Prints each trusted directory, marking any that no longer exist |
+
+`trust` refuses inside a job the MCP server started, so a run cannot trust its own
+files; `li hooks trust` and `li plugin trust` refuse there too.
 
 ---
 

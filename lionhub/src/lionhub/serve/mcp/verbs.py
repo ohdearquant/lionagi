@@ -30,13 +30,16 @@ __all__ = (
 )
 
 # Operations that grant privilege to the caller (every caller is an agent, so
-# trusting a plugin/hook bundle would let the grantee also be the granter), and
+# trusting a plugin/hook bundle or a project .lionagi directory would let the
+# grantee also be the granter; `lionagi-dir untrust` writes the same record), and
 # `li remote`, which would let an agent start further agents on another machine.
 # No verb resolves to these paths and none accepts opaque argv, so unreachable.
 FENCED_PATHS = (
     "state migrate",
     "plugin trust",
     "hooks trust",
+    "lionagi-dir trust",
+    "lionagi-dir untrust",
     "remote run",
     "remote status",
     "remote output",
@@ -914,7 +917,13 @@ ABSENT: tuple[AbsentVerb, ...] = (
     ),
     # `plugin trust`/`hooks trust` are deliberately absent from this list too:
     # they're accounted for by FENCED_PATHS, and naming them here would
-    # advertise the capability to the caller it's fenced from.
+    # advertise the capability to the caller it's fenced from. So are
+    # `lionagi-dir trust`/`lionagi-dir untrust`.
+    *_absent(
+        "lionagi-dir",
+        ("list",),
+        "The project .lionagi directories trusted for runs this server starts.",
+    ),
     *_absent(
         "plugin",
         ("enable", "disable"),

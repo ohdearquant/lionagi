@@ -262,11 +262,18 @@ def _resolve_command(
             return None, "delivery_command_is_empty"
         return parsed, None
 
+    from lionagi._lionagi_dir_trust import UntrustedLionagiDirError, enforced, gate_setting
+
     try:
         from lionagi.state.lifecycle.notify_settings import resolve_notify_config
 
-        resolution = resolve_notify_config(project_dir=cwd)
+        # This server has no gate variable of its own, so it applies the setting here, as its
+        # jobs do (ADR-0088 Amendment 2).
+        with enforced(gate_setting() == "mcp"):
+            resolution = resolve_notify_config(project_dir=cwd)
         reason, resolved = resolution.reason, resolution.handler
+    except UntrustedLionagiDirError:
+        return None, "notify_settings_untrusted_lionagi_dir"
     except Exception as exc:  # noqa: BLE001 — a settings problem must never break the terminal path
         return None, f"notify_settings_unreadable:{type(exc).__name__}"
     if reason is not None:

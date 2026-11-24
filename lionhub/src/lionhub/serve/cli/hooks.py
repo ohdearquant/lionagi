@@ -429,7 +429,13 @@ def _iter_untrusted_commands(
 
 
 def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
+    from lionagi._lionagi_dir_trust import trust_step_refusal
     from lionagi.plugins._user_settings import read_user_settings, write_user_settings
+
+    refusal = trust_step_refusal("hooks trust")
+    if refusal is not None:
+        log_error(refusal)
+        return 1
 
     project_dir = Path(cwd) if cwd else Path.cwd()
     pending, rejected = _iter_untrusted_commands(project_dir)

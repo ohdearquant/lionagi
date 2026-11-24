@@ -101,6 +101,9 @@
     "lionhub/src/lionhub/serve/cli/hooks.py": [
       "__all__ = (\"add_hooks_subparser\", \"run_hooks\")"
     ],
+    "lionhub/src/lionhub/serve/cli/lionagi_dir.py": [
+      "__all__ = (\"add_lionagi_dir_subparser\", \"run_lionagi_dir\")"
+    ],
     "lionhub/src/lionhub/serve/cli/machine.py": [
       "__all__ = (\n    \"CONTRACT_VERSION\",\n    \"MIN_SUPPORTED_CONTRACT_VERSION\",\n    \"ERROR_KINDS\",\n    \"MachineError\",\n    \"ok\",\n    \"failure\",\n    \"validate_envelope\",\n    \"available\",\n    \"unavailable\",\n    \"read_json_file\",\n    \"list_directory\",\n    \"machine_parser\",\n    \"parse_machine_argv\",\n    \"machine_subcommand\",\n    \"readonly_state_db\",\n    \"state_db_absent\",\n    \"store_unreachable\",\n    \"reserve_stdout\",\n    \"dispatch_machine\",\n    \"handshake_data\",\n    \"add_handshake_subparser\",\n    \"run_handshake\",\n    \"add_runs_subparser\",\n    \"run_runs\",\n    \"lifecycle_data\",\n    \"add_lifecycle_subparser\",\n    \"run_lifecycle\",\n)"
     ],
@@ -325,6 +328,10 @@
     "lionhub/src/lionhub/serve/cli/kill.py": [
       "add_kill_subparser",
       "run_kill"
+    ],
+    "lionhub/src/lionhub/serve/cli/lionagi_dir.py": [
+      "add_lionagi_dir_subparser",
+      "run_lionagi_dir"
     ],
     "lionhub/src/lionhub/serve/cli/machine.py": [
       "MachineChannel",

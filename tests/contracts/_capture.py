@@ -781,7 +781,7 @@ def _run_compat_trace(module_name: str, timeout: float = 20.0) -> dict[str, Any]
 def capture_import_laziness() -> dict[str, Any]:
     """Fresh-process ``sys.modules`` traces proving selected-only CLI loading.
 
-    For each of the 22 canonical CLI seeds, launches a fresh subprocess that
+    For each of the 23 canonical CLI seeds, launches a fresh subprocess that
     imports only that seed through the registry (``load_cli_command``), never
     the whole CLI. In-process checks (``capture_imports`` below) cannot prove
     this: pytest itself has already imported most of the tree by the time a

@@ -43,6 +43,9 @@
     "lionagi/_errors.py": [
       "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
     ],
+    "lionagi/_lionagi_dir_trust.py": [
+      "__all__ = (\n    \"GATE_ENV_VAR\",\n    \"GATE_SETTING\",\n    \"RECORD_KEY\",\n    \"LionagiDirTrustSettingError\",\n    \"UntrustedLionagiDirError\",\n    \"check_lionagi_dir\",\n    \"enforced\",\n    \"gate_active\",\n    \"gate_setting\",\n    \"is_trusted\",\n    \"trust_step_refusal\",\n    \"trusted_lionagi_dirs\",\n)"
+    ],
     "lionagi/_log_channels.py": [
       "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
     ],
@@ -148,6 +151,17 @@
       "validate_flow_args_schema",
       "validate_flow_spec",
       "validate_flow_spec_fields"
+    ],
+    "lionagi/_lionagi_dir_trust.py": [
+      "LionagiDirTrustSettingError",
+      "UntrustedLionagiDirError",
+      "check_lionagi_dir",
+      "enforced",
+      "gate_active",
+      "gate_setting",
+      "is_trusted",
+      "trust_step_refusal",
+      "trusted_lionagi_dirs"
     ],
     "lionagi/_log_channels.py": [
       "hint",

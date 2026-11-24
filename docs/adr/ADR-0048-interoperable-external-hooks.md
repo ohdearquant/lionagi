@@ -11,7 +11,8 @@
   posture is adopted verbatim for hook commands); revisited by ADR-0120 (interception,
   observation, and durable-delivery planes) and ADR-0121 (authoritative action execution);
   Amendment 1 adds a per-leg `hooks_from` input to `agent.submit` and leaves hook
-  rendering for CLI legs to ADR-0134
+  rendering for CLI legs to ADR-0134; ADR-0088 Amendment 2 makes D7's `li hooks trust`
+  refuse inside a run the MCP server started with the `.lionagi` trust gate on
 
 ## Amendment note (2026-08-16)
 

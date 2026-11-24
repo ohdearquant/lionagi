@@ -599,6 +599,15 @@ def main(argv: list[str] | None = None) -> int:
         if run_was_allocated():
             raise
         return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR, argv=argv)
+    except Exception as exc:
+        # A gated run's refusal of an untrusted project .lionagi directory (ADR-0088
+        # Amendment 2) is its answer, printed whole; anything else propagates unchanged.
+        # Looked up in sys.modules so startup imports nothing new for it.
+        trust = sys.modules.get("lionagi._lionagi_dir_trust")
+        if trust is None or not isinstance(exc, trust.UntrustedLionagiDirError):
+            raise
+        log_error(str(exc))
+        return 1
     finally:
         end_invocation()
 
