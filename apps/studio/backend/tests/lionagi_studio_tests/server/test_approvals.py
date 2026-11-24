@@ -193,6 +193,90 @@ def test_expiry_rejects_consume_of_granted_but_expired(tmp_path, monkeypatch):
     assert refreshed["status"] == "expired"
 
 
+def _expire_after_the_read(monkeypatch, approvals_mod, db_path: Path, approval_id: str) -> None:
+    """Make the row pass its expiry between the service's read and its status move.
+
+    The read is answered with the row as it stood before expiry, as a read made a moment
+    earlier would answer, and the stored row is then put past its expiry.
+    """
+    before = _run(approvals_mod._fetch_row(approval_id))
+
+    async def _force_expired():
+        from lionhub.orchestration.state_store import open_db
+
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approvals SET expires_at = ? WHERE id = ?",
+                (time.time() - 1, approval_id),
+            )
+            await db.commit()
+
+    _run(_force_expired())
+
+    async def _read_before_expiry(requested_id: str):
+        assert requested_id == approval_id
+        return dict(before)
+
+    monkeypatch.setattr(approvals_mod, "get_approval", _read_before_expiry)
+
+
+def test_a_grant_that_reaches_the_row_after_its_expiry_expires_it(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from fastapi import HTTPException
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    row = _run(
+        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
+    )
+    _expire_after_the_read(monkeypatch, approvals_mod, db_path, row["id"])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run(approvals_mod.grant_approval(row["id"]))
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == f"approval {row['id']!r} has expired"
+
+    stored = _run(approvals_mod._fetch_row(row["id"]))
+    assert stored["status"] == "expired"
+    assert stored["granted_at"] is None
+    assert stored["decision_principal_id"] is None
+    chain = _run(approvals_mod.verify_evidence_chain())
+    assert chain["valid"] is True
+    assert chain["total_entries"] == 2  # proposed, expired
+
+
+def test_a_consume_that_reaches_the_row_after_its_expiry_expires_it(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from fastapi import HTTPException
+
+    from lionagi_studio.services import approvals as approvals_mod
+
+    params = {"name": "demo"}
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params=params))
+    _run(approvals_mod.grant_approval(row["id"]))
+    _expire_after_the_read(monkeypatch, approvals_mod, db_path, row["id"])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            approvals_mod.require_approval(row["id"], action_kind="launch_playbook", params=params)
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == f"approval {row['id']!r} has expired"
+
+    stored = _run(approvals_mod._fetch_row(row["id"]))
+    assert stored["status"] == "expired"
+    assert stored["consumed_at"] is None
+    chain = _run(approvals_mod.verify_evidence_chain())
+    assert chain["valid"] is True
+    assert chain["total_entries"] == 3  # proposed, granted, expired
+
+
 def test_params_hash_mismatch_rejected_without_consuming(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)

@@ -2,11 +2,102 @@
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
   Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
-  Proposed
+  Proposed; Amendment 8 (2026-11-23) Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 8 (2026-11-23) — a resume runs the MCP servers its first run was handed
+
+**Status: Proposed.**
+
+A new `li agent` branch records its MCP choice once, in `branch.metadata["mcp_launch"]`. A
+resumed or continued leg that names neither `--mcp-config` nor `--no-mcp-config` replays that
+choice (`docs/internals/cli.md`, the `mcp_launch` paragraph). No decision record described this
+record until now. Its fields are:
+
+- `mcp_config`: the absolute path of the file whose servers the run was handed, or null.
+- `no_mcp_config`: whether the run was handed no servers.
+- `launch_dir`: the directory the run resolved from. A resume searches from here, not from where
+  it runs.
+- `no_mcp_config_source`: `profile` when an agent profile's `mcp: none` made the choice. A resume
+  cannot widen that choice with `--mcp-config`.
+- `mcp_config_origin`: `submit_snapshot` when the file is the copy `agent.submit` took of a config
+  it discovered, or `explicit` when the file was named on the command line.
+
+The feature request reports that a resume "resolves the recorded path again and reads the file as
+it is at that moment. Nothing compares it with what the first run read." Three kinds of record
+reach a resume. A config `agent.submit` discovered is replayed from the copy it took at submit. A
+person's `li agent` that names no flag records `mcp_config: null` and the launch directory, and its
+resume searches that directory again. A named config is read again from the named file, which can
+have changed since the first run and can sit where the leg itself can write. This amendment
+changes the third kind only.
+
+Decision:
+
+- **A named set is copied at launch.** This covers a new branch whose set was named on the command
+  line, whether by a person or by `agent.submit` passing its caller's `mcp_config` through. Once the
+  leg has allocated its run directory, it writes `mcp-config.json` there, created new and readable
+  by its owner alone (mode 0600). The copy holds the servers as read from the named file, before
+  the run's own khive actor is attributed to them, so a resume attributes its own actor as the first
+  run did. It is not a second read of the named file.
+- **The record points at the copy.** `mcp_config` names the copy, and `mcp_config_origin` stays
+  `explicit`. A new field, `mcp_config_named`, holds the absolute path the caller named. A resume
+  reads `mcp_config` as before and never reads `mcp_config_named`, which is provenance only. A
+  record whose `mcp_config_named` is not an absolute path, or whose origin is not `explicit`,
+  refuses the resume before any config is read.
+- **The copy is still a named set.** A resume hands it over as the whole set, as the first run had
+  it: Claude gets `--strict-mcp-config`, and codex is given only those servers.
+- **A resume copies it again.** A resume that replays a copy writes the set again into its own
+  run directory and points `mcp_config` there, keeping `mcp_config_named`. Nothing in lionagi
+  removes a run directory; a sweep outside it may, so the set lasts as long as the branch's newest
+  run directory rather than its first. An automatic resume after a timeout replays the copy the
+  same way rather than reading the named file again.
+- **A copy that is gone refuses the resume.** The refusal names the file and the flags to go on
+  with (`--mcp-config`, `--no-mcp-config`), as a recorded file that can no longer be read does
+  today.
+- **The record is written after the run directory exists.** The branch is persisted only after
+  that point, so no branch can carry a record that points at a copy that was never written. A launch
+  refused before its run directory exists (a profile's `scratch` or `deny_read` that the route
+  cannot hold) leaves neither a copy nor a branch, as before. A branch with no record at all reads
+  as before, and this amendment adds no way to reach that state.
+- **Where the copy sits.** At `<lionagi home>/runs/<run id>/mcp-config.json`. No default write
+  root holds the lionagi home, and the copy is among the run files a Claude Code child's file tools
+  are denied by name (beside `run.json`, `checkpoint.json`, `branches` and `stream`). A Claude Code
+  child's Bash is held to its working directory and `allowWrite`, and its file tools to the same
+  roots by a hook; a codex child writes under its working directory, its granted roots and its
+  scratch directory; an API model's write set under its working directory, the temporary directory,
+  the uv cache and its granted roots. None of these reaches the copy unless the working directory or a granted
+  root contains the lionagi home.
+- **Records written before this amendment.** A record with origin `explicit` and no
+  `mcp_config_named` keeps today's behaviour and reads the named file again.
+- **`li o flow`.** Its checkpoint records a named config the same way (`mcp_config` and
+  `mcp_config_origin: explicit`), and its resume reads the file again. The flow copies the set into
+  its own run directory under the same rules, and its checkpoint gains `mcp_config_named`. That half
+  is not implemented yet: until it is, a flow's resume reads the named file again.
+- **`agent.submit` takes no copy of a named config itself.** ADR-0048 Amendment 1's sentence on
+  this stays true of the submit layer, and the job record's `mcp_config` still names the caller's
+  file.
+
+Limits:
+
+- A set found by searching the launch directory is searched again on every resume, by design. It
+  is not pinned, and a config placed in that directory or above it after the first run reaches the
+  resume.
+- A branch recorded before this amendment has no copy. Its resumes read the named file as it is
+  then, until the branch is started fresh. A resume that names an MCP flag uses that flag for that
+  leg only and does not rewrite the record.
+- A leg with no filesystem boundary can rewrite the copy, as it can the run's other files: a child
+  whose sandbox is switched off, a codex child with `bypass_approvals`, and a Gemini CLI child,
+  whose sandbox grants no write set this launcher can verify.
+- The copy holds each server's `env` and headers as the named file did. They now also sit in the
+  run directory, as a discovered config's copy already does in the job directory.
+- A resume that names `--mcp-config` reads that file as it is then. The copy governs only a resume
+  that names no MCP flag.
+- A copy that cannot be written fails the launch after its run directory exists. No branch is
+  persisted, and the run's `run.json` keeps the `running` entry it was allocated with, as for any
+  other failure between allocating the run and starting the leg.
 
 ## Amendment 7 (2026-11-23) — an agent profile adds paths its child may not read
 

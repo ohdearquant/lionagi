@@ -25,8 +25,8 @@ governed by ADR-0120/ADR-0121; no reader should implement the old “only extern
 ## Amendment 1 (2026-11-23): a leg takes its parent's deny rules and hooks from a file named at submit
 
 **Status**: Accepted (2026-11-23). The `agent.submit` inputs it describes are not wired yet: no
-production code calls `lionhub/src/lionhub/hooks/hooks_from.py`, so H4 does not run today. Issue
-#4546 stays open for that wiring.
+production code calls `lionhub/src/lionhub/hooks/hooks_from.py`, so H4 does not run today.
+Issue #4546 stays open for that wiring.
 
 Issue #4546 asks for "`hooks.import` over MCP, or `agent.submit(hooks_from=\"<config path>\")`,
 snapshotted at submit like `mcp_config`", because "A deployment that delegates only through the MCP
@@ -38,6 +38,10 @@ directory (the same function, through `_write_mcp_server_snapshot`). This amendm
 `hooks_from` the snapshot the request asks for, with `prompt_file` as the precedent
 (`lionhub/src/lionhub/serve/mcp/dispatch.py::_resolve_prompt`: an absolute path, read once at
 submit, capped, empty refused). It does not change `mcp_config`.
+
+Note (2026-11-23): `agent.submit` still passes a caller-named file through. The leg now copies the
+set it was handed into its own run directory, and a resume replays that copy (ADR-0041
+Amendment 8).
 
 It adds to D6 and D7 and replaces nothing in them: `li hooks import`, the `hooks_external` block, the
 D7 tiers and the loader rule stay as written.
@@ -217,6 +221,12 @@ deny, and a deny only narrows, so both are rendered. Where the documentation giv
 matching, or the shape is in doubt, the rule takes the any-depth form: a rule rendered deeper than
 the parent applied it denies more, never less, while the anchored form of `Read(secrets/**)` would
 let the leg read `vendor/secrets/x`, which the parent could not.
+
+Each `<dir>` is pasted into the rule as written, so it must be an absolute path holding no character
+the rule syntax reads as a pattern: `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)` or a backslash. A rule
+that would render with any other directory names something else in the leg, so it refuses at submit,
+naming whether the source project directory or the leg's working directory was the cause and quoting
+neither.
 
 Rules for other tools:
 
