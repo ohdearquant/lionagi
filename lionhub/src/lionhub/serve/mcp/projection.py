@@ -176,11 +176,18 @@ _APPEND = argparse._AppendAction
 # invocation, so skipping them is not a gap in the description.
 _META_ACTIONS = (argparse._HelpAction, argparse._VersionAction)
 
-# Destinations a command accepts on the command line only. ``mcp_submit_snapshot`` is set by
-# the server itself when it launches a command; ``probe_anthropic_account`` sends a billed
-# request and can lift an account block, which ADR-0126 Amendment 15 keeps to the operator's
-# own command line.
-_CLI_ONLY_DESTS = frozenset({"mcp_submit_snapshot", "probe_anthropic_account"})
+# Destinations a command accepts on the command line only. ``mcp_submit_snapshot``,
+# ``graph_submit_snapshot`` and ``graph_submit_resolved`` are set by the server itself when
+# it launches a command; ``probe_anthropic_account`` sends a billed request and can lift an
+# account block, which ADR-0126 Amendment 15 keeps to the operator's own command line.
+_CLI_ONLY_DESTS = frozenset(
+    {
+        "mcp_submit_snapshot",
+        "graph_submit_snapshot",
+        "graph_submit_resolved",
+        "probe_anthropic_account",
+    }
+)
 
 _SCALAR_JSON_TYPE = {None: "string", str: "string", int: "integer", float: "number"}
 

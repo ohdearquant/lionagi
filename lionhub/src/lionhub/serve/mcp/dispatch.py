@@ -913,9 +913,11 @@ def _has_prompt_source(kind: str, args: dict[str, Any], prompt: str | None) -> b
 
     A resume names a saved run, and the command's resume path replays that run's
     checkpoint without reading a prompt (``li o flow --resume``), so a resume is a
-    complete submission with or without one. Only flow and play declare it.
+    complete submission with or without one. Only flow and play declare it. A written
+    graph gives each node its own prompt, so it is a complete submission too; only flow
+    takes one.
     """
-    if args.get("resume"):
+    if args.get("resume") or args.get("graph"):
         return True
     query = args.get("query") or []
     last_positional = prompt if prompt is not None else (query[-1] if query else None)
@@ -992,6 +994,41 @@ def _refuse_unknown_profile(
             ):
                 return None
             raise OpError("invalid_input", str(exc)) from exc
+
+
+def _refuse_invalid_graph(verb: Verb, args: dict[str, Any], cwd: str | None) -> Any:
+    """Load and check a flow's written graph before any job record or directory exists.
+
+    The same loader and checks ``li o flow --graph`` runs (ADR-0069 Amendment 4 G3), with
+    profiles resolved from the run's ``cwd``, so one file gets one answer on both paths
+    and a refused graph leaves nothing on ``job.list``. Returns the accepted graph, or
+    None when the submission names none.
+    """
+    if verb.job_kind != "flow" or args.get("graph") is None:
+        return None
+    from lionhub.orchestration.flow.graph import (
+        FlowGraphError,
+        check_graph,
+        graph_flag_refusal,
+        load_graph,
+    )
+
+    refusal = graph_flag_refusal(
+        playbook=args.get("playbook"),
+        file=args.get("file"),
+        reactive=args.get("reactive"),
+        resume=args.get("resume"),
+        with_synthesis=args.get("with_synthesis"),
+        bare=args.get("bare"),
+    )
+    if refusal is not None:
+        raise OpError("invalid_input", refusal)
+    try:
+        source = load_graph(args["graph"])
+        check_graph(source, cwd=cwd, max_ops=args.get("max_ops") or 0)
+    except FlowGraphError as exc:
+        raise OpError("invalid_input", str(exc)) from None
+    return source
 
 
 def _resolve_cwd(args: dict[str, Any]) -> str | None:
@@ -1131,6 +1168,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
         if defaulted:
             default_name = selected
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
+    graph_source = _refuse_invalid_graph(verb, args, cwd)
     write_capable = _write_capable(verb, args, profile)
     account, account_provider = _requested_account(verb, args, profile, prompt)
     assert verb.job_kind is not None
@@ -1156,6 +1194,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             account=account,
             account_provider=account_provider,
             **({"replay_mcp_choice": True} if resumes else {}),
+            **({"graph_source": graph_source} if graph_source is not None else {}),
         )
     except NestedAgentRefusedError as exc:
         # Well-formed, and refused for where the caller runs, which no retry changes.

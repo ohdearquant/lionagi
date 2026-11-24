@@ -1527,6 +1527,11 @@
               "-p"
             ]
           },
+          "graph": {
+            "type": "string",
+            "description": "Run a written graph instead of a planned one: an absolute path to a JSON file whose one key, nodes, lists objects with id, agent (a profile name), prompt, needs (a list of ids) and optionally exit_criteria. No planner call, no reactive growth and no synthesis pass. Cannot be combined with `playbook`, `file`, `resume`, `with_synthesis`, `bare` or `reactive` other than off.",
+            "x-flag": "--graph"
+          },
           "agent": {
             "type": "string",
             "description": "Load orchestrator profile by name \u2014 resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md.",

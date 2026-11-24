@@ -316,7 +316,10 @@ _RUN_ID_ATTEMPTS = 8
 # writes and the cleanup that removes them can't drift apart.
 _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
-_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+# The copy of a written graph a flow submission accepted (ADR-0069 Amendment 4); the same
+# name the run gives its own copy.
+_GRAPH_SNAPSHOT_FILENAME = "graph.json"
+_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME, _GRAPH_SNAPSHOT_FILENAME)
 # Written into a reservation directory only when its giveback could not remove
 # it, never as part of a submission's own state — kept out of
 # _RESERVATION_CONTENTS so a later giveback attempt doesn't try to unlink it
@@ -1349,6 +1352,7 @@ def submit(
     replay_mcp_choice: bool = False,
     account: str | None = None,
     account_provider: str | None = None,
+    graph_source: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1379,6 +1383,10 @@ def submit(
     run to use, as names only (``accounts.toml``'s name and its provider table); they are
     recorded and returned as given. The run resolves the account itself and writes what it
     resolved to its ``run.json``.
+
+    *graph_source* is a flow's written graph, already loaded and checked. Its accepted bytes
+    are written into this run's directory and the run is pointed at that copy, so the run
+    reads only the bytes that were checked here.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1564,6 +1572,17 @@ def submit(
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.
+        graph_snapshot_path = None
+        if graph_source is not None:
+            graph_snapshot_path = d / _GRAPH_SNAPSHOT_FILENAME
+            options = [
+                "--graph-submit-snapshot",
+                str(graph_snapshot_path),
+                "--graph-submit-resolved",
+                graph_source.resolved,
+                *options,
+            ]
+
         options = [
             "--notify",
             _notify_template(run_id, notify_target, notify_command, notify_sender),
@@ -1598,6 +1617,10 @@ def submit(
 
         if prompt_path is not None:
             prompt_path.write_text(prompt)
+        if graph_snapshot_path is not None:
+            from lionhub.orchestration.flow.graph import write_graph_copy
+
+            write_graph_copy(d, graph_source)
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(
                 Path(mcp_config_path),

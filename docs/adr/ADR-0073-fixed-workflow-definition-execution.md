@@ -565,3 +565,7 @@ decided. Delta 2 is intentionally a decision gate, not a fabricated conclusion.
 `gate` rejection is not normally a compiler error: create/load validation excludes it before the
 compiler. `parse` and `fanout` are the stored kinds that reach the compiler and receive structured
 dropped-kind errors. Coding cwd is engine-kind-specific, not a universal per-node field.
+
+2026-11-23: agent-leg graphs, nodes that are legs with a profile, a prompt and `needs`, run on
+the flow lane under ADR-0069 Amendment 4. The WorkflowDef lane and its delta 1 (`li flow run`)
+are unchanged by it.

@@ -541,6 +541,39 @@
           },
           {
             "option_strings": [
+              "--graph"
+            ],
+            "dest": "graph",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "Run a written graph instead of a planned one: an absolute path to a JSON file whose one key, nodes, lists objects with id, agent (a profile name), prompt, needs (a list of ids) and optionally exit_criteria. No planner call, no reactive growth and no synthesis pass. Cannot be combined with -p, -f, --resume, --with-synthesis, --bare or --reactive other than off."
+          },
+          {
+            "option_strings": [
+              "--graph-submit-snapshot"
+            ],
+            "dest": "graph_submit_snapshot",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "==SUPPRESS=="
+          },
+          {
+            "option_strings": [
+              "--graph-submit-resolved"
+            ],
+            "dest": "graph_submit_resolved",
+            "required": false,
+            "nargs": null,
+            "default": null,
+            "choices": null,
+            "help": "==SUPPRESS=="
+          },
+          {
+            "option_strings": [
               "-a",
               "--agent"
             ],

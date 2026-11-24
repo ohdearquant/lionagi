@@ -20,18 +20,14 @@ A refusal names an entry by its key path and index, never by its content.
 
 from __future__ import annotations
 
-import errno
-import hashlib
-import json
-import os
 import re
 import shlex
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from lionhub.hooks.external import SUPPORTED_EVENTS, ExternalHookConfigError, validate_argv
+from lionhub.orchestration.json_file import read_json_file
 
 __all__ = (
     "HOOKS_FROM_CARRY",
@@ -114,10 +110,6 @@ class HooksFromError(ValueError):
         self.problems = problems
 
 
-class _RefusedError(ValueError):
-    """Raised from inside the JSON parser; carries a reason with no file content."""
-
-
 @dataclass(frozen=True)
 class HooksFile:
     """The accepted bytes of a hooks file and what was read from them."""
@@ -154,92 +146,17 @@ class CarryPlan:
         return lines
 
 
-def _refuse_constant(name: str) -> Any:
-    raise _RefusedError(f"uses {name}, which JSON does not define")
-
-
-def _refuse_repeated_names(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    obj = dict(pairs)
-    if len(obj) != len(pairs):
-        raise _RefusedError("repeats a name inside an object")
-    return obj
-
-
 def read_hooks_file(path: Any) -> HooksFile:
     """Read the hooks file at *path* once, under ADR-0048 Amendment 1 H2."""
-    if not isinstance(path, str) or not path:
-        raise HooksFromError("absolute-path", "hooks_from must be an absolute path")
-    if path == "-":
-        raise HooksFromError(
-            "absolute-path", "hooks_from cannot be '-': the server reads the file itself"
-        )
-    given = Path(path)
-    if not given.is_absolute():
-        raise HooksFromError(
-            "absolute-path",
-            f"hooks_from must be an absolute path, got {path!r}: the server reads it, so a "
-            "relative path would resolve against the server's directory",
-        )
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise HooksFromError(
-            "no-symlink", "hooks_from needs O_NOFOLLOW, which this platform does not provide"
-        )
-    flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.EMLINK):
-            raise HooksFromError(
-                "no-symlink",
-                f"hooks_from {path!r} is a symbolic link; name the file it points to",
-            ) from None
-        raise HooksFromError(
-            "open", f"could not open hooks_from {path!r}: {exc.strerror}"
-        ) from None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise HooksFromError("regular-file", f"hooks_from {path!r} is not a regular file")
-        chunks: list[bytes] = []
-        total = 0
-        while total <= MAX_HOOKS_FROM_BYTES:
-            chunk = os.read(fd, MAX_HOOKS_FROM_BYTES + 1 - total)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-    finally:
-        os.close(fd)
-    data = b"".join(chunks)
-    if len(data) > MAX_HOOKS_FROM_BYTES:
-        raise HooksFromError(
-            "size", f"hooks_from {path!r} is larger than {MAX_HOOKS_FROM_BYTES} bytes"
-        )
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HooksFromError("json", f"hooks_from {path!r} is not UTF-8 text") from None
-    try:
-        document = json.loads(
-            text, parse_constant=_refuse_constant, object_pairs_hook=_refuse_repeated_names
-        )
-    except _RefusedError as exc:
-        raise HooksFromError("json", f"hooks_from {path!r} {exc}") from None
-    except json.JSONDecodeError as exc:
-        raise HooksFromError(
-            "json",
-            f"hooks_from {path!r} is not valid JSON (line {exc.lineno}, column {exc.colno})",
-        ) from None
-    except RecursionError:
-        raise HooksFromError("json", f"hooks_from {path!r} nests too deeply") from None
-    if not isinstance(document, dict):
-        raise HooksFromError("json", f"hooks_from {path!r} must hold a JSON object at the top")
+    read = read_json_file(
+        path, label="hooks_from", max_bytes=MAX_HOOKS_FROM_BYTES, error=HooksFromError
+    )
     return HooksFile(
-        path=path,
-        resolved_path=str(given.parent.resolve() / given.name),
-        data=data,
-        sha256=hashlib.sha256(data).hexdigest(),
-        document=document,
+        path=read.path,
+        resolved_path=read.resolved_path,
+        data=read.data,
+        sha256=read.sha256,
+        document=read.document,
     )
 
 
