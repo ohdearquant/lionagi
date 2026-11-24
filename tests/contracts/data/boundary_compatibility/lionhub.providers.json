@@ -63,6 +63,9 @@
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "__all__ = (\"ClaudeCodeRequest\", \"stream_claude_code_cli\", \"ClaudeCodeCLIEndpoint\")"
     ],
+    "lionhub/src/lionhub/providers/anthropic/claude_deny_probe.py": [
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"SOURCE_RULES\",\n    \"deny_record_dir\",\n    \"deny_record_path\",\n    \"main\",\n    \"probe\",\n    \"write_record\",\n)"
+    ],
     "lionhub/src/lionhub/providers/anthropic/claude_read_probe.py": [
       "__all__ = (\n    \"PLACEHOLDER_API_KEY\",\n    \"REQUIRED_ARMS\",\n    \"MessagesStandIn\",\n    \"ProxyRecorder\",\n    \"main\",\n    \"probe\",\n    \"read_record_dir\",\n    \"read_record_path\",\n    \"run_claude\",\n    \"write_record\",\n)"
     ],
@@ -381,6 +384,13 @@
       "resolve_claude_cli",
       "stream_cc_cli_events",
       "stream_claude_code_cli"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/claude_deny_probe.py": [
+      "deny_record_dir",
+      "deny_record_path",
+      "main",
+      "probe",
+      "write_record"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_read_probe.py": [
       "MessagesStandIn",

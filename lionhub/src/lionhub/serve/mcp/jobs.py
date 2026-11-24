@@ -316,6 +316,8 @@ _RUN_ID_ATTEMPTS = 8
 # writes and the cleanup that removes them can't drift apart.
 _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
+# The leg's own copy of the hooks file its submission named (ADR-0048 Amendment 1 H2).
+_HOOKS_FROM_SNAPSHOT_FILENAME = "hooks-from.json"
 # The copy of a written graph a flow submission accepted (ADR-0069 Amendment 4); the same
 # name the run gives its own copy.
 _GRAPH_SNAPSHOT_FILENAME = "graph.json"
@@ -1352,6 +1354,7 @@ def submit(
     replay_mcp_choice: bool = False,
     account: str | None = None,
     account_provider: str | None = None,
+    hooks_from: dict[str, Any] | None = None,
     graph_source: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
@@ -1384,12 +1387,21 @@ def submit(
     recorded and returned as given. The run resolves the account itself and writes what it
     resolved to its ``run.json``.
 
+    *hooks_from*, for an agent run only, is the hooks file the submission named, already read
+    and planned: ``file`` (a ``HooksFile``), ``plan`` (a ``CarryPlan``), ``format`` and
+    ``carry``. Its accepted bytes are written into the run directory as a new owner-only file,
+    the leg is pointed at that copy with the digest it must match, and the record and the
+    handle carry the path as given, the resolved path, the digest and the plan's report
+    (ADR-0048 Amendment 1 H2, H3).
+
     *graph_source* is a flow's written graph, already loaded and checked. Its accepted bytes
     are written into this run's directory and the run is pointed at that copy, so the run
     reads only the bytes that were checked here.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
+    if hooks_from is not None and kind != "agent":
+        raise SubmitInputError("hooks_from is taken by agent runs only")
     # Checked in this server, which is alive and inside the tree of whatever started it: the
     # detached run checks again, but a server that exits first leaves it outside that tree
     # (ADR-0133 D7).
@@ -1570,6 +1582,35 @@ def submit(
                 )  # readable order; child reads the snapshot file, not this list
                 options = ["--mcp-submit-snapshot", mcp_config_path, *options]
 
+        # The leg reads only this copy, and refuses to start unless it hashes to the digest
+        # named on its own command line, which the job record keeps (ADR-0048 Amendment 1 H2).
+        hooks_from_path: Path | None = None
+        hooks_from_record: dict[str, Any] | None = None
+        if hooks_from is not None:
+            hooks_file, plan = hooks_from["file"], hooks_from["plan"]
+            hooks_from_path = d / _HOOKS_FROM_SNAPSHOT_FILENAME
+            snapshot_spec = {
+                "copy": str(hooks_from_path),
+                "sha256": hooks_file.sha256,
+                "format": hooks_from["format"],
+                "carry": list(hooks_from["carry"]),
+                "source": hooks_file.resolved_path,
+            }
+            options = [
+                "--hooks-from-snapshot",
+                json.dumps(snapshot_spec, sort_keys=True),
+                *options,
+            ]
+            hooks_from_record = {
+                "path": hooks_file.path,
+                "resolved_path": hooks_file.resolved_path,
+                "sha256": hooks_file.sha256,
+                "copy": str(hooks_from_path),
+                "format": hooks_from["format"],
+                "carry": list(hooks_from["carry"]),
+                "report": plan.report(),
+            }
+
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
         # finished_at/status (and fire the configured delivery) even across a restart.
         graph_snapshot_path = None
@@ -1617,6 +1658,10 @@ def submit(
 
         if prompt_path is not None:
             prompt_path.write_text(prompt)
+        if hooks_from_path is not None:
+            from lionhub.hooks.hooks_from import write_snapshot
+
+            write_snapshot(hooks_from_path, hooks_from["file"])
         if graph_snapshot_path is not None:
             from lionhub.orchestration.flow.graph import write_graph_copy
 
@@ -1685,6 +1730,8 @@ def submit(
         "excluded_mcp_servers": recorded_exclusions,
         # Deprecated response/record alias; keep equal to the truthful name.
         "mcp_config_servers": declared_mcp_servers,
+        # The hooks file this leg carries guards from, or null when the submission named none.
+        "hooks_from": hooks_from_record,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -1775,6 +1822,7 @@ def submit(
         "submitting_actor": minted.submitting_actor if minted else None,
         "account": account,
         "account_provider": account_provider,
+        "hooks_from": hooks_from_record,
     }
 
 
