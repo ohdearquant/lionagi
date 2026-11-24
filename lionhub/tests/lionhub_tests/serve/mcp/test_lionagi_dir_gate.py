@@ -17,8 +17,13 @@ import pytest
 import yaml
 
 from lionagi._lionagi_dir_trust import GATE_ENV_VAR, RECORD_KEY, UntrustedLionagiDirError
+from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.spawn import load_agent_profile
-from lionhub.serve.cli.orchestrate._orchestration import resolve_worker_spec
+from lionhub.serve.cli.orchestrate._orchestration import (
+    WorkerBuildError,
+    attribute_worker_build_failure,
+    resolve_worker_spec,
+)
 from lionhub.serve.mcp import _notify_hook, dispatch, jobs, roster
 
 
@@ -288,6 +293,22 @@ def test_in_a_gated_process_a_flow_worker_from_an_untrusted_profile_refuses(worl
     # Refused, never read as a missing profile and run as the model spec "worker".
     with pytest.raises(UntrustedLionagiDirError):
         resolve_worker_spec("worker")
+
+
+def test_a_flow_worker_refusal_ends_the_run_failed_with_the_refusal_naming_the_worker(
+    world, monkeypatch
+):
+    monkeypatch.setenv(GATE_ENV_VAR, "1")
+    with pytest.raises(UntrustedLionagiDirError) as refused:
+        resolve_worker_spec("worker")
+    # The flow and fanout loops pass a build failure through this before re-raising it.
+    with pytest.raises(WorkerBuildError) as attributed:
+        attribute_worker_build_failure(refused.value, agent_id="worker-1", role="worker")
+    assert attributed.value.__cause__ is refused.value
+    assert str(refused.value) in str(attributed.value)
+    assert "worker-1" in str(attributed.value)
+    # The run's terminal status is taken from the exception that ends it.
+    assert classify_exception(attributed.value) == "failed"
 
 
 def test_a_person_typed_run_without_the_variable_is_unchanged(world):
