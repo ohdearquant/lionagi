@@ -137,6 +137,7 @@ With `gate: mcp`, `profile.list` and `profile.show` (`serve/mcp/roster.py`) add 
 ### Tests
 
 Gate off (the default, and the setting absent):
+
 - each MCP submit kind with a project profile that sets `bypass: true` starts as it does today, and the run takes bypass from the profile;
 - a project `notify.on_terminal` runs at the end of an MCP-started run as it does today;
 - `li agent -a x` and `li o flow -p y` in a project are unchanged;
@@ -144,6 +145,7 @@ Gate off (the default, and the setting absent):
 - the job process's environment has no `LIONAGI_DIR_TRUST_GATE`.
 
 Gate on:
+
 - each submit kind, `dry_run` included, refuses a project profile from an untrusted directory before a job record or directory exists, with the text above;
 - the same for a project playbook, and for a trusted playbook naming a profile from an untrusted directory;
 - an untrusted project `settings.yaml` refuses at submit, before a job record or directory exists, and refuses in the job process, once for each of three files: one carrying only `notify.on_terminal`, one carrying only `dispatch.notify_template`, and one carrying only a source-less `hooks_external` entry. The third is not read by any run path today, and is tested because the layer is checked as a whole;
