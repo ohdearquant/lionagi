@@ -318,7 +318,7 @@ _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
 # The leg's own copy of the hooks file its submission named (ADR-0048 Amendment 1 H2).
 _HOOKS_FROM_SNAPSHOT_FILENAME = "hooks-from.json"
-_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME, _HOOKS_FROM_SNAPSHOT_FILENAME)
 # Written into a reservation directory only when its giveback could not remove
 # it, never as part of a submission's own state — kept out of
 # _RESERVATION_CONTENTS so a later giveback attempt doesn't try to unlink it

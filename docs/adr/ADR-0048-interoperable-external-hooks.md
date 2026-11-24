@@ -24,9 +24,7 @@ governed by ADR-0120/ADR-0121; no reader should implement the old “only extern
 
 ## Amendment 1 (2026-11-23): a leg takes its parent's deny rules and hooks from a file named at submit
 
-**Status**: Accepted (2026-11-23). The `agent.submit` inputs it describes are not wired yet: no
-production code calls `lionhub/src/lionhub/hooks/hooks_from.py`, so H4 does not run today.
-Issue #4546 stays open for that wiring.
+**Status**: Accepted (2026-11-23).
 
 Issue #4546 asks for "`hooks.import` over MCP, or `agent.submit(hooks_from=\"<config path>\")`,
 snapshotted at submit like `mcp_config`", because "A deployment that delegates only through the MCP
@@ -347,6 +345,18 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
   provider refuses at submit and at spawn, naming the provider and saying the key is checked for
   codex and API-model legs only. For claude_code this holds until ADR-0134 gives lionagi a hooks
   render for Claude legs, as Amendment 1 H5 holds hook entries for a claude_code leg.
+- **A hooks file named at submit (Amendment 1).** It gives no leg a hook that runs, so it neither
+  meets the key nor adds to what the key checks. Amendment 1 H5 refuses the file's hook entries on
+  every provider, and its deny and ask rules are Claude Code permission rules, applied by a
+  claude_code leg only (`lionhub/src/lionhub/hooks/hooks_from.py::carry_refusal`). The file's
+  refusal is raised before the key's, at submit and at the leg's start, so a leg with the key and a
+  `hooks_from` file gets:
+  - on codex, H5's refusal when the file carries hook entries or deny or ask rules; a file that
+    carries neither leaves the key's codex answer as it was;
+  - on an API model, the same H5 refusal; a file that carries neither leaves the key's API-model
+    answer as it was, read from the settings and the profile;
+  - on claude_code, H5's refusal when the file carries hook entries; a file that carries only deny
+    and ask rules passes H5, and the key then refuses, naming claude_code.
 
 ### R3. Limits
 
@@ -358,7 +368,9 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
 - Applying lionagi's hooks to a CLI-spawned API-model leg is outside this amendment. When a later
   change applies them, the API arm of R2 becomes D7's own check: the key is met when
   `lionhub/src/lionhub/hooks/external.py::_trust_status` trusts every imported or plugin entry the
-  leg carries.
+  leg carries. The same holds for a `hooks_from` file's hook entries: a change that lets a leg run
+  them makes them hooks declared for that leg, which the key counts and the refusal text of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks` describes.
 - A flow, fanout or play does not pass through `agent.submit`'s check for each worker. Its workers
   are refused at spawn.
 - An `agent.submit` that resumes or continues a branch takes its model from that branch, which the
@@ -392,6 +404,12 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
 - A claude_code profile with the key refuses at submit, naming claude_code. A gemini profile with
   the key refuses at submit, naming gemini.
 - A profile whose key is the string "yes" warns and is read as true.
+- A profile with the key and a `hooks_from` file, each refused before any job record: on codex,
+  with a trusted home, a file with hook entries and a file with deny rules are refused by H5, and a
+  file carrying neither leaves the home's answer (an untrusted hook refuses, a trusted one is
+  accepted); on an API model, a file with hook entries is refused by H5 and a file carrying neither
+  is accepted; on claude_code, a file of deny rules alone is refused by the key, naming
+  claude_code, and a file with hook entries is refused by H5.
 - `li agent -a` with the key on codex refuses at spawn (the existing request check is reached).
 - A run refused at spawn ends failed with the refusal's class and text recorded, and takes no turn;
   `job.status` and the notice carry the text as `reason_detail`.

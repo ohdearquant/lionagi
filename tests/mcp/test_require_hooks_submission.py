@@ -307,6 +307,92 @@ def test_the_flag_the_submit_check_builds_is_the_flag_the_run_builds(
     assert _run_flag(spawned[0], monkeypatch) is ignored
 
 
+_HOOK_ENTRIES = {
+    "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "/bin/true"}]}]}
+}
+_DENY_RULES = {"permissions": {"deny": ["Bash(rm:*)"]}}
+_NEITHER = {"permissions": {"deny": []}}
+
+
+def _with_hooks_file(tmp_path: Path, cwd: Path, document: dict) -> dict:
+    path = Path(os.path.realpath(tmp_path)) / "guards.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return {
+        "agent": "guarded",
+        "prompt": "do work",
+        "cwd": str(cwd),
+        "hooks_from": str(path),
+        "hooks_from_format": "claude",
+    }
+
+
+@pytest.mark.parametrize(
+    ("document", "refusal"),
+    [(_HOOK_ENTRIES, "hook entries"), (_DENY_RULES, "only a claude_code leg applies them")],
+)
+def test_a_hooks_file_refuses_a_codex_leg_the_key_would_accept(
+    submission, tmp_path, document, refusal
+):
+    """The home's hook is trusted, so the key alone accepts; the file is refused first,
+    since no codex leg runs its hook entries or applies its deny rules."""
+    cwd, _home, _server_codex, spawned = submission
+    home, _hook = _codex_home(tmp_path, "account-codex", trusted=True)
+    _profile("guarded", f"model: codex/gpt-5\nrequire_hooks: true\ncodex_home: {home}\n")
+    result = _submit(_with_hooks_file(tmp_path, cwd, document))
+    assert result["ok"] is False, result
+    assert refusal in result["error"]["message"]
+    assert _no_run_recorded(spawned)
+
+
+def test_a_hooks_file_carrying_neither_kind_leaves_the_codex_answer(submission, tmp_path):
+    """With the file adding nothing, the home's untrusted hook still refuses and a trusted
+    one is still accepted."""
+    cwd, _home, _server_codex, spawned = submission
+    home, hook = _codex_home(tmp_path, "account-codex")
+    _profile("guarded", f"model: codex/gpt-5\nrequire_hooks: true\ncodex_home: {home}\n")
+    refused = _submit(_with_hooks_file(tmp_path, cwd, _NEITHER))
+    assert refused["ok"] is False, refused
+    assert f"{hook} (untrusted)" in refused["error"]["message"]
+    trusted, _ = _codex_home(tmp_path, "trusted-codex", trusted=True)
+    _profile("guarded", f"model: codex/gpt-5\nrequire_hooks: true\ncodex_home: {trusted}\n")
+    assert _submit(_with_hooks_file(tmp_path, cwd, _NEITHER))["ok"]
+    assert len(spawned) == 1
+
+
+def test_a_hooks_file_adds_no_hook_to_an_api_model_leg(submission, tmp_path):
+    """Hook entries are refused; a file that carries neither kind leaves the key met."""
+    cwd, _home, _server_codex, spawned = submission
+    _profile("guarded", "model: openai/gpt-4.1\nrequire_hooks: true\n")
+    refused = _submit(_with_hooks_file(tmp_path, cwd, _HOOK_ENTRIES))
+    assert refused["ok"] is False, refused
+    assert "hook entries" in refused["error"]["message"]
+    assert "applies no lionagi hooks" not in refused["error"]["message"]
+    assert _no_run_recorded(spawned)
+    accepted = _submit(_with_hooks_file(tmp_path, cwd, _NEITHER))
+    assert accepted["ok"], accepted
+    assert len(spawned) == 1
+
+
+@pytest.mark.parametrize(
+    ("document", "refusal"),
+    [
+        (_DENY_RULES, "checked for codex and API-model legs only"),
+        (_HOOK_ENTRIES, "hook entries"),
+    ],
+)
+def test_a_claude_code_leg_with_a_hooks_file_is_refused(submission, tmp_path, document, refusal):
+    """Deny rules pass the file's check and the key refuses, naming claude_code; hook entries
+    are refused by the file's check first."""
+    cwd, _home, _server_codex, spawned = submission
+    _profile("guarded", "model: claude_code/sonnet\nrequire_hooks: true\n")
+    result = _submit(_with_hooks_file(tmp_path, cwd, document))
+    assert result["ok"] is False, result
+    assert refusal in result["error"]["message"]
+    if document is _DENY_RULES:
+        assert "claude_code" in result["error"]["message"]
+    assert _no_run_recorded(spawned)
+
+
 def test_a_profile_without_the_key_is_not_checked_at_submit(submission, tmp_path):
     cwd, _home, _server_codex, spawned = submission
     home, _hook = _codex_home(tmp_path, "account-codex")
