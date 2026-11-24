@@ -13,6 +13,7 @@ from typing import Any
 
 from lionagi._checkpoint_version import (
     CHECKPOINT_VERSION,
+    GRAPH_CHECKPOINT_VERSION,
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
@@ -67,8 +68,11 @@ class CheckpointWriter:
     _seq: int = field(default=0, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
+        # A written graph's run is the only writer of version 4 (ADR-0069 Amendment 4 G4);
+        # its config's ``graph`` record is what a resume checks the run's copy against.
+        version = GRAPH_CHECKPOINT_VERSION if "graph" in self.config else CHECKPOINT_VERSION
         checkpoint = {
-            "version": CHECKPOINT_VERSION,
+            "version": version,
             "session_id": self.session_id,
             "prompt": self.prompt,
             "plan": self.plan,

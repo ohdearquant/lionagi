@@ -30,7 +30,9 @@ def test_loader_preserves_legacy_base_with_an_unrelated_journal(tmp_path, versio
     assert load_checkpoint(path) == base
 
 
-@pytest.mark.parametrize("version", [3, 999])
+# Version 3, the journaled format, is not read yet, and a version 4 base is read only beside a
+# written-graph record; this one has none.
+@pytest.mark.parametrize("version", [3, 4, 999])
 def test_loader_rejects_unsupported_base_with_journal(tmp_path, version):
     path = _write_fixture(tmp_path, json.dumps(_base(version)))
     with pytest.raises(FlowResumeError, match="not supported"):
