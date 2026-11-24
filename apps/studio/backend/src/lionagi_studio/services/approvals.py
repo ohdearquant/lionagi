@@ -463,6 +463,35 @@ async def verify_evidence_chain() -> dict[str, Any]:
     }
 
 
+async def _expire_if_due(db: Any, approval_id: str, *, now: float) -> bool:
+    """Move a pending or granted row that is past its expiry to 'expired', with its evidence row.
+
+    The caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`), so the
+    row read here is the row the move applies to. Returns True when this call expired it.
+    """
+    cur = await db.execute(
+        "SELECT status, action_kind, params_hash, expires_at FROM approvals WHERE id = ?",
+        (approval_id,),
+    )
+    row = await cur.fetchone()
+    if row is None or row["status"] not in ("pending", "granted") or now <= row["expires_at"]:
+        return False
+    await db.execute(
+        "UPDATE approvals SET status = 'expired' WHERE id = ? AND status = ?",
+        (approval_id, row["status"]),
+    )
+    await _write_evidence(
+        db,
+        event_type="expired",
+        approval_id=approval_id,
+        action_kind=row["action_kind"],
+        status_from=row["status"],
+        status_to="expired",
+        params_hash=row["params_hash"],
+    )
+    return True
+
+
 async def _lazy_expire(approval_id: str, row: dict[str, Any], *, now: float) -> dict[str, Any]:
     """CAS the row to 'expired' if it is past its TTL and still pending/granted."""
     if row["status"] not in ("pending", "granted") or now <= row["expires_at"]:
@@ -470,20 +499,7 @@ async def _lazy_expire(approval_id: str, row: dict[str, Any], *, now: float) -> 
     async with _open_db(store_path()) as db:
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
-        cur = await db.execute(
-            "UPDATE approvals SET status = 'expired' WHERE id = ? AND status = ?",
-            (approval_id, row["status"]),
-        )
-        if cur.rowcount == 1:
-            await _write_evidence(
-                db,
-                event_type="expired",
-                approval_id=approval_id,
-                action_kind=row["action_kind"],
-                status_from=row["status"],
-                status_to="expired",
-                params_hash=row["params_hash"],
-            )
+        await _expire_if_due(db, approval_id, now=now)
         await db.commit()
     refreshed = await _fetch_row(approval_id)
     return refreshed if refreshed is not None else row
@@ -616,10 +632,15 @@ async def grant_approval(
             "UPDATE approvals SET status = 'granted', granted_at = ?, "
             "decision_principal_id = ?, decision_epoch = ?, decision_method = ?, "
             "decision_origin = ?, decision_scope = ? "
-            "WHERE id = ? AND status = 'pending'",
-            (now, *_principal_values(principal), approval_id),
+            "WHERE id = ? AND status = 'pending' AND expires_at >= ?",
+            (now, *_principal_values(principal), approval_id, now),
         )
         if cur.rowcount != 1:
+            # Expiry is part of the move: a row that passed its expiry after the read above
+            # is expired here, in the same transaction, rather than granted.
+            if await _expire_if_due(db, approval_id, now=now):
+                await db.commit()
+                raise HTTPException(status_code=409, detail=f"approval {approval_id!r} has expired")
             await db.rollback()
             raise HTTPException(
                 status_code=409,
@@ -730,10 +751,15 @@ async def require_approval(
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
             "UPDATE approvals SET status = 'consumed', consumed_at = ? "
-            "WHERE id = ? AND status = 'granted'",
-            (now, approval_id),
+            "WHERE id = ? AND status = 'granted' AND expires_at >= ?",
+            (now, approval_id, now),
         )
         if cur.rowcount != 1:
+            # As in grant_approval: a row that passed its expiry after the read above is
+            # expired here rather than consumed.
+            if await _expire_if_due(db, approval_id, now=now):
+                await db.commit()
+                raise HTTPException(status_code=409, detail=f"approval {approval_id!r} has expired")
             await db.rollback()
             raise HTTPException(
                 status_code=409,
