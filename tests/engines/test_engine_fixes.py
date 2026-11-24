@@ -438,6 +438,7 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
 
     operate_completed = asyncio.Event()
     operate_started = asyncio.Event()
+    operate_cancelled = asyncio.Event()
 
     class _SlowBranch:
         name = "slow"
@@ -445,7 +446,11 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
 
         async def operate(self, *, instruction):
             operate_started.set()
-            await asyncio.sleep(10)  # far past the 0.02 s deadline
+            try:
+                await asyncio.sleep(10)  # far past the 1 s deadline
+            except asyncio.CancelledError:
+                operate_cancelled.set()
+                raise
             operate_completed.set()
             return "done"
 
@@ -461,7 +466,9 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
             )
             return "completed"
 
-    eng = _SlowEngine(deadline_s=0.02)
+    # Long enough that the call is in flight when the deadline fires, even on a cold first
+    # import; a deadline that fires before operate() starts tests nothing about it.
+    eng = _SlowEngine(deadline_s=1.0)
     t0 = time.monotonic()
 
     events: list[dict] = []
@@ -471,9 +478,14 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
 
     elapsed = time.monotonic() - t0
 
-    # Must cancel within a reasonable bound (<<10 s — the sleep duration).
-    assert elapsed < 2.0, f"deadline overrun: ran for {elapsed:.2f}s, expected <2s"
+    # The watchdog cancelled the call in flight: it started, received the cancellation and
+    # never finished. Asserted on the call itself rather than on wall time, which a loaded
+    # runner stretches.
+    assert operate_started.is_set(), "branch.operate never started"
+    assert operate_cancelled.is_set(), "branch.operate was not cancelled"
     assert not operate_completed.is_set(), "branch.operate must not have completed"
+    # Backstop only: well under the 10 s the call would take if nothing cancelled it.
+    assert elapsed < 8.0, f"deadline overrun: ran for {elapsed:.2f}s, expected <8s"
     assert any(e["type"] == "budget_exhausted" for e in events), (
         f"budget_exhausted not emitted; events: {[e['type'] for e in events]}"
     )
