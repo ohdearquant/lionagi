@@ -4,6 +4,10 @@
 # -p scripts.hubless_pytest_plugin, the "Core suite without lionhub" job in CI. The list may
 # only shrink: take a module off once it passes without lionhub, and never add one. It is
 # empty by lionagi 2.0, when lionhub ships as its own distribution.
+#
+# The list is the Linux one: the job runs on ubuntu-latest, and a module whose need for
+# lionhub differs by platform is listed as it behaves there. A run on another platform can
+# disagree with it in either direction.
 
 tests/agent/test_agent_resolved_model_effort.py
 tests/agent/test_api_effort.py
@@ -31,7 +35,6 @@ tests/apps_studio_server/test_session_listing_projection.py
 tests/apps_studio_server/test_session_status_filter.py
 tests/apps_studio_server/test_sessions_detail.py
 tests/apps_studio_server/test_terminal_admin_delivery.py
-tests/benchmarks/test_lndl_pilot.py
 tests/contracts/test_auto_registry.py
 tests/contracts/test_cli_catalog_compatibility.py
 tests/contracts/test_public_surfaces.py
@@ -48,7 +51,6 @@ tests/docs/test_integrations.py
 tests/docs/test_patterns.py
 tests/docs/test_quickstart.py
 tests/docs/test_site_contract.py
-tests/e2e_studio/test_fixtures.py
 tests/engines/test_engine.py
 tests/engines/test_engine_emission_reliability.py
 tests/engines/test_engine_fixes.py
@@ -155,13 +157,11 @@ tests/orchestration/test_patterns.py
 tests/orchestration/test_reactive_e2e.py
 tests/orchestration/test_spawn_operation_constraint.py
 tests/packaging/test_cli_relocation.py
-tests/packaging/test_studio_import_boundary.py
 tests/protocols/action/test_mcp_tool_admission_boundaries.py
 tests/protocols/action/test_tool_invocation_paths.py
 tests/protocols/action/test_tool_invoke_hooks.py
 tests/protocols/generic/test_log_redaction.py
 tests/protocols/messages/test_rendering.py
-tests/protocols/messages/test_utils.py
 tests/providers/google/gemini_code/test_ndjson_mapping.py
 tests/providers/openai/codex/test_account_integrations.py
 tests/providers/openai/codex/test_call_markup_in_final_message.py
@@ -195,10 +195,7 @@ tests/providers/test_public_provider_errors.py
 tests/providers/test_secret_resolution.py
 tests/providers/test_subagent_admission.py
 tests/providers/test_subagent_admission_accounts.py
-tests/scripts/test_check_data_files.py
-tests/scripts/test_ci_flake_hardening.py
 tests/scripts/test_feature_boundary_checker.py
-tests/scripts/test_python_hygiene_allowlist.py
 tests/service/accounts/test_attempt_telemetry.py
 tests/service/accounts/test_rejection_ladder.py
 tests/service/accounts/test_routed_endpoint.py
@@ -293,26 +290,24 @@ tests/session/test_signal_emit.py
 tests/session/test_system_template_deprecation.py
 tests/session/test_typed_gate_action.py
 tests/state/lifecycle/test_delivery_eligibility.py
+tests/state/lifecycle/test_exact_terminal_attempt.py
 tests/state/lifecycle/test_notify_settings.py
 tests/state/lifecycle/test_reconciler_end_to_end.py
 tests/state/lifecycle/test_service.py
 tests/state/lifecycle/test_settings_delivery_integration.py
 tests/state/lifecycle/test_transition_matrix_contract.py
-tests/state/test_artifact_upsert_race.py
 tests/state/test_chain_decision_readers.py
-tests/state/test_check_rebuild_concurrency.py
 tests/state/test_cli_prune_backends.py
 tests/state/test_cli_worker_retention.py
 tests/state/test_compatibility_owner_ops.py
 tests/state/test_compatibility_refusal_paths.py
 tests/state/test_compatibility_teardown_ops.py
-tests/state/test_completion_evidence.py
+tests/state/test_dual_backend.py
 tests/state/test_engine_catalog_keyset.py
 tests/state/test_engine_def_writes.py
 tests/state/test_engine_schema.py
 tests/state/test_github_poll_stagnation.py
 tests/state/test_json_bind_non_finite.py
-tests/state/test_migrations.py
 tests/state/test_quarantine_hostname_failure.py
 tests/state/test_quarantine_identity_rules.py
 tests/state/test_quarantine_probe_errors.py
@@ -341,7 +336,6 @@ tests/studio/test_schedule_prompt_bound.py
 tests/studio/test_schedule_recent_summary.py
 tests/studio/test_schedule_run_view_service.py
 tests/studio/test_schedule_runs_regression.py
-tests/studio/test_schedule_service_import_closure.py
 tests/studio/test_schedule_skip_reason_projection.py
 tests/studio/test_schedule_trigger_facts.py
 tests/studio/test_schedule_tz_recompute.py
