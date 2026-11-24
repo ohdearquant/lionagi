@@ -117,6 +117,7 @@ _PRELOAD_MODULES = (
     "lionhub.agent.settings",
     "lionhub.agent.subscription_accounts",
     "lionhub.hooks.external",
+    "lionhub.hooks.hooks_from",
     "lionhub.orchestration",
     "lionhub.orchestration.console",
     "lionhub.orchestration.job",
@@ -1093,6 +1094,68 @@ def _requested_account(
     return str(name), provider
 
 
+def _resolve_hooks_from(
+    args: dict[str, Any], profile: Any, prompt: str | None, cwd: str | None
+) -> dict[str, Any] | None:
+    """Read and plan the hooks file an agent submission names (ADR-0048 Amendment 1).
+
+    Returns what ``jobs.submit`` snapshots, or None when no file is named. The file is read
+    once here, under the H2 rules, and planned for the leg's working directory; a guard the
+    leg cannot apply refuses the submission (H3, H5). The leg's model is picked the way
+    ``_requested_account`` picks it: the first of two positionals, else the profile's model.
+    The leg reads its copy and checks the same refusals again when it starts.
+    """
+    path = args.get("hooks_from")
+    fmt = args.get("hooks_from_format")
+    carry = args.get("hooks_from_carry")
+    if path is None:
+        if fmt is not None or carry is not None:
+            raise OpError("invalid_input", "hooks_from_format and hooks_from_carry need hooks_from")
+        return None
+    if args.get("resume") or args.get("continue_last"):
+        raise OpError(
+            "invalid_input",
+            "hooks_from cannot be combined with resume or continue_last: a resumed run keeps "
+            "the guards it started with; start a fresh run to carry a hooks file",
+        )
+    if fmt is None:
+        raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
+    from lionhub.agent.subscription_accounts import account_provider
+    from lionhub.hooks.hooks_from import (
+        HOOKS_FROM_CARRY,
+        HooksFromError,
+        carry_refusal,
+        plan_carry,
+        read_hooks_file,
+    )
+
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+    claude_code = (
+        isinstance(model, str)
+        and "/" in model
+        and account_provider(model.split("/", 1)[0]) == "claude_code"
+    )
+    carried = list(HOOKS_FROM_CARRY) if carry is None else carry
+    leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    try:
+        hooks_file = read_hooks_file(path)
+        plan = plan_carry(
+            hooks_file.document,
+            fmt=fmt,
+            carry=carried,
+            source_path=hooks_file.resolved_path,
+            leg_cwd=leg_cwd,
+        )
+    except HooksFromError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
+    reason = carry_refusal(plan, claude_code=claude_code)
+    if reason is not None:
+        raise OpError("invalid_input", f"cannot submit this leg with hooks_from: {reason}")
+    return {"file": hooks_file, "plan": plan, "format": fmt, "carry": list(carried)}
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     resumes = bool(args.get("resume") or args.get("continue_last"))
@@ -1133,6 +1196,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     profile = _refuse_unknown_profile(args, cwd, default_name=default_name)
     write_capable = _write_capable(verb, args, profile)
     account, account_provider = _requested_account(verb, args, profile, prompt)
+    hooks_from = _resolve_hooks_from(args, profile, prompt, cwd)
     assert verb.job_kind is not None
     resume_id = None
     try:
@@ -1155,6 +1219,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             profile=profile,
             account=account,
             account_provider=account_provider,
+            **({"hooks_from": hooks_from} if hooks_from is not None else {}),
             **({"replay_mcp_choice": True} if resumes else {}),
         )
     except NestedAgentRefusedError as exc:

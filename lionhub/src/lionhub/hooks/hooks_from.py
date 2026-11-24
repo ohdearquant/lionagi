@@ -40,9 +40,12 @@ __all__ = (
     "CarryPlan",
     "HooksFile",
     "HooksFromError",
+    "carry_refusal",
     "plan_carry",
     "read_hooks_file",
+    "read_snapshot",
     "render_permission_rule",
+    "write_snapshot",
 )
 
 MAX_HOOKS_FROM_BYTES = 256 * 1024
@@ -244,6 +247,63 @@ def read_hooks_file(path: Any) -> HooksFile:
         sha256=hashlib.sha256(data).hexdigest(),
         document=document,
     )
+
+
+def write_snapshot(target: Path, hooks_file: HooksFile) -> None:
+    """Write the accepted bytes of *hooks_file* to *target*, a new owner-only file (H2 rule 6).
+
+    The file is created exclusively, so an existing file or link at *target* refuses the
+    write rather than being replaced or followed.
+    """
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    fd = os.open(target, flags, 0o600)
+    try:
+        view = memoryview(hooks_file.data)
+        while view:
+            view = view[os.write(fd, view) :]
+    finally:
+        os.close(fd)
+
+
+def read_snapshot(path: str, sha256: str) -> HooksFile:
+    """Read a leg's copy of its hooks file and check it against the digest recorded at submit.
+
+    The copy is read under the same H2 rules as the original. A copy whose bytes no longer
+    hash to *sha256* refuses, so an edit after submit reaches no leg (H2 rule 6).
+    """
+    snapshot = read_hooks_file(path)
+    if not isinstance(sha256, str) or snapshot.sha256 != sha256:
+        raise HooksFromError(
+            "digest",
+            f"the hooks_from copy {path!r} does not match the digest recorded when the leg was "
+            "submitted",
+        )
+    return snapshot
+
+
+def carry_refusal(plan: CarryPlan, *, claude_code: bool) -> str | None:
+    """Why a leg cannot apply *plan*, or None when it can (ADR-0048 Amendment 1 H5).
+
+    *claude_code* says whether the leg runs on a Claude Code model. Deny and ask rules are
+    applied by a Claude Code leg only. Hook entries are refused on every provider for now.
+    """
+    if plan.hooks:
+        return (
+            "the file carries hook entries, and no leg applies hook entries from hooks_from yet; "
+            'submit with hooks_from_carry=["deny"] to carry only its deny and ask rules'
+        )
+    if plan.deny_rules and not claude_code:
+        return (
+            "the file carries deny or ask rules, and only a claude_code leg applies them; run "
+            "the leg on a claude_code model"
+        )
+    return None
 
 
 def _source_kind(resolved_path: str, home: Path) -> tuple[str, Path | None]:

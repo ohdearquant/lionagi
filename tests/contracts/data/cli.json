@@ -1314,6 +1314,17 @@
         },
         {
           "option_strings": [
+            "--hooks-from-snapshot"
+          ],
+          "dest": "hooks_from_snapshot",
+          "required": false,
+          "nargs": null,
+          "default": null,
+          "choices": null,
+          "help": "==SUPPRESS=="
+        },
+        {
+          "option_strings": [
             "--mcp-config"
           ],
           "dest": "mcp_config",
