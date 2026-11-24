@@ -317,6 +317,10 @@ def test_the_two_runs_differ_only_in_the_rules(tmp_path):
     (control_argv, control_env, control_cwd), (rules_argv, rules_env, rules_cwd) = fake.calls
     assert control_cwd == rules_cwd == Path(rendering["leg_cwd"])
     assert control_env["HOME"] != rules_env["HOME"]
+    # Each run has its own Claude Code temp directory, recorded in the run.
+    assert control_env["CLAUDE_CODE_TMPDIR"] == runs["control"]["claude_tmp"]
+    assert rules_env["CLAUDE_CODE_TMPDIR"] == runs["rules"]["claude_tmp"]
+    assert control_env["CLAUDE_CODE_TMPDIR"] != rules_env["CLAUDE_CODE_TMPDIR"]
     settings_at = control_argv.index("--settings") + 1
     assert control_argv[:settings_at] == rules_argv[:settings_at]
     assert control_argv[settings_at + 1 :] == rules_argv[settings_at + 1 :]
