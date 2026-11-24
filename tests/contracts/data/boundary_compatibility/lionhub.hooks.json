@@ -4,7 +4,7 @@
       "__all__ = (\n    \"BLOCKING_EVENTS\",\n    \"PROFILE_VERSION\",\n    \"SUPPORTED_EVENTS\",\n    \"ExternalHookConfigError\",\n    \"HookVerdict\",\n    \"build_envelope\",\n    \"compute_command_hash\",\n    \"compute_executable_digest\",\n    \"compute_trust_record\",\n    \"external_hook_adapter\",\n    \"is_command_trusted\",\n    \"match_hook\",\n    \"resolve_hook_executable\",\n    \"validate_argv\",\n)"
     ],
     "lionhub/src/lionhub/hooks/hooks_from.py": [
-      "__all__ = (\n    \"HOOKS_FROM_CARRY\",\n    \"HOOKS_FROM_FORMATS\",\n    \"MAX_HOOKS_FROM_BYTES\",\n    \"CarryPlan\",\n    \"HooksFile\",\n    \"HooksFromError\",\n    \"plan_carry\",\n    \"read_hooks_file\",\n    \"render_permission_rule\",\n)"
+      "__all__ = (\n    \"HOOKS_FROM_CARRY\",\n    \"HOOKS_FROM_FORMATS\",\n    \"MAX_HOOKS_FROM_BYTES\",\n    \"CarryPlan\",\n    \"HooksFile\",\n    \"HooksFromError\",\n    \"carry_refusal\",\n    \"plan_carry\",\n    \"read_hooks_file\",\n    \"read_snapshot\",\n    \"render_permission_rule\",\n    \"write_snapshot\",\n)"
     ]
   },
   "public_definitions": {
@@ -25,9 +25,12 @@
       "CarryPlan",
       "HooksFile",
       "HooksFromError",
+      "carry_refusal",
       "plan_carry",
       "read_hooks_file",
-      "render_permission_rule"
+      "read_snapshot",
+      "render_permission_rule",
+      "write_snapshot"
     ]
   }
 }

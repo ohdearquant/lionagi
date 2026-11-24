@@ -241,6 +241,9 @@ _MCP_LAUNCH_KEY = "mcp_launch"
 _MCP_CONFIG_NAMED_KEY = "mcp_config_named"
 # The name of that copy inside a run directory.
 _MCP_CONFIG_COPY_NAME = "mcp-config.json"
+# Branch metadata naming the hooks file copy a leg started with, so a resume checks it again.
+_HOOKS_FROM_KEY = "hooks_from"
+_HOOKS_FROM_SPEC_FIELDS = ("copy", "sha256", "format", "carry", "source")
 # The subscription account a branch was launched on (names and paths only, never a token); a
 # resume runs on the same one unless a Claude Code resume names another.
 _SUBSCRIPTION_ACCOUNT_KEY = "subscription_account"
@@ -1934,6 +1937,80 @@ _SCRATCH_REFUSAL_GEMINI = (
 )
 
 
+def _hooks_from_spec(
+    snapshot: str | None, branch: Any, is_resumed_branch: bool
+) -> dict[str, Any] | None:
+    """The hooks file copy this leg carries guards from, or None (ADR-0048 Amendment 1).
+
+    A fresh leg reads it from ``--hooks-from-snapshot``, which the MCP server sets when a
+    submission names ``hooks_from``. A resumed branch reads the one it started with from its
+    metadata and takes no new one, so a resume can neither drop nor swap its guards.
+    """
+    if is_resumed_branch:
+        if snapshot is not None:
+            raise ConfigurationError(
+                "--hooks-from-snapshot cannot be given to a resumed branch: a resumed run keeps "
+                "the guards it started with"
+            )
+        spec: Any = branch.metadata.get(_HOOKS_FROM_KEY)
+        if spec is None:
+            return None
+        where = "the branch's hooks_from record"
+    else:
+        if snapshot is None:
+            return None
+        where = "--hooks-from-snapshot"
+        try:
+            spec = json.loads(snapshot)
+        except ValueError:
+            raise ConfigurationError(f"{where} is not valid JSON") from None
+    if (
+        not isinstance(spec, dict)
+        or not all(
+            isinstance(spec.get(field), str)
+            for field in _HOOKS_FROM_SPEC_FIELDS
+            if field != "carry"
+        )
+        or not isinstance(spec.get("carry"), list)
+    ):
+        raise ConfigurationError(f"{where} must name {', '.join(_HOOKS_FROM_SPEC_FIELDS)}")
+    return {field: spec[field] for field in _HOOKS_FROM_SPEC_FIELDS}
+
+
+def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> None:
+    """Check this leg's hooks file copy and hand its deny rules to its Claude Code models.
+
+    The copy must hash to the digest recorded at submit (H2 rule 6). It is planned again for
+    this process's working directory, and a guard no model of this leg can apply refuses the
+    leg before the run exists (H3, H5).
+    """
+    from lionhub.agent.subscription_accounts import account_provider
+    from lionhub.hooks.hooks_from import HooksFromError, carry_refusal, plan_carry, read_snapshot
+
+    leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    try:
+        snapshot = read_snapshot(spec["copy"], spec["sha256"])
+        plan = plan_carry(
+            snapshot.document,
+            fmt=spec["format"],
+            carry=spec["carry"],
+            source_path=spec["source"],
+            leg_cwd=leg_cwd,
+        )
+    except HooksFromError as exc:
+        raise ConfigurationError(f"cannot start this leg with hooks_from: {exc}") from exc
+    models = [m for m in (branch.chat_model, branch.parse_model) if m is not None and m.is_cli]
+    claude_code = branch.chat_model in models and all(
+        account_provider(m.endpoint.config.provider or "") == "claude_code" for m in models
+    )
+    reason = carry_refusal(plan, claude_code=claude_code)
+    if reason is not None:
+        raise ConfigurationError(f"cannot start this leg with hooks_from: {reason}")
+    if plan.deny_rules:
+        for model in models:
+            model.endpoint.config.kwargs["carried_deny"] = list(plan.deny_rules)
+
+
 def _scratch_refusal(
     provider: str,
     *,
@@ -2036,6 +2113,7 @@ async def _run_agent(
     *,
     notify_sender: str | None = None,
     mcp_submit_snapshot: str | None = None,
+    hooks_from_snapshot: str | None = None,
     account: str | None = None,
     _parent_marker: Callable[[], None] | None = None,
     _lost_write_out: dict[str, Any] | None = None,
@@ -3118,6 +3196,14 @@ async def _run_agent(
             for _model in (branch.chat_model, branch.parse_model):
                 if _model is not None and _model.is_cli:
                     _model.endpoint.config.kwargs["profile_deny_read"] = list(profile_reads)
+
+        # A hooks file named at submit: checked against its recorded digest and applied before
+        # the run exists. A resumed branch checks the copy it started with again.
+        hooks_from_spec = _hooks_from_spec(hooks_from_snapshot, branch, is_resumed_branch)
+        if hooks_from_spec is not None:
+            _apply_hooks_from(hooks_from_spec, branch, cwd)
+            if not is_resumed_branch:
+                branch.metadata[_HOOKS_FROM_KEY] = hooks_from_spec
 
         inherited_run_id = current_run_id()
         job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)
@@ -4320,6 +4406,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     agent.add_argument("--mcp-submit-snapshot", default=None, help=argparse.SUPPRESS)
+    agent.add_argument("--hooks-from-snapshot", default=None, help=argparse.SUPPRESS)
     agent.add_argument(
         "--mcp-config",
         dest="mcp_config",
@@ -4519,6 +4606,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 **(
                     {"mcp_submit_snapshot": args.mcp_submit_snapshot}
                     if getattr(args, "mcp_submit_snapshot", None) is not None
+                    else {}
+                ),
+                **(
+                    {"hooks_from_snapshot": args.hooks_from_snapshot}
+                    if getattr(args, "hooks_from_snapshot", None) is not None
                     else {}
                 ),
             )

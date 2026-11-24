@@ -197,6 +197,48 @@ _SPAWN_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     "exclude_mcp_servers": _EXCLUDE_MCP_SERVERS,
 }
 
+_HOOKS_FROM = {
+    "type": "string",
+    "description": (
+        "Absolute path to a Claude Code settings.json or a Codex hooks.json whose guards this "
+        "one leg carries. The server reads it once now, under a size cap and with symbolic "
+        "links refused, and the leg reads only its own copy, so an edit to the file afterwards "
+        "reaches no leg. Deny and ask rules are carried as deny rules by a claude_code leg; "
+        "hook entries are not applied by any leg yet. A guard the leg cannot apply refuses the "
+        "submit. Requires hooks_from_format; refused with resume or continue_last."
+    ),
+    "x-server-owned": True,
+}
+
+_HOOKS_FROM_FORMAT = {
+    "type": "string",
+    "enum": ["claude", "codex"],
+    "description": (
+        "The shape of the hooks_from file: claude for a Claude Code settings.json, codex for a "
+        "Codex hooks.json. Required whenever hooks_from is given."
+    ),
+    "x-server-owned": True,
+}
+
+_HOOKS_FROM_CARRY = {
+    "type": "array",
+    "items": {"type": "string", "enum": ["hooks", "deny"]},
+    "maxItems": 2,
+    "uniqueItems": True,
+    "description": (
+        "Which guard kinds to carry from hooks_from: hooks, deny (which covers ask rules too), "
+        "or both, the default. A kind left out is not carried and the result says so."
+    ),
+    "x-server-owned": True,
+}
+
+_AGENT_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
+    **_SPAWN_SERVER_PARAMS,
+    "hooks_from": _HOOKS_FROM,
+    "hooks_from_format": _HOOKS_FROM_FORMAT,
+    "hooks_from_carry": _HOOKS_FROM_CARRY,
+}
+
 _FLOW_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     **_SPAWN_SERVER_PARAMS,
     "playbook_fingerprint": _PLAYBOOK_FINGERPRINT,
@@ -419,7 +461,7 @@ _REGISTERED: tuple[Verb, ...] = (
         cli_path="agent",
         job_kind="agent",
         refuses=_AGENT_REFUSALS,
-        server_params=_SPAWN_SERVER_PARAMS,
+        server_params=_AGENT_SERVER_PARAMS,
     ),
     Verb(
         name="flow.submit",
