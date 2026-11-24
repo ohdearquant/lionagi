@@ -35,6 +35,10 @@ directory (the same function, through `_write_mcp_server_snapshot`). This amendm
 (`lionhub/src/lionhub/serve/mcp/dispatch.py::_resolve_prompt`: an absolute path, read once at
 submit, capped, empty refused). It does not change `mcp_config`.
 
+Note (2026-11-23): `agent.submit` still passes a caller-named file through. The leg now copies the
+set it was handed into its own run directory, and a resume replays that copy (ADR-0041
+Amendment 8).
+
 It adds to D6 and D7 and replaces nothing in them: `li hooks import`, the `hooks_external` block, the
 D7 tiers and the loader rule stay as written.
 
