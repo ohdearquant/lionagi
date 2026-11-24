@@ -11911,6 +11911,31 @@
                   "default": false,
                   "choices": null,
                   "help": "Record trust without an interactive confirmation prompt."
+                },
+                {
+                  "option_strings": [
+                    "--from"
+                  ],
+                  "dest": "from_path",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": null,
+                  "help": "Absolute path of a Claude Code settings.json or Codex hooks.json that was never imported, such as a file an agent submission names as hooks_from. Its hook commands are listed and approved as they resolve from --cwd, the directory the leg will run in. Requires --format."
+                },
+                {
+                  "option_strings": [
+                    "--format"
+                  ],
+                  "dest": "from_format",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": [
+                    "claude",
+                    "codex"
+                  ],
+                  "help": "The shape of the --from file: claude for settings.json, codex for hooks.json."
                 }
               ],
               "subparsers": {}

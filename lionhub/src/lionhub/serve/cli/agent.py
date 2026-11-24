@@ -1978,14 +1978,25 @@ def _hooks_from_spec(
 
 
 def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> None:
-    """Check this leg's hooks file copy and hand its deny rules to its Claude Code models.
+    """Check this leg's hooks file copy and apply what it carries.
 
     The copy must hash to the digest recorded at submit (H2 rule 6). It is planned again for
     this process's working directory, and a guard no model of this leg can apply refuses the
-    leg before the run exists (H3, H5).
+    leg before the run exists (H3, H5). Deny rules go to the leg's Claude Code models; hook
+    entries are wired onto an API-model leg's branch after each command passes the trust and
+    writable-directory checks again from this directory (H4).
     """
+    from lionhub.agent.factory import _wire_external_hook_entries
     from lionhub.agent.subscription_accounts import account_provider
-    from lionhub.hooks.hooks_from import HooksFromError, carry_refusal, plan_carry, read_snapshot
+    from lionhub.hooks.hooks_from import (
+        HooksFromError,
+        carry_refusal,
+        hook_command_refusals,
+        hook_entries,
+        plan_carry,
+        read_snapshot,
+        writable_roots,
+    )
 
     leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
     try:
@@ -1999,13 +2010,24 @@ def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> Non
         )
     except HooksFromError as exc:
         raise ConfigurationError(f"cannot start this leg with hooks_from: {exc}") from exc
-    models = [m for m in (branch.chat_model, branch.parse_model) if m is not None and m.is_cli]
+    present = [m for m in (branch.chat_model, branch.parse_model) if m is not None]
+    models = [m for m in present if m.is_cli]
     claude_code = branch.chat_model in models and all(
         account_provider(m.endpoint.config.provider or "") == "claude_code" for m in models
     )
-    reason = carry_refusal(plan, claude_code=claude_code)
+    api = bool(present) and not models
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
     if reason is not None:
         raise ConfigurationError(f"cannot start this leg with hooks_from: {reason}")
+    if plan.hooks:
+        refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise ConfigurationError(
+                f"cannot start this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}"
+            )
+        _wire_external_hook_entries(branch, hook_entries(plan), cwd=leg_cwd)
     if plan.deny_rules:
         for model in models:
             model.endpoint.config.kwargs["carried_deny"] = list(plan.deny_rules)
