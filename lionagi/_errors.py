@@ -18,6 +18,7 @@ __all__ = (
     "ExecutionError",
     "ProviderStreamError",
     "ConfigurationError",
+    "RequireHooksRefusedError",
     "CredentialMissingError",
     "ContainmentRefusedError",
     "TimeoutError",
@@ -166,6 +167,17 @@ class ConfigurationError(LionError, ValueError):
 
 class _ExclusiveMcpSelectionError(ConfigurationError):
     """A Codex launch cannot enforce its explicit exclusive MCP selection."""
+
+    __slots__ = ()
+
+
+class RequireHooksRefusedError(ConfigurationError):
+    """A leg whose profile sets ``require_hooks`` is refused: a hook declared for it will not run.
+
+    Its message is written by lionagi alone (the profile name, the provider, which hooks and
+    where they are declared), never a provider's reply, so a job record may carry it as the
+    reason a run ended (ADR-0048 Amendment 2).
+    """
 
     __slots__ = ()
 

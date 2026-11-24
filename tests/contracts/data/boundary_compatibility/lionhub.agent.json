@@ -157,6 +157,7 @@
     "lionhub/src/lionhub/agent/factory.py": [
       "apply_forwarded_mcp_servers",
       "create_agent",
+      "forwarded_set_ignores_user_config",
       "provider_accepts_forwarded_mcp",
       "register_profile_injection",
       "request_carries_forwarded_mcp",

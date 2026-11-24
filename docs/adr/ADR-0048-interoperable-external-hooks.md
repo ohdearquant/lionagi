@@ -1,6 +1,6 @@
 # ADR-0048: Interoperable external hooks (Claude Code / Codex hook contract)
 
-- **Status**: Accepted, amended 2026-11-23 (Amendment 1)
+- **Status**: Accepted, amended 2026-11-23 (Amendment 1); Amendment 2 Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial
 - **Area**: hooks
@@ -11,7 +11,9 @@
   posture is adopted verbatim for hook commands); revisited by ADR-0120 (interception,
   observation, and durable-delivery planes) and ADR-0121 (authoritative action execution);
   Amendment 1 adds a per-leg `hooks_from` input to `agent.submit` and leaves hook
-  rendering for CLI legs to ADR-0134
+  rendering for CLI legs to ADR-0134; Amendment 2 adds a `require_hooks` profile key,
+  checked at submit and at spawn for codex and API-model legs and refused for other
+  providers until ADR-0134
 
 ## Amendment note (2026-08-16)
 
@@ -275,6 +277,149 @@ does not show refused is refused at submit.
   reach the leg.
 - `li hooks trust --from` records trust for a file that was never imported, and `hooks trust` stays
   unreachable from the MCP server.
+
+## Amendment 2 (2026-11-24): a profile can require that its leg's declared hooks run
+
+**Status**: Proposed.
+
+Issue #4721 asks for `require_hooks: true` "to refuse the job before spawn if a declared hook is
+untrusted". `CodexCodeRequest.require_hooks` already refuses at spawn
+(`lionhub/src/lionhub/providers/openai/codex.py::_refuse_hooks_that_will_not_run`), but no job
+surface sets it. This amendment adds the profile key and a check at submit. It adds to D7 and
+Amendment 1 and replaces nothing in them.
+
+### R1. Surface
+
+An agent profile gains `require_hooks`, true or false, absent meaning false. A value that is not a
+boolean warns and is read as true, as `contain_account_integrations` and `contain_user_settings` are
+read (`lionhub/src/lionhub/orchestration/spawn.py`). The key is carried to the leg's request wherever
+the profile is used: `li agent -a`, `agent.submit`, and a flow, fanout or play worker. `li agent`
+gains no flag, and `agent.submit` gains no argument: the key belongs to the profile.
+
+### R2. Where it is met, where it is checked
+
+The key asks that the hooks declared for the leg will run. On codex these are the hooks of the codex
+home's `hooks.json` and of the `[hooks]` table of its `config.toml`. On an API-model leg they are
+lionagi's own hooks. On every other provider lionagi sees no hooks, and the key refuses.
+
+- **codex.** Codex runs a hook only once its `[hooks.state]` entry under the declaring home records
+  the hook's current hash. The key is carried as `require_hooks=True` on the request. The answer at
+  submit and at spawn comes from one function over the same three inputs: the codex home the run
+  will read, the hook state the run's command line writes, and whether the launch reads the user
+  config. That function is `_refuse_hooks_that_will_not_run`, which takes the hook state from the
+  command-line layer and leaves out the `[hooks]` table of the config when the launch ignores the
+  user config. A launch that ignores the user config while that table declares hooks is refused
+  earlier, whatever `require_hooks` says (`lionhub/src/lionhub/providers/openai/codex.py::_ignored_user_config_carry`).
+  `lionhub/src/lionhub/providers/openai/codex.py::check_require_hooks` runs those two checks on a request, in the launch's order, without
+  starting codex. `agent.submit` builds the leg's model with the builder `li agent` uses for a new
+  branch (`lionhub/src/lionhub/orchestration/spawn.py::build_chat_model`), in the codex home the run
+  resolves, and calls `check_require_hooks` on the request that model makes, before it writes the job
+  record. Whether that request ignores the user config is decided by the predicate the launch uses
+  (`lionhub/src/lionhub/agent/factory.py::forwarded_set_ignores_user_config`, reached through
+  `lionhub/src/lionhub/orchestration/spawn.py::chat_model_ignores_user_config`), over the MCP set the run will resolve: the submit
+  resolves it with the run's own call (`lionhub/src/lionhub/orchestration/mcp_config.py::resolve_spawn_mcp_servers`) over
+  what the run's command line hands it, which is the named config, `--no-mcp-config`, or the snapshot
+  the submission wrote. The `li agent` builder passes no server allowlist, so on `agent.submit` the
+  flag never depends on one. The home is
+  the one the run resolves, in the order `li agent` reads it (`serve/cli/agent.py`, through
+  `resolve_leg_account`): the submit's `account` argument, else the profile's `account`, else the
+  profile's `codex_home`, else the server's environment. The submit is refused naming each hook and
+  its status. The spawn check stays, because trust can change between submit and spawn, and because
+  the other surfaces in R1 reach the leg without `agent.submit`.
+- **API-model legs.** On the surfaces in R1 an API-model leg runs none of lionagi's hooks today.
+  Each run path creates its agent with `load_settings=False` (`serve/cli/agent.py`,
+  `serve/cli/orchestrate/_orchestration.py` twice, `serve/cli/orchestrate/fanout.py`,
+  `orchestration/engines/engine.py`, `orchestration/patterns.py`, and the sub-agent of
+  `tools/coding.py`), so no `hooks_external` or `hooks` entry of the settings reaches the leg. No
+  launch path applies a profile's hooks assembly either: Studio saves one on a profile
+  (`apps/studio/backend/src/lionagi_studio/services/agents.py::_validate_hooks_key`), and the Studio
+  Operator applies only its own assembly, read from `LIONAGI_HOME/operator_hooks.json`
+  (`lionagi_studio/services/operator_hooks.py`, `lionagi_studio/operator/engine.py`). The warning
+  `li agent` prints for a profile with a hooks assembly said Operator turns apply it; it is corrected
+  in the same change. A hook declared for such a leg therefore does not run, whether D7 would trust
+  it or not. The key refuses, at submit and at spawn, when `~/.lionagi/settings.yaml` declares a
+  `hooks_external` or `hooks` entry or the profile declares a hooks assembly, naming each and saying
+  that a CLI-spawned API-model leg applies no lionagi hooks. With none declared, the key is met.
+- **claude_code, gemini and every other CLI provider.** lionagi reads none of their hook rules (R3),
+  so it cannot say whether a declared hook will run. A profile with `require_hooks: true` on such a
+  provider refuses at submit and at spawn, naming the provider and saying the key is checked for
+  codex and API-model legs only. For claude_code this holds until ADR-0134 gives lionagi a hooks
+  render for Claude legs, as Amendment 1 H5 holds hook entries for a claude_code leg.
+- **A hooks file named at submit (Amendment 1).** It gives no leg a hook that runs, so it neither
+  meets the key nor adds to what the key checks. Amendment 1 H5 refuses the file's hook entries on
+  every provider, and its deny and ask rules are Claude Code permission rules, applied by a
+  claude_code leg only (`lionhub/src/lionhub/hooks/hooks_from.py::carry_refusal`). The file's
+  refusal is raised before the key's, at submit and at the leg's start, so a leg with the key and a
+  `hooks_from` file gets:
+  - on codex, H5's refusal when the file carries hook entries or deny or ask rules; a file that
+    carries neither leaves the key's codex answer as it was;
+  - on an API model, the same H5 refusal; a file that carries neither leaves the key's API-model
+    answer as it was, read from the settings and the profile;
+  - on claude_code, H5's refusal when the file carries hook entries; a file that carries only deny
+    and ask rules passes H5, and the key then refuses, naming claude_code.
+
+### R3. Limits
+
+- On codex, hooks in project layers, plugins and managed configuration are not checked, as the
+  request field already says.
+- lionagi does not read Claude Code's or gemini's settings, so on those providers it cannot see
+  whether a hook is declared, disabled or trusted. That is why R2 refuses there rather than
+  accepting.
+- Applying lionagi's hooks to a CLI-spawned API-model leg is outside this amendment. When a later
+  change applies them, the API arm of R2 becomes D7's own check: the key is met when
+  `lionhub/src/lionhub/hooks/external.py::_trust_status` trusts every imported or plugin entry the
+  leg carries. The same holds for a `hooks_from` file's hook entries: a change that lets a leg run
+  them makes them hooks declared for that leg, which the key counts and the refusal text of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks` describes.
+- A flow, fanout or play does not pass through `agent.submit`'s check for each worker. Its workers
+  are refused at spawn.
+- An `agent.submit` that resumes or continues a branch takes its model from that branch, which the
+  server does not read, so the submit is accepted and the resumed run is checked at spawn. With the
+  hooks, their trust and the settings unchanged between submit and spawn, this is the only case
+  where the submit accepts and the spawn refuses; everywhere else the submit gives the spawn's
+  answer.
+- The requirement stays with the branch. When `li agent` launches a branch under a profile with the
+  key, it records the key in the branch's metadata, and a resume or continue is checked when that
+  record or the profile the resume names sets it, whatever profile the resume names, or none. A
+  resumed codex request is given `require_hooks` again; any other resumed leg gets R2's answer for
+  its provider, with an API-model leg's declared hooks read at the resume (the settings, and the
+  profile the resume names).
+- A refusal at spawn is raised once the run is allocated and before its first turn, so no provider
+  process is started. The job ends `failed`; the run records the cause class
+  `RequireHooksRefusedError` with the refusal's text, and the job record's `reason_detail`, read
+  through `job.status`, and the terminal notice carry that text.
+- The key is not a 1.0 condition. A profile without it behaves as in 0.x.
+
+### R4. Tests the implementation carries
+
+- A codex profile with the key and an untrusted hook in the account home refuses the submit before
+  any job record exists, naming the hook. The same profile with the hook trusted is accepted.
+- The home checked at submit is the named account's home, not the server's, when both are set and
+  differ. With no account named, it is the profile's `codex_home`.
+- A codex profile whose launch ignores the user config gets the same answer at submit and at spawn,
+  for a `[hooks]` table that declares hooks and for one that declares none.
+- An API-model profile with the key refuses at submit and at spawn when `~/.lionagi/settings.yaml`
+  declares a `hooks_external` entry (trusted and untrusted both), and when the profile declares a
+  hooks assembly. With neither declared, it is accepted.
+- A claude_code profile with the key refuses at submit, naming claude_code. A gemini profile with
+  the key refuses at submit, naming gemini.
+- A profile whose key is the string "yes" warns and is read as true.
+- A profile with the key and a `hooks_from` file, each refused before any job record: on codex,
+  with a trusted home, a file with hook entries and a file with deny rules are refused by H5, and a
+  file carrying neither leaves the home's answer (an untrusted hook refuses, a trusted one is
+  accepted); on an API model, a file with hook entries is refused by H5 and a file carrying neither
+  is accepted; on claude_code, a file of deny rules alone is refused by the key, naming
+  claude_code, and a file with hook entries is refused by H5.
+- `li agent -a` with the key on codex refuses at spawn (the existing request check is reached).
+- A run refused at spawn ends failed with the refusal's class and text recorded, and takes no turn;
+  `job.status` and the notice carry the text as `reason_detail`.
+- A branch launched under the key and resumed with no profile is refused at spawn when a declared
+  hook cannot run, and the same resume of a branch launched without the key runs. A resumed codex
+  branch launched under the key carries `require_hooks` on its request.
+- The user-config flag on the request the submit check builds equals the flag on the request
+  `li agent` builds from the spawned command line, for a profile with `mcp: none`, a caller's
+  `no_mcp_config`, a named config that lists no servers, a snapshot every server was excluded from, a
+  snapshot with a server, and no config found.
 
 ## Context
 

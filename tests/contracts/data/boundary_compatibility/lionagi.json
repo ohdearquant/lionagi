@@ -41,7 +41,7 @@
       "__all__ = (\"configured_command_env_names\", \"command_environment\")"
     ],
     "lionagi/_errors.py": [
-      "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
+      "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"RequireHooksRefusedError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
     ],
     "lionagi/_log_channels.py": [
       "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
@@ -134,6 +134,7 @@
       "ProviderStreamError",
       "RateLimitError",
       "RelationError",
+      "RequireHooksRefusedError",
       "ResourceError",
       "TimeoutError",
       "ValidationError"

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import iModel
-from lionagi._errors import ConfigurationError
+from lionagi._errors import ConfigurationError, RequireHooksRefusedError
 from lionagi._paths import (
     AmbiguousProfileNameError,
     _name_spellings,
@@ -69,7 +69,10 @@ __all__ = (
     "add_common_cli_args",
     "build_chat_model",
     "build_imodel_from_spec",
+    "chat_model_ignores_user_config",
     "parse_model_spec",
+    "refuse_require_hooks",
+    "refuse_require_hooks_at_submit",
     "resolve_account_integrations",
     "resolve_codex_config_profile",
     "resolve_persisted_effort",
@@ -129,6 +132,137 @@ def strip_connector_grant(kwargs: dict) -> None:
     """
     if kwargs.pop("account_connectors", None):
         kwargs["contain_account_integrations"] = True
+
+
+def refuse_require_hooks(
+    name: str | None, profile: Any | None, model: iModel, *, required: bool | None = None
+) -> None:
+    """Refuse a leg that requires its hooks when a hook declared for it will not run.
+
+    The requirement is the profile's ``require_hooks``, or *required* when given: a resumed
+    branch keeps the requirement its launch recorded, whatever profile the resume names
+    (ADR-0048 Amendment 2 R3). A codex leg is checked by its own request, which carries
+    ``require_hooks``, so nothing is decided here for it. A leg on an API model is spawned
+    with ``load_settings=False`` and gets no profile hooks assembly, so any lionagi hook
+    declared for it, in the global settings or in its profile, would not run. lionagi reads
+    no other CLI provider's hook rules, so the key cannot be met there. The refusal is a
+    ``RequireHooksRefusedError``, whose text a job record carries as the reason.
+    """
+    if required is None:
+        required = bool(getattr(profile, "require_hooks", False))
+    if not required:
+        return
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    who = (
+        f"agent profile {name!r} sets require_hooks"
+        if getattr(profile, "require_hooks", False)
+        else "this branch was launched with require_hooks"
+    )
+    endpoint = model.endpoint
+    provider = EndpointRegistry.canonical_provider(endpoint.config.provider)
+    if endpoint.is_cli:
+        if provider == "codex":
+            return
+        raise RequireHooksRefusedError(
+            f"{who}, which is checked for codex and API-model legs only: lionagi does not "
+            f"read the hook rules of {provider!r}, so it cannot say whether a hook declared "
+            "for this leg will run. Remove require_hooks, or run the role on codex or an API "
+            "model."
+        )
+    declared = _declared_lionagi_hooks(profile)
+    if declared:
+        raise RequireHooksRefusedError(
+            f"{who}, and its leg runs on the API model provider {provider!r}, which applies "
+            "no lionagi hooks to a leg spawned from the command line, so these would not "
+            f"run: {'; '.join(declared)}. Remove require_hooks or the hooks."
+        )
+
+
+def _declared_lionagi_hooks(profile: Any) -> list[str]:
+    """The lionagi hooks declared for a leg of *profile*, one label each: the global settings'
+    ``hooks_external`` and ``hooks`` blocks, and the profile's own ``hooks``."""
+    from lionagi._settings import load_settings
+
+    settings = load_settings(include_project=False)
+    declared: list[str] = []
+    for key in ("hooks_external", "hooks"):
+        if isinstance(settings, dict) and settings.get(key):
+            declared.append(f"{key} in ~/.lionagi/settings.yaml")
+    if (getattr(profile, "extra", None) or {}).get("hooks"):
+        declared.append("hooks in the agent profile")
+    return declared
+
+
+def refuse_require_hooks_at_submit(
+    name: str,
+    profile: Any | None,
+    model_spec: str,
+    *,
+    account: str | None = None,
+    mcp_servers: dict | None = None,
+    mcp_exclusive: bool = False,
+    cwd: str | os.PathLike[str],
+) -> None:
+    """Refuse a submitted agent run whose profile sets ``require_hooks`` when a hook declared
+    for it will not run, before the run is recorded (ADR-0048 Amendment 2).
+
+    The leg's model is built by the builder ``li agent`` uses for a new branch
+    (``build_chat_model``), with the key, in the codex home the run will read: the named
+    *account*'s, else the profile's ``codex_home``, else this process's. *mcp_servers* and
+    *mcp_exclusive* are the MCP set the run will resolve (``McpResolution.servers`` and
+    ``.exclusive``). Of that set, only whether it makes the request ignore the user config
+    reaches the model built here, answered by ``chat_model_ignores_user_config``, so no
+    server's own settings are written to disk at submit. A codex leg then runs the check
+    its launch runs, over the request that model makes, in *cwd*; every other leg gets
+    ``refuse_require_hooks``'s answer. The launch checks again and decides, since trust can
+    change in between.
+    """
+    if profile is None or not getattr(profile, "require_hooks", False):
+        return
+    from lionhub.agent.factory import _parse_agent_model_spec
+
+    origin = "profile" if model_spec == getattr(profile, "model", None) else "explicit"
+    # Split as `li agent` splits the spec it parses.
+    provider, _, model = _parse_agent_model_spec(model_spec, origin=origin).model.partition("/")
+    model = model or provider
+    env = None
+    account_name = account if account is not None else getattr(profile, "account", None)
+    # A named account wins over the profile's codex_home, as in `li agent`.
+    codex_home = None if account_name is not None else getattr(profile, "codex_home", None)
+    if account_name is not None or codex_home is not None:
+        from lionhub.agent.subscription_accounts import account_provider, resolve_leg_account
+
+        if account_provider(provider) == "codex":
+            env = resolve_leg_account(provider, account=account_name, codex_home=codex_home).env
+    ignore = chat_model_ignores_user_config(mcp_servers, mcp_exclusive)
+    chat_model = build_chat_model(
+        provider,
+        model,
+        False,
+        False,
+        None,
+        workload=getattr(profile, "workload", None) or DEFAULT_WORKLOAD,
+        env=env,
+        require_hooks=True,
+        # The declared-empty set stands in for the run's own: it sets the same flag and
+        # writes nothing, where a server's env or headers would write a codex profile.
+        **({"mcp_servers": {}, "mcp_exclusive": True} if ignore else {}),
+    )
+    # As `li agent` turns what the builder returns into the model it spawns.
+    if not isinstance(chat_model, str) and not chat_model.is_cli:
+        chat_model = f"{provider}/{model}"
+    if isinstance(chat_model, str):
+        chat_model = iModel(model=chat_model)
+    refuse_require_hooks(name, profile, chat_model)
+    endpoint = chat_model.endpoint
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    if endpoint.is_cli and EndpointRegistry.canonical_provider(endpoint.config.provider) == "codex":
+        from lionhub.providers.openai.codex import check_require_hooks
+
+        payload, _ = endpoint.create_payload({"prompt": "require_hooks check"})
+        check_require_hooks(payload["request"], cwd)
 
 
 def _profile_names_codex(profile: AgentProfile) -> bool:
@@ -253,8 +387,13 @@ def build_imodel_from_spec(
     tool_settings: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     secret_fill_skip: frozenset[str] | None = None,
+    require_hooks: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
+
+    ``require_hooks`` is a profile's key (ADR-0048 Amendment 2): on a codex request it sets the
+    request's own ``require_hooks``, whose check refuses the launch; other providers are refused
+    by ``refuse_require_hooks``, which the caller runs once the model is built.
 
     ``ignore_user_config`` builds a codex request that loads no user config, so no
     effort is derived from that config either. ``tool_settings`` is a profile's tool set
@@ -308,6 +447,8 @@ def build_imodel_from_spec(
         extra["cli_display_theme"] = theme
     if ignore_user_config and provider == "codex":
         extra["ignore_user_config"] = True
+    if require_hooks and provider == "codex":
+        extra["require_hooks"] = True
     if effort is None and provider == "codex" and not ignore_user_config:
         effort = codex_unset_effort_from_config(ms.model, codex_profile_overrides, env)
     if effort is not None:
@@ -363,6 +504,27 @@ def build_imodel_from_spec(
     return model_instance
 
 
+def _forwarded_mcp_exclusive(mcp_servers: dict | None, mcp_exclusive: bool) -> bool | None:
+    """How ``build_chat_model`` hands an MCP set on: None when it hands none, else whether
+    the set is the whole set. An empty set states the whole set; a non-empty one adds to
+    what the provider finds unless *mcp_exclusive* says it is the whole set."""
+    if mcp_servers is None and not mcp_exclusive:
+        return None
+    return mcp_exclusive or not mcp_servers
+
+
+def chat_model_ignores_user_config(mcp_servers: dict | None, mcp_exclusive: bool) -> bool:
+    """Whether a codex model ``build_chat_model`` builds with this MCP set ignores the user
+    config, answered before any request exists by the predicate the build sets the flag on
+    (``factory.forwarded_set_ignores_user_config``). The build passes no allowlist."""
+    from lionhub.agent.factory import forwarded_set_ignores_user_config
+
+    exclusive = _forwarded_mcp_exclusive(mcp_servers, mcp_exclusive)
+    return exclusive is not None and forwarded_set_ignores_user_config(
+        mcp_servers or {}, exclusive=exclusive
+    )
+
+
 def build_chat_model(
     provider: str,
     model: str,
@@ -380,8 +542,12 @@ def build_chat_model(
     tool_settings: dict[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     secret_fill_skip: frozenset[str] | None = None,
+    require_hooks: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
+
+    ``require_hooks`` sets a codex request's own ``require_hooks`` (ADR-0048 Amendment 2); on
+    any other provider it adds nothing here, and the caller runs ``refuse_require_hooks``.
 
     Returns the bare spec string only when no flag is set and no effort was
     given or derived (a codex request may derive one from the global config);
@@ -413,7 +579,8 @@ def build_chat_model(
             profile_name = model
             model, codex_profile_overrides = resolved_profile
             progress(f"codex profile {profile_name!r} resolves to model {model!r}")
-    if mcp_servers is not None or mcp_exclusive:
+    forwarded_exclusive = _forwarded_mcp_exclusive(mcp_servers, mcp_exclusive)
+    if forwarded_exclusive is not None:
         from lionhub.agent.factory import apply_forwarded_mcp_servers
 
         # Whether/how this provider accepts a server set (e.g. codex via config
@@ -427,7 +594,7 @@ def build_chat_model(
             extra,
             mcp_servers,
             provider=provider,
-            exclusive=mcp_exclusive or not mcp_servers,
+            exclusive=forwarded_exclusive,
             # The codex config the child reads, and the home a generated profile goes in,
             # are the ones its own environment names.
             env=env,
@@ -442,6 +609,8 @@ def build_chat_model(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
+        if require_hooks:
+            extra["require_hooks"] = True
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -740,6 +909,11 @@ class AgentProfile:
     deny_read: tuple[str, ...] = ()
     """Paths a child of this role may not read, added to the child sandbox's list after every
     exemption (``lionhub.agent.child_sandbox.profile_deny_read``)."""
+    require_hooks: bool = False
+    """Refuse a leg of this role when a hook declared for it will not run: checked against the
+    codex home's hook trust on codex, refused when any lionagi hook is declared on an API model
+    (a CLI-spawned API leg applies none), and refused on every other CLI provider (ADR-0048
+    Amendment 2)."""
 
 
 class AgentProfileNotFoundError(FileNotFoundError):
@@ -851,6 +1025,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["scratch"] = profile.scratch
     if profile.deny_read:
         config["deny_read"] = list(profile.deny_read)
+    if profile.require_hooks:
+        config["require_hooks"] = True
     return config
 
 
@@ -1105,6 +1281,20 @@ def _parse_profile_contain_user_settings(name: str, frontmatter: dict) -> bool:
     from lionhub.orchestration.console import warn
 
     warn(f"agent profile {name!r}: contain_user_settings {raw!r} is not true or false; containing")
+    return True
+
+
+def _parse_profile_require_hooks(name: str, frontmatter: dict) -> bool:
+    """Validate the profile flag. Absent, it is off; a value other than true or false, an
+    empty one included, warns and defaults to requiring."""
+    if "require_hooks" not in frontmatter:
+        return False
+    raw = frontmatter["require_hooks"]
+    if isinstance(raw, bool):
+        return raw
+    from lionhub.orchestration.console import warn
+
+    warn(f"agent profile {name!r}: require_hooks {raw!r} is not true or false; requiring")
     return True
 
 
@@ -2073,6 +2263,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         codex_home=codex_home,
         scratch=_parse_profile_scratch(name, frontmatter),
         deny_read=profile_deny_read(name, frontmatter.get("deny_read")),
+        require_hooks=_parse_profile_require_hooks(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -2098,6 +2289,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "codex_home",
                 "scratch",
                 "deny_read",
+                "require_hooks",
             )
         },
     )

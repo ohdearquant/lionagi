@@ -321,7 +321,12 @@ _HOOKS_FROM_SNAPSHOT_FILENAME = "hooks-from.json"
 # The copy of a written graph a flow submission accepted (ADR-0069 Amendment 4); the same
 # name the run gives its own copy.
 _GRAPH_SNAPSHOT_FILENAME = "graph.json"
-_RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME, _GRAPH_SNAPSHOT_FILENAME)
+_RESERVATION_CONTENTS = (
+    _PROMPT_FILENAME,
+    _MCP_SNAPSHOT_FILENAME,
+    _HOOKS_FROM_SNAPSHOT_FILENAME,
+    _GRAPH_SNAPSHOT_FILENAME,
+)
 # Written into a reservation directory only when its giveback could not remove
 # it, never as part of a submission's own state — kept out of
 # _RESERVATION_CONTENTS so a later giveback attempt doesn't try to unlink it
@@ -1336,6 +1341,53 @@ def _validate_notify_sender(
         )
 
 
+def _refuse_require_hooks(
+    profile: Any | None,
+    model: str,
+    *,
+    account: str | None,
+    cwd: str,
+    mcp_config: str | None,
+    no_mcp_config: bool,
+    submit_snapshot: str | None,
+) -> None:
+    """Refuse the submission when its profile's ``require_hooks`` is not met, as the run's
+    launch would refuse it (``spawn.refuse_require_hooks_at_submit``).
+
+    The MCP set is resolved by the call the run makes on start, with the arguments this
+    submission hands it: the named config, ``--no-mcp-config``, or the snapshot written
+    above. The launch checks again and decides; this answer may only be as strict.
+    """
+    if profile is None or not getattr(profile, "require_hooks", False):
+        return
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
+    from lionhub.orchestration.spawn import refuse_require_hooks_at_submit
+
+    try:
+        resolution = resolve_spawn_mcp_servers(
+            mcp_config,
+            launch_dir=cwd,
+            disabled=no_mcp_config,
+            submit_snapshot=submit_snapshot,
+        )
+    except McpConfigError as exc:
+        # The run would refuse the same file on start.
+        raise SubmitInputError(f"cannot submit this agent run: {exc}") from exc
+    try:
+        refuse_require_hooks_at_submit(
+            profile.name,
+            profile,
+            model,
+            account=account,
+            mcp_servers=resolution.servers,
+            mcp_exclusive=resolution.exclusive,
+            cwd=cwd,
+        )
+    except ConfigurationError as exc:
+        raise SubmitInputError(str(exc)) from exc
+
+
 def submit(
     kind: str,
     flags: list[str],
@@ -1355,6 +1407,7 @@ def submit(
     account: str | None = None,
     account_provider: str | None = None,
     hooks_from: dict[str, Any] | None = None,
+    model: str | None = None,
     graph_source: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
@@ -1393,6 +1446,10 @@ def submit(
     the leg is pointed at that copy with the digest it must match, and the record and the
     handle carry the path as given, the resolved path, the digest and the plan's report
     (ADR-0048 Amendment 1 H2, H3).
+
+    *model* is an agent run's model spec when the submission names one. It is read only to
+    answer the profile's ``require_hooks`` before anything is recorded (ADR-0048 Amendment 2);
+    a resumed run's model comes from its branch, so the run's own launch answers for it.
 
     *graph_source* is a flow's written graph, already loaded and checked. Its accepted bytes
     are written into this run's directory and the run is pointed at that copy, so the run
@@ -1672,6 +1729,17 @@ def submit(
                 mcp_servers,
                 source=mcp_config_source or "",
                 searched_from=mcp_config_searched_from or "",
+            )
+        if kind == "agent" and isinstance(model, str) and model and not replay_mcp_choice:
+            _refuse_require_hooks(
+                profile,
+                model,
+                account=account,
+                cwd=cwd or os.getcwd(),
+                mcp_config=mcp_config,
+                # A profile declaring mcp: none puts --no-mcp-config on the run's line above.
+                no_mcp_config=no_mcp_config or profile_disables_mcp,
+                submit_snapshot=mcp_config_path if mcp_servers is not None else None,
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
