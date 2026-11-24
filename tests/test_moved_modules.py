@@ -1568,6 +1568,50 @@ def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
     assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
+_STUDIO_NAME = re.compile(r"lionagi_studio(\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _studio_names(path: Path, source: str | None = None) -> list[str]:
+    """Every import of the Studio backend, or string naming one of its modules, in ``path``."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    hits = []
+    for node in ast.walk(ast.parse(text, filename=str(path))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names = [node.module or ""]
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names = [node.value]
+        else:
+            continue
+        hits += [f"{path}:{node.lineno}: {n}" for n in names if _STUDIO_NAME.fullmatch(n)]
+    return hits
+
+
+def test_the_core_names_no_studio_backend_module():
+    # The Studio application lives in apps/studio/backend and imports the core; the core
+    # never imports it back. _moved.py names it as data: the table that serves the old
+    # lionagi.studio path from it until 2.0.0.
+    lionagi = SOURCE_ROOTS[0]
+    paths = sorted(lionagi.rglob("*.py"))
+    assert len(paths) > 100, "the core tree was not found, so this checks nothing"
+    hits = [hit for path in paths if path.name != "_moved.py" for hit in _studio_names(path)]
+    assert hits == []
+    assert _studio_names(lionagi / "_moved.py"), "_moved.py names no Studio module"
+
+
+def test_the_studio_check_sees_each_form_of_reference():
+    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    source = (
+        "import lionagi_studio.operator\n"
+        "from lionagi_studio.operator import store\n"
+        "importlib.import_module('lionagi_studio.services.agents')\n"
+        "PREFIXES = ('lionagi_studio.', 'lionagi_studiox.app')\n"
+    )
+    hits = _studio_names(probe, source)
+    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
+
+
 # The hub's provider modules, as dotted names. A reference is an import, a from-import or a
 # string that is exactly one such name: ``lionhub.providersx`` is another package, and a
 # prefix such as ``lionhub.providers.`` names no module.

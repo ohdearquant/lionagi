@@ -39,11 +39,23 @@ from lionhub.providers.anthropic.claude_read_probe import (
     MessagesStandIn,
     ProxyRecorder,
 )
+from lionhub.tools import _seatbelt
 
 _REAL_SERVE = probe_module._serve
 _PORTS = itertools.count(41000)
 _LIVE: dict[str, object] = {}
-_PREFIX = os.path.realpath(sys.prefix)
+
+
+def _interpreter(tmp_path: Path) -> dict[str, str]:
+    """An interpreter laid out as uv lays one out: the venv's ``python`` links into a store
+    through a linked directory, and the two prefixes resolve only the end of the chain."""
+    base = tmp_path / "interp"
+    return {
+        "python": str(base / "venv" / "bin" / "python"),
+        "venv": os.path.realpath(base / "venv"),
+        "store": os.path.realpath(base / "store" / "full"),
+        "link": str(base / "store" / "minor"),
+    }
 
 
 @contextlib.contextmanager
@@ -67,7 +79,18 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "LIONAGI_HOME", tmp_path / "lionagi-home")
     monkeypatch.setattr(probe_module, "_serve", _in_memory_serve)
     monkeypatch.setattr(probe_module, "_temp_roots", lambda: [])
-    monkeypatch.setattr(probe_module, "_system_read_roots", lambda: (_PREFIX, "/usr", "/bin"))
+    interp = _interpreter(tmp_path)
+    (Path(interp["store"]) / "bin").mkdir(parents=True)
+    (Path(interp["store"]) / "bin" / "python3").write_text("")
+    Path(interp["link"]).symlink_to(interp["store"], target_is_directory=True)
+    Path(interp["python"]).parent.mkdir(parents=True)
+    Path(interp["python"]).symlink_to(Path(interp["link"]) / "bin" / "python3")
+    monkeypatch.setattr(probe_module, "_child_python", lambda: interp["python"])
+    monkeypatch.setattr(
+        probe_module,
+        "_system_read_roots",
+        lambda: (interp["venv"], interp["store"], "/usr", "/bin"),
+    )
     planted = []
     for name, _ in probe_module._PLANTED:
         directory = tmp_path / f"planted-{name}"
@@ -109,8 +132,14 @@ class FakeClaude:
     directories are readable), ``no_python`` (the interpreter cannot start), ``no_refusal_text``
     (a refused read prints another message), ``cwd_read`` (the working directory's file is
     refused), ``read_tool_unconfined`` (the Read tool ignores the rules), ``control_read_fails``
-    (the control run's Read fails), ``proxy`` (the child sends a request through the proxy) and
-    ``timeout`` (the run with read rules ends before any request).
+    (the control run's Read fails), ``proxy`` (the child sends a request through the proxy),
+    ``timeout`` (the run with read rules ends before any request), ``tmpdir_fallback`` (Claude
+    Code keeps its temp files in the system temp directory whatever ``CLAUDE_CODE_TMPDIR`` says)
+    and ``open_unconfined`` (``cat`` opens any file; only its output stays confined).
+
+    ``cat`` opens the file, then inspects its output, a file in Claude Code's temp directory, as
+    macOS ``/bin/cat`` does. The interpreter starts when each link on the way to it is readable
+    as written and the file it ends at is readable.
     """
 
     def __init__(self, *leaks: str) -> None:
@@ -148,7 +177,7 @@ class FakeClaude:
             if call is None:
                 return 0
             call_id, name, tool_input = call
-            text, is_error = self._tool(name, tool_input, rules, cwd)
+            text, is_error = self._tool(name, tool_input, rules, cwd, env)
             results.append(
                 {
                     "type": "tool_result",
@@ -160,10 +189,10 @@ class FakeClaude:
         raise AssertionError("the stand-in never ended the run")
 
     # The sandbox's judgement of one path: the most specific rule above it decides.
-    def _readable(self, path: str, rules: dict | None) -> bool:
+    def _readable(self, path: str, rules: dict | None, *, resolve: bool = True) -> bool:
         if rules is None:
             return True
-        judged = path if "symlink" in self.leaks else os.path.realpath(path)
+        judged = path if "symlink" in self.leaks or not resolve else os.path.realpath(path)
         if "planted" in self.leaks and Path(judged).parent.name.startswith("planted-"):
             return True
         best, allowed = -1, True
@@ -181,7 +210,19 @@ class FakeClaude:
         )
         return f"{tool}: {path}: {message}\nrc=1"
 
-    def _tool(self, name: str, tool_input: dict, rules: dict | None, cwd: Path) -> tuple[str, bool]:
+    def _temp(self, env: dict[str, str]) -> Path:
+        base = "/private/tmp" if "tmpdir_fallback" in self.leaks else env["CLAUDE_CODE_TMPDIR"]
+        return Path(base) / f"claude-{os.getuid()}"
+
+    def _starts(self, python: str, rules: dict | None) -> bool:
+        links = [path for path in _seatbelt._lookup_paths(python) if os.path.islink(path)]
+        return all(self._readable(p, rules, resolve=False) for p in links) and self._readable(
+            python, rules
+        )
+
+    def _tool(
+        self, name: str, tool_input: dict, rules: dict | None, cwd: Path, env: dict[str, str]
+    ) -> tuple[str, bool]:
         if name == "Read":
             path = tool_input["file_path"]
             if rules is None and "control_read_fails" in self.leaks:
@@ -197,9 +238,13 @@ class FakeClaude:
             path = words[1]
             if "cwd_read" in self.leaks and Path(path).parent == cwd:
                 return self._refusal("cat", path), False
-            if not self._readable(path, rules):
+            if "open_unconfined" not in self.leaks and not self._readable(path, rules):
                 return self._refusal("cat", path), False
+            if not self._readable(str(self._temp(env) / "out"), rules):
+                return self._refusal("cat", "stdout"), False
             return Path(path).read_text() + "rc=0", False
+        if words[0] == "printf":
+            return f"tmpdir={self._temp(env)}\nrc=0", False
         if words[:2] == ["/bin/ls", "-d"]:
             if "stat" not in self.leaks and not self._readable(words[2], rules):
                 return self._refusal("ls", words[2]), False
@@ -214,7 +259,7 @@ class FakeClaude:
             Path(words[3]).write_text("w\n")
             return "rc=0", False
         assert words[1:3] == ["-I", "-c"], words
-        if "no_python" in self.leaks or not self._readable(_PREFIX, rules):
+        if "no_python" in self.leaks or not self._starts(words[0], rules):
             return "dyld: Library not loaded\nrc=134", False
         return "python=ok\nrc=0", False
 
@@ -239,7 +284,16 @@ def test_every_arm_passes_against_a_claude_applying_the_read_rules(tmp_path):
     )
     assert list(arms) == list(REQUIRED_ARMS)
     assert _failing(arms) == set(), {n: a["evidence"] for n, a in arms.items() if not a["passed"]}
-    assert read_roots[2:] == (_PREFIX, "/usr", "/bin")
+    interp = _interpreter(tmp_path)
+    granted = os.path.join(runs["roots"]["claude_tmp"], f"claude-{os.getuid()}")
+    assert read_roots[2:] == (
+        interp["venv"],
+        interp["store"],
+        "/usr",
+        "/bin",
+        interp["link"],
+        granted,
+    )
     assert runs["roots"]["exit_status"] == 0
 
 
@@ -280,11 +334,74 @@ _REFUSALS = {
         ),
         ("proxy", {"no_other_outbound"}),
         ("timeout", _ROOTS_RUN_ARMS),
+        (
+            "tmpdir_fallback",
+            {"read_inside_root_works", "read_cwd_works", "bash_temp_in_granted_dir"},
+        ),
     ],
 )
 def test_each_leak_fails_exactly_its_arms(tmp_path, leak, expected):
     arms, _, _ = probe_module.probe("claude", runner=FakeClaude(leak), scratch=tmp_path / "s")
     assert _failing(arms) == expected
+
+
+def test_a_command_refused_only_its_own_output_is_not_a_refused_read(tmp_path):
+    # cat opens every file and is then refused its output, so it prints the refusal text and
+    # none of the file: only the path in front of the refusal tells the two apart.
+    arms, _, _ = probe_module.probe(
+        "claude", runner=FakeClaude("open_unconfined", "tmpdir_fallback"), scratch=tmp_path / "s"
+    )
+    assert _failing(arms) == {
+        "read_outside_refused",
+        "read_through_symlink_refused",
+        "read_via_tmp_link_refused",
+        "read_via_var_link_refused",
+        "read_users_shared_refused",
+        "read_inside_root_works",
+        "read_cwd_works",
+        "bash_temp_in_granted_dir",
+    }
+    assert "cat: stdout: Operation not permitted" in arms["read_outside_refused"]["evidence"]
+
+
+def test_the_run_with_read_rules_grants_its_own_claude_temp_directory_and_no_other(tmp_path):
+    fake = FakeClaude()
+    arms, read_roots, runs = probe_module.probe("claude", runner=fake, scratch=tmp_path / "s")
+    (_, control_env, _), (_, roots_env, _) = fake.calls
+    scratch = Path(os.path.realpath(tmp_path / "s"))
+    for env in (control_env, roots_env):
+        assert scratch in Path(env["CLAUDE_CODE_TMPDIR"]).parents
+    assert control_env["CLAUDE_CODE_TMPDIR"] != roots_env["CLAUDE_CODE_TMPDIR"]
+    assert runs["roots"]["claude_tmp"] == roots_env["CLAUDE_CODE_TMPDIR"]
+    granted = [root for root in read_roots if Path(root).name.startswith("claude-")]
+    assert granted == [str(Path(roots_env["CLAUDE_CODE_TMPDIR"]) / f"claude-{os.getuid()}")]
+    # On Linux pytest's own tmp_path sits under /tmp, so roots inside this test's directory
+    # are the probe's scratch and not a grant of the system temporary directory.
+    own = Path(os.path.realpath(tmp_path))
+    system_tmp = [
+        root
+        for root in read_roots
+        if root.startswith(("/tmp", "/private/tmp"))
+        and not (Path(os.path.realpath(root)) == own or own in Path(os.path.realpath(root)).parents)
+    ]
+    assert not system_tmp
+    assert f"granted {granted[0]}" in arms["bash_temp_in_granted_dir"]["evidence"]
+
+
+def test_each_link_to_the_interpreter_is_granted_and_never_a_directory_on_the_way(tmp_path):
+    interp = _interpreter(tmp_path)
+    _, read_roots, _ = probe_module.probe("claude", runner=FakeClaude(), scratch=tmp_path / "s")
+    assert interp["link"] in read_roots
+    assert interp["python"] not in read_roots  # it lies in the venv prefix, already a root
+    for directory in (tmp_path, tmp_path / "interp", tmp_path / "interp" / "store"):
+        assert str(directory) not in read_roots
+        assert os.path.realpath(directory) not in read_roots
+
+
+def test_without_the_link_grants_the_interpreter_does_not_start(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe_module, "_python_links", lambda python, roots: ())
+    arms, _, _ = probe_module.probe("claude", runner=FakeClaude(), scratch=tmp_path / "s")
+    assert _failing(arms) == {"python_starts_with_site"}
 
 
 def test_a_refused_read_tool_counts_only_beside_a_control_that_read_the_file(tmp_path):
@@ -324,6 +441,7 @@ def test_the_two_runs_differ_only_in_the_read_rules(tmp_path):
     assert control_cwd == roots_cwd
     assert control_env["HOME"] != roots_env["HOME"]
     assert control_env["CLAUDE_CONFIG_DIR"] != roots_env["CLAUDE_CONFIG_DIR"]
+    assert control_env["CLAUDE_CODE_TMPDIR"] != roots_env["CLAUDE_CODE_TMPDIR"]
     settings_at = control_argv.index("--settings") + 1
     assert control_argv[:settings_at] == roots_argv[:settings_at]
     assert control_argv[settings_at + 1 :] == roots_argv[settings_at + 1 :]
@@ -367,8 +485,18 @@ def test_the_child_environment_is_built_not_inherited(tmp_path, monkeypatch):
     assert env["HTTPS_PROXY"] != env["ANTHROPIC_BASE_URL"]
     assert runs["roots"]["env_names"] == sorted(env)
     scratch = Path(os.path.realpath(tmp_path / "s"))
-    for path in (env["HOME"], env["CLAUDE_CONFIG_DIR"]):
+    for path in (env["HOME"], env["CLAUDE_CONFIG_DIR"], env["CLAUDE_CODE_TMPDIR"]):
         assert scratch in Path(path).parents
+
+
+def test_both_runs_ask_the_child_to_send_no_nonessential_traffic(tmp_path):
+    fake = FakeClaude()
+    _, _, runs = probe_module.probe("claude", runner=fake, scratch=tmp_path / "s")
+    assert len(fake.calls) == 2
+    for _, env, _ in fake.calls:
+        assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    for run in ("control", "roots"):
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" in runs[run]["env_names"]
 
 
 def test_the_probe_root_is_removed_and_planted_files_with_it(tmp_path):

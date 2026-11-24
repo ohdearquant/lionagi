@@ -20,6 +20,7 @@ A refusal names an entry by its key path and index, never by its content.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass
@@ -36,9 +37,12 @@ __all__ = (
     "CarryPlan",
     "HooksFile",
     "HooksFromError",
+    "carry_refusal",
     "plan_carry",
     "read_hooks_file",
+    "read_snapshot",
     "render_permission_rule",
+    "write_snapshot",
 )
 
 MAX_HOOKS_FROM_BYTES = 256 * 1024
@@ -87,6 +91,9 @@ _NAME = re.compile(r"\A[A-Za-z][A-Za-z0-9_]{0,63}\Z")
 # Tools whose rules have no path anchor to lose, carried as written.
 _ANCHORLESS_TOOLS = frozenset({"Bash", "PowerShell", "WebFetch", "Agent"})
 _PATH_TOOLS = frozenset({"Read", "Edit"})
+# Characters a rule's path pattern reads as syntax. A directory holding one cannot be pasted
+# into a rule and still name itself.
+_PATTERN_CHARACTERS = frozenset("*?[]{}()\\")
 # Tools whose path rules Claude Code accepts and never matches, with the spelling to use.
 _UNMATCHED_PATH_TOOLS = {
     "Write": "Edit",
@@ -160,6 +167,63 @@ def read_hooks_file(path: Any) -> HooksFile:
     )
 
 
+def write_snapshot(target: Path, hooks_file: HooksFile) -> None:
+    """Write the accepted bytes of *hooks_file* to *target*, a new owner-only file (H2 rule 6).
+
+    The file is created exclusively, so an existing file or link at *target* refuses the
+    write rather than being replaced or followed.
+    """
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    fd = os.open(target, flags, 0o600)
+    try:
+        view = memoryview(hooks_file.data)
+        while view:
+            view = view[os.write(fd, view) :]
+    finally:
+        os.close(fd)
+
+
+def read_snapshot(path: str, sha256: str) -> HooksFile:
+    """Read a leg's copy of its hooks file and check it against the digest recorded at submit.
+
+    The copy is read under the same H2 rules as the original. A copy whose bytes no longer
+    hash to *sha256* refuses, so an edit after submit reaches no leg (H2 rule 6).
+    """
+    snapshot = read_hooks_file(path)
+    if not isinstance(sha256, str) or snapshot.sha256 != sha256:
+        raise HooksFromError(
+            "digest",
+            f"the hooks_from copy {path!r} does not match the digest recorded when the leg was "
+            "submitted",
+        )
+    return snapshot
+
+
+def carry_refusal(plan: CarryPlan, *, claude_code: bool) -> str | None:
+    """Why a leg cannot apply *plan*, or None when it can (ADR-0048 Amendment 1 H5).
+
+    *claude_code* says whether the leg runs on a Claude Code model. Deny and ask rules are
+    applied by a Claude Code leg only. Hook entries are refused on every provider for now.
+    """
+    if plan.hooks:
+        return (
+            "the file carries hook entries, and no leg applies hook entries from hooks_from yet; "
+            'submit with hooks_from_carry=["deny"] to carry only its deny and ask rules'
+        )
+    if plan.deny_rules and not claude_code:
+        return (
+            "the file carries deny or ask rules, and only a claude_code leg applies them; run "
+            "the leg on a claude_code model"
+        )
+    return None
+
+
 def _source_kind(resolved_path: str, home: Path) -> tuple[str, Path | None]:
     """``user``, ``project`` with its project directory, or ``other``."""
     path = Path(resolved_path)
@@ -174,8 +238,22 @@ def _absolute_rule(directory: Path, pattern: str) -> str:
     return "//" + str(directory).strip("/") + "/" + pattern
 
 
+def _rule_directory(directory: Path, name: str) -> Path:
+    """*directory* as it is pasted into a rule; refuses one the rule would not name."""
+    if not directory.is_absolute():
+        raise ValueError(f"{name} is not an absolute path, so no rule can be anchored there")
+    if any(character in _PATTERN_CHARACTERS for character in str(directory)):
+        raise ValueError(
+            f"{name} holds a character the rule syntax reads as a pattern (one of "
+            "* ? [ ] { } ( ) or a backslash), so a rule anchored there would not name it"
+        )
+    return directory
+
+
 def _directories(source_dir: Path, leg_cwd: Path) -> list[Path]:
-    return [source_dir] if source_dir == leg_cwd else [source_dir, leg_cwd]
+    source = _rule_directory(source_dir, "the source project directory")
+    leg = _rule_directory(leg_cwd, "the leg's working directory")
+    return [source] if source == leg else [source, leg]
 
 
 def render_permission_rule(

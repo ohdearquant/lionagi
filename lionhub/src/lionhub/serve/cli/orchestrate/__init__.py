@@ -632,6 +632,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
+        github_pr = None
         file_spec = getattr(args, "file", None)
         if playbook_name and file_spec:
             log_error("pass either -p/--playbook or -f/--file, not both")
@@ -683,6 +684,19 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.model = spec["model"]
             if args.agent is None and spec.get("agent"):
                 args.agent = spec["agent"]
+            if spec.get("github_pr") is not None:
+                # Fetched here, under this process's GitHub sign-in, so the run's agents
+                # get the pull request as text and never need GitHub access themselves.
+                from ._github_pr import GithubPrError, fetch_pull_request, resolve_target
+
+                try:
+                    github_pr = resolve_target(spec["github_pr"], args.prompt, playbook_ctx)
+                    pr_meta, pr_diff = fetch_pull_request(github_pr)
+                except GithubPrError as exc:
+                    log_error(str(exc))
+                    return 1
+                playbook_ctx["pr_meta"] = pr_meta
+                playbook_ctx["pr_diff"] = pr_diff
             if spec.get("prompt"):
                 args.prompt = _interpolate_prompt(spec["prompt"], args.prompt, playbook_ctx)
             if args.max_concurrent == 0 and spec.get("workers"):
@@ -857,6 +871,21 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         output, terminal_status = flow_result
         if not args.verbose:
             print(output)
+        if github_pr is not None and github_pr.comment != "none" and not args.dry_run:
+            if terminal_status != "completed":
+                log_error(
+                    f"github-pr: the run ended {terminal_status}; nothing was posted to "
+                    f"{github_pr.pr}"
+                )
+            else:
+                from ._github_pr import GithubPrError, post_review
+
+                try:
+                    post_review(github_pr, output)
+                except GithubPrError as exc:
+                    log_error(str(exc))
+                    return EXIT_CODE_BY_STATUS["failed"]
+                hint(f"Review posted to pull request {github_pr.pr}")
         return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
 
     if args.orch_command == "ctl":

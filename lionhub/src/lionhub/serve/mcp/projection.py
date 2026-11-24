@@ -177,11 +177,13 @@ _APPEND = argparse._AppendAction
 _META_ACTIONS = (argparse._HelpAction, argparse._VersionAction)
 
 # Destinations a command accepts on the command line only. ``mcp_submit_snapshot``,
-# ``graph_submit_snapshot`` and ``graph_submit_resolved`` are set by the server itself when
-# it launches a command; ``probe_anthropic_account`` sends a billed request and can lift an
-# account block, which ADR-0126 Amendment 15 keeps to the operator's own command line.
+# ``hooks_from_snapshot``, ``graph_submit_snapshot`` and ``graph_submit_resolved`` are set by
+# the server itself when it launches a command; ``probe_anthropic_account`` sends a billed
+# request and can lift an account block, which ADR-0126 Amendment 15 keeps to the operator's
+# own command line.
 _CLI_ONLY_DESTS = frozenset(
     {
+        "hooks_from_snapshot",
         "mcp_submit_snapshot",
         "graph_submit_snapshot",
         "graph_submit_resolved",
