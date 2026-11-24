@@ -92,7 +92,7 @@ Every reader of a project `.lionagi` directory goes through `find_lionagi_dirs` 
 | `plugins/*/plugin.yaml` bundles | `discover_plugins` (`lionagi/plugins/discovery.py` 140-159) | D5's `trusted_plugins` |
 | MCP configuration | the MCP lookup | the existing project-settings trust gate (Amendment 1, unchanged) |
 
-The other readers do not change what a run may do: `state/provenance.py` hashes the profile file for the run record, `child_sandbox.py::_profile_file_is_global` decides whether a profile is the user's, `serve/daemon/leg_host.py` 395 refuses a leg whose directory shadows the user's, and `serve/mcp/roster.py` lists profiles.
+The other readers do not change what a run may do: `state/provenance.py` hashes the profile file for the run record, `lionhub/src/lionhub/agent/child_sandbox.py::_profile_file_is_global` decides whether a profile is the user's, `serve/daemon/leg_host.py` 395 refuses a leg whose directory shadows the user's, and `serve/mcp/roster.py` lists profiles.
 
 So three things the directory supplies have no fence today: profiles, playbooks, and the project `settings.yaml` layer, whose reachable effect is the two notify commands. The gate checks the settings layer as a whole, so a key that a later change starts reading from it is covered without a change to this text. It covers the directory as a whole and is never a list of fields. Plugin bundles and MCP configuration keep their own records.
 
@@ -113,7 +113,7 @@ Trust covers the files reached through the trusted directory, a profile file tha
 
 With `gate: mcp`, the same three things are checked at both points, so one project gets one answer at submit and in the job:
 
-1. **At submit, in the MCP server.** `agent.submit`, `flow.submit`, `play.submit` and `fanout.submit` resolve, under the op's cwd, the named profile (`dispatch.py::_refuse_unknown_profile`), the named playbook, and the project settings layer. Any of them from an untrusted directory refuses before a job record or a job directory exists. `dry_run` gives the same refusal. The server's terminal hook reads the settings layer under the op's cwd (`_notify_hook.py` 268) and applies the same check.
+1. **At submit, in the MCP server.** `agent.submit`, `flow.submit`, `play.submit` and `fanout.submit` resolve, under the op's cwd, the named profile (`lionhub/src/lionhub/serve/mcp/dispatch.py::_refuse_unknown_profile`), the named playbook, and the project settings layer. Any of them from an untrusted directory refuses before a job record or a job directory exists. `dry_run` gives the same refusal. The server's terminal hook reads the settings layer under the op's cwd (`_notify_hook.py` 268) and applies the same check.
 2. **In the job process and every process it starts.** The server starts the job with `LIONAGI_DIR_TRUST_GATE=1` in its environment. A lionagi process with the variable checks at the three places a project directory supplies something: `load_agent_profile`, `_resolve_playbook_path`, and the project layer of `load_settings`. The check refuses and never skips, so an untrusted file is named instead of being run around. That covers the flow and fanout workers when they are built (the planner picks their roles after submit, so the submit check cannot see them), the orchestrator profile, the notify bootstrap at each `li` start, a `li agent` that a leg starts in its own shell, and the graph nodes of ADR-0069 Amendment 4, whose profiles resolve as `agent.submit`'s do. Child processes inherit the variable.
 
 ### The catalog
