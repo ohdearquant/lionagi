@@ -940,16 +940,9 @@ def _wire_plain_leg_stubs(monkeypatch, tmp_path: Path) -> dict:
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
-            run_id="r",
-            artifact_root=tmp_path / "artifacts",
-            stream_dir=tmp_path / "stream",
-            branches_dir=tmp_path / "branches",
-        ),
-    )
+    from .test_agent_preset_mcp_handover import _stub_run_allocator
+
+    monkeypatch.setattr(agent_mod, "allocate_run", _stub_run_allocator(tmp_path))
     return handed
 
 
@@ -1075,16 +1068,9 @@ def _wire_resume_stubs(
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
-            run_id="r",
-            artifact_root=tmp_path / "artifacts",
-            stream_dir=tmp_path / "stream",
-            branches_dir=tmp_path / "branches",
-        ),
-    )
+    from .test_agent_preset_mcp_handover import _stub_run_allocator
+
+    monkeypatch.setattr(agent_mod, "allocate_run", _stub_run_allocator(tmp_path))
     return str(branch.id)
 
 

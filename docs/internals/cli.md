@@ -139,9 +139,15 @@ a profile whose file is gone.
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
 `mcp_launch`: the config file on the command line as an absolute path (a submitted leg's
-snapshot included), the `--no-mcp-config` flag, and the launch directory. The resume resolves
-from the record, searching from the launch directory, so the directory the resume runs in does
-not decide what is found. A flag given on the resume is used for that leg instead of the record,
+snapshot included), the `--no-mcp-config` flag, and the launch directory. A config named with
+`--mcp-config` is recorded as the copy the run wrote of it: once the run directory exists, the
+servers read from the named file (before the run's khive actor is attributed to them) go to
+`mcp-config.json` there, owner-only, and the record names that copy, keeping the named path as
+`mcp_config_named`. A resume reads the copy, never the named file, and writes it again into its
+own run directory, pointing the record there; an automatic resume after a timeout does the
+same. A record from before the copy existed still names the file itself, and its resume reads
+it. The resume resolves from the record, searching from the launch directory, so the directory
+the resume runs in does not decide what is found. A flag given on the resume is used for that leg instead of the record,
 except that profile-origin `mcp: none` containment cannot be relaxed with `--mcp-config`; that
 combination is refused even when no profile is named on resume. Its `mcp_launch` record sets
 `no_mcp_config_source` to `profile`.
