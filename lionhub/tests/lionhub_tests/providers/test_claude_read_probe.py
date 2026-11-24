@@ -375,7 +375,16 @@ def test_the_run_with_read_rules_grants_its_own_claude_temp_directory_and_no_oth
     assert runs["roots"]["claude_tmp"] == roots_env["CLAUDE_CODE_TMPDIR"]
     granted = [root for root in read_roots if Path(root).name.startswith("claude-")]
     assert granted == [str(Path(roots_env["CLAUDE_CODE_TMPDIR"]) / f"claude-{os.getuid()}")]
-    assert not [root for root in read_roots if root.startswith(("/tmp", "/private/tmp"))]
+    # On Linux pytest's own tmp_path sits under /tmp, so roots inside this test's directory
+    # are the probe's scratch and not a grant of the system temporary directory.
+    own = Path(os.path.realpath(tmp_path))
+    system_tmp = [
+        root
+        for root in read_roots
+        if root.startswith(("/tmp", "/private/tmp"))
+        and not (Path(os.path.realpath(root)) == own or own in Path(os.path.realpath(root)).parents)
+    ]
+    assert not system_tmp
     assert f"granted {granted[0]}" in arms["bash_temp_in_granted_dir"]["evidence"]
 
 

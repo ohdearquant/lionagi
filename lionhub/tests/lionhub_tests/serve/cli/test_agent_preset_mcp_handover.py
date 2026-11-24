@@ -94,17 +94,28 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path):
         ),
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
-    monkeypatch.setattr(
-        agent_mod,
-        "allocate_run",
-        lambda: SimpleNamespace(
+    monkeypatch.setattr(agent_mod, "allocate_run", _stub_run_allocator(tmp_path))
+    return branches_created
+
+
+def _stub_run_allocator(tmp_path: Path):
+    """An allocate_run stand-in whose every run has a run directory of its own, as the real
+    one does: a named MCP config is copied into it."""
+    allocated: list[Path] = []
+
+    def allocate():
+        state_root = tmp_path / "run-state" / f"r{len(allocated)}"
+        state_root.mkdir(parents=True)
+        allocated.append(state_root)
+        return SimpleNamespace(
             run_id="r",
+            state_root=state_root,
             artifact_root=tmp_path / "artifacts",
             stream_dir=tmp_path / "stream",
             branches_dir=tmp_path / "branches",
-        ),
-    )
-    return branches_created
+        )
+
+    return allocate
 
 
 @pytest.fixture
@@ -518,8 +529,9 @@ async def test_no_mcp_config_hands_nothing_over(spawn, codex_home, model):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
 async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_path, preset):
-    """The record holds the launch directory, the named config as an absolute
-    path and the refusal flag: what a resume that names no flag replays."""
+    """The record holds the launch directory, the run directory's copy of the named set, the
+    named config as an absolute path and the refusal flag: what a resume that names no flag
+    replays."""
     from lionhub.serve.cli.agent import _MCP_LAUNCH_KEY, _run_agent
 
     named = _write_mcp_config(tmp_path / "named", {"named": {"command": "named-server"}})
@@ -533,12 +545,15 @@ async def test_a_new_branch_records_the_mcp_choice_a_resume_replays(spawn, tmp_p
         mcp_config=str(named),
     )
 
+    copy = tmp_path / "run-state" / "r0" / "mcp-config.json"
     assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY] == {
-        "mcp_config": str(named.resolve()),
+        "mcp_config": str(copy),
+        "mcp_config_named": str(named.resolve()),
         "mcp_config_origin": "explicit",
         "no_mcp_config": False,
         "launch_dir": str(spawn.submit_dir.resolve()),
     }
+    assert json.loads(copy.read_text()) == {"mcpServers": {"named": {"command": "named-server"}}}
 
 
 @pytest.mark.asyncio
