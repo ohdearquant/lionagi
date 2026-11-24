@@ -60,6 +60,7 @@ from lionhub.orchestration.spawn import (
     list_agents,
     load_agent_profile,
     parse_model_spec,
+    refuse_require_hooks,
     resolve_account_integrations,
     resolve_persisted_effort,
 )
@@ -1630,7 +1631,12 @@ async def build_worker_branch(
         tool_settings=None if env.bare else _profile_tool_settings(w_profile),
         env=worker_account.env if worker_account is not None else None,
         secret_fill_skip=worker_account.secret_fill_skip if worker_account is not None else None,
+        # A codex worker refuses at launch when a hook declared for it will not run
+        # (ADR-0048 Amendment 2); a bare worker has no role to ask for that.
+        require_hooks=bool(not env.bare and getattr(w_profile, "require_hooks", False)),
     )
+    if not env.bare:
+        refuse_require_hooks(role, w_profile, w_imodel)
     if worker_account is not None:
         from lionhub.agent.subscription_accounts import leg_account_reached
 

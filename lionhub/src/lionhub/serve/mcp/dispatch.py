@@ -1101,6 +1101,15 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
     )
 
 
+def _agent_model_spec(args: dict[str, Any], profile: Any, prompt: str | None) -> Any:
+    """The model an agent submission names: the first positional when a prompt follows it, else
+    the profile's model. ``None`` when neither names one (a resumed run's model comes from its
+    branch)."""
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    return bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+
+
 def _requested_account(
     verb: Verb, args: dict[str, Any], profile: Any, prompt: str | None
 ) -> tuple[str | None, str | None]:
@@ -1119,9 +1128,7 @@ def _requested_account(
     name = args.get("account") or getattr(profile, "account", None)
     if name is None and getattr(profile, "codex_home", None) is None:
         return None, None
-    query = args.get("query") or []
-    bucket = [*query, *([prompt] if prompt is not None else [])]
-    model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+    model = _agent_model_spec(args, profile, prompt)
     provider = None
     if isinstance(model, str) and model:
         from lionhub.agent.subscription_accounts import account_provider
@@ -1159,22 +1166,27 @@ def _resolve_hooks_from(
         )
     if fmt is None:
         raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.connections.registry import EndpointRegistry
+    from lionagi.service.providers import CLI_PROVIDERS
     from lionhub.agent.subscription_accounts import account_provider
     from lionhub.hooks.hooks_from import (
         HOOKS_FROM_CARRY,
         HooksFromError,
         carry_refusal,
+        hook_command_refusals,
         plan_carry,
         read_hooks_file,
+        writable_roots,
     )
 
     query = args.get("query") or []
     bucket = [*query, *([prompt] if prompt is not None else [])]
     model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
-    claude_code = (
-        isinstance(model, str)
-        and "/" in model
-        and account_provider(model.split("/", 1)[0]) == "claude_code"
+    provider = model.split("/", 1)[0] if isinstance(model, str) and "/" in model else None
+    claude_code = provider is not None and account_provider(provider) == "claude_code"
+    api = (
+        provider is not None and EndpointRegistry.canonical_provider(provider) not in CLI_PROVIDERS
     )
     carried = list(HOOKS_FROM_CARRY) if carry is None else carry
     leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
@@ -1189,9 +1201,23 @@ def _resolve_hooks_from(
         )
     except HooksFromError as exc:
         raise OpError("invalid_input", str(exc)) from exc
-    reason = carry_refusal(plan, claude_code=claude_code)
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
     if reason is not None:
         raise OpError("invalid_input", f"cannot submit this leg with hooks_from: {reason}")
+    if plan.hooks:
+        try:
+            refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        except ConfigurationError as exc:
+            raise OpError(
+                "invalid_input", f"cannot submit this leg with hooks_from: {exc}"
+            ) from exc
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise OpError(
+                "invalid_input",
+                f"cannot submit this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}",
+            )
     return {"file": hooks_file, "plan": plan, "format": fmt, "carry": list(carried)}
 
 
@@ -1313,6 +1339,13 @@ def _run_spawn(
             profile=profile,
             account=account,
             account_provider=account_provider,
+            # Read for the profile's require_hooks before the run is recorded; a resumed run's
+            # model comes from its branch, so its launch answers instead.
+            model=(
+                _agent_model_spec(args, profile, prompt)
+                if verb.job_kind == "agent" and not resumes
+                else None
+            ),
             **({"hooks_from": hooks_from} if hooks_from is not None else {}),
             **({"replay_mcp_choice": True} if resumes else {}),
             **({"graph_source": graph_source} if graph_source is not None else {}),

@@ -5,8 +5,8 @@
 The server reads the file once, refuses guards the leg cannot apply, writes a copy beside
 the job record and hands the leg the copy's path and digest. The leg reads the copy, checks
 the digest and the same refusals, and gives the deny rules to its Claude Code models, which
-put them in the one ``--settings`` value they pass the CLI. Hook entries are refused on every
-provider for now.
+put them in the one ``--settings`` value they pass the CLI. Hook entries are applied by an
+API-model leg only (``test_hooks_from_api_legs.py``).
 """
 
 from __future__ import annotations
@@ -107,12 +107,20 @@ def test_a_copy_read_back_must_hash_to_the_recorded_digest(tmp_path):
     assert caught.value.rule == "digest"
 
 
-def test_hook_entries_are_refused_on_every_provider_with_the_way_out():
+def test_hook_entries_are_refused_on_every_cli_provider_with_the_way_out():
     plan = _plan(hooks={"PreToolUse": [{"hooks": []}]}, deny=(RULE,))
 
     for claude in (True, False):
         reason = carry_refusal(plan, claude_code=claude)
         assert reason is not None and 'hooks_from_carry=["deny"]' in reason
+
+
+def test_hook_entries_are_applied_by_an_api_model_leg():
+    plan = _plan(hooks={"PreToolUse": [{"hooks": []}]})
+
+    assert carry_refusal(plan, claude_code=False, api=True) is None
+    reason = carry_refusal(_plan(deny=(RULE,)), claude_code=False, api=True)
+    assert reason is not None and 'hooks_from_carry=["hooks"]' in reason
 
 
 def test_deny_rules_are_applied_by_a_claude_code_leg_only():

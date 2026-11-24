@@ -113,6 +113,24 @@ def add_hooks_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Record trust without an interactive confirmation prompt.",
     )
+    trust.add_argument(
+        "--from",
+        dest="from_path",
+        default=None,
+        help=(
+            "Absolute path of a Claude Code settings.json or Codex hooks.json that was never "
+            "imported, such as a file an agent submission names as hooks_from. Its hook "
+            "commands are listed and approved as they resolve from --cwd, the directory the "
+            "leg will run in. Requires --format."
+        ),
+    )
+    trust.add_argument(
+        "--format",
+        dest="from_format",
+        choices=("claude", "codex"),
+        default=None,
+        help="The shape of the --from file: claude for settings.json, codex for hooks.json.",
+    )
 
 
 def _tokenize_command(command: Any) -> tuple[list[str] | None, str | None]:
@@ -374,13 +392,6 @@ def _iter_untrusted_commands(
     """
     import yaml
 
-    from lionhub.hooks.external import (
-        ExternalHookConfigError,
-        compute_trust_record,
-        is_command_trusted,
-        validate_argv,
-    )
-
     settings_path = project_dir / ".lionagi" / "settings.yaml"
     if not settings_path.is_file():
         return [], []
@@ -388,6 +399,20 @@ def _iter_untrusted_commands(
     hooks_external = data.get("hooks_external", {}) if isinstance(data, dict) else {}
     if not isinstance(hooks_external, dict):
         return [], []
+    return _untrusted_in_block(hooks_external, project_dir)
+
+
+def _untrusted_in_block(
+    hooks_external: dict[str, Any], project_dir: Path
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(pending, rejected)`` for one ``hooks_external`` block, each command resolved from
+    *project_dir*; see :func:`_iter_untrusted_commands`."""
+    from lionhub.hooks.external import (
+        ExternalHookConfigError,
+        compute_trust_record,
+        is_command_trusted,
+        validate_argv,
+    )
 
     pending: list[dict[str, Any]] = []
     rejected: list[str] = []
@@ -428,7 +453,39 @@ def _iter_untrusted_commands(
     return pending, rejected
 
 
-def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
+def _untrusted_in_file(
+    path: str, fmt: str, project_dir: Path
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """``(pending, rejected)`` for the hook commands of a file that was never imported.
+
+    The file is read and translated as an agent submission's ``hooks_from`` is (ADR-0048
+    Amendment 1 H2, H3), so a command trusted here is the command a leg would carry. Prints
+    the refusal and returns None when the file or one of its hook entries is refused.
+    """
+    from lionhub.hooks.hooks_from import HooksFromError, plan_carry, read_hooks_file
+
+    try:
+        hooks_file = read_hooks_file(path)
+        plan = plan_carry(
+            hooks_file.document,
+            fmt=fmt,
+            carry=["hooks"],
+            source_path=hooks_file.resolved_path,
+            leg_cwd=str(project_dir),
+        )
+    except HooksFromError as exc:
+        print(f"refused: {exc}")
+        return None
+    return _untrusted_in_block(plan.hooks, project_dir)
+
+
+def _run_trust(
+    cwd: str | None,
+    *,
+    assume_yes: bool,
+    from_path: str | None = None,
+    from_format: str | None = None,
+) -> int:
     from lionagi._lionagi_dir_trust import trust_step_refusal
     from lionagi.plugins._user_settings import read_user_settings, write_user_settings
 
@@ -438,7 +495,19 @@ def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
         return 1
 
     project_dir = Path(cwd) if cwd else Path.cwd()
-    pending, rejected = _iter_untrusted_commands(project_dir)
+    if from_path is None:
+        if from_format is not None:
+            print("--format needs --from")
+            return 1
+        pending, rejected = _iter_untrusted_commands(project_dir)
+    else:
+        if from_format is None:
+            print("--from needs --format: claude or codex")
+            return 1
+        found = _untrusted_in_file(from_path, from_format, project_dir)
+        if found is None:
+            return 1
+        pending, rejected = found
     for line in rejected:
         print(f"rejected {line}")
     if not pending:
@@ -485,6 +554,11 @@ def run_hooks(args: argparse.Namespace) -> int:
     if args.hooks_command == "import":
         return _run_import(args.source, args.path, args.cwd)
     if args.hooks_command == "trust":
-        return _run_trust(args.cwd, assume_yes=args.yes)
+        return _run_trust(
+            args.cwd,
+            assume_yes=args.yes,
+            from_path=args.from_path,
+            from_format=args.from_format,
+        )
     log_error(f"unknown hooks subcommand: {args.hooks_command!r}")
     return 1

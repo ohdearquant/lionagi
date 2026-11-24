@@ -41,7 +41,7 @@
       "__all__ = (\"configured_command_env_names\", \"command_environment\")"
     ],
     "lionagi/_errors.py": [
-      "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
+      "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"RequireHooksRefusedError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
     ],
     "lionagi/_lionagi_dir_trust.py": [
       "__all__ = (\n    \"GATE_ENV_VAR\",\n    \"GATE_SETTING\",\n    \"RECORD_KEY\",\n    \"LionagiDirTrustSettingError\",\n    \"UntrustedLionagiDirError\",\n    \"check_lionagi_dir\",\n    \"enforced\",\n    \"gate_active\",\n    \"gate_setting\",\n    \"is_trusted\",\n    \"trust_step_refusal\",\n    \"trusted_lionagi_dirs\",\n)"
@@ -137,6 +137,7 @@
       "ProviderStreamError",
       "RateLimitError",
       "RelationError",
+      "RequireHooksRefusedError",
       "ResourceError",
       "TimeoutError",
       "ValidationError"

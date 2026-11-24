@@ -827,6 +827,20 @@
             "description": "Record trust without an interactive confirmation prompt.",
             "default": false,
             "x-flag": "--yes"
+          },
+          "from_path": {
+            "type": "string",
+            "description": "Absolute path of a Claude Code settings.json or Codex hooks.json that was never imported, such as a file an agent submission names as hooks_from. Its hook commands are listed and approved as they resolve from `cwd`, the directory the leg will run in. Requires `from_format`.",
+            "x-flag": "--from"
+          },
+          "from_format": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "description": "The shape of the `from_path` file: claude for settings.json, codex for hooks.json.",
+            "x-flag": "--format"
           }
         },
         "additionalProperties": false
