@@ -91,6 +91,9 @@ _NAME = re.compile(r"\A[A-Za-z][A-Za-z0-9_]{0,63}\Z")
 # Tools whose rules have no path anchor to lose, carried as written.
 _ANCHORLESS_TOOLS = frozenset({"Bash", "PowerShell", "WebFetch", "Agent"})
 _PATH_TOOLS = frozenset({"Read", "Edit"})
+# Characters a rule's path pattern reads as syntax. A directory holding one cannot be pasted
+# into a rule and still name itself.
+_PATTERN_CHARACTERS = frozenset("*?[]{}()\\")
 # Tools whose path rules Claude Code accepts and never matches, with the spelling to use.
 _UNMATCHED_PATH_TOOLS = {
     "Write": "Edit",
@@ -257,8 +260,22 @@ def _absolute_rule(directory: Path, pattern: str) -> str:
     return "//" + str(directory).strip("/") + "/" + pattern
 
 
+def _rule_directory(directory: Path, name: str) -> Path:
+    """*directory* as it is pasted into a rule; refuses one the rule would not name."""
+    if not directory.is_absolute():
+        raise ValueError(f"{name} is not an absolute path, so no rule can be anchored there")
+    if any(character in _PATTERN_CHARACTERS for character in str(directory)):
+        raise ValueError(
+            f"{name} holds a character the rule syntax reads as a pattern (one of "
+            "* ? [ ] { } ( ) or a backslash), so a rule anchored there would not name it"
+        )
+    return directory
+
+
 def _directories(source_dir: Path, leg_cwd: Path) -> list[Path]:
-    return [source_dir] if source_dir == leg_cwd else [source_dir, leg_cwd]
+    source = _rule_directory(source_dir, "the source project directory")
+    leg = _rule_directory(leg_cwd, "the leg's working directory")
+    return [source] if source == leg else [source, leg]
 
 
 def render_permission_rule(
