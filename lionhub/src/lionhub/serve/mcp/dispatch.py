@@ -1165,22 +1165,27 @@ def _resolve_hooks_from(
         )
     if fmt is None:
         raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
+    from lionagi._errors import ConfigurationError
+    from lionagi.service.connections.registry import EndpointRegistry
+    from lionagi.service.providers import CLI_PROVIDERS
     from lionhub.agent.subscription_accounts import account_provider
     from lionhub.hooks.hooks_from import (
         HOOKS_FROM_CARRY,
         HooksFromError,
         carry_refusal,
+        hook_command_refusals,
         plan_carry,
         read_hooks_file,
+        writable_roots,
     )
 
     query = args.get("query") or []
     bucket = [*query, *([prompt] if prompt is not None else [])]
     model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
-    claude_code = (
-        isinstance(model, str)
-        and "/" in model
-        and account_provider(model.split("/", 1)[0]) == "claude_code"
+    provider = model.split("/", 1)[0] if isinstance(model, str) and "/" in model else None
+    claude_code = provider is not None and account_provider(provider) == "claude_code"
+    api = (
+        provider is not None and EndpointRegistry.canonical_provider(provider) not in CLI_PROVIDERS
     )
     carried = list(HOOKS_FROM_CARRY) if carry is None else carry
     leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
@@ -1195,9 +1200,23 @@ def _resolve_hooks_from(
         )
     except HooksFromError as exc:
         raise OpError("invalid_input", str(exc)) from exc
-    reason = carry_refusal(plan, claude_code=claude_code)
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
     if reason is not None:
         raise OpError("invalid_input", f"cannot submit this leg with hooks_from: {reason}")
+    if plan.hooks:
+        try:
+            refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        except ConfigurationError as exc:
+            raise OpError(
+                "invalid_input", f"cannot submit this leg with hooks_from: {exc}"
+            ) from exc
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise OpError(
+                "invalid_input",
+                f"cannot submit this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}",
+            )
     return {"file": hooks_file, "plan": plan, "format": fmt, "carry": list(carried)}
 
 

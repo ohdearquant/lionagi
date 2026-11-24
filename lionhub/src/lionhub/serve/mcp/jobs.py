@@ -1341,6 +1341,16 @@ def _validate_notify_sender(
         )
 
 
+def _carried_hook_labels(hooks_from: dict[str, Any] | None) -> list[str]:
+    """Each hook entry a submission's ``hooks_from`` file carries, labelled by its place in
+    the file; empty with no file."""
+    if hooks_from is None:
+        return []
+    from lionhub.hooks.hooks_from import hook_entries
+
+    return [entry["where"] for entry in hook_entries(hooks_from["plan"])]
+
+
 def _refuse_require_hooks(
     profile: Any | None,
     model: str,
@@ -1350,13 +1360,16 @@ def _refuse_require_hooks(
     mcp_config: str | None,
     no_mcp_config: bool,
     submit_snapshot: str | None,
+    carried: list[str],
 ) -> None:
     """Refuse the submission when its profile's ``require_hooks`` is not met, as the run's
     launch would refuse it (``spawn.refuse_require_hooks_at_submit``).
 
     The MCP set is resolved by the call the run makes on start, with the arguments this
     submission hands it: the named config, ``--no-mcp-config``, or the snapshot written
-    above. The launch checks again and decides; this answer may only be as strict.
+    above. *carried* labels the hook entries the submission's ``hooks_from`` file carries,
+    which the key counts. The launch checks again and decides; this answer may only be as
+    strict.
     """
     if profile is None or not getattr(profile, "require_hooks", False):
         return
@@ -1383,6 +1396,7 @@ def _refuse_require_hooks(
             mcp_servers=resolution.servers,
             mcp_exclusive=resolution.exclusive,
             cwd=cwd,
+            carried=carried,
         )
     except ConfigurationError as exc:
         raise SubmitInputError(str(exc)) from exc
@@ -1740,6 +1754,7 @@ def submit(
                 # A profile declaring mcp: none puts --no-mcp-config on the run's line above.
                 no_mcp_config=no_mcp_config or profile_disables_mcp,
                 submit_snapshot=mcp_config_path if mcp_servers is not None else None,
+                carried=_carried_hook_labels(hooks_from),
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)

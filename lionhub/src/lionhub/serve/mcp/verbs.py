@@ -204,8 +204,10 @@ _HOOKS_FROM = {
         "one leg carries. The server reads it once now, under a size cap and with symbolic "
         "links refused, and the leg reads only its own copy, so an edit to the file afterwards "
         "reaches no leg. Deny and ask rules are carried as deny rules by a claude_code leg; "
-        "hook entries are not applied by any leg yet. A guard the leg cannot apply refuses the "
-        "submit. Requires hooks_from_format; refused with resume or continue_last."
+        "hook entries are run by an API-model leg, each only when a person has approved its "
+        "command with `li hooks trust` and neither its program nor a file it names lies in a "
+        "directory the leg can write. A guard the leg cannot apply refuses the submit. "
+        "Requires hooks_from_format; refused with resume or continue_last."
     ),
     "x-server-owned": True,
 }

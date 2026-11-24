@@ -135,7 +135,12 @@ def strip_connector_grant(kwargs: dict) -> None:
 
 
 def refuse_require_hooks(
-    name: str | None, profile: Any | None, model: iModel, *, required: bool | None = None
+    name: str | None,
+    profile: Any | None,
+    model: iModel,
+    *,
+    required: bool | None = None,
+    carried: Iterable[str] = (),
 ) -> None:
     """Refuse a leg that requires its hooks when a hook declared for it will not run.
 
@@ -147,6 +152,12 @@ def refuse_require_hooks(
     declared for it, in the global settings or in its profile, would not run. lionagi reads
     no other CLI provider's hook rules, so the key cannot be met there. The refusal is a
     ``RequireHooksRefusedError``, whose text a job record carries as the reason.
+
+    *carried* names, by its place in the file, each hook entry a ``hooks_from`` file carries
+    onto the leg. Those are hooks declared for the leg too, and they count (ADR-0048
+    Amendment 2 R3): an API-model
+    leg runs them, since each has passed the trust and writable-directory checks before this
+    one, and every other leg runs none of them, so on any other leg they refuse.
     """
     if required is None:
         required = bool(getattr(profile, "require_hooks", False))
@@ -159,9 +170,17 @@ def refuse_require_hooks(
         if getattr(profile, "require_hooks", False)
         else "this branch was launched with require_hooks"
     )
+    carried = list(carried)
     endpoint = model.endpoint
     provider = EndpointRegistry.canonical_provider(endpoint.config.provider)
     if endpoint.is_cli:
+        if carried:
+            raise RequireHooksRefusedError(
+                f"{who}, and its leg runs on the CLI provider {provider!r}, which does not run "
+                "the hook entries a hooks_from file carries, so these would not run: "
+                f"{'; '.join(carried)}. Run the role on an API model, or carry only the file's "
+                "deny and ask rules."
+            )
         if provider == "codex":
             return
         raise RequireHooksRefusedError(
@@ -172,10 +191,16 @@ def refuse_require_hooks(
         )
     declared = _declared_lionagi_hooks(profile)
     if declared:
+        runs = (
+            f" It does run the hook entries its hooks_from file carries: {'; '.join(carried)}."
+            if carried
+            else ""
+        )
         raise RequireHooksRefusedError(
             f"{who}, and its leg runs on the API model provider {provider!r}, which applies "
-            "no lionagi hooks to a leg spawned from the command line, so these would not "
-            f"run: {'; '.join(declared)}. Remove require_hooks or the hooks."
+            "no lionagi hooks from the settings or the agent profile to a leg spawned from the "
+            f"command line, so these would not run: {'; '.join(declared)}.{runs} Remove "
+            "require_hooks or those hooks."
         )
 
 
@@ -203,9 +228,13 @@ def refuse_require_hooks_at_submit(
     mcp_servers: dict | None = None,
     mcp_exclusive: bool = False,
     cwd: str | os.PathLike[str],
+    carried: Iterable[str] = (),
 ) -> None:
     """Refuse a submitted agent run whose profile sets ``require_hooks`` when a hook declared
     for it will not run, before the run is recorded (ADR-0048 Amendment 2).
+
+    *carried* names the hook entries the submission's ``hooks_from`` file carries, as
+    ``refuse_require_hooks`` takes them.
 
     The leg's model is built by the builder ``li agent`` uses for a new branch
     (``build_chat_model``), with the key, in the codex home the run will read: the named
@@ -254,7 +283,7 @@ def refuse_require_hooks_at_submit(
         chat_model = f"{provider}/{model}"
     if isinstance(chat_model, str):
         chat_model = iModel(model=chat_model)
-    refuse_require_hooks(name, profile, chat_model)
+    refuse_require_hooks(name, profile, chat_model, carried=carried)
     endpoint = chat_model.endpoint
     from lionagi.service.connections.registry import EndpointRegistry
 

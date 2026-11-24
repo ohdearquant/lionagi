@@ -1985,15 +1985,27 @@ def _hooks_from_spec(
     return {field: spec[field] for field in _HOOKS_FROM_SPEC_FIELDS}
 
 
-def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> None:
-    """Check this leg's hooks file copy and hand its deny rules to its Claude Code models.
+def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> list[str]:
+    """Check this leg's hooks file copy and apply what it carries.
 
     The copy must hash to the digest recorded at submit (H2 rule 6). It is planned again for
     this process's working directory, and a guard no model of this leg can apply refuses the
-    leg before the run exists (H3, H5).
+    leg before the run exists (H3, H5). Deny rules go to the leg's Claude Code models; hook
+    entries are wired onto an API-model leg's branch after each command passes the trust and
+    writable-directory checks again from this directory (H4). Returns the place in the file of
+    each hook entry wired, which ``require_hooks`` counts (ADR-0048 Amendment 2 R3).
     """
+    from lionhub.agent.factory import _wire_external_hook_entries
     from lionhub.agent.subscription_accounts import account_provider
-    from lionhub.hooks.hooks_from import HooksFromError, carry_refusal, plan_carry, read_snapshot
+    from lionhub.hooks.hooks_from import (
+        HooksFromError,
+        carry_refusal,
+        hook_command_refusals,
+        hook_entries,
+        plan_carry,
+        read_snapshot,
+        writable_roots,
+    )
 
     leg_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
     try:
@@ -2007,16 +2019,30 @@ def _apply_hooks_from(spec: dict[str, Any], branch: Any, cwd: str | None) -> Non
         )
     except HooksFromError as exc:
         raise ConfigurationError(f"cannot start this leg with hooks_from: {exc}") from exc
-    models = [m for m in (branch.chat_model, branch.parse_model) if m is not None and m.is_cli]
+    present = [m for m in (branch.chat_model, branch.parse_model) if m is not None]
+    models = [m for m in present if m.is_cli]
     claude_code = branch.chat_model in models and all(
         account_provider(m.endpoint.config.provider or "") == "claude_code" for m in models
     )
-    reason = carry_refusal(plan, claude_code=claude_code)
+    api = bool(present) and not models
+    reason = carry_refusal(plan, claude_code=claude_code, api=api)
     if reason is not None:
         raise ConfigurationError(f"cannot start this leg with hooks_from: {reason}")
+    if plan.hooks:
+        refused = hook_command_refusals(plan, leg_cwd=leg_cwd, writable=writable_roots(leg_cwd))
+        if refused:
+            listed = "; ".join(f"{where}: {why}" for where, why in refused)
+            raise ConfigurationError(
+                f"cannot start this leg with hooks_from: {len(refused)} hook command(s) "
+                f"cannot run: {listed}"
+            )
+    wired = hook_entries(plan) if plan.hooks else []
+    if wired:
+        _wire_external_hook_entries(branch, wired, cwd=leg_cwd)
     if plan.deny_rules:
         for model in models:
             model.endpoint.config.kwargs["carried_deny"] = list(plan.deny_rules)
+    return [entry["where"] for entry in wired]
 
 
 def _scratch_refusal(
@@ -3241,9 +3267,20 @@ async def _run_agent(
         # the run exists. A resumed branch checks the copy it started with again.
         hooks_from_spec = _hooks_from_spec(hooks_from_snapshot, branch, is_resumed_branch)
         if hooks_from_spec is not None:
-            _apply_hooks_from(hooks_from_spec, branch, cwd)
+            carried_hooks = _apply_hooks_from(hooks_from_spec, branch, cwd)
             if not is_resumed_branch:
                 branch.metadata[_HOOKS_FROM_KEY] = hooks_from_spec
+            if _require_hooks_refusal is not None and carried_hooks:
+                # The key's refusal was decided before the file was read; the entries it
+                # carries run on this leg, so the refusal is stated again counting them.
+                from lionhub.orchestration.spawn import refuse_require_hooks
+
+                try:
+                    refuse_require_hooks(
+                        agent_name, profile, branch.chat_model, required=True, carried=carried_hooks
+                    )
+                except RequireHooksRefusedError as exc:
+                    _require_hooks_refusal = exc
 
         inherited_run_id = current_run_id()
         job_run_id = os.environ.get(_MCP_JOB_RUN_ID_ENV_VAR)

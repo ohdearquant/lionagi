@@ -140,6 +140,73 @@ async def test_a_profile_without_the_key_takes_its_turn(agent_run, monkeypatch):
     assert not agent_run.cause.exists()
 
 
+@pytest.mark.asyncio
+async def test_a_refusal_at_launch_names_the_hook_entries_a_hooks_file_carries(
+    agent_run, monkeypatch, tmp_path
+):
+    """A trusted carried entry runs on the API leg, so the refusal for the settings hook
+    names it as one that runs (ADR-0048 Amendment 2 R2)."""
+    import hashlib
+    import importlib
+    import tempfile
+
+    from lionhub.hooks.external import compute_trust_record
+
+    user_settings = importlib.import_module("lionagi.plugins._user_settings")
+    child_sandbox = importlib.import_module("lionhub.agent.child_sandbox")
+    (agent_run.home / ".lionagi" / "settings.yaml").write_text(_SETTINGS_HOOK)
+    work, guards, private = (tmp_path.resolve() / name for name in ("work", "guards", "private"))
+    for directory in (work, guards, private):
+        directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    program = guards / "guard.sh"
+    program.write_text("#!/bin/sh\nexit 0\n")
+    program.chmod(0o755)
+    record = compute_trust_record([str(program)], str(work))
+    monkeypatch.setattr(
+        user_settings, "read_user_settings", lambda: {"trusted_hook_commands": [record]}
+    )
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {"child_sandbox": {}})
+    copy = tmp_path.resolve() / "hooks-from.json"
+    hook = {"type": "command", "command": [str(program)]}
+    copy.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]}}))
+    spec = {
+        "copy": str(copy),
+        "sha256": hashlib.sha256(copy.read_bytes()).hexdigest(),
+        "format": "claude",
+        "carry": ["hooks"],
+        "source": str(tmp_path.resolve() / "guards.json"),
+    }
+    _use_profile(
+        monkeypatch,
+        agent_run.mod,
+        AgentProfile(
+            name="guarded",
+            model="openai/gpt-4.1",
+            require_hooks=True,
+            extra={"api_tools": "read"},
+        ),
+    )
+
+    with pytest.raises(RequireHooksRefusedError) as raised:
+        await agent_run.mod._run_agent(
+            None,
+            "do the thing",
+            agent_name="guarded",
+            cwd=str(work),
+            hooks_from_snapshot=json.dumps(spec),
+        )
+
+    text = str(raised.value)
+    assert "these would not run: hooks_external in ~/.lionagi/settings.yaml." in text
+    assert (
+        "It does run the hook entries its hooks_from file carries: hooks.PreToolUse[0].hooks[0]."
+        in text
+    )
+    assert agent_run.turns == []
+    assert json.loads(agent_run.cause.read_text())["detail"] == text
+
+
 # ── a resume keeps the requirement its branch was launched with ────────────
 
 

@@ -326,8 +326,9 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
   profile's `codex_home`, else the server's environment. The submit is refused naming each hook and
   its status. The spawn check stays, because trust can change between submit and spawn, and because
   the other surfaces in R1 reach the leg without `agent.submit`.
-- **API-model legs.** On the surfaces in R1 an API-model leg runs none of lionagi's hooks today.
-  Each run path creates its agent with `load_settings=False` (`serve/cli/agent.py`,
+- **API-model legs.** On the surfaces in R1 an API-model leg runs none of the lionagi hooks the
+  settings or a profile declare. Each run path creates its agent with `load_settings=False`
+  (`serve/cli/agent.py`,
   `serve/cli/orchestrate/_orchestration.py` twice, `serve/cli/orchestrate/fanout.py`,
   `orchestration/engines/engine.py`, `orchestration/patterns.py`, and the sub-agent of
   `tools/coding.py`), so no `hooks_external` or `hooks` entry of the settings reaches the leg. No
@@ -339,24 +340,36 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
   in the same change. A hook declared for such a leg therefore does not run, whether D7 would trust
   it or not. The key refuses, at submit and at spawn, when `~/.lionagi/settings.yaml` declares a
   `hooks_external` or `hooks` entry or the profile declares a hooks assembly, naming each and saying
-  that a CLI-spawned API-model leg applies no lionagi hooks. With none declared, the key is met.
+  that a CLI-spawned API-model leg applies no lionagi hooks from the settings or a profile. With
+  none declared, the key is met. The hook entries a `hooks_from` file carries are the exception,
+  and the bullet on that file below says how the key counts them.
 - **claude_code, gemini and every other CLI provider.** lionagi reads none of their hook rules (R3),
   so it cannot say whether a declared hook will run. A profile with `require_hooks: true` on such a
   provider refuses at submit and at spawn, naming the provider and saying the key is checked for
   codex and API-model legs only. For claude_code this holds until ADR-0134 gives lionagi a hooks
   render for Claude legs, as Amendment 1 H5 holds hook entries for a claude_code leg.
-- **A hooks file named at submit (Amendment 1).** It gives no leg a hook that runs, so it neither
-  meets the key nor adds to what the key checks. Amendment 1 H5 refuses the file's hook entries on
-  every provider, and its deny and ask rules are Claude Code permission rules, applied by a
+- **A hooks file named at submit (Amendment 1).** Its hook entries are hooks declared for the leg,
+  and the key counts them (R3). An API-model leg runs them, each only once it has passed Amendment
+  1 H4's trust and writable-directory checks
+  (`lionhub/src/lionhub/hooks/hooks_from.py::hook_command_refusals`); no other leg runs them, and H5
+  refuses them there. Its deny and ask rules are Claude Code permission rules, applied by a
   claude_code leg only (`lionhub/src/lionhub/hooks/hooks_from.py::carry_refusal`). The file's
-  refusal is raised before the key's, at submit and at the leg's start, so a leg with the key and a
+  refusals are raised before the key's, at submit and at the leg's start, and the key's check is
+  handed each carried hook entry by its place in the file (the `carried` argument of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks`). A leg with the key and a
   `hooks_from` file gets:
   - on codex, H5's refusal when the file carries hook entries or deny or ask rules; a file that
     carries neither leaves the key's codex answer as it was;
-  - on an API model, the same H5 refusal; a file that carries neither leaves the key's API-model
-    answer as it was, read from the settings and the profile;
+  - on an API model, H5's refusal when the file carries deny or ask rules, and H4's when a hook
+    entry is untrusted or its program, or a file it names, lies where the leg can write. Otherwise
+    the file's hook entries run, so they meet the key, and the key's answer is the one it gives
+    without the file, read from the settings and the profile. When that answer is a refusal, its
+    text also names each carried hook entry as one that runs;
   - on claude_code, H5's refusal when the file carries hook entries; a file that carries only deny
     and ask rules passes H5, and the key then refuses, naming claude_code.
+
+  Were a carried hook entry to reach a CLI leg past H5, the key would refuse it there too, naming
+  it.
 
 ### R3. Limits
 
@@ -368,9 +381,9 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
 - Applying lionagi's hooks to a CLI-spawned API-model leg is outside this amendment. When a later
   change applies them, the API arm of R2 becomes D7's own check: the key is met when
   `lionhub/src/lionhub/hooks/external.py::_trust_status` trusts every imported or plugin entry the
-  leg carries. The same holds for a `hooks_from` file's hook entries: a change that lets a leg run
-  them makes them hooks declared for that leg, which the key counts and the refusal text of
-  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks` describes.
+  leg carries. A `hooks_from` file's hook entries already run on an API-model leg (Amendment 1
+  H4, H5): they are hooks declared for that leg, which the key counts and the refusal text of
+  `lionhub/src/lionhub/orchestration/spawn.py::refuse_require_hooks` describes (R2).
 - A flow, fanout or play does not pass through `agent.submit`'s check for each worker. Its workers
   are refused at spawn.
 - An `agent.submit` that resumes or continues a branch takes its model from that branch, which the
@@ -407,8 +420,10 @@ lionagi's own hooks. On every other provider lionagi sees no hooks, and the key 
 - A profile with the key and a `hooks_from` file, each refused before any job record: on codex,
   with a trusted home, a file with hook entries and a file with deny rules are refused by H5, and a
   file carrying neither leaves the home's answer (an untrusted hook refuses, a trusted one is
-  accepted); on an API model, a file with hook entries is refused by H5 and a file carrying neither
-  is accepted; on claude_code, a file of deny rules alone is refused by the key, naming
+  accepted); on an API model, a file with an untrusted hook entry is refused by H4, a file of
+  trusted hook entries is accepted, and with a hook also declared in the settings the key refuses,
+  naming the settings hook as one that does not run and the carried entry as one that does; on
+  claude_code, a file of deny rules alone is refused by the key, naming
   claude_code, and a file with hook entries is refused by H5.
 - `li agent -a` with the key on codex refuses at spawn (the existing request check is reached).
 - A run refused at spawn ends failed with the refusal's class and text recorded, and takes no turn;

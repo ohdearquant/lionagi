@@ -755,7 +755,17 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
     See docs/internals/agent-runtime.md#external-hook-wiring for the
     attach/queue/reparent contract.
     """
-    if not spec.external_hooks:
+    _wire_external_hook_entries(branch, spec.external_hooks, cwd=spec.cwd)
+
+
+def _wire_external_hook_entries(
+    branch: Branch, entries: list[dict[str, Any]], *, cwd: str | None
+) -> None:
+    """Attach parsed ``hooks_external`` *entries* to *branch*, each hook running in *cwd*.
+
+    The entries are the dicts :func:`lionhub.agent.settings.parse_external_hooks` returns.
+    """
+    if not entries:
         return
 
     from lionagi.hooks.bus import HookPoint
@@ -769,14 +779,14 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
         "PostToolUseFailure": HookPoint.TOOL_ERROR,
     }
 
-    for entry in spec.external_hooks:
+    for entry in entries:
         handler = external_hook_adapter(
             event=entry["event"],
             command=entry["command"],
             timeout=entry["timeout"],
             matcher=entry.get("matcher"),
             source=entry.get("source"),
-            cwd=spec.cwd,
+            cwd=cwd,
             session_id=session_id,
         )
         if entry["event"] == "PreToolUse":

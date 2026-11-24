@@ -359,13 +359,15 @@ def test_a_hooks_file_carrying_neither_kind_leaves_the_codex_answer(submission, 
     assert len(spawned) == 1
 
 
-def test_a_hooks_file_adds_no_hook_to_an_api_model_leg(submission, tmp_path):
-    """Hook entries are refused; a file that carries neither kind leaves the key met."""
+def test_a_hook_entry_that_cannot_run_refuses_an_api_model_leg_before_the_key(submission, tmp_path):
+    """A hook entry that cannot run is refused by the file's own check, before the key; a
+    file that carries neither kind leaves the key met."""
     cwd, _home, _server_codex, spawned = submission
     _profile("guarded", "model: openai/gpt-4.1\nrequire_hooks: true\n")
     refused = _submit(_with_hooks_file(tmp_path, cwd, _HOOK_ENTRIES))
     assert refused["ok"] is False, refused
-    assert "hook entries" in refused["error"]["message"]
+    # Untrusted where /bin/true exists, not found where it does not: refused either way.
+    assert "hook command(s) cannot run" in refused["error"]["message"]
     assert "applies no lionagi hooks" not in refused["error"]["message"]
     assert _no_run_recorded(spawned)
     accepted = _submit(_with_hooks_file(tmp_path, cwd, _NEITHER))

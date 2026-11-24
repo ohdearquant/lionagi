@@ -14,6 +14,9 @@ running leg:
   and dropped, and a guard that cannot be carried refuses the whole plan. Hook entries
   are translated to ``hooks_external`` entries tagged ``source: imported:<format>``;
   deny and ask rules are rendered for the leg by :func:`render_permission_rule` (H6).
+- :func:`hook_command_refusals` checks each carried hook command before a leg runs it
+  (H4): a trust record must match it, and neither its program nor a file it names may
+  lie in a directory the leg can write.
 
 A refusal names an entry by its key path and index, never by its content.
 """
@@ -23,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,10 +42,13 @@ __all__ = (
     "HooksFile",
     "HooksFromError",
     "carry_refusal",
+    "hook_command_refusals",
+    "hook_entries",
     "plan_carry",
     "read_hooks_file",
     "read_snapshot",
     "render_permission_rule",
+    "writable_roots",
     "write_snapshot",
 )
 
@@ -130,7 +137,11 @@ class HooksFile:
 
 @dataclass(frozen=True)
 class CarryPlan:
-    """What one leg carries from a hooks file, and what the submit result reports."""
+    """What one leg carries from a hooks file, and what the submit result reports.
+
+    ``hook_labels`` names each carried hook entry by its key path in the file, in the order
+    :func:`hook_entries` walks ``hooks``.
+    """
 
     hooks: dict[str, list[dict[str, Any]]]
     deny_rules: tuple[str, ...]
@@ -138,6 +149,7 @@ class CarryPlan:
     left_out: tuple[str, ...]
     dropped_keys: tuple[str, ...]
     dropped_other: int
+    hook_labels: tuple[str, ...] = ()
 
     def report(self) -> list[str]:
         lines = []
@@ -205,23 +217,137 @@ def read_snapshot(path: str, sha256: str) -> HooksFile:
     return snapshot
 
 
-def carry_refusal(plan: CarryPlan, *, claude_code: bool) -> str | None:
+def carry_refusal(plan: CarryPlan, *, claude_code: bool, api: bool = False) -> str | None:
     """Why a leg cannot apply *plan*, or None when it can (ADR-0048 Amendment 1 H5).
 
-    *claude_code* says whether the leg runs on a Claude Code model. Deny and ask rules are
-    applied by a Claude Code leg only. Hook entries are refused on every provider for now.
+    *claude_code* says whether every model of the leg runs on Claude Code, *api* whether
+    every model of the leg is an API model. Deny and ask rules are applied by a Claude Code
+    leg only, and hook entries by an API-model leg only: no CLI provider renders hook entries
+    from a hooks file yet.
     """
-    if plan.hooks:
+    if plan.hooks and not api:
         return (
-            "the file carries hook entries, and no leg applies hook entries from hooks_from yet; "
+            "the file carries hook entries, and only an API-model leg applies them; "
             'submit with hooks_from_carry=["deny"] to carry only its deny and ask rules'
         )
     if plan.deny_rules and not claude_code:
+        if api:
+            return (
+                "the file carries deny or ask rules, and only a claude_code leg applies them; "
+                'submit with hooks_from_carry=["hooks"] to carry only its hook entries'
+            )
         return (
             "the file carries deny or ask rules, and only a claude_code leg applies them; run "
             "the leg on a claude_code model"
         )
     return None
+
+
+def hook_entries(plan: CarryPlan) -> list[dict[str, Any]]:
+    """The plan's hook entries, one dict each, in the shape the agent factory wires.
+
+    Each entry is ``{event, matcher, command, timeout, source, where}``, the first five as
+    :func:`lionhub.agent.settings.parse_external_hooks` returns them and ``where`` the
+    entry's key path in the file.
+    """
+    entries: list[dict[str, Any]] = []
+    for event, groups in plan.hooks.items():
+        for group in groups:
+            for spec in group["hooks"]:
+                entries.append(
+                    {
+                        "event": event,
+                        "matcher": group.get("matcher"),
+                        "command": list(spec["command"]),
+                        "timeout": float(spec.get("timeout", 60.0)),
+                        "source": spec["source"],
+                    }
+                )
+    labels = plan.hook_labels
+    for index, entry in enumerate(entries):
+        entry["where"] = labels[index] if index < len(labels) else f"hook entry {index}"
+    return entries
+
+
+def writable_roots(leg_cwd: str) -> tuple[str, ...]:
+    """The directories an API-model leg can write: its working directory and the child
+    sandbox's ``allow_write`` roots, each expanded and resolved.
+
+    An API-model leg, the only leg that carries hook entries, has no scratch directory
+    (ADR-0041 Amendment 6), so none is added. Raises ``ConfigurationError`` when the child
+    sandbox settings cannot be read.
+    """
+    from lionhub.agent.child_sandbox import resolve_child_sandbox
+
+    roots = [leg_cwd, *resolve_child_sandbox(None).allow_write]
+    resolved = (str(Path(os.path.expanduser(root)).resolve()) for root in roots)
+    return tuple(dict.fromkeys(resolved))
+
+
+def _inside(path: Path, roots: Sequence[Path]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def hook_command_refusals(
+    plan: CarryPlan, *, leg_cwd: str, writable: Sequence[str]
+) -> list[tuple[str, str]]:
+    """Each carried hook command the leg may not run, with the reason (ADR-0048 Amendment 1 H4).
+
+    A command is refused when its program, or an argument naming an existing file, lies in one
+    of the *writable* directories, where the leg could rewrite its own guard during the run; and
+    when no ``trusted_hook_commands`` record matches it as it resolves from *leg_cwd*, the
+    directory the hook runs in. A relative argument is resolved against *leg_cwd* too. Reasons
+    quote nothing from the file. This narrows what a leg can rewrite under its own guard; a
+    guard that imports or reads a module from a writable directory at run time is not caught.
+    """
+    from lionhub.hooks.external import (
+        ExternalHookConfigError,
+        _trust_status,
+        resolve_hook_executable,
+    )
+
+    roots = [Path(root).resolve() for root in writable]
+    problems: list[tuple[str, str]] = []
+    for entry in hook_entries(plan):
+        where, command = entry["where"], entry["command"]
+        try:
+            program = resolve_hook_executable(command, leg_cwd)
+        except ExternalHookConfigError:
+            problems.append(
+                (where, "its program is not an executable file found from the leg's directory")
+            )
+            continue
+        if _inside(program, roots):
+            problems.append(
+                (
+                    where,
+                    "its program lies in a directory the leg can write, so the leg could "
+                    "rewrite its own guard",
+                )
+            )
+            continue
+        named = (
+            Path(arg) if os.path.isabs(arg) else Path(leg_cwd) / arg for arg in command[1:] if arg
+        )
+        if any(path.is_file() and _inside(path.resolve(), roots) for path in named):
+            problems.append(
+                (
+                    where,
+                    "an argument names a file in a directory the leg can write, so the leg "
+                    "could rewrite its own guard",
+                )
+            )
+            continue
+        trusted, _ = _trust_status(command, source=entry["source"], cwd=leg_cwd)
+        if not trusted:
+            problems.append(
+                (
+                    where,
+                    "no trust record matches its command; a person approves it with "
+                    "`li hooks trust --from <file> --format <format> --cwd <leg directory>`",
+                )
+            )
+    return problems
 
 
 def _source_kind(resolved_path: str, home: Path) -> tuple[str, Path | None]:
@@ -357,7 +483,7 @@ def _is_timeout(value: Any) -> bool:
 
 
 def _plan_hooks(
-    block: Any, fmt: str, problems: list[tuple[str, str]]
+    block: Any, fmt: str, problems: list[tuple[str, str]], labels: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
     if not isinstance(block, dict):
         problems.append(("hooks", "must be an object mapping event names to matcher groups"))
@@ -408,6 +534,7 @@ def _plan_hooks(
                         continue
                     entry["timeout"] = spec["timeout"]
                 translated.append(entry)
+                labels.append(entry_where)
             if translated:
                 group_entry: dict[str, Any] = {"hooks": translated}
                 if matcher is not None:
@@ -457,12 +584,13 @@ def plan_carry(
             dropped_other += 1
 
     hooks: dict[str, list[dict[str, Any]]] = {}
+    hook_labels: list[str] = []
     deny_rules: list[str] = []
     ask_count = 0
     for key, value in document.items():
         if key == "hooks":
             if "hooks" in carried:
-                hooks = _plan_hooks(value, fmt, problems)
+                hooks = _plan_hooks(value, fmt, problems, hook_labels)
             continue
         if key == "permissions" and fmt == "claude":
             if not isinstance(value, dict):
@@ -505,4 +633,5 @@ def plan_carry(
         left_out=tuple(guard for guard in HOOKS_FROM_CARRY if guard not in carried),
         dropped_keys=tuple(sorted(dropped)),
         dropped_other=dropped_other,
+        hook_labels=tuple(hook_labels),
     )
