@@ -140,6 +140,9 @@
     "lionhub/src/lionhub/serve/cli/orchestrate/_finalize.py": [
       "__all__ = (\n    \"CLAIM_ROLE_RUNNER\",\n    \"CLAIM_ROLE_KILL_REAPER\",\n    \"CLAIM_ROLE_ORPHAN_REAPER\",\n    \"NOTHING_OWED\",\n    \"TERMINAL_WRITE_ONLY\",\n    \"LATE_FACTS\",\n    \"FULL_PATH\",\n    \"FinalizeClaim\",\n    \"claim_path\",\n    \"claim_finalization\",\n)"
     ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_github_pr.py": [
+      "__all__ = (\n    \"GITHUB_COMMENT_MAX_CHARS\",\n    \"PR_META_FIELDS\",\n    \"GithubPrError\",\n    \"GithubPrTarget\",\n    \"fetch_pull_request\",\n    \"post_review\",\n    \"resolve_target\",\n    \"synthesis_text\",\n)"
+    ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_harvest.py": [
       "__all__ = (\n    \"MAX_FILES_PER_LEG\",\n    \"MAX_BYTES_PER_LEG\",\n    \"COPY_CHUNK_BYTES\",\n    \"STATE_ABSENT\",\n    \"STATE_EMPTY\",\n    \"STATE_FAILED\",\n    \"SKIP_SYMLINK\",\n    \"SKIP_HARDLINK\",\n    \"SKIP_SWAPPED\",\n    \"SKIP_SPECIAL\",\n    \"SKIP_UNREADABLE\",\n    \"HarvestResult\",\n    \"harvest_leg_artifacts\",\n)"
     ],
@@ -399,6 +402,14 @@
       "FinalizeClaim",
       "claim_finalization",
       "claim_path"
+    ],
+    "lionhub/src/lionhub/serve/cli/orchestrate/_github_pr.py": [
+      "GithubPrError",
+      "GithubPrTarget",
+      "fetch_pull_request",
+      "post_review",
+      "resolve_target",
+      "synthesis_text"
     ],
     "lionhub/src/lionhub/serve/cli/orchestrate/_harvest.py": [
       "HarvestResult",
