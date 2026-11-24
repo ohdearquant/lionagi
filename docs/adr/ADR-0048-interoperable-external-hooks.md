@@ -214,6 +214,12 @@ matching, or the shape is in doubt, the rule takes the any-depth form: a rule re
 the parent applied it denies more, never less, while the anchored form of `Read(secrets/**)` would
 let the leg read `vendor/secrets/x`, which the parent could not.
 
+Each `<dir>` is pasted into the rule as written, so it must be an absolute path holding no character
+the rule syntax reads as a pattern: `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)` or a backslash. A rule
+that would render with any other directory names something else in the leg, so it refuses at submit,
+naming whether the source project directory or the leg's working directory was the cause and quoting
+neither.
+
 Rules for other tools:
 
 - A rule carries as written only when it has no path anchor to lose: a bare tool name, a `*` form,
