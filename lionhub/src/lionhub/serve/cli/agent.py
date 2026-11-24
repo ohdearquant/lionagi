@@ -236,6 +236,11 @@ def _subscription_read_rules(
 _NO_PERSISTED_EXECUTION = object()
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
+# The config file a branch was named with, kept as provenance once the record points at the
+# run directory's copy of the set it handed (ADR-0041 Amendment 8).
+_MCP_CONFIG_NAMED_KEY = "mcp_config_named"
+# The name of that copy inside a run directory.
+_MCP_CONFIG_COPY_NAME = "mcp-config.json"
 # Branch metadata naming the hooks file copy a leg started with, so a resume checks it again.
 _HOOKS_FROM_KEY = "hooks_from"
 _HOOKS_FROM_SPEC_FIELDS = ("copy", "sha256", "format", "carry", "source")
@@ -1885,6 +1890,33 @@ def _attributed_resolution(
     )
 
 
+def _servers_as_read(resolution: McpResolution) -> dict[str, Any] | None:
+    """A copy of the servers *resolution* read, detached from anything that later changes it."""
+    if resolution.servers is None:
+        return None
+    return json.loads(json.dumps(resolution.servers))
+
+
+def _write_mcp_config_copy(state_root: Path, servers: dict[str, Any] | None) -> Path:
+    """Write the server set a named config handed this run into its run directory.
+
+    The file is created, never replaced, and readable by its owner alone: a resume reads this
+    copy rather than the named file, so the set it replays is the set this run was handed.
+    """
+    path = Path(state_root) / _MCP_CONFIG_COPY_NAME
+    content = json.dumps({"mcpServers": servers or {}}, indent=2) + "\n"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:
+        raise McpConfigError(
+            f"could not copy the named MCP config into the run directory ({path}): "
+            f"{exc.strerror or type(exc).__name__}"
+        ) from None
+    return path
+
+
 #: Why a run whose profile declares ``scratch`` is refused on a provider other than a Claude Code
 #: CLI child (ADR-0041 Amendment 6). Each names what is missing, not a preference.
 _SCRATCH_REFUSAL_API = (
@@ -2330,6 +2362,15 @@ async def _run_agent(
                     or recorded_launch.get("no_mcp_config") is not False
                 ):
                     raise McpConfigError("this branch has an invalid recorded MCP snapshot origin")
+                if _MCP_CONFIG_NAMED_KEY in recorded_launch and (
+                    origin != "explicit"
+                    or not isinstance(recorded_launch[_MCP_CONFIG_NAMED_KEY], str)
+                    or not os.path.isabs(recorded_launch[_MCP_CONFIG_NAMED_KEY])
+                ):
+                    raise McpConfigError(
+                        "this branch has an invalid record of the MCP config it was named; "
+                        "start a fresh run"
+                    )
                 if (
                     "no_mcp_config" in recorded_launch
                     and type(recorded_launch["no_mcp_config"]) is not bool
@@ -2362,6 +2403,9 @@ async def _run_agent(
                 f"this branch has an invalid recorded MCP config "
                 f"{_format_recorded_mcp_path(recorded_launch['mcp_config'])}; start a fresh run"
             )
+        # The servers a named config handed this run, as read from it and before the run's own
+        # actor is attributed to them: what the run directory's copy holds (ADR-0041 Amendment 8).
+        handed_servers: dict[str, Any] | None = None
         if not replay_recorded_choice:
             mcp_resolution = resolve_spawn_mcp_servers(
                 mcp_config,
@@ -2369,6 +2413,7 @@ async def _run_agent(
                 disabled=no_mcp_config,
                 submit_snapshot=mcp_submit_snapshot if not is_resumed_branch else None,
             )
+            handed_servers = _servers_as_read(mcp_resolution)
             mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
 
         # A resume that names no MCP flag replays the choice its branch was launched
@@ -2416,6 +2461,7 @@ async def _run_agent(
                         submit_snapshot=recorded_config if is_submit_snapshot else None,
                         **({"reject_legacy_snapshot": True} if legacy_recorded_file else {}),
                     )
+                    handed_servers = _servers_as_read(mcp_resolution)
                     mcp_resolution = _attributed_resolution(mcp_resolution, agent_name, cwd=cwd)
                 except LegacyMcpReplayError as exc:
                     # The resolver constructed this fixed, safely-labelled message.
@@ -3095,41 +3141,6 @@ async def _run_agent(
         if account_switched_from is not None and leg_account is not None:
             account_switches.append(dict(leg_account.record))
             branch.metadata[_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY] = account_switches
-        if not is_resumed_branch:
-            # The file on the line is what a resume reads again, named or not: a
-            # leg submitted through the MCP server is pointed at a snapshot of the
-            # config its submission found, and that snapshot is its set.
-            # A snapshot's resolution reports the config it was taken from and the
-            # directory its search began in, both provenance; a resume must read the
-            # snapshot itself, from this process's own directory.
-            selected_config = mcp_config or mcp_submit_snapshot
-            named_on_the_line = selected_config is not None and mcp_resolution.source is not None
-            line_file = (
-                explicit_mcp_config_path(selected_config, launch_dir=launch_dir)
-                if named_on_the_line
-                else None
-            )
-            branch.metadata[_MCP_LAUNCH_KEY] = {
-                "mcp_config": str(line_file) if line_file is not None else None,
-                "no_mcp_config": no_mcp_config,
-                "launch_dir": str(launch_dir),
-            }
-            if profile_disables_mcp:
-                branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
-            elif mcp_submit_snapshot is not None and not no_mcp_config:
-                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
-            elif mcp_config is not None and not no_mcp_config:
-                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "explicit"
-        elif profile_disables_mcp:
-            # Once a resumed leg is contained by its profile, later resumes
-            # without that profile must not restore the earlier server set.
-            branch.metadata[_MCP_LAUNCH_KEY] = {
-                "mcp_config": None,
-                "no_mcp_config": True,
-                "no_mcp_config_source": "profile",
-                "launch_dir": str(launch_dir),
-            }
-
         if is_resumed_branch:
             from lionhub.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
 
@@ -3207,6 +3218,65 @@ async def _run_agent(
             # the matching launch ID when it allocates the job's run directory.
             if not _auto_resumed and inherited_run_id == job_run_id == run.run_id:
                 _job_result_run = run
+        # Recorded once the run directory exists, because a named set is copied into it: no
+        # branch is persisted before this point, so none can carry a record without its copy.
+        # Whether this run's record now points at a copy it wrote; an automatic resume then
+        # replays that copy rather than reading the named file again.
+        mcp_copy_written = False
+        if not is_resumed_branch:
+            # The file on the line is what a resume reads again, named or not: a
+            # leg submitted through the MCP server is pointed at a snapshot of the
+            # config its submission found, and that snapshot is its set.
+            # A snapshot's resolution reports the config it was taken from and the
+            # directory its search began in, both provenance; a resume must read the
+            # snapshot itself, from this process's own directory.
+            selected_config = mcp_config or mcp_submit_snapshot
+            named_on_the_line = selected_config is not None and mcp_resolution.source is not None
+            line_file = (
+                explicit_mcp_config_path(selected_config, launch_dir=launch_dir)
+                if named_on_the_line
+                else None
+            )
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                "mcp_config": str(line_file) if line_file is not None else None,
+                "no_mcp_config": no_mcp_config,
+                "launch_dir": str(launch_dir),
+            }
+            if profile_disables_mcp:
+                branch.metadata[_MCP_LAUNCH_KEY]["no_mcp_config_source"] = "profile"
+            elif mcp_submit_snapshot is not None and not no_mcp_config:
+                branch.metadata[_MCP_LAUNCH_KEY]["mcp_config_origin"] = "submit_snapshot"
+            elif mcp_config is not None and not no_mcp_config:
+                # A named file can change, or sit where the leg can write: the record points
+                # at the copy of the set this run was handed, and keeps the name as provenance.
+                branch.metadata[_MCP_LAUNCH_KEY].update(
+                    {
+                        "mcp_config": str(_write_mcp_config_copy(run.state_root, handed_servers)),
+                        "mcp_config_origin": "explicit",
+                        _MCP_CONFIG_NAMED_KEY: str(line_file),
+                    }
+                )
+                mcp_copy_written = True
+        elif profile_disables_mcp:
+            # Once a resumed leg is contained by its profile, later resumes
+            # without that profile must not restore the earlier server set.
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                "mcp_config": None,
+                "no_mcp_config": True,
+                "no_mcp_config_source": "profile",
+                "launch_dir": str(launch_dir),
+            }
+        elif (
+            replay_recorded_choice
+            and isinstance(recorded_launch, dict)
+            and _MCP_CONFIG_NAMED_KEY in recorded_launch
+        ):
+            # A resume that replayed a copy copies the set again into its own run directory, so
+            # the set lasts as long as the branch's newest run rather than its first.
+            branch.metadata[_MCP_LAUNCH_KEY] = {
+                **recorded_launch,
+                "mcp_config": str(_write_mcp_config_copy(run.state_root, handed_servers)),
+            }
         branch_id = str(branch.id)
         resolved_model_spec = _provenance.resolve_model_spec(provider, model)
         run_manifest = {
@@ -4138,7 +4208,7 @@ async def _run_agent(
                     workload=workload,
                     notify=notify,
                     notify_sender=notify_sender,
-                    mcp_config=mcp_config,
+                    mcp_config=None if mcp_copy_written else mcp_config,
                     no_mcp_config=no_mcp_config,
                     **(
                         {"mcp_submit_snapshot": mcp_submit_snapshot}

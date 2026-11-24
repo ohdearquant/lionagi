@@ -573,6 +573,13 @@ def _argv(
         binary,
         "exec",
         "--skip-git-repo-check",
+        # The flags a contained launch passes, since the probe certifies a contained launch.
+        # Plugins off is also the one that stops codex cloning its plugin catalog into its home
+        # at startup, an outbound connection the probe would otherwise make itself.
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
         "-c",
         'model_provider="stub"',
         "-c",
