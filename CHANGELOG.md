@@ -6,6 +6,626 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `lionagi_studio/compatibility.json`: the daemon reads the attached application's
+  compatibility manifest before it adds a route and refuses a missing, malformed or incompatible
+  one with an installation error.
+
+- `job.output` returns `transcript_path` for an `agent.submit` job: the saved branch file, named by the
+  run's own `run.json`, that holds every message including each tool call and its arguments. It is null
+  for other job kinds, before the branch is saved, and when the file is unavailable or is a link.
+
+- `LIONAGI_STUDIO_PRUNE_CHUNK_PAUSE_SECONDS` (default `0.5`, `0` disables): the retention prune waits
+  this long after each committed chunk, so a writer waiting for the store's lock can take it between chunks.
+
+- `gemini_code` resolves the Gemini 4 Neon, Carbon and Hydrogen families to their own agy model
+  names, at each family's own tiers: Low, Medium and High, plus XHigh on Neon and Hydrogen, where
+  `xhigh`, `max` and `ultra` resolve to XHigh. Before, every such spec ran as Argon, and every effort
+  above high became High.
+
+- `li agent` records `resolved_model` in `run.json`: the exact `agy --model` name the run asked for.
+
+- CLI agent legs can run on named subscription accounts. A Claude Code account is a login token read
+  at spawn from a token file, a macOS keychain item or a `.env` variable, and reaches the child only
+  as `CLAUDE_CODE_OAUTH_TOKEN`. A Codex account is a Codex home, which reaches the child as
+  `CODEX_HOME`. Accounts are listed under `LIONAGI_LOGINS_DIR` (default `<LIONAGI_HOME>/logins`);
+  a leg picks one with `li agent --account <name>`, or `account:` or `codex_home:` in its agent
+  profile, which flow and fan-out orchestrators and their workers honour too. The profile keys are
+  honoured only in `~/.lionagi/agents`: a project's own or a plugin's profile that sets either is
+  refused, and the leg does not start. An account that does
+  not resolve refuses the launch; nothing falls back. `run.json` and saved branches record the
+  account name, and for Codex the home, never a token.
+
+- A resumed branch keeps its account unless `--account` names another, and each move is recorded. A
+  Claude Code branch may move to any account; a Codex branch stays in the home it ran in, so it moves
+  only to another account on that home.
+
+- `create_agent(agent_env={"CODEX_HOME": ...})` runs a Codex agent in that home, which must be an
+  existing absolute directory.
+
+- A leg-host launch may name a subscription account with `action_account`, and `li remote run`
+  takes `--account`. The leg host refuses a malformed name, or one with no entry for the
+  profile's provider in its own accounts directory, and runs the leg with `li agent --account`.
+  The launch response echoes the account and `GET /api/launches/capabilities` reports
+  `named_account`; `li remote run --account` refuses an empty name and a host without the
+  capability, and cancels a launch whose response does not confirm the account.
+
+- An agent profile can declare a Claude Code agent with no built-in tool: `tools: none`, written
+  with no list around it, becomes `--tools ""`, and the agent works only through the MCP servers
+  it is handed. An empty `tools` list is still refused, a list that names `none` as a tool is
+  refused, and the declaration is refused for a model on another provider like the other tool
+  fields. A contained worker (`contain_user_settings: true`) whose role declares it keeps no
+  built-in tool.
+
+- `ndjson_from_cli()` takes `secret_values`: literal values to remove from every message it logs or
+  raises, for a secret that no environment mapping or named argument holds.
+
+- `POST /api/approvals/{id}/consume` uses a granted Studio approval once, for exactly the
+  `action_kind` and `params` it was granted for, so an executor outside the Studio process can
+  consume it. A mismatch is a 422 and leaves the approval granted. The route needs the daemon's
+  bearer token (`LIONAGI_STUDIO_AUTH_TOKEN`), as granting does: a request without it is refused,
+  and a daemon started with no token configured refuses every consume with a 403.
+
+- The Studio approval lifetime is configurable: `LIONAGI_STUDIO_APPROVAL_TTL_SECONDS` sets the
+  default (five minutes when unset), `LIONAGI_STUDIO_APPROVAL_MAX_TTL_SECONDS` the cap (one hour
+  when unset), and a proposal may ask for `ttl_seconds` up to the cap. A request over the cap is
+  refused, never shortened.
+
+- A subscription account in `accounts.toml` may set `max_concurrent = N`: at most `N` CLI agents
+  on that account run at once on this machine, counted in their own admission pool beside the
+  machine-wide caps. A cap that is not a whole number of at least 1 refuses the account.
+
+- Background jobs submitted through the MCP server record the subscription account their
+  submission asked for (`account`, `account_provider`) in the job record, `job.status` and
+  `job.list`.
+
+- New MCP verb `account.list`: each declared subscription account with its source kind, cap, held
+  slots, running jobs, jobs ended in the last 24 hours and the last usage-limit refusal recorded
+  for it (Codex only; Claude Code limits are not yet recorded). It never returns where a
+  credential is kept.
+
+- A Studio approval records who granted or denied it, and `GET /api/approvals/{id}` returns it
+  as `decision_principal_id`, `decision_epoch`, `decision_method`, `decision_origin` and
+  `decision_scope`. A grant or deny that carries a verified `X-Studio-Decision-Token` (the
+  decision capability `li studio` pairs its page with) records that principal, method
+  `pairing`, as Operator decisions already do. One that the bearer token admits without such a
+  capability records the credential: id `studio-credential`, method `credential`, the daemon
+  start's epoch, and no origin or scope. That principal says the configured token decided; it
+  does not tell apart the people or programs holding it, since everyone with that one token is
+  the same principal, and neither the token nor any digest of it is stored. The evidence hash
+  includes the principal only when one is recorded, so existing evidence chains still verify.
+  Existing stores gain the columns as NULL on their next writable open.
+
+- An older lionagi checking the evidence chain of a store this version wrote reports a content
+  hash mismatch on every grant or deny that recorded a principal, because it does not know the
+  field. The rows are intact; check the chain with this version or later.
+
+- An agent profile's `scratch: true` or `scratch: keep` gives each `li agent` run of the role on a Claude Code model a private writable directory inside the run's state directory, the one write root added to an otherwise read-only sandbox and the child's temporary directory. `true` removes it when the run ends without following any link; `keep` leaves it. run.json records the path and the outcome. Codex, Gemini CLI and API-model runs, and flows, fan-outs and plays, refuse such a profile and name the reason.
+
+- `li doctor` reports, for the codex home the environment names and for each codex
+  subscription account's home, the hooks codex will not run because their trust record is
+  missing, stale or unreadable under that home.
+
+- `CodexCodeRequest.require_hooks` (off by default) refuses to start a Codex run when a hook
+  its codex home declares will not run.
+
+- An agent profile can declare `deny_read`, a list of absolute or `~/` paths its child may not
+  read. The entries are added after the `allow_read` exemptions, so no exemption lifts one, and
+  any profile file may carry them. A relative path, a pattern, or a path through a symbolic link
+  refuses the profile when it loads; the link refusal prints the path to write instead.
+
+- A run whose profile declares `deny_read` is refused before its run directory exists on a
+  route that cannot hold the entries: an API model with the read tool set (and, in a flow,
+  fan-out or play, an orchestrator or worker on any API model), the Gemini CLI on a
+  host without `sandbox-exec`, a CLI with no child sandbox, and any route while the child
+  sandbox is switched off.
+
+- An orchestration engine stage whose role's profile declares `deny_read` is refused when its
+  agent is built: a stage takes only the model and effort from the profile, so nothing would
+  carry the entries to its child. A profile that fails to load for another reason is refused
+  the same way when its file names `deny_read` or cannot be read, since such a stage runs on
+  its other settings.
+
+- `python -m lionhub.providers.openai.codex_exec_capture --out <new directory>` records what
+  `codex exec --json` writes for fixed prompts (a run asked to write nothing, a run naming an
+  unknown model, and a run whose prompt a hook in a scratch codex home blocks; `--case NAME`
+  picks them), read-only and with no MCP server, so the cases can be told apart from captured
+  output. Each command line is printed before it runs, the command writes nothing outside
+  `--out`, runs under the operator's codex home are ephemeral, and no sign-in file is read.
+
+- The codex exec capture has a `scratch_no_hook` case, the hook case's control: the same prompt
+  in a scratch codex home with no hook. `--hook-case` runs both.
+
+- `python -m lionhub.tools.seatbelt_read_probe --scratch <dir>` measures, on the volume holding
+  `<dir>`, whether lionagi's Seatbelt policy with reads denied by default refuses a read outside
+  its roots (a direct read, a stat, a read through a symlink, a listing of the directory above the
+  workspace, and files under `/tmp`, `/var/tmp` and `/Users/Shared` spelled through their links)
+  while a shell and the interpreter still start. It writes a record keyed by the volume. The
+  policy variant (`SeatbeltPolicy.read_roots`) is not used by any launch yet; with it unset the
+  policy text is unchanged. With it set, the root directory is readable, every directory and link
+  on the way to the running interpreter has its metadata readable (so an interpreter reached
+  through links outside the roots starts), and rendering the policy fails if the base policy no
+  longer holds its unrestricted read line exactly once.
+
+- A codex `li agent` run whose profile declares `scratch` gets the run's scratch directory as
+  one write entry in its permission profile, in every workload and sandbox mode, with `TMPDIR`,
+  `TMP` and `TEMP` set to it for the commands the child runs.
+
+- The codex sandbox probe has a `scratch_env` arm, and a scratch launch needs it to have passed.
+
+- `python -m lionhub.providers.openai.codex_read_probe` measures whether a codex binary honours a
+  permission profile that denies reads by default and grants a read entry per root, and writes a
+  record under `LIONAGI_HOME/codex-read-probes`. `permission_profile_table` takes `read_roots` to
+  build such a table. No launch uses either yet.
+
+- `python -m lionhub.providers.anthropic.claude_read_probe` measures, for one `claude` binary,
+  whether Claude Code's sandbox with `denyRead: ["/"]` and an `allowRead` list refuses a read
+  outside the allowed paths (a direct read, a stat, a read through a symlink, a listing of the
+  directory above the working directory, files under `/tmp`, `/var/tmp` and `/Users/Shared`, and
+  the Read tool) while reads inside them, a shell and the interpreter still work. It runs the
+  binary against a loopback stand-in for the Messages API with a placeholder key, no MCP server and
+  its own home and config directories, beside a control run without the read rules, and writes a
+  record under `LIONAGI_HOME/claude-read-probes`. No launch reads the record.
+
+- A test freezes the old `lionagi.studio` import paths: every module path at the base of
+  ADR-0136 Amendment 5 and every Studio row of the moved-path table, each with the module it
+  must resolve to as the same object, and the three kept parent packages importing as
+  themselves. A module or row lost in a later change now fails this test instead of dropping
+  out of the comparison.
+
+- CI builds the wheel, installs `lionagi[studio]` from it into a fresh environment outside the
+  checkout, and runs the Studio boundary checks with that interpreter. The run fails unless
+  `lionagi` and `lionhub` are imported from that environment and the installed files match the
+  wheel's RECORD. The new `studio-wheel` job is required by the CI gate.
+
+- `lionhub.hooks.hooks_from` reads a Claude Code `settings.json` or a Codex `hooks.json` once
+  (an absolute path, no symbolic link as the last component, a regular file of at most 256 KiB,
+  strict UTF-8 JSON with an object at the top) and plans what a leg carries from it: hooks become
+  `hooks_external` entries tagged `source: imported:<format>`, deny and ask rules are rendered so a
+  relative or `/`-anchored rule keeps meaning what it meant where it was written, every other key
+  is reported, and a guard that cannot be carried refuses the whole plan, named by key path and
+  index. A `Cd` rule carries only when written from the filesystem root (`Cd(//x)`) or the home
+  directory (`Cd(~/x)`), and a path rule for `Write`, `NotebookEdit`, `MultiEdit`, `Glob` or
+  `Grep`, which Claude Code accepts and never matches, refuses naming the spelling to use.
+  Refusals carry no bytes from the file. Nothing calls it yet.
+
+- `python -m lionhub.providers.anthropic.claude_deny_probe` records whether a `claude` binary
+  refuses the deny and ask rules `plan_carry` renders for a leg: one rule of each source shape,
+  run once with no rules as the control and once with the rendered rules. The record is keyed by
+  the binary's resolved path, version and bytes; no launch reads it yet.
+
+- `agent.submit` takes `hooks_from`, `hooks_from_format` and `hooks_from_carry`. The server reads
+  the named Claude Code `settings.json` or Codex `hooks.json` once, keeps a digest-checked copy
+  beside the job, and refuses a guard the leg cannot apply. A claude_code leg receives the carried
+  deny and ask rules as `permissions.deny` in its `--settings` value. Hook entries are refused on
+  every provider for now, so a file holding them needs `hooks_from_carry=["deny"]`.
+
+- Agent profiles take `require_hooks: true`: a leg of that role is refused at submit and at spawn when a
+  hook declared for it will not run, and a run refused at spawn ends failed with the refusal's text.
+
+- `li o flow --graph FILE` and `flow.submit(graph=...)` run a JSON graph of agent legs as written, with
+  no planner or synthesis; each node sees only the results it names under `needs`, and a resume replays
+  the run's digest-checked copy of the graph.
+
+- The `lionagi_dir_trust.gate: mcp` setting makes MCP-started jobs load profiles, playbooks and project
+  settings from a project `.lionagi` directory only once `li lionagi-dir trust` has recorded it; the
+  spawn verbs refuse an untrusted file at submit.
+
+- A test refuses any core module under `lionagi/` that imports or names the Studio backend package
+  `lionagi_studio`; only the moved-path table in `lionagi/_moved.py` may name it.
+
+- A CI job runs the core suite with lionhub imports refused and fails when a test module outside
+  `tests/hub_dependent_modules.txt` needs lionhub, a listed one no longer does, or the list grows.
+
+- An agent submission's `hooks_from` file can carry hook entries to a leg whose models are all API
+  models. Each hook command must match a `trusted_hook_commands` record by argv, resolved program
+  and content digest, and a command whose program or file argument the leg can write is refused.
+
+- `li hooks trust --from <path> --format claude|codex [--cwd <dir>]` approves the hook commands of
+  a hooks file that was never imported, reading it the way `hooks_from` does.
+
+### Changed
+
+- The daemon's root application is built in `lionhub.serve.daemon.app.create_daemon_app`, and
+  Studio attaches to it through `attach_studio`; the daemon alone imports no application module.
+  Studio's routes keep their paths; in the OpenAPI document, routes are ordered by their module's
+  position in the combined daemon and Studio route inventory, then by registration order.
+
+- A Gemini 4 name with a family word the resolver does not list, such as `gemini-4-flash`, or with
+  two family words, is passed to agy as given instead of running as Argon (Medium). agy refuses a
+  name it does not serve. `gemini-4`, `gemini-4-high` and `gemini-4-preview` still mean Argon.
+
+- A sandboxed Claude Code child is now denied the whole default Codex home, `~/.codex`, not only its
+  `auth.json`: the home's `config.toml` can hold provider keys and MCP server `env` values. An
+  `allow_read` exemption that names a path inside another entry its profile leaves denied, such as
+  `~/.codex/auth.json` alone, is now refused with that entry named, because it would lift nothing;
+  list the directory in the same `allow_read` to lift both. Such a settings file stops every agent
+  launch, on every provider and in the leg host, until it is corrected.
+
+- A `codex` command run by a sandboxed Claude Code child on the default Codex home now fails when it
+  reads `config.toml`. Under the default policy it already failed at startup, because the home is
+  not writable to the child. It used to start only where the settings add `~/.codex` to
+  `allow_write`. An `allow_read` exemption for `~/.codex` does not restore it: a read exemption never
+  lifts the edit denial, so the home stays unwritable. Run the nested agent on a Codex home outside the
+  denied entries, named with `codex_home` and added to `allow_write`.
+
+- A Codex home named in `codex_home` by a profile under `~/.lionagi/agents` is now denied to a
+  sandboxed Claude Code child, like the homes in the accounts directory. A global profile that
+  cannot be read, or that the profile loader refuses for any of its settings, now stops every
+  launch that reads the child sandbox policy (Claude Code, Codex and Pi command-line legs, flow
+  workers and the leg host) with an error naming the file, instead of leaving its home readable.
+  Before, the same file stopped only launches of its own role.
+
+- A project profile under `.lionagi/agents` is now refused when it shares its name with a global
+  profile that sets `account` or `codex_home`, or with a global profile that cannot be checked (a
+  symlink whose target cannot be read, or a file that cannot be read or loaded), because loading it
+  could silently drop that account. Rename it or remove it; a global profile that names no account
+  can still be shadowed.
+
+- The agent profile list leaves out a profile refused for its account settings, names it with the
+  reason in a warning, and lists every other profile instead of failing. The MCP `profile_list`
+  result also returns it in a `refused` list.
+
+- The account refusal message now says to move the setting to a profile under `~/.lionagi/agents`
+  or remove it.
+
+- A leg-host leg's environment now carries the daemon's `LIONAGI_HOME` and `LIONAGI_LOGINS_DIR`,
+  so the leg finds subscription accounts in the directory the daemon is configured with.
+
+- The Studio application moved out of the `lionagi` package into its own package,
+  `lionagi_studio`, whose source is under `apps/studio/backend/src/`. The wheel ships it beside
+  `lionagi` and `lionhub`, and `li studio`, `python -m lionagi_studio` and
+  `uvicorn lionagi_studio.app:app` serve it. `lionagi.studio`, `lionagi.studio.services` and
+  `lionagi.studio.operator` stay as packages in `lionagi`, so the daemon modules that earlier moved
+  to `lionhub` keep their old import paths without the application installed. The first two are
+  empty, and `lionagi.studio.operator` only forwards the three names the application's Operator
+  package exports.
+
+- A data file read by the old package name, such as a built-in playbook through
+  `pkgutil.get_data("lionagi.studio", ...)`, is not found there any more: package data moved with
+  the application. Read it through `lionagi_studio`.
+
+- `li studio` reports a Studio application that is not installed, naming the install command,
+  before it starts the server and before a hosted launch prints a pairing link. An installed
+  application that fails to import stops the server with its import error.
+
+- Each API write-set spec and each confined gemini-cli launch gets a new, empty uv cache of its own;
+  the shared uv cache is no longer writable from either.
+
+- `SeatbeltPolicy` takes an opt-in `deny_read` list.
+
+- `lionhub.agent.child_sandbox.credential_deny_read()` returns the one unreadable list the Claude
+  Code policy, the API write set and the gemini-cli policy all start from.
+
+- With the child sandbox on, a Codex child's command line carries no `--sandbox` and no `-s`: it
+  carries `default_permissions` and a `permissions.lionagi_child` table as the last `-c`
+  overrides, with the same write roots and network setting the sandbox mode gave: the network
+  is off for a light child and a read-only one, and a heavy workspace-write child takes the user
+  config's `sandbox_workspace_write.network_access` (off when nothing sets it). The
+  `sandbox_workspace_write` pins are no longer emitted in that state. With the child sandbox off
+  the command line is unchanged.
+
+- A Codex launch under the profile refuses `sandbox_mode`, `permissions` and `default_permissions`
+  overrides, a user config that sets `default_permissions` or defines `[permissions.lionagi_child]`,
+  and a project `.codex/config.toml`. A user config that sets a root `sandbox_mode` is accepted,
+  and the leg log says in one line that the command-line profile governs over it.
+
+- Under the profile, an override key is refused when either reading of it names a guarded key
+  (`sandbox_mode`, `default_permissions`, `permissions.*`, `profile`, `sandbox_workspace_write.*`):
+  split at dots, the way Codex reads command-line keys, or decoded as a TOML dotted key, so a
+  quoted part, spaces around a dot or a `\u` escape does not hide it. A profile the run could apply
+  (the request's `profile`, a `profile` override, or the root `profile` key of `config.toml`) is
+  refused when it sets `sandbox_mode`, `default_permissions` or `permissions`, as a
+  `[profiles.<name>]` table or a `CODEX_HOME/<name>.config.toml` file. A request's own `full_auto`
+  or `sandbox` setting no longer exempts a user config that turns the sandbox off, because no
+  `--sandbox` flag is emitted, and `as_cmd_args()` reaches the same refusals as a launch.
+
+- The profile's write entries are the set the sandbox mode it replaces granted. A read-only child
+  has none, its working directory included; a light child writes its working directory only; a
+  heavy child writes the child sandbox's roots, the `writable_roots` the run's own overrides set
+  (a string, list or tuple, at the root or in the selected config profile, with a leading `~`
+  expanded), the `--add-dir` directories and a linked worktree's git roots. A heavy profile
+  honours the user config's `exclude_slash_tmp` and `exclude_tmpdir_env_var`. Codex ignores
+  `sandbox_workspace_write.*` under a permission profile, so those pins and the caller's
+  `writable_roots` overrides are no longer emitted beside it; the table carries them.
+
+- A heavy request that names no sandbox takes the mode Codex would have used without
+  `--sandbox`: the user config's `sandbox_mode`, then the selected profile's, and read-only when
+  neither sets one. A read-only profile has no write entry at all.
+
+- A denied location is emitted as written, as the sandbox places it (the real path of its
+  directory plus its own name) when that differs, and at each link hop. A leading `~` expands
+  against the child's `HOME` and the account's home directory, both when they differ, never the
+  launching process's `HOME`. A per-profile `allow_read` list is not applied to a Codex child,
+  which does not know the agent profile the way a Claude Code child does; the sandbox's default
+  read policy applies.
+
+- The probe's arms test what they name. The real-path deny arms open the path for zero bytes
+  with `/bin/sh -c ': < "$1"'` (BSD `head -c 0` exits 1 on its own argument check, so those arms
+  passed when nothing was denied), and each has a same-run control, the same open on a readable
+  file, that must succeed. The deny arm fails when no denied file exists on the host to open.
+  The write-entry arm tests an entry only the profile table grants and
+  passes no `--add-dir`. The scratch root is a caller-given directory (`--scratch`), by default
+  under the lionagi home's `state` directory, and the probe refuses one inside `/tmp`,
+  `/var/tmp`, the platform temp directory or `$TMPDIR`. With `TMPDIR` unset the second temporary
+  directory arm is recorded as skipped instead of testing `/tmp` twice; that arm is listed in
+  `CONDITIONAL_ARMS`, and such a record satisfies a launch whose `TMPDIR` is also unset.
+  A new unix-socket arm has the child connect to an in-process listener inside a denied
+  directory and passes only when the connect is refused and a same-run connect to a socket
+  outside every denied path succeeds, so a launch is refused on a host where Codex's sandbox
+  lets the connect through.
+
+- A Codex turn whose CLI exits cleanly without any text or tool call no longer finishes as a
+  completed run with an empty answer. It fails with `ProviderEmptyTurnError` and the run reason
+  `run.failed.empty_turn`, is not retried, and quotes the end of the CLI's stderr (redacted). An
+  MCP job that ends this way carries that text as its `reason_detail`.
+
+- The codex sandbox probe records format 4. It checks the unix-socket refusal once with the network on and once with the network off, and adds a read-only write-root check. A profiled codex launch now needs the socket check of its own network state. When that check did not pass, the launch is refused, and the refusal names the codex version, the binary, the check and the remedies. A probe record of format 3 or earlier no longer admits a launch: run the probe again.
+
+- The codex sandbox probe reads each unix-socket connect by the token it prints
+  (`connect=ok`, `connect=<errno name>`, `connect=timeout`); only `EPERM` counts as the sandbox
+  refusing, so a connect that finds no socket no longer passes as a refusal.
+
+- Each probe run that connects to the two sockets is bracketed by the probe's own connects from
+  outside the sandbox, and a listener's count for the run is read only after the after-run
+  connect is counted, so a child connection queued before the listener counted it is not missed.
+
+- The network-off socket arm passes a run whose control connect the sandbox refused as well as
+  one whose control connect was reached, and the record names which. On codex 0.162.1 this
+  admits network-off profiled launches, which every earlier record refused.
+
+- The probe record is format 5 and keeps every connect's token and count; a format 4 record
+  admits no launch, so the probe is run again.
+
+- The default reasoning effort for a codex model launched with no explicit effort comes from the
+  codex adapter, `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog.
+  Core no longer imports the codex profile module for it. The outcome is unchanged for every model,
+  effort level and profile override. With no codex provider in the catalog, or the hub absent, the
+  default is `None` and a launch reports the provider error itself.
+
+- The codex probe record is format 6; a format 5 record admits no profiled codex launch, so the
+  probe is run again.
+
+- A codex scratch launch is refused under `bypass_approvals`, with the child sandbox off, and
+  for a scratch path over a denied location, the probe record directory, or a `/tmp` or
+  `$TMPDIR` the profile makes read-only.
+
+- An empty codex turn whose usage counts are all zero and whose stream had no item now says, before
+  the stderr tail, that the prompt did not reach the model, that a prompt refused by a hook before
+  the turn started ends this way, and that codex does not report the hook's message. The reason
+  stays `run.failed.empty_turn`.
+
+- The Studio boundary check now runs `li schedule validate` and `li schedule export`, human and
+  machine, as separate processes over valid and invalid cron, interval, command, flow and playbook
+  declarations and over populated declaration-managed and legacy rows, including a partial export.
+  It fails if validation leaves any file behind, if export changes a row, or if a command loads the
+  Studio application. In the wheel arm the commands run through the installed `li` script.
+
+- `plan_carry` refuses a source project directory or leg working directory that is not absolute,
+  or that holds a character the rule syntax reads as a pattern (`*`, `?`, `[`, `]`, `{`, `}`, `(`,
+  `)` or a backslash), since a rule pasted with it would name something else in the leg. The
+  refusal says which directory was the cause and quotes neither.
+
+- The built-in `pr-review` playbook works again: the launcher fetches the pull request and posts the
+  review comment with its own `gh` sign-in, through a new `github-pr` playbook field, so the run's
+  agents need no GitHub access.
+
+### Deprecated
+
+- `lionagi.studio` moved to `lionagi_studio`. The old import path, `python -m lionagi.studio`
+  included, warns once and is removed in lionagi 2.0.0. The application's loggers keep their
+  `lionagi.studio.*` names until then.
+
+### Removed
+
+- `lionagi.service.connections._provider_compat.codex_unset_effort_1x`, a private helper; use
+  `lionagi.service.providers.codex_unset_effort_default`.
+
+### Fixed
+
+- A Studio daemon whose start fails or is cancelled part way now stops what it had already
+  started (scheduler, launches, Operator, reconnect socket, mirror, warmup) in the normal stop
+  order, and every shutdown step still runs when an earlier one fails or the shutdown itself is
+  cancelled. A start failure is raised unchanged when its cleanup succeeds; when a cleanup step
+  also fails, both are raised together in an `ExceptionGroup`. When the cleanup itself is
+  interrupted, the interrupt propagates and the start failure is logged.
+
+- A reconnect channel that fails after binding its socket, including when its accept thread
+  cannot start, no longer leaves its socket file behind.
+
+- The daily retention prune no longer holds the state store's write lock for minutes at a time, which
+  made schedule fires and other writers fail with `database is locked`. Two partial indexes,
+  `idx_sched_runs_chain_parent` and `idx_dispatch_outbox_schedule_run`, let each prune chunk find the
+  rows that point at a pruned run without scanning the table; existing stores gain them when the
+  schema-managing process opens them, and that first open builds them once, holding the write lock
+  while it does.
+
+- Stopping the transcript mirror during daemon shutdown cancels its tail when the stopping call is itself
+  cancelled, instead of leaving the tail running.
+
+- A second interrupt during an already interrupted daemon shutdown is logged at error level with its
+  traceback instead of being dropped; the first interrupt still propagates and every shutdown step still runs.
+
+- The six statements in each session chunk of the retention prune that clear or delete the chunk's
+  session references no longer read every terminal session in the store: each re-checks that the
+  sessions it touches are still terminal by looking them up by id. A partial index,
+  `idx_dispatch_outbox_session`, lets the `dispatch_outbox` statement find its rows without scanning
+  the table; existing stores gain it when the schema-managing process opens them, and that first open
+  builds it once, holding the write lock while it does.
+
+- A session chunk of the retention prune that has no messages to delete no longer counts every
+  progression in the store while it holds the write lock, and a malformed progression collection
+  outside its sessions' history no longer stops it. A chunk that has messages to delete still fails
+  on malformed JSON before its archive is written. The `non_array_survivor_progressions` warning is
+  logged only by chunks that counted.
+
+- The MCP server's `play.submit` and `flow.submit` resolve a named playbook under the op's
+  `cwd`, where the spawned run resolves it, rather than under the server's own directory. A
+  project's `.lionagi/playbooks/` playbook is no longer refused as not found, and a same-named
+  playbook beside the server is no longer the schema checked. `help` takes a `cwd` beside
+  `playbook` to return the matching schema and fingerprint.
+
+- The codex sandbox probe reads a step's exit status when the step's output has no trailing
+  newline. The network arm (`heavy_network_on`) failed on hosts where the network did reach
+  the probe's stub, because `curl -s` output ran straight into the exit-status marker.
+
+- `scripts/fold_changelog_fragments.py` no longer folds when given `--help` or an argument it does not know. It prints the usage, or refuses the argument, and changes no file. A new `--check` option validates the fragments and the fold without writing anything.
+
+- The codex exec capture writes `stdout.jsonl` and `stderr.txt` one line per line of output,
+  newlines kept, with secrets removed per line; before, the log redaction turned every newline
+  into the two characters `\n` and each file was a single line.
+
+- A Codex turn input longer than the CLI's limit is now refused with the same input-refusal error whether the request was built that way or copied from a smaller one, instead of a plain `ValueError` on the copied request. A judge whose oversized copied Codex request is refused this way now raises the refusal rather than returning a pass with a judge error.
+
+- A judge whose containment or exclusive-selection refusal has an unreadable cause now raises that refusal itself, not the error its cause read raised.
+
+- The JSON response-format prompt no longer tells the model "No triple backticks" right after asking for a JSON code block, on the same line as the closing fence. The fence now ends its line, and the guidance says not to put triple backticks inside JSON string values.
+
+- The OpenAI chat request and the agent's reasoning-effort handling now read one shared classification of OpenAI model names (reasoning, non-reasoning, or unlisted), so both always agree on whether a model takes `reasoning_effort`. The classification reads a model id the way the developer-message choice already did: a routing prefix such as `openrouter/openai/` is dropped, case is ignored, and a fine-tuned `ft:` id is judged by its base model. A routed or fine-tuned reasoning model therefore drops sampling parameters such as `temperature`, and a fine-tuned non-reasoning model drops `reasoning_effort`, where both used to be passed through unjudged.
+
+- The Claude Code read probe now kills the probed binary's process group before it collects the
+  binary's process, so the kill cannot reach another group that took over the id. The exit is
+  observed with kqueue, or with `os.waitid` and `WNOWAIT` where kqueue is absent.
+
+- A coding tool command whose exit watch kqueue refused with an error other than "no such
+  process" is now waited on until it exits or reaches its deadline. Before, the refusal was
+  read as the command's exit, and a command that had closed its output could come back with no
+  return code while it was still running.
+
+- `flow.submit` with `resume` and no prompt is admitted and reaches the flow's resume path, as
+  `li o flow --resume` does. A new flow with no prompt is still refused.
+
+- Studio approvals: a grant or consume that reaches an approval after it has expired now marks it
+  expired, records the expiry in the evidence chain and answers 409 "has expired". Before, an
+  approval that expired between the read and the status change could still be granted or consumed.
+
+- `li agent` with `--mcp-config` now keeps a copy of the MCP servers it was handed in the run
+  directory, and a resume, manual or automatic, replays that copy instead of re-reading the named
+  file. A resume whose copy is missing is refused and names `--mcp-config` and `--no-mcp-config`.
+  Branches recorded before this change still read the named file.
+
+- The codex sandbox probe now runs codex with `--disable apps --disable plugins`, as a contained
+  codex launch does, so it certifies the profile under the same features and no longer fetches
+  the plugin catalog over the network at startup.
+
+- The Claude read probe gives each run its own Claude temp directory and grants only that one,
+  checks that Bash command output lands inside it, grants each link to the interpreter without
+  the directories on the way, and counts a Bash read as refused only when the refusal names the
+  path. Both Claude probes now start the child with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+
+- A Claude Code leg's file tools are denied edits to the job's MCP server snapshot
+  (`mcp/jobs/<id>/mcp-servers.json`), which an agent or flow resume reads again, so a leg can no
+  longer change the servers a later run of the same job is given.
+
+- In an MCP job with the `.lionagi` trust gate on, a flow or fanout worker refused for an untrusted
+  project profile now ends the run with the refusal printed whole, naming the worker, and `li` exits 1;
+  it printed a traceback before.
+
+- The engine deadline test asserts that the watchdog cancelled the call in flight instead of holding
+  the run to a 2 s wall-clock bound that a loaded runner exceeds.
+
+### Security
+
+- The attached application is no longer handed the daemon's launch and access modules, and the
+  reconnect key is no longer kept on the application's state; neither a handler nor a response or
+  log line carries the admission bearer, pairing codes, decision capabilities or the reconnect key.
+  This bounds what the application is handed: it runs in the daemon's process, so code that imports
+  a daemon module can still reach that material.
+
+- A sandboxed Claude Code child is denied each account's sign-in: the accounts directory, each token
+  file, each `.env` file a row reads and each listed Codex home, at the path as written and at the
+  path it resolves to. A token kept in the macOS keychain stays readable to such a child; keep a
+  token that must stay out of a Claude Code child's reach in a token file or a `.env` row. A Codex
+  child is not denied these reads, and a Codex home set only by a profile's `codex_home:` or by
+  `agent_env` is not on the deny list.
+
+- An API-model leg launched with `api_tools: write`, whose editor and bash run under a macOS
+  Seatbelt policy, and a gemini-cli leg launched with yolo, which runs the whole Antigravity CLI
+  under one, can no longer read or overwrite the child sandbox's credential locations
+  (`DEFAULT_DENY_READ`: `~/.ssh`, `~/.secrets`, cloud and package-registry credential files, the
+  agent CLIs' login files, shell histories and others), lionagi's own `.env`, or any sign-in the
+  subscription accounts directory keeps or names (the directory, its token files, the `.env` files
+  its rows read and its Codex homes). A denied path is denied as written, at every link it passes
+  through and where it resolves. An accounts file that cannot be read refuses the launch.
+
+- Neither policy lets a networked command reach the keychain service any more.
+
+- With the network on, neither policy lets a command connect to a unix socket inside a denied
+  path (a local store's server socket, an agent socket), so a daemon there cannot read or
+  write for it.
+
+- Neither policy lets a command connect to the Studio daemon's reconnect socket, which answers
+  with a pairing code and the daemon's key, when the daemon keeps its socket where the
+  launching process resolves it (the same store setting and home). The Claude Code child
+  sandbox also lists that directory as unreadable.
+
+- A Codex child under the child sandbox is now denied reading the credential locations the
+  child sandbox lists, and its own Codex home, as Claude Code children already were. The child
+  runs under a permission profile, and a launch is refused before the process starts unless a
+  probe record shows that the codex binary it runs enforces the profile. The record is written by
+  `python -m lionhub.providers.openai.codex_sandbox_probe`, and its directory is on the child
+  sandbox's edit-deny list so a child cannot forge one.
+
+- The probe record directory is now also a deny entry of the Codex permission profile, resolved
+  through symlinks as the other deny entries are. A write root (`--add-dir`, a caller's
+  `writable_roots`, the child sandbox's roots or a linked worktree's git roots) that contains the
+  record directory or lies inside it is refused before the launch, and so is such a working
+  directory for a launch that is not read-only. The record is keyed by the
+  resolved path, the version and the SHA-256 of the binary's bytes, so a binary replaced in place
+  has no record, and the binary a launch looks up is the one found on the `PATH` of the child's
+  final environment, by the lookup the spawn uses. Records of the earlier format are not read:
+  run the probe again.
+
+- A write root (`--add-dir`, a caller's `writable_roots`, the child sandbox's roots or a linked
+  worktree's git roots), and the working directory of a launch that is not read-only, is refused
+  when it is, holds or lies inside a denied location, the child's `CODEX_HOME` included, so no
+  launch rests on a read denial winning over a write grant on the same path.
+
+- Limit: the probe refuses a scratch root inside the temp directories it can name (`/tmp`,
+  `/var/tmp`, the platform temp directory, `$TMPDIR`). It cannot list every other location a Codex
+  version leaves writable under `:workspace`, so a caller-given scratch directory elsewhere that the
+  profile leaves writable is the caller's to avoid.
+
+- Limit: the profile's deny entry and the write-root refusal keep a Codex child from writing the
+  probe record directory; they do not stop another process of the same account from writing it. The
+  write-root refusal compares the spellings it sees when the command line is built, and a link made
+  later is not seen.
+
+- The `deny_read` entries of `child_sandbox` in `~/.lionagi/settings.yaml`, and of its `extends`
+  files, now reach the two sandbox policies lionagi builds itself: the API write set's bash and
+  editor, and the confined gemini-cli process. Before, both took only the built-in credential
+  list, so a path the user added there was denied to a Claude Code child and still readable to
+  those two. They take the list a Claude Code child launched without a profile is denied, with no
+  profile's `allow_read` exemption, and `enabled: false` does not shorten it there. A malformed
+  `child_sandbox` block now refuses their launch too, with no opt-out in the message.
+
+- On a volume mounted with ownership ignored (an external APFS disk's default), the Seatbelt
+  policy of the API write set and the gemini-cli process let a confined command hard-link a file
+  outside the writable roots, or the workspace's `.git/config`, into the workspace and then write
+  it. The policy now denies the link operation outside the writable roots and under each
+  read-only and unreadable path.
+
+- A write-capable API launch (`api_tools: write`) is refused unless the volume of every writable
+  root has a passing record from `python -m lionhub.tools.seatbelt_link_probe --scratch <dir>`,
+  which tries those links on the volume holding `<dir>`. The record is keyed by the volume UUID,
+  the kernel and the policy text, so a kernel update or a policy change asks for a new probe.
+
+- A Claude Code child reads a non-empty `mcp_servers` set from a file only the launching user can
+  read, named on its command line, and no longer from the command line itself. The file is removed
+  once the child is gone. Every header value (whole and by each word after the first) and every
+  `env` value under a credential-reading name, each also in its JSON-escaped form, are removed from
+  the messages the spawn logs and raises. Matching is literal, so a value the child transforms in
+  another way is not removed; a credential inside a server's `url` or in the `args` of a stdio
+  server is not declared by this rule; an `env` value under a name the credential rule does not
+  match is not declared; a value under eight characters is not redacted.
+
+- The Codex sandbox probe requires a new arm, `read_only_cwd_write_refused`: under the profile a
+  read-only launch builds, a write into the working directory must be refused and leave no file,
+  while a read in the same run succeeds. The probe record format goes from 2 to 3, so a record
+  written before this release no longer satisfies a launch; run the probe again before starting a
+  confined Codex child.
+
 ## [0.38.0] - 2026-11-18
 
 Breaking: Claude Code child agents now run in Claude Code's sandbox by default. Their commands
