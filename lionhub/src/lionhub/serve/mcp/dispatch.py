@@ -150,6 +150,7 @@ _PRELOAD_MODULES = (
     "lionhub.serve.cli.orchestrate",
     "lionhub.serve.cli.orchestrate._common",
     "lionhub.serve.cli.orchestrate._control",
+    "lionhub.serve.cli.orchestrate._github_pr",
     "lionhub.serve.cli.orchestrate._orchestration",
     "lionhub.serve.cli.team",
     "lionhub.serve.cli.wait",
