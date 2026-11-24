@@ -1367,6 +1367,23 @@ def request_carries_forwarded_mcp(branch: Branch) -> bool:
     return request_kwargs_carry_forwarded_mcp(getattr(config, "kwargs", None))
 
 
+def forwarded_set_ignores_user_config(
+    servers: Mapping[str, Any] | None,
+    *,
+    exclusive: bool,
+    allowed_names: Collection[str] | None = None,
+) -> bool:
+    """Whether handing codex this MCP set makes its request ignore the user config.
+
+    The empty set, as the whole set, with an empty allowlist is the hermetic codex run: the
+    user config, and every server, hook and profile it declares, is not loaded at all. An
+    allowlist can name a server from any later-loaded config layer, so only an empty one
+    takes this path. ``apply_forwarded_mcp_servers`` sets the flag on exactly this answer,
+    and a caller that must know the flag before a request exists asks here.
+    """
+    return bool(exclusive and not servers and not allowed_names)
+
+
 def apply_forwarded_mcp_servers(
     kwargs: dict[str, Any],
     servers: dict[str, Any] | None,
@@ -1476,12 +1493,11 @@ def apply_forwarded_mcp_servers(
             pass
 
     flag = kwargs.get("ignore_user_config")
-    if exclusive and not servers and not allowed_names and (flag is None or flag is False):
-        # The empty set is the hermetic codex run: the user config, and every server,
-        # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag. An allowlist can name a server
-        # from any later-loaded config layer, so only an empty allowlist takes
-        # this path.
+    if forwarded_set_ignores_user_config(
+        servers, exclusive=exclusive, allowed_names=allowed_names
+    ) and (flag is None or flag is False):
+        # The hermetic codex run (see forwarded_set_ignores_user_config). Codex keeps its
+        # own authentication store under the flag.
         # A profile the caller named is user config too, so under the flag the codex
         # provider refuses that request. A flag value the request refuses is not
         # replaced here: it is left for the request to refuse.

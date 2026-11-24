@@ -37,6 +37,7 @@ from lionagi._errors import (
     CLIInputRefusedError,
     ConfigurationError,
     ContainmentRefusedError,
+    RequireHooksRefusedError,
     _ExclusiveMcpSelectionError,
 )
 from lionagi._provider_errors import classify_provider_error
@@ -183,6 +184,7 @@ __all__ = (
     "stream_codex_cli",
     "CodexCLIEndpoint",
     "refuse_declaring_project_layer",
+    "check_require_hooks",
 )
 
 # The integrations Codex attaches from the signed-in account rather than from
@@ -3133,13 +3135,31 @@ def _refuse_hooks_that_will_not_run(plain: _PlainRequest, env: Mapping[str, str]
         if any(hook.status == UNCONFIRMED for hook in refused)
         else ""
     )
-    raise ConfigurationError(
+    raise RequireHooksRefusedError(
         f"Codex is not started: require_hooks is set and the hooks of the codex home "
         f"{str(report.codex_home)!r} cannot all run: {'; '.join(reasons)}. Codex runs a hook "
         "only once it is trusted under the home that declares it, and a hook trusted under "
         "another home does not count. Trust each one in codex under this home, or start "
         f"without require_hooks.{unconfirmed}"
     )
+
+
+def check_require_hooks(request: CodexCodeRequest, cwd: str | os.PathLike[str]) -> None:
+    """Run the hook checks a launch of *request* in *cwd* runs, without starting codex.
+
+    For a caller that answers before the launch, such as a job submission (ADR-0048
+    Amendment 2). The request is reduced as the launch reduces it; a run that ignores the
+    user config reads that config as the launch does, which refuses hooks declared in its
+    `[hooks]` table; then ``_refuse_hooks_that_will_not_run`` reads the codex home the
+    request's environment names (ours when it names none). A request without
+    ``require_hooks`` is not checked.
+    """
+    plain = _plain_request(request)
+    if not plain.require_hooks:
+        return
+    if plain.ignore_user_config:
+        _ignored_user_config_carry(plain, Path(cwd))
+    _refuse_hooks_that_will_not_run(plain, plain.env)
 
 
 def _hook_trust_records(state: Any) -> dict[str, dict[str, Any]]:

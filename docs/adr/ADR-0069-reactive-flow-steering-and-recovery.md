@@ -1,6 +1,7 @@
 # ADR-0069: Reactive flow steering and recovery
 
-- **Status**: Accepted, amended 2026-10-16 (see Amendment 1); Amendment 2 (2026-10-26) is Proposed
+- **Status**: Accepted, amended 2026-10-16 (see Amendment 1); Amendment 2 (2026-10-26) is Proposed;
+  Amendment 4 (2026-11-23) is Proposed
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
@@ -13,7 +14,8 @@
   `status` alone, and files the settle check that would narrow that as delta rows 2,
   6, 7, 8, and 9; Amendment 2 (Proposed) specifies a version 3 checkpoint, a base
   snapshot plus an ordered journal, in place of D4's full snapshot per outcome, and
-  states which version 2 durability guarantees version 3 keeps
+  states which version 2 durability guarantees version 3 keeps; Amendment 4 (Proposed) lets a
+  flow run a written graph of agent legs in place of the planner
 
 ## Context
 
@@ -969,6 +971,90 @@ preserving pending/completed/failed retry metadata through replacement and compa
 whole-resume refusal and failure reporting; neither storage format settles Amendment 1's separate
 artifact/output questions by recorded status alone.
 
+## Amendment 4 (2026-11-23) — a flow can run a written graph with no planner
+
+**Status**: Proposed.
+
+Issue #4542 asks for a graph of agent legs, each with a profile, a prompt and `needs`, run with "no planner, no reactive growth, and the same job record". A resume already runs a fixed plan: it rebuilds the assignments, `agent_ids` and `dep_indices` from the checkpoint and goes straight to `_build_dag` (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py`, the resume branch of `_run_flow_inner`; D5). A written graph enters at the same point. Nothing in D1-D5 or Amendments 1-3 changes.
+
+### G1. Input
+
+`li o flow --graph FILE` and `flow.submit(graph="<absolute path>")`. The file is UTF-8 JSON with one top-level key, `nodes`, a list of objects:
+
+- `id`: a string, unique in the graph. It becomes the node's `agent_id`.
+- `agent`: a profile name. It becomes `TaskAssignment.assignee` and is resolved by the roster `_build_dag` already uses.
+- `prompt`: a non-empty string. It becomes `TaskAssignment.task`.
+- `needs`: a list of ids, which may be empty. It becomes `dep_indices`, by each named node's position.
+- `exit_criteria`: optional, a string, carried as a planned assignment carries it.
+
+`play.submit` refuses a `graph` argument and names `flow.submit` in the refusal: a playbook's plan comes from its prompt.
+
+Any other key on a node, or at the top level, is refused. The file is read under the rules of ADR-0048 Amendment 1 H2: rules 1 to 5 (an absolute path; one open with `O_NOFOLLOW` and `fstat` on that descriptor; a regular file; at most 256 KiB, a larger file refused and never truncated; UTF-8 JSON whose top level is an object, with `NaN` and the infinities refused and a name repeated inside any object refused), and rule 6 (the accepted bytes written as a new file, created exclusively with owner-only mode, its sha256, the path as given and the resolved path in the run record; the run reads only the copy). `flow.submit` and `li o flow --graph` parse with the same loader, so one file gets one answer on both paths. YAML is not accepted: it would need a second loader for repeated names, anchors and merge entries. It can come later as its own addition. There is no inline graph object (fork b). `play.submit` does not take `graph`: it refuses it and names `flow.submit`, because a playbook's plan comes from its prompt.
+
+### G2. What `needs` gives a node
+
+Exactly what a planned assignment's dependencies give it today, by the same code:
+
+- The node does not start until every node it names has finished (`lionagi/operations/flow.py`, the wait on each predecessor's completion event).
+- Its context gains each named node's result, keyed `<operation id>_result` (`lionagi/operations/flow.py::DependencyAwareExecutor._prepare_operation`). A named node that failed, or was skipped, contributes no result.
+- Its artifact instructions name each named node's artifact directory, as "step N (<id>): <dir>/" (`_build_dag`).
+
+Only the nodes a node names are passed to it. A node two steps up is not passed unless it is named too. A graph that wants a node to see more names more. One path reaches past `needs`, in every flow and not only a written one: a result that is a mapping carrying a `context` key is merged into the run's shared context, which every node that starts after it receives (`flow.py`, the `response_context` merge and the shared-context merge in `_prepare_operation`).
+
+### G3. Refusals
+
+Each refusal names the node by `id` (or by position when the id is the fault) and the rule it broke:
+
+1. an empty `nodes` list;
+2. a repeated `id`;
+3. an `id` that is not a safe path component. Today `RunDir.agent_artifact_dir` refuses one through `validate_path_component` (`lionhub/src/lionhub/orchestration/runs.py`), but only when the leg is built, after the job record exists;
+4. a `needs` entry that names no node, or names the node itself;
+5. a cycle, naming the ids on it;
+6. an `agent` that resolves to no profile;
+7. more than 200 nodes. The planner path truncates a plan at 200 with a warning (`flow.py`, "truncating to 200"). A written graph is never truncated;
+8. more nodes than `--max-ops`, when that is set;
+9. `--graph` together with an option that makes or changes the plan or its run: `-p`, `-f`, `--resume`, `--with-synthesis`, `--bare`, or `--reactive` other than off.
+
+On the MCP path every refusal happens in `flow.submit` before a job record or job directory exists, so a refused graph leaves nothing to clean up and nothing on `job.list`. `li o flow --graph` refuses at the same points before the first leg starts. `dry_run` runs the same checks and prints the same refusals. A graph that passes them prints through the existing dry-run plan printer, with each profile resolved, and nothing is built.
+
+### G4. Run and resume
+
+The planner is never called. Reactive growth is off. `_synthesize` is not run (fork a): the flow's result is each node's output, and a graph that wants a summary writes a node for it. There is no flag to turn synthesis back on.
+
+The checkpoint holds the plan as it holds any plan. Its `config` records the run's settings, and a resume passes them back as the run's keyword arguments (D5; the `**config` call in the resume path of `flow.py`). A written graph's checkpoint config carries `with_synthesis: false` and reactive off, as any run's config carries those settings, so a resume makes no synthesis call and grows nothing. It also carries one new field, `graph`, holding `sha256` (the digest of the copy in the job directory), `path` (as given) and `resolved`. That field is what says the run is a written graph. A resume reads the plan from the checkpoint and never from the file. It hashes the copy and refuses on a mismatch with `graph.sha256`, as H2 rule 6 requires of every resume, so an edit to the file after submit reaches no run.
+
+The checkpoint version. A written graph's checkpoint is written as version 4, and every other checkpoint stays at version 2, so nothing a released reader can resume today changes. Version 3 is not used: Amendment 2 specifies it as the journaled format, and it stays refused until that amendment is implemented, which also decides how a journaled written-graph run is versioned. Both writer values live in one module, `lionagi/_checkpoint_version.py`: `CHECKPOINT_VERSION = 2` stays, `GRAPH_CHECKPOINT_VERSION = 4` is added, the supported set becomes {1, 2, 4}, and the import-time assertion there covers both writer values. The other readers of a checkpoint take the set from that module, so they accept 4 with no change of their own: the run detail reader (`lionhub/src/lionhub/serve/mcp/_run_detail.py`, through `load_legacy_checkpoint_json`) and the daemon's resume service (`lionhub/src/lionhub/serve/daemon/services/run_resume.py`, through `lionhub/src/lionhub/orchestration/flow/checkpoint.py::resolve_checkpoint_target`).
+
+Version and field agree at read, both ways, in `load_legacy_checkpoint_json`: a version 4 checkpoint whose `config` has no `graph` field refuses, and a version 1 or 2 checkpoint whose `config` carries one refuses. Without this the version would only be a label, and a hand-edited version 2 checkpoint with a `graph` field would resume with no digest check.
+
+Older readers: 0.37.0 and 0.38.0 refuse a version 4 checkpoint by their version check, which accepts only 1 and 2. A release from before that check fails on the unknown `graph` keyword instead. Neither resumes the run.
+
+The job record, `job.wait`, `job.output` and the terminal notice are flow's, unchanged. The model-source check in `flow.submit` counts `graph` as a source.
+
+### G5. Limits
+
+- `needs` orders nodes and passes results. It does not gate on success: a node runs when a node it names failed during the run, without that node's result. A node is skipped only when its edges are skipped, which happens when every node it names was skipped or failed before the run reached it (a resume of an earlier failure).
+- The job's terminal status is the one flow gives today: `completed` when the run returns, changed only by an exception that leaves the run or by the timeout (`flow.py`, `_terminal_status`). A graph in which one node failed and the others ran ends `completed`, and each node's own status is in the checkpoint's `ops`. The implementation pins this with a test.
+- A node's profile resolves as `agent.submit`'s does, from the op's cwd. What the project-profile trust text (#4725) decides for project profiles applies to graph nodes too.
+- The topology is fixed at submit. Operator messages (D3) still steer a running node, and pause and resume (D2) still apply, but no node is added.
+- A profile is resolved at submit for the refusal and again when its leg starts. A profile edited between the two runs as edited.
+- This is not a 1.0 condition. It is additive.
+
+### G6. Tests the implementation carries
+
+- Each refusal in G3 on the MCP path, asserting no job directory and no job record exist after it, the unsafe id and the 201-node graph included.
+- `dry_run` prints the same refusal text as a real submit for each G3 case, and the resolved plan for a valid graph.
+- One file gets the same answer from `flow.submit` and `li o flow --graph`, a repeated name included.
+- A three-node graph (a, b needs a, c needs b) runs with no planner call, and c's context holds b's result and not a's.
+- A node whose named dependency failed during the run starts without that result, and the job ends `completed` with the failed node's status in the checkpoint.
+- No synthesis call is made under `--graph`, and none on its resume.
+- A resume after an interruption runs the remaining nodes from the checkpoint after the graph file has been changed on disk. A resume whose copy no longer matches `graph.sha256` refuses.
+- A written graph's checkpoint is version 4. A planned run's checkpoint stays version 2.
+- A version 4 checkpoint with no `graph` field refuses, and so do a version 2 and a version 1 checkpoint that carry one. A version 3 checkpoint refuses with or without one.
+- The run detail reader returns detail for a version 4 checkpoint with its `graph` field, not `unsupported_checkpoint_version`.
+- The import-time assertion fails when either writer value is outside the supported set.
+- An unknown key on a node, and at the top level, is refused.
+
 ## Consequences
 
 - A separate CLI process can steer a live flow through the database without an in-process handle
@@ -1001,7 +1087,7 @@ artifact/output questions by recorded status alone.
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
 | 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
-| 4 | Single-file checkpoint version compatibility is implemented. Integer versions 1 and 2 and unversioned legacy snapshots proceed to the normal resume checks. An unsupported or duplicate top-level `version` raises `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError` before graph construction. Amendment 2 tracks journal-aware v3 dispatch and rollout. | S | #4252 |
+| 4 | Single-file checkpoint version compatibility is implemented. Integer versions 1 and 2 and unversioned legacy snapshots proceed to the normal resume checks. An unsupported or duplicate top-level `version` raises `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError` before graph construction. Amendment 2 tracks journal-aware v3 dispatch and rollout. A written-graph run's checkpoint is read at version 4 only beside its `graph` record, and version 3 stays refused (Amendment 4). | S | #4252 |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
 | 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`. The bytes hashed are the node's own recorded result — the `<id>.md` file `_record_result` writes into the node's artifact directory once the DAG finishes (`lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._record_result`), which today lands only after `run_dag`, not at node completion. | L | (filled at issue-open time) |
 | 7 | Make the artifact check byte-level with a per-artifact completion digest, and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a checkpoint records a completion digest per declared artifact, so a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. Depends on delta 2 — the digest is compared against artifacts row 2 has already shown are present; the size-and-mtime check alone narrows the window rather than closing it. | L | (filled at issue-open time) |

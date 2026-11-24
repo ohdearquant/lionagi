@@ -238,7 +238,7 @@
       "__all__ = (\"OpenAIChatCompletionsRequest\", \"OpenaiChatEndpoint\")"
     ],
     "lionhub/src/lionhub/providers/openai/codex.py": [
-      "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n)"
+      "__all__ = (\n    \"CodexCodeRequest\",\n    \"stream_codex_cli\",\n    \"CodexCLIEndpoint\",\n    \"refuse_declaring_project_layer\",\n    \"check_require_hooks\",\n)"
     ],
     "lionhub/src/lionhub/providers/openai/codex_exec_capture.py": [
       "__all__ = (\n    \"CASES\",\n    \"DEFAULT_CASES\",\n    \"HOOK_CASES\",\n    \"Case\",\n    \"CaptureRefusedError\",\n    \"capture\",\n    \"case_argv\",\n    \"main\",\n    \"stream_shape\",\n)"
@@ -610,6 +610,7 @@
     "lionhub/src/lionhub/providers/openai/codex.py": [
       "CodexCLIEndpoint",
       "CodexCodeRequest",
+      "check_require_hooks",
       "refuse_declaring_project_layer",
       "stream_codex_cli",
       "stream_codex_cli_events",

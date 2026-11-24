@@ -274,6 +274,11 @@ _FLOW_REFUSALS: Mapping[str, str] = {
     ),
 }
 
+_PLAY_REFUSALS: Mapping[str, str] = {
+    **_FLOW_REFUSALS,
+    "graph": "a playbook's plan comes from its prompt; run a written graph with flow.submit",
+}
+
 
 # ── schemas for the operations this server implements itself ─────────────────
 
@@ -492,7 +497,7 @@ _REGISTERED: tuple[Verb, ...] = (
         job_kind="play",
         # flow.submit is the same command with the playbook optional.
         requires=("playbook",),
-        refuses=_FLOW_REFUSALS,
+        refuses=_PLAY_REFUSALS,
         server_params=_FLOW_SERVER_PARAMS,
         playbook_aware=True,
     ),

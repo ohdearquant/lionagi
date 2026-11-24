@@ -108,6 +108,12 @@
     "lionhub/src/lionhub/orchestration/flow/checkpoint.py": [
       "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"CheckpointWriter\",\n    \"FlowResumeError\",\n    \"UnsupportedFlowCheckpointVersionError\",\n    \"load_checkpoint\",\n    \"resolve_checkpoint_target\",\n)"
     ],
+    "lionhub/src/lionhub/orchestration/flow/graph.py": [
+      "__all__ = (\n    \"GRAPH_COPY_FILENAME\",\n    \"MAX_GRAPH_BYTES\",\n    \"MAX_GRAPH_NODES\",\n    \"FlowGraphError\",\n    \"GraphNode\",\n    \"GraphSource\",\n    \"check_graph\",\n    \"graph_flag_refusal\",\n    \"load_graph\",\n    \"load_graph_record\",\n    \"write_graph_copy\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/json_file.py": [
+      "__all__ = (\"JsonFile\", \"read_json_file\")"
+    ],
     "lionhub/src/lionhub/orchestration/mcp_config.py": [
       "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
     ],
@@ -145,7 +151,7 @@
       "__all__ = (\n    \"DEFAULT_HEARTBEAT_TTL_SECONDS\",\n    \"DEFAULT_KEY_CONCURRENCY\",\n    \"DEFAULT_LEASE_TTL_SECONDS\",\n    \"DEFAULT_WAITER_CAP_MULTIPLIER\",\n    \"MAX_LEASE_ATTEMPTS\",\n    \"TASK_WORKER_ENABLED\",\n    \"claim_and_execute\",\n    \"default_execute\",\n    \"reap_expired_leases\",\n    \"register_heartbeat\",\n    \"worker_tick\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/spawn.py": [
-      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"normalize_effort\",\n    \"add_common_cli_args\",\n    \"build_chat_model\",\n    \"build_imodel_from_spec\",\n    \"parse_model_spec\",\n    \"resolve_account_integrations\",\n    \"resolve_codex_config_profile\",\n    \"resolve_persisted_effort\",\n    \"strip_connector_grant\",\n    \"AgentProfile\",\n    \"AgentProfileNotFoundError\",\n    \"AmbiguousProfileNameError\",\n    \"build_agent_profile_catalog\",\n    \"build_deadline_preamble\",\n    \"list_agents\",\n    \"load_agent_profile\",\n    \"profile_config\",\n    \"_parse_profile\",\n    \"_resolve_profile_path\",\n    \"_validate_bare_name\",\n)"
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"MAX_TIMEOUT_SECONDS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"normalize_effort\",\n    \"add_common_cli_args\",\n    \"build_chat_model\",\n    \"build_imodel_from_spec\",\n    \"chat_model_ignores_user_config\",\n    \"parse_model_spec\",\n    \"refuse_require_hooks\",\n    \"refuse_require_hooks_at_submit\",\n    \"resolve_account_integrations\",\n    \"resolve_codex_config_profile\",\n    \"resolve_persisted_effort\",\n    \"strip_connector_grant\",\n    \"AgentProfile\",\n    \"AgentProfileNotFoundError\",\n    \"AmbiguousProfileNameError\",\n    \"build_agent_profile_catalog\",\n    \"build_deadline_preamble\",\n    \"list_agents\",\n    \"load_agent_profile\",\n    \"profile_config\",\n    \"_parse_profile\",\n    \"_resolve_profile_path\",\n    \"_validate_bare_name\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/work/__init__.py": [
       "from .form import (\n    VALID_TRANSITIONS,\n    FieldSpec,\n    FieldType,\n    FormStatus,\n    WorkForm,\n    fill_form,\n    validate_form,\n)",
@@ -259,6 +265,16 @@
       "load_checkpoint",
       "resolve_checkpoint_target"
     ],
+    "lionhub/src/lionhub/orchestration/flow/graph.py": [
+      "FlowGraphError",
+      "GraphNode",
+      "GraphSource",
+      "check_graph",
+      "graph_flag_refusal",
+      "load_graph",
+      "load_graph_record",
+      "write_graph_copy"
+    ],
     "lionhub/src/lionhub/orchestration/flow/parsing.py": [
       "add_orchestrate_subparser"
     ],
@@ -284,6 +300,10 @@
       "resolve_entity",
       "run_was_allocated",
       "validate_cwd_exists"
+    ],
+    "lionhub/src/lionhub/orchestration/json_file.py": [
+      "JsonFile",
+      "read_json_file"
     ],
     "lionhub/src/lionhub/orchestration/kill.py": [
       "CancelPersistenceError",
@@ -533,10 +553,13 @@
       "build_chat_model",
       "build_deadline_preamble",
       "build_imodel_from_spec",
+      "chat_model_ignores_user_config",
       "global_profile_codex_homes",
       "list_agents",
       "load_agent_profile",
       "profile_config",
+      "refuse_require_hooks",
+      "refuse_require_hooks_at_submit",
       "resolve_account_integrations",
       "resolve_persisted_effort",
       "strip_connector_grant"

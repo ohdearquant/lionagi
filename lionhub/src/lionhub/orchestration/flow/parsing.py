@@ -216,6 +216,22 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--graph",
+        metavar="FILE",
+        default=None,
+        help=(
+            "Run a written graph instead of a planned one: an absolute path to a JSON file "
+            "whose one key, nodes, lists objects with id, agent (a profile name), prompt, "
+            "needs (a list of ids) and optionally exit_criteria. No planner call, no "
+            "reactive growth and no synthesis pass. Cannot be combined with -p, -f, "
+            "--resume, --with-synthesis, --bare or --reactive other than off."
+        ),
+    )
+    # Set by the server that submits a run with --graph: the copy of the file it accepted,
+    # and where the named file resolved, so the run reads only the bytes that were checked.
+    fl.add_argument("--graph-submit-snapshot", default=None, help=argparse.SUPPRESS)
+    fl.add_argument("--graph-submit-resolved", default=None, help=argparse.SUPPRESS)
+    fl.add_argument(
         "-a",
         "--agent",
         metavar="NAME",

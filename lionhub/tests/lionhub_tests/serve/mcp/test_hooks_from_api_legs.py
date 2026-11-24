@@ -247,8 +247,11 @@ def test_an_api_leg_runs_a_trusted_hook_from_its_copy(tmp_path, trust_store):
     _trust(trust_store, [str(program)], work)
     branch = _branch(_model("anthropic", is_cli=False))
 
-    agent_cli._apply_hooks_from(_spec(tmp_path, _document([str(program)])), branch, str(work))
+    wired = agent_cli._apply_hooks_from(
+        _spec(tmp_path, _document([str(program)])), branch, str(work)
+    )
 
+    assert wired == ["hooks.PreToolUse[0].hooks[0]"]
     (pre_hook,) = branch.acts.pre
     decision = asyncio.run(pre_hook("Bash", {"command": "ls"}))
     assert decision.decision == "deny"
@@ -438,6 +441,66 @@ def test_each_provider_refuses_the_guards_it_cannot_apply(
     assert answer["ok"] is False, answer
     assert message in json.dumps(answer)
     assert submitted == []
+
+
+# ---- require_hooks counts the carried hook entries ---------------------------------
+
+
+def _guarded_profile(tmp_path: Path) -> None:
+    agents = tmp_path / "home" / ".lionagi" / "agents"
+    (agents / "guarded-api.md").write_text(
+        "---\nmodel: anthropic/claude-haiku-5-5\nrequire_hooks: true\n---\nWork.\n"
+    )
+
+
+def test_a_trusted_carried_hook_meets_require_hooks_on_an_api_leg(submitted, tmp_path, trust_store):
+    work, guards = _dirs(tmp_path)
+    program = _program(guards)
+    _trust(trust_store, [str(program)], work)
+    _guarded_profile(tmp_path)
+
+    answer = _submit(_args("guarded-api", _file(tmp_path, _document([str(program)]))))
+
+    assert answer["ok"] is True, answer
+    assert len(submitted) == 1
+
+
+def test_a_require_hooks_refusal_names_the_carried_hook_as_one_that_runs(
+    submitted, tmp_path, trust_store
+):
+    work, guards = _dirs(tmp_path)
+    program = _program(guards)
+    _trust(trust_store, [str(program)], work)
+    _guarded_profile(tmp_path)
+    (tmp_path / "home" / ".lionagi" / "settings.yaml").write_text(
+        "hooks_external:\n  - event: pre_tool\n    command: [/bin/true]\n"
+    )
+
+    answer = _submit(_args("guarded-api", _file(tmp_path, _document([str(program)]))))
+
+    assert answer["ok"] is False, answer
+    message = answer["error"]["message"]
+    assert "these would not run: hooks_external in ~/.lionagi/settings.yaml." in message
+    assert (
+        "It does run the hook entries its hooks_from file carries: hooks.PreToolUse[0].hooks[0]."
+        in message
+    )
+    assert submitted == []
+
+
+def test_require_hooks_refuses_carried_hook_entries_on_a_cli_leg():
+    from lionagi._errors import RequireHooksRefusedError
+    from lionhub.orchestration.spawn import refuse_require_hooks
+
+    codex = SimpleNamespace(
+        endpoint=SimpleNamespace(is_cli=True, config=SimpleNamespace(provider="codex"))
+    )
+    profile = SimpleNamespace(require_hooks=True)
+
+    with pytest.raises(RequireHooksRefusedError, match=r"hooks\.PreToolUse\[0\]\.hooks\[0\]"):
+        refuse_require_hooks("guarded", profile, codex, carried=["hooks.PreToolUse[0].hooks[0]"])
+    # Without carried entries a codex leg is left to its own request's check.
+    refuse_require_hooks("guarded", profile, codex)
 
 
 # ---- li hooks trust --from ---------------------------------------------------------

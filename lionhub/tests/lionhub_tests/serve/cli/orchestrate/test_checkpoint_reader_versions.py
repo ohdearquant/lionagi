@@ -44,7 +44,7 @@ async def test_cli_resume_rejects_unsupported_checkpoint_before_flow(tmp_path, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [2, 3, 999, "duplicate"])
+@pytest.mark.parametrize("version", [2, "graph4", 3, 4, 999, "duplicate"])
 async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, version):
     from lionagi import _paths
     from lionagi.state import db as state_db
@@ -53,6 +53,11 @@ async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, 
 
     if version == "duplicate":
         contents = '{"version":3,"vers\\u0069on":2,"spawned":[]}'
+    elif version == "graph4":
+        # A written-graph run: version 4 with its graph record is a supported checkpoint.
+        base = _base(4)
+        base["config"]["graph"] = {"sha256": "0" * 64, "path": "/g.json", "resolved": "/g.json"}
+        contents = json.dumps(base)
     else:
         contents = json.dumps(_base(version))
     _write_fixture(tmp_path, contents)
@@ -80,7 +85,7 @@ async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, 
     monkeypatch.setattr(state_db, "StateDB", FakeStateDB)
     monkeypatch.setattr(sessions_svc, "get_session", get_session)
     detail = await build_run_detail(_RUN_ID)
-    if version != 2:
+    if version not in (2, "graph4"):
         assert detail == {"detail_unavailable": "unsupported_checkpoint_version"}
     else:
         assert {node["id"]: node["spawned_by"] for node in detail["nodes"]} == {

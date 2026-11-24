@@ -66,6 +66,11 @@
         ],
         "x-flag": "--file"
       },
+      "graph": {
+        "description": "Run a written graph instead of a planned one: an absolute path to a JSON file whose one key, nodes, lists objects with id, agent (a profile name), prompt, needs (a list of ids) and optionally exit_criteria. No planner call, no reactive growth and no synthesis pass. Cannot be combined with `playbook`, `file`, `resume`, `with_synthesis`, `bare` or `reactive` other than off.",
+        "type": "string",
+        "x-flag": "--graph"
+      },
       "invocation": {
         "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
         "type": "string",

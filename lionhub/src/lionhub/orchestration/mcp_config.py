@@ -92,6 +92,13 @@ class McpResolution:
             return True
         return self.reason is None
 
+    @property
+    def exclusive(self) -> bool:
+        """Whether this set is the whole set a leg gets, its CLI's own servers left out: a
+        config the caller named, or no servers declared (``declared_empty``). A set found by
+        search joins what the CLI finds for itself."""
+        return self.declared_empty or self.explicit
+
 
 def discover_mcp_config(start: str | Path) -> Path | None:
     """Nearest ``.mcp.json`` at or above *start*, or None.
