@@ -480,6 +480,16 @@ def test_the_child_environment_is_built_not_inherited(tmp_path, monkeypatch):
         assert scratch in Path(path).parents
 
 
+def test_both_runs_ask_the_child_to_send_no_nonessential_traffic(tmp_path):
+    fake = FakeClaude()
+    _, _, runs = probe_module.probe("claude", runner=fake, scratch=tmp_path / "s")
+    assert len(fake.calls) == 2
+    for _, env, _ in fake.calls:
+        assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    for run in ("control", "roots"):
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" in runs[run]["env_names"]
+
+
 def test_the_probe_root_is_removed_and_planted_files_with_it(tmp_path):
     scratch = tmp_path / "s"
     probe_module.probe("claude", runner=FakeClaude(), scratch=scratch)

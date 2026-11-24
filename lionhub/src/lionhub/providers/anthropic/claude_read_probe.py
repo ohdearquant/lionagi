@@ -45,7 +45,7 @@ What the child is given, all of it in the record:
   settings and plugins, CLAUDE.md discovery and keychain reads, and authenticates only with
   ``ANTHROPIC_API_KEY``.
 - The environment, by name: ``PATH``, ``HOME``, ``CLAUDE_CONFIG_DIR``, ``CLAUDE_CODE_TMPDIR``,
-  ``TMPDIR`` when set, ``ANTHROPIC_BASE_URL`` (the stand-in), ``ANTHROPIC_API_KEY``
+  ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`` (``1``), ``TMPDIR`` when set, ``ANTHROPIC_BASE_URL`` (the stand-in), ``ANTHROPIC_API_KEY``
   (``PLACEHOLDER_API_KEY``, which no service accepts), the proxy variables and ``NO_PROXY``.
   Nothing else is inherited.
 - The steps: fixed commands that read, list or write files the probe made, and print a marker.
@@ -471,6 +471,9 @@ def _env(
         "HOME": str(home),
         "CLAUDE_CONFIG_DIR": str(config),
         "CLAUDE_CODE_TMPDIR": str(claude_tmp),
+        # Named in the 2.1.331 binary's own text, not in its --help. The outbound arm says
+        # whether the child still reaches anything but the stand-in with it set.
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_API_KEY": PLACEHOLDER_API_KEY,
         "NO_PROXY": _NO_PROXY,
