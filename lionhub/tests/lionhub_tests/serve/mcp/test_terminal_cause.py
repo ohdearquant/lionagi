@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from lionagi._errors import RequireHooksRefusedError
 from lionagi._provider_errors import (
     ProviderAdapterError,
     ProviderAuthError,
@@ -363,6 +364,60 @@ class TestAnEmptyTurnCarriesItsText:
         assert _notify_hook.main(["--run-id", rid, "--status", "failed"]) == 0
 
         assert jobs._read_job(rid)["reason_detail"] == "set before the cause was read"
+
+
+class TestARequireHooksRefusalCarriesItsText:
+    """A require_hooks refusal ends a run before any provider child starts. Its text is
+    lionagi's own sentence naming the hooks that would not run, so the job record and the
+    notice carry it as the reason the run ended.
+    """
+
+    TEXT = (
+        "agent profile 'guarded' sets require_hooks, and its leg runs on the API model "
+        "provider 'openai', which applies no lionagi hooks to a leg spawned from the command "
+        "line, so these would not run: hooks_external in ~/.lionagi/settings.yaml. Remove "
+        "require_hooks or the hooks."
+    )
+
+    def test_the_text_round_trips_as_detail(self, cause_file):
+        write_terminal_cause(RequireHooksRefusedError(self.TEXT))
+        assert read_terminal_cause(cause_file) == {
+            "class": "RequireHooksRefusedError",
+            "retryable": False,
+            "status_source": "absent",
+            "detail": self.TEXT,
+        }
+
+    def test_a_plain_configuration_error_keeps_no_text(self, cause_file):
+        """Only the refusal's own class is recorded with its text; its parent is not."""
+        from lionagi._errors import ConfigurationError
+
+        write_terminal_cause(ConfigurationError(self.TEXT))
+        assert read_terminal_cause(cause_file) == {
+            "class": UNKNOWN_CAUSE,
+            "retryable": False,
+            "status_source": "absent",
+        }
+
+    def test_the_record_status_and_notice_carry_it(self, monkeypatch, tmp_path):
+        rid = _job(monkeypatch, tmp_path)
+        monkeypatch.setenv(config.CAUSE_FILE_ENV_VAR, str(jobs.failure_cause_path(rid)))
+        write_terminal_cause(RequireHooksRefusedError(self.TEXT))
+        seen: list[dict] = []
+
+        def deliver(run_id, job, status, **kw):
+            seen.append(kw)
+            return {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "n"}
+
+        monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", deliver)
+
+        assert _notify_hook.main(["--run-id", rid, "--status", "failed"]) == 0
+
+        state = jobs.status(rid)
+        assert state["status"] == "failed"
+        assert state["reason_detail"] == self.TEXT
+        assert jobs._read_job(rid)["failure_cause"]["class"] == "RequireHooksRefusedError"
+        assert [kw["reason_detail"] for kw in seen] == [self.TEXT]
 
 
 class TestTheProviderStatusDiscriminator:

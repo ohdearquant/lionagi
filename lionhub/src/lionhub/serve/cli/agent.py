@@ -24,7 +24,12 @@ from pydantic import BaseModel, field_validator
 from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._cli_worker_context import _bind_cli_worker_recorder
-from lionagi._errors import ConfigurationError, FailedRoundError, InputTokenCapError
+from lionagi._errors import (
+    ConfigurationError,
+    FailedRoundError,
+    InputTokenCapError,
+    RequireHooksRefusedError,
+)
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
@@ -255,6 +260,9 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {
 _API_CONFINED_TOOL_SETS = ("write",)
 # The tool set and round bound an API branch was launched with, read again on resume.
 _API_LAUNCH_KEY = "api_launch"
+# Set when a branch was launched under a profile's require_hooks; a resume is checked against
+# it whatever profile the resume names, as it keeps the approval mode it was launched with.
+_REQUIRE_HOOKS_KEY = "require_hooks"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
 # The tool loops an API leg can run (`api_loop`): ReAct, the default, batched LNDL rounds
@@ -2108,14 +2116,14 @@ async def _run_agent(
                 resume_on_timeout = True
             if (getattr(profile, "extra", None) or {}).get("hooks"):
                 # A saved guard the leg silently does not run is worse than no
-                # guard: say so at launch until CLI runs consume the assembly.
+                # guard: say so at launch until a run consumes the assembly.
                 from lionhub.orchestration.console import warn
 
                 warn(
                     f"agent profile {agent_name!r} declares a hooks assembly; "
-                    "CLI-spawned runs do not apply profile hook assemblies yet "
-                    "(Studio Operator turns do), so those hooks are NOT active "
-                    "for this run"
+                    "no run applies a profile's hooks assembly yet (the Studio "
+                    "Operator applies only its own, from operator_hooks.json), so "
+                    "those hooks are NOT active for this run"
                 )
 
         # The line's --account wins over the role's account or codex_home.
@@ -2405,6 +2413,11 @@ async def _run_agent(
         # "openai-codex" is clamped and flagged as codex; `provider` stays as written.
         canonical = _canonical_provider(provider)
 
+        # A require_hooks refusal is held until the run is under way and raised there, so the
+        # job ends failed with the refusal's text and no provider child is started
+        # (ADR-0048 Amendment 2 R3).
+        _require_hooks_refusal: RequireHooksRefusedError | None = None
+        _requires_hooks = bool(getattr(profile, "require_hooks", False))
         if branch is None:
             # Codex blocks tool calls until file access is enabled. Surface this
             # even without verbose output; CLI or profile approval flags suppress it.
@@ -2439,13 +2452,14 @@ async def _run_agent(
                 fast,
                 bypass,
                 mcp_servers=mcp_resolution.servers,
-                mcp_exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                mcp_exclusive=mcp_resolution.exclusive,
                 account_connectors=account_connectors,
                 contain_account_integrations=contain_account_integrations,
                 workload=workload,
                 tool_settings=tool_settings,
                 env=leg_account.env if leg_account is not None else None,
                 secret_fill_skip=leg_account.secret_fill_skip if leg_account is not None else None,
+                require_hooks=bool(getattr(profile, "require_hooks", False)),
             )
             if leg_account is not None:
                 from lionhub.agent.subscription_accounts import leg_account_reached
@@ -2470,6 +2484,14 @@ async def _run_agent(
                 from lionagi.service.imodel import iModel
 
                 chat_model = iModel(model=chat_model)
+            # A codex request carries the key and refuses at its own launch; the rest is
+            # decided here, once the model's kind is known (ADR-0048 Amendment 2).
+            from lionhub.orchestration.spawn import refuse_require_hooks
+
+            try:
+                refuse_require_hooks(agent_name, profile, chat_model)
+            except RequireHooksRefusedError as exc:
+                _require_hooks_refusal = exc
             if not chat_model.is_cli and effort is not None:
                 from lionhub.agent.factory import _set_api_effort
 
@@ -2910,7 +2932,7 @@ async def _run_agent(
                 # own servers are left out too. A set found by search joins what the provider finds
                 # for itself, and a failed search leaves the earlier run's servers, as it leaves a new
                 # leg to what its CLI finds.
-                exclusive=mcp_resolution.declared_empty or mcp_resolution.explicit,
+                exclusive=mcp_resolution.exclusive,
             )
             missing_profile = _missing_generated_codex_profile(
                 cfg, leg_account.env if leg_account is not None else None
@@ -2937,6 +2959,22 @@ async def _run_agent(
                     cwd=cwd,
                     forwarded=forwarded,
                 )
+            # The requirement a branch was launched with stays with it: a resume naming no
+            # profile, or one without the key, is checked as its launch was (ADR-0048
+            # Amendment 2 R3). A codex request carries it and refuses at its own launch.
+            _requires_hooks = _requires_hooks or bool(branch.metadata.get(_REQUIRE_HOOKS_KEY))
+            if _requires_hooks:
+                from lionhub.orchestration.spawn import refuse_require_hooks
+
+                if (
+                    _canonical_provider(branch.chat_model.endpoint.config.provider) == "codex"
+                    and branch.chat_model.endpoint.is_cli
+                ):
+                    cfg["require_hooks"] = True
+                try:
+                    refuse_require_hooks(agent_name, profile, branch.chat_model, required=True)
+                except RequireHooksRefusedError as exc:
+                    _require_hooks_refusal = exc
 
         # A branch launched onto the tool loop records the tool set and bound it was
         # launched with, and a resume runs the loop again from that record. A branch
@@ -3017,6 +3055,8 @@ async def _run_agent(
         if account_switched_from is not None and leg_account is not None:
             account_switches.append(dict(leg_account.record))
             branch.metadata[_SUBSCRIPTION_ACCOUNT_SWITCHES_KEY] = account_switches
+        if _requires_hooks:
+            branch.metadata[_REQUIRE_HOOKS_KEY] = True
         if not is_resumed_branch:
             # The file on the line is what a resume reads again, named or not: a
             # leg submitted through the MCP server is pointed at a snapshot of the
@@ -3433,6 +3473,8 @@ async def _run_agent(
         _worker_spawn_teardown_cancel = None
         _run_scratch = None
         try:
+            if _require_hooks_refusal is not None:
+                raise _require_hooks_refusal
             if scratch_mode is not None:
                 from lionhub.orchestration.run_scratch import RunScratch
 

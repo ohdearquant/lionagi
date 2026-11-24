@@ -1061,6 +1061,15 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
     )
 
 
+def _agent_model_spec(args: dict[str, Any], profile: Any, prompt: str | None) -> Any:
+    """The model an agent submission names: the first positional when a prompt follows it, else
+    the profile's model. ``None`` when neither names one (a resumed run's model comes from its
+    branch)."""
+    query = args.get("query") or []
+    bucket = [*query, *([prompt] if prompt is not None else [])]
+    return bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+
+
 def _requested_account(
     verb: Verb, args: dict[str, Any], profile: Any, prompt: str | None
 ) -> tuple[str | None, str | None]:
@@ -1079,9 +1088,7 @@ def _requested_account(
     name = args.get("account") or getattr(profile, "account", None)
     if name is None and getattr(profile, "codex_home", None) is None:
         return None, None
-    query = args.get("query") or []
-    bucket = [*query, *([prompt] if prompt is not None else [])]
-    model = bucket[0] if len(bucket) >= 2 else getattr(profile, "model", None)
+    model = _agent_model_spec(args, profile, prompt)
     provider = None
     if isinstance(model, str) and model:
         from lionhub.agent.subscription_accounts import account_provider
@@ -1155,6 +1162,13 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             profile=profile,
             account=account,
             account_provider=account_provider,
+            # Read for the profile's require_hooks before the run is recorded; a resumed run's
+            # model comes from its branch, so its launch answers instead.
+            model=(
+                _agent_model_spec(args, profile, prompt)
+                if verb.job_kind == "agent" and not resumes
+                else None
+            ),
             **({"replay_mcp_choice": True} if resumes else {}),
         )
     except NestedAgentRefusedError as exc:

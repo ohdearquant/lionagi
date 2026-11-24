@@ -1331,6 +1331,53 @@ def _validate_notify_sender(
         )
 
 
+def _refuse_require_hooks(
+    profile: Any | None,
+    model: str,
+    *,
+    account: str | None,
+    cwd: str,
+    mcp_config: str | None,
+    no_mcp_config: bool,
+    submit_snapshot: str | None,
+) -> None:
+    """Refuse the submission when its profile's ``require_hooks`` is not met, as the run's
+    launch would refuse it (``spawn.refuse_require_hooks_at_submit``).
+
+    The MCP set is resolved by the call the run makes on start, with the arguments this
+    submission hands it: the named config, ``--no-mcp-config``, or the snapshot written
+    above. The launch checks again and decides; this answer may only be as strict.
+    """
+    if profile is None or not getattr(profile, "require_hooks", False):
+        return
+    from lionagi._errors import ConfigurationError
+    from lionhub.orchestration.mcp_config import McpConfigError, resolve_spawn_mcp_servers
+    from lionhub.orchestration.spawn import refuse_require_hooks_at_submit
+
+    try:
+        resolution = resolve_spawn_mcp_servers(
+            mcp_config,
+            launch_dir=cwd,
+            disabled=no_mcp_config,
+            submit_snapshot=submit_snapshot,
+        )
+    except McpConfigError as exc:
+        # The run would refuse the same file on start.
+        raise SubmitInputError(f"cannot submit this agent run: {exc}") from exc
+    try:
+        refuse_require_hooks_at_submit(
+            profile.name,
+            profile,
+            model,
+            account=account,
+            mcp_servers=resolution.servers,
+            mcp_exclusive=resolution.exclusive,
+            cwd=cwd,
+        )
+    except ConfigurationError as exc:
+        raise SubmitInputError(str(exc)) from exc
+
+
 def submit(
     kind: str,
     flags: list[str],
@@ -1349,6 +1396,7 @@ def submit(
     replay_mcp_choice: bool = False,
     account: str | None = None,
     account_provider: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1379,6 +1427,10 @@ def submit(
     run to use, as names only (``accounts.toml``'s name and its provider table); they are
     recorded and returned as given. The run resolves the account itself and writes what it
     resolved to its ``run.json``.
+
+    *model* is an agent run's model spec when the submission names one. It is read only to
+    answer the profile's ``require_hooks`` before anything is recorded (ADR-0048 Amendment 2);
+    a resumed run's model comes from its branch, so the run's own launch answers for it.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1604,6 +1656,17 @@ def submit(
                 mcp_servers,
                 source=mcp_config_source or "",
                 searched_from=mcp_config_searched_from or "",
+            )
+        if kind == "agent" and isinstance(model, str) and model and not replay_mcp_choice:
+            _refuse_require_hooks(
+                profile,
+                model,
+                account=account,
+                cwd=cwd or os.getcwd(),
+                mcp_config=mcp_config,
+                # A profile declaring mcp: none puts --no-mcp-config on the run's line above.
+                no_mcp_config=no_mcp_config or profile_disables_mcp,
+                submit_snapshot=mcp_config_path if mcp_servers is not None else None,
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
