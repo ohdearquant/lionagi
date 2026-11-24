@@ -473,6 +473,26 @@ def test_the_probe_carries_the_profile_overrides_a_launch_renders(tmp_path, sand
         assert argv[start : start + len(pair)] == pair
 
 
+def test_the_probe_command_line_turns_apps_and_plugins_off_as_a_contained_launch_does(tmp_path):
+    table = {"extends": ":read-only", "network": {"enabled": False}}
+    argv = probe_module._argv("/opt/codex", "http://127.0.0.1:9", table, tmp_path, ())
+    assert argv[:2] == ["/opt/codex", "exec"]
+    disabled = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"]
+    assert disabled == ["apps", "plugins"]
+    # Flags of `codex exec`, so they sit after the subcommand and before the prompt.
+    assert argv.index("--disable") < argv.index("probe")
+
+
+def test_every_probe_run_turns_codex_apps_and_plugins_off(tmp_path, sandbox_on):
+    fake = FakeCodex()
+    probe_module.probe("/opt/codex", runner=fake, scratch=tmp_path / "scratch")
+    assert len(fake.runs) == 6
+    for argv, _env, _cwd in fake.runs:
+        disabled = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"]
+        assert disabled == ["apps", "plugins"]
+        assert argv.index("exec") < argv.index("--disable") < argv.index("probe")
+
+
 def test_a_tilde_deny_entry_expands_against_the_home_the_probe_child_gets(tmp_path, monkeypatch):
     import lionhub.agent.child_sandbox as child_sandbox
 
