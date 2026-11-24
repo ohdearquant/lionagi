@@ -238,7 +238,7 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Twenty-six further names are catalogued as **unavailable**, each with its
+Twenty-seven further names are catalogued as **unavailable**, each with its
 reason. They are not omissions: a caller that asks what exists gets the name and
 why it cannot be called, which is a different answer from the name never having
 been considered. The right-hand column below abbreviates the reason; `help=true`
@@ -251,6 +251,7 @@ returns each one in full.
 | `casts` | The built-in roles and modes an agent can be composed from. | no machine result |
 | `orchestrate.ctl.status` | What a running flow's control plane reports about it. | no machine result |
 | `state.doctor` | Read-only inspection of the lifecycle store. | no machine result |
+| `lionagi-dir.list` | The project .lionagi directories trusted for runs this server starts. | no machine result |
 | `state.checkpoint` | Writes against the lifecycle store. | invalidating write |
 | `state.import` | Writes against the lifecycle store. | invalidating write |
 | `state.import-teams` | Writes against the lifecycle store. | invalidating write |

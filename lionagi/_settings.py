@@ -125,6 +125,11 @@ def load_settings(
             # HOME or not at all. As the nearest file it still ends the search, so
             # excluding it never promotes a farther one.
             if not is_account_lionagi_dir(candidate.parent):
+                # A run the MCP server started takes this layer only from a trusted
+                # directory (ADR-0088 Amendment 2); ungated, this does nothing.
+                from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+                check_lionagi_dir("project settings", candidate, candidate.parent)
                 with open(candidate) as f:
                     local_settings = yaml.safe_load(f) or {}
                 _deep_merge(merged, local_settings)

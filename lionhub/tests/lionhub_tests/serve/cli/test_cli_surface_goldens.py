@@ -135,6 +135,7 @@ TOP_LEVEL_COMMANDS = [
     "invoke",
     "kill",
     "lifecycle",
+    "lionagi-dir",
     "mcp",
     "mirror",
     "mon",

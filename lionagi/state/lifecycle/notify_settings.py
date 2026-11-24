@@ -269,6 +269,12 @@ def resolve_notify_config(
         try:
             settings = load_settings(project_dir=project_dir)
         except Exception as exc:  # noqa: BLE001 -- malformed settings must never affect the run
+            from lionagi._lionagi_dir_trust import UntrustedLionagiDirError
+
+            if isinstance(exc, UntrustedLionagiDirError):
+                # Not malformed: a gated run refuses an untrusted project directory
+                # rather than carrying on without its settings (ADR-0088 Amendment 2).
+                raise
             logger.warning("notify.on_terminal settings resolution failed: %s", exc)
             return _rejected("settings_load_failed")
     notify_cfg = settings.get("notify") if isinstance(settings, dict) else None

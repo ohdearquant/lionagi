@@ -1423,6 +1423,7 @@ def submit(
     hooks_from: dict[str, Any] | None = None,
     model: str | None = None,
     graph_source: Any | None = None,
+    lionagi_dir_gate: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1468,6 +1469,11 @@ def submit(
     *graph_source* is a flow's written graph, already loaded and checked. Its accepted bytes
     are written into this run's directory and the run is pointed at that copy, so the run
     reads only the bytes that were checked here.
+
+    *lionagi_dir_gate* starts the run with ``LIONAGI_DIR_TRUST_GATE`` set, so it and every process
+    it starts take project ``.lionagi`` files only from trusted directories (ADR-0088
+    Amendment 2). The caller passes it when ``lionagi_dir_trust.gate`` is ``mcp``; otherwise the
+    variable is not set here.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1722,6 +1728,10 @@ def submit(
         env.pop(MINTED_CHILD_ACTOR_ENV, None)
         if minted is not None:
             env[MINTED_CHILD_ACTOR_ENV] = minted.actor
+        if lionagi_dir_gate:
+            from lionagi._lionagi_dir_trust import GATE_ENV_VAR
+
+            env[GATE_ENV_VAR] = "1"
 
         # Checked before anything is written: Popen raising this late would
         # leave a job recorded "running" for a run that never started.

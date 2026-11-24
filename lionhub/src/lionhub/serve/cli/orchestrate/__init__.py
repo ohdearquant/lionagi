@@ -234,6 +234,9 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
     playbooks join the search only after a project/global miss (bare name),
     or via an explicit ``<plugin>/<name>`` token, and only for a plugin that
     is trusted + enabled + version-compatible (see ``lionagi.plugins``).
+
+    In a gated run, a project playbook from an untrusted ``.lionagi`` directory raises
+    ``UntrustedLionagiDirError`` (``lionagi._lionagi_dir_trust``) instead of returning.
     """
     from lionagi._paths import find_lionagi_dirs
     from lionagi.libs.path_safety import validate_path_component
@@ -285,6 +288,11 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
                     None,
                     f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
                 )
+            # Raised, not returned as a message: it is a refusal of a file that resolved,
+            # never a reason to look for another (ADR-0088 Amendment 2).
+            from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+            check_lionagi_dir("playbook", candidate, d)
             _warn_if_shadowing_plugin_playbook(name)
             _warn_if_shadowing_global_playbook(name, d)
             return candidate, None

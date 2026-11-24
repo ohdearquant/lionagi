@@ -663,6 +663,7 @@ jobs:
             # sources and fails when this one differs.
             - 'lionagi/__init__.py'
             - 'lionagi/_cli_worker_context.py'
+            - 'lionagi/_lionagi_dir_trust.py'
             - 'lionagi/_log_channels.py'
             - 'lionagi/_moved.py'
             - 'lionagi/_paths.py'

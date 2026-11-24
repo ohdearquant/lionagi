@@ -13,7 +13,8 @@
   Amendment 1 adds a per-leg `hooks_from` input to `agent.submit` and leaves hook
   rendering for CLI legs to ADR-0134; Amendment 2 adds a `require_hooks` profile key,
   checked at submit and at spawn for codex and API-model legs and refused for other
-  providers until ADR-0134
+  providers until ADR-0134; ADR-0088 Amendment 2 makes D7's `li hooks trust`
+  refuse inside a run the MCP server started with the `.lionagi` trust gate on
 
 ## Amendment note (2026-08-16)
 

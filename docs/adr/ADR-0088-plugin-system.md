@@ -1,6 +1,6 @@
 # ADR-0088: Plugin system (directory-bundle manifest with lazy activation)
 
-- **Status**: Accepted, amended 2026-10-11 (see Amendment 1)
+- **Status**: Accepted, amended 2026-10-11 (see Amendment 1); Amendment 2 proposed 2026-11-23
 - **Kind**: Aspirational
 - **Area**: substrates
 - **Date**: 2026-07-12
@@ -63,6 +63,104 @@ Four changes in behaviour, named:
 
 The user-level trust records of D5 and the plugin settings of D7 stay in
 `~/.lionagi/settings.yaml`, read through `HOME` as before.
+
+## Amendment 2 (2026-11-23): project files on runs a model started need a trusted .lionagi directory
+
+**Status**: Proposed.
+
+This amendment also changes two existing trust steps: `li plugin trust` (D5) and `li hooks trust` (ADR-0048 D7) refuse inside a run the MCP server started with the gate on. ADR-0048's Relations line gains one sentence saying so, in the same PR.
+
+### Where this sits
+
+D5's record, `trusted_plugins`, cannot hold a project directory. It is keyed by plugin name and pins the content of every declared file. A project `.lionagi` directory is trusted by its path, and its files are expected to change. So this amendment adds a second record, `trusted_lionagi_dirs`, inside D5's fence: the same user-level file (`~/.lionagi/settings.yaml`, read through `HOME` as Amendment 1 keeps it), written only by a CLI step a person runs, never by a repository and never by the MCP server. Today nothing under `lionhub/serve/mcp` writes that file. The production writers are the trust steps of the CLI (`serve/cli/hooks.py` and `serve/cli/plugin.py`). The amendment extends D5 for the fence and Amendment 1 for which directories count as project directories.
+
+Names: the record, the setting (`lionagi_dir_trust`), the variable (`LIONAGI_DIR_TRUST_GATE`) and the command (`li lionagi-dir`) all say `lionagi-dir`. They do not say `project`, because lionagi already has registered projects (the state database's project rows, named by a schedule's `action_project`), and the Codex provider already reads Codex's own per-project trust levels (`providers/openai/codex.py`, `project_trust`). This record is neither of those.
+
+### What a project directory supplies, and what fences each part
+
+Every reader of a project `.lionagi` directory goes through `find_lionagi_dirs` or the settings loader. At dev `dfacfb5b` those readers, and what already fences each, are:
+
+| What the directory supplies | Read by | Already fenced by |
+| --- | --- | --- |
+| `agents/*.md` profiles: `bypass`, `yolo`, `mcp`, the containment fields, `deny_read`, `codex_home`, hooks in extra fields, model, effort, system prompt (`orchestration/spawn.py` 2044-2102) | `load_agent_profile` (`spawn.py` 920-954); `li agent` takes `bypass` and `yolo` from it with no flag (`serve/cli/agent.py` 2097-2100); flow and fanout workers through `resolve_worker_spec` (`_orchestration.py` 487-504) | nothing (only the account refusals, `spawn.py` 951-953) |
+| `playbooks/*.playbook.yaml` | `_resolve_playbook_path` (orchestrate `__init__.py` 229-289) | nothing |
+| `settings.yaml` `notify.on_terminal`: a command run when the run ends | the notify bootstrap at every `li` start (`serve/cli/main.py` 376-380; a `--notify` flag overrides it, `spawn.py` 666-667) and the MCP server's terminal hook under the op's cwd (`serve/mcp/_notify_hook.py` 268), both through `load_settings` with the project layer | nothing |
+| `settings.yaml` `dispatch.notify_template`: an argv the dispatch outbox runs | `orchestration/dispatch/outbox.py` 97-110, from the process's cwd, project layer included | nothing |
+| `settings.yaml` `hooks_external` and `hooks` | `apply_hooks_from_settings`, reached only through `create_agent(load_settings=True)`, which reads the project layer only when its caller passes `trust_project_settings` (`agent/factory.py` 334-343). No production caller passes it. Every CLI run path passes `load_settings=False`: `serve/cli/agent.py` 2586, `_orchestration.py` 1309 and 1769, `fanout.py` 141, `engines/engine.py` 933, `patterns.py` 188 | not reachable from a project directory on any of those paths |
+| `settings.yaml` `child_sandbox` | not read: the project layer is ignored with a warning (`agent/child_sandbox.py` 789-813) | not reachable |
+| `settings.yaml` `secrets.lookup`, `project_overrides`, the email header guard | read from the global layer only (`include_project=False`) | not reachable |
+| `plugins/*/plugin.yaml` bundles | `discover_plugins` (`lionagi/plugins/discovery.py` 140-159) | D5's `trusted_plugins` |
+| MCP configuration | the MCP lookup | the existing project-settings trust gate (Amendment 1, unchanged) |
+
+The other readers do not change what a run may do: `state/provenance.py` hashes the profile file for the run record, `lionhub/src/lionhub/agent/child_sandbox.py::_profile_file_is_global` decides whether a profile is the user's, `serve/daemon/leg_host.py` 395 refuses a leg whose directory shadows the user's, and `serve/mcp/roster.py` lists profiles.
+
+So three things the directory supplies have no fence today: profiles, playbooks, and the project `settings.yaml` layer, whose reachable effect is the two notify commands. The gate checks the settings layer as a whole, so a key that a later change starts reading from it is covered without a change to this text. It covers the directory as a whole and is never a list of fields. Plugin bundles and MCP configuration keep their own records.
+
+### What a directory is
+
+The trusted object is a `.lionagi` directory that the resolver found as a project directory (`lionagi/_paths.py::find_lionagi_dirs`: the git root's, then those on the walk from the working directory up; and the nearest `settings.yaml` on that walk for the settings layer), named by `os.path.realpath`, so links are resolved. A link to a shared `.lionagi` is recorded and checked as its target. Each found directory is checked on its own: trusting one covers no directory above it or below it. The user-level `~/.lionagi` is never gated.
+
+Trust covers the files reached through the trusted directory, a profile file that is a link included. The playbook resolver already refuses a link that leaves `playbooks/` (orchestrate `__init__.py` 279-287). The profile resolver follows links, and this amendment does not change that.
+
+### The setting and the CLI step
+
+- `lionagi_dir_trust: {gate: off | mcp}` in `~/.lionagi/settings.yaml`. The default is `off` through 1.x. With `off`, the MCP server never sets the variable, and 0.x behaviour is unchanged on every path. Whether the default changes is a 2.0 question.
+- `li lionagi-dir trust [DIR]` (DIR defaults to the working directory) records `realpath(DIR/.lionagi)`. Before it asks, it lists every profile and playbook there, and every `notify` and `dispatch.notify_template` entry in its `settings.yaml`. For each profile it shows `bypass`, `yolo`, `mcp` and the containment fields. It refuses when there is no `.lionagi` there, or when that directory is the user-level one. `li lionagi-dir untrust [DIR]` removes the record. `li lionagi-dir list` lists the records.
+- Confirmation works as it does for `li hooks trust` and `li plugin trust` today: a `[y/N]` prompt read with `input()`, and `--yes` skips it. Neither of those steps checks for a terminal (`serve/cli/hooks.py` 446-454, `serve/cli/plugin.py` 201), and this one matches them.
+- `li lionagi-dir trust`, `li hooks trust` and `li plugin trust` each refuse, before they read anything and with `--yes` too, when `LIONAGI_DIR_TRUST_GATE` is set in their own environment. A run the server started therefore cannot write any of the three records by typing the command. With the gate off the variable is never set, so nothing changes.
+
+### Where the gate is checked
+
+With `gate: mcp`, the same three things are checked at both points, so one project gets one answer at submit and in the job:
+
+1. **At submit, in the MCP server.** `agent.submit`, `flow.submit`, `play.submit` and `fanout.submit` resolve, under the op's cwd, the named profile (`lionhub/src/lionhub/serve/mcp/dispatch.py::_refuse_unknown_profile`), the named playbook, and the project settings layer. Any of them from an untrusted directory refuses before a job record or a job directory exists. `dry_run` gives the same refusal. The server's terminal hook reads the settings layer under the op's cwd (`_notify_hook.py` 268) and applies the same check.
+2. **In the job process and every process it starts.** The server starts the job with `LIONAGI_DIR_TRUST_GATE=1` in its environment. A lionagi process with the variable checks at the three places a project directory supplies something: `load_agent_profile`, `_resolve_playbook_path`, and the project layer of `load_settings`. The check refuses and never skips, so an untrusted file is named instead of being run around. That covers the flow and fanout workers when they are built (the planner picks their roles after submit, so the submit check cannot see them), the orchestrator profile, the notify bootstrap at each `li` start, a `li agent` that a leg starts in its own shell, and the graph nodes of ADR-0069 Amendment 4, whose profiles resolve as `agent.submit`'s do. Child processes inherit the variable.
+
+### The catalog
+
+With `gate: mcp`, `profile.list` and `profile.show` (`serve/mcp/roster.py`) add `trusted: true|false` to each project entry beside its `scope`, so a caller sees a refusal coming before it submits. With `gate: off` the field is absent and the output is what it is today.
+
+### The limits, stated
+
+- Trust is of the path. Files under a trusted directory can be edited, added or swapped after the record is written, and the next run uses them as they are. That is the limit ADR-0048 D7 accepts for project-authored hooks, which run as code because they are versioned and reviewed beside the code. A person who trusts a directory is trusting whoever can write to it.
+- The variable alone turns the check on in a process, whatever the setting says. The setting decides only whether the MCP server sets it. A person who sets it by hand gets the gated behaviour in their own run.
+- The record is read through `HOME`. A process started with another `HOME` reads another record, and possibly none. The server copies its own environment, `HOME` included, into the job (`serve/mcp/jobs.py` 1577), so a run reads the record the server read unless something in it changes `HOME`.
+- The gate does not contain a leg that is already running. A process that removes the variable, or changes `HOME`, before it starts `li` has already run code under the authority it was given.
+- A person-typed command without the variable is unchanged through 1.x.
+
+### Refusal text
+
+> {what} {path} comes from {dir}, which is not a trusted .lionagi directory; this run was started through the MCP server with lionagi_dir_trust.gate set to mcp. Run `li lionagi-dir trust {parent of dir}` to trust it, or start the run from a directory without project files.
+
+`{what}` is `agent profile`, `playbook` or `project settings`. The text names the file and the directory as resolved paths and quotes nothing from the file. Each trust step's own refusal reads: `li <step> refuses to run inside a run the MCP server started (LIONAGI_DIR_TRUST_GATE is set); run it from your own shell.`
+
+### Tests
+
+Gate off (the default, and the setting absent):
+
+- each MCP submit kind with a project profile that sets `bypass: true` starts as it does today, and the run takes bypass from the profile;
+- a project `notify.on_terminal` runs at the end of an MCP-started run as it does today;
+- `li agent -a x` and `li o flow -p y` in a project are unchanged;
+- the catalog output has no `trusted` field;
+- the job process's environment has no `LIONAGI_DIR_TRUST_GATE`.
+
+Gate on:
+
+- each submit kind, `dry_run` included, refuses a project profile from an untrusted directory before a job record or directory exists, with the text above;
+- the same for a project playbook, and for a trusted playbook naming a profile from an untrusted directory;
+- an untrusted project `settings.yaml` refuses at submit, before a job record or directory exists, and refuses in the job process, once for each of three files: one carrying only `notify.on_terminal`, one carrying only `dispatch.notify_template`, and one carrying only a source-less `hooks_external` entry. The third is not read by any run path today, and is tested because the layer is checked as a whole;
+- the server's terminal hook does not run a project `notify.on_terminal` from an untrusted directory;
+- a trusted directory passes, and so does the same directory reached through a link;
+- trusting a parent directory's `.lionagi` does not admit one in a subdirectory, and the reverse;
+- a flow whose planner assigns a worker role that exists only as an untrusted project profile refuses when that worker is built, and the job records the refusal;
+- a graph node naming an untrusted project profile refuses at submit;
+- a person-typed `li agent -a x` in the same untrusted directory, without the variable, runs;
+- the variable alone, with the setting `off`, gates a person-typed `li agent -a x`;
+- a profile file edited under a trusted directory is used as edited (the stated limit, pinned);
+- `profile.list` and `profile.show` mark a project profile `trusted: false` from an untrusted directory and `trusted: true` from a trusted one;
+- `li lionagi-dir trust` refuses the user-level directory and a directory with no `.lionagi`;
+- `li lionagi-dir trust`, `li hooks trust` and `li plugin trust`, each with `--yes`, refuse when `LIONAGI_DIR_TRUST_GATE` is set and write nothing; without the variable, `li lionagi-dir trust --yes` writes the record and the prompt path asks;
+- no module under `lionhub/serve/mcp` writes `trusted_lionagi_dirs`. This is a test that greps the source, and it checks a known writer in the same run.
 
 ## Context
 

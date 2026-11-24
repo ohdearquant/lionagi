@@ -18,12 +18,13 @@
     "stats",
     "plugin",
     "hooks",
+    "lionagi-dir",
     "handshake",
     "runs",
     "lifecycle",
     "mcp"
   ],
-  "registry_count": 22,
+  "registry_count": 23,
   "name_map": {
     "agent": "agent",
     "casts": "casts",
@@ -35,6 +36,7 @@
     "invoke": "invoke",
     "kill": "kill",
     "lifecycle": "lifecycle",
+    "lionagi-dir": "lionagi-dir",
     "mcp": "mcp",
     "mirror": "mirror",
     "mon": "monitor",
@@ -50,7 +52,7 @@
     "studio": "studio",
     "team": "team"
   },
-  "name_map_count": 24,
+  "name_map_count": 25,
   "top_level": [
     {
       "name": "orchestrate",
@@ -144,6 +146,11 @@
     {
       "name": "hooks",
       "help": "Import Claude Code / Codex hook configs; trust imported hook commands.",
+      "aliases": []
+    },
+    {
+      "name": "lionagi-dir",
+      "help": "Trust a project's .lionagi directory for runs the MCP server starts.",
       "aliases": []
     },
     {
@@ -1618,6 +1625,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -2017,6 +2025,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -2145,6 +2171,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -2710,6 +2737,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -2838,6 +2883,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -3518,6 +3564,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -3646,6 +3710,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -4237,6 +4302,24 @@
         },
         "hooks": {
           "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
           "actions": [
             {
               "option_strings": [
@@ -5451,6 +5534,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -6231,6 +6315,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -6359,6 +6461,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -6920,6 +7023,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -7048,6 +7169,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -7517,6 +7639,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -7645,6 +7785,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -8105,6 +8246,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -8233,6 +8392,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -8868,6 +9028,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -8996,6 +9174,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -9581,6 +9760,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -9709,6 +9906,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -10110,6 +10308,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -10238,6 +10454,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -10680,6 +10897,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -10808,6 +11043,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -11340,6 +11576,24 @@
           ],
           "subparsers": {}
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -11468,6 +11722,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -11975,6 +12230,24 @@
             }
           }
         },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
         "handshake": {
           "prog": "li handshake",
           "actions": [
@@ -12049,7 +12322,7 @@
         }
       }
     },
-    "handshake": {
+    "lionagi-dir": {
       "prog": "li",
       "actions": [
         {
@@ -12103,6 +12376,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -12466,6 +12740,647 @@
         },
         "hooks": {
           "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            },
+            {
+              "option_strings": [],
+              "dest": "lionagi_dir_command",
+              "required": true,
+              "nargs": "A...",
+              "default": null,
+              "choices": [
+                "list",
+                "trust",
+                "untrust"
+              ],
+              "help": null
+            }
+          ],
+          "subparsers": {
+            "trust": {
+              "prog": "li lionagi-dir trust",
+              "actions": [
+                {
+                  "option_strings": [
+                    "-h",
+                    "--help"
+                  ],
+                  "dest": "help",
+                  "required": false,
+                  "nargs": 0,
+                  "default": "==SUPPRESS==",
+                  "choices": null,
+                  "help": "show this help message and exit"
+                },
+                {
+                  "option_strings": [],
+                  "dest": "dir",
+                  "required": false,
+                  "nargs": "?",
+                  "default": null,
+                  "choices": null,
+                  "help": "Directory holding the .lionagi to trust (default: the working directory)."
+                },
+                {
+                  "option_strings": [
+                    "--yes"
+                  ],
+                  "dest": "yes",
+                  "required": false,
+                  "nargs": 0,
+                  "default": false,
+                  "choices": null,
+                  "help": "Record trust without an interactive confirmation prompt."
+                }
+              ],
+              "subparsers": {}
+            },
+            "untrust": {
+              "prog": "li lionagi-dir untrust",
+              "actions": [
+                {
+                  "option_strings": [
+                    "-h",
+                    "--help"
+                  ],
+                  "dest": "help",
+                  "required": false,
+                  "nargs": 0,
+                  "default": "==SUPPRESS==",
+                  "choices": null,
+                  "help": "show this help message and exit"
+                },
+                {
+                  "option_strings": [],
+                  "dest": "dir",
+                  "required": false,
+                  "nargs": "?",
+                  "default": null,
+                  "choices": null,
+                  "help": "Directory holding the .lionagi to stop trusting (default: the working directory)."
+                }
+              ],
+              "subparsers": {}
+            },
+            "list": {
+              "prog": "li lionagi-dir list",
+              "actions": [
+                {
+                  "option_strings": [
+                    "-h",
+                    "--help"
+                  ],
+                  "dest": "help",
+                  "required": false,
+                  "nargs": 0,
+                  "default": "==SUPPRESS==",
+                  "choices": null,
+                  "help": "show this help message and exit"
+                }
+              ],
+              "subparsers": {}
+            }
+          }
+        },
+        "handshake": {
+          "prog": "li handshake",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "runs": {
+          "prog": "li runs",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lifecycle": {
+          "prog": "li lifecycle",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "mcp": {
+          "prog": "li mcp",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        }
+      }
+    },
+    "handshake": {
+      "prog": "li",
+      "actions": [
+        {
+          "option_strings": [
+            "-h",
+            "--help"
+          ],
+          "dest": "help",
+          "required": false,
+          "nargs": 0,
+          "default": "==SUPPRESS==",
+          "choices": null,
+          "help": "show this help message and exit"
+        },
+        {
+          "option_strings": [
+            "--version"
+          ],
+          "dest": "version",
+          "required": false,
+          "nargs": 0,
+          "default": "==SUPPRESS==",
+          "choices": null,
+          "help": "Print the installed lionagi version and exit."
+        },
+        {
+          "option_strings": [
+            "--machine"
+          ],
+          "dest": "machine",
+          "required": false,
+          "nargs": 0,
+          "default": false,
+          "choices": null,
+          "help": "Emit one machine-result JSON object on stdout and send every human-facing line to stderr."
+        },
+        {
+          "option_strings": [],
+          "dest": "command",
+          "required": true,
+          "nargs": "A...",
+          "default": null,
+          "choices": [
+            "agent",
+            "casts",
+            "dispatch",
+            "doctor",
+            "engine",
+            "handshake",
+            "hooks",
+            "invoke",
+            "kill",
+            "lifecycle",
+            "lionagi-dir",
+            "mcp",
+            "mirror",
+            "mon",
+            "monitor",
+            "o",
+            "orchestrate",
+            "plugin",
+            "remote",
+            "runs",
+            "schedule",
+            "state",
+            "stats",
+            "studio",
+            "team"
+          ],
+          "help": null
+        }
+      ],
+      "subparsers": {
+        "orchestrate": {
+          "prog": "li orchestrate",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "o": {
+          "prog": "li orchestrate",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "agent": {
+          "prog": "li agent",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "casts": {
+          "prog": "li casts",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "engine": {
+          "prog": "li engine",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "team": {
+          "prog": "li team",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "studio": {
+          "prog": "li studio",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "schedule": {
+          "prog": "li schedule",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "remote": {
+          "prog": "li remote",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "state": {
+          "prog": "li state",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "invoke": {
+          "prog": "li invoke",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "kill": {
+          "prog": "li kill",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "mirror": {
+          "prog": "li mirror",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "monitor": {
+          "prog": "li monitor",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "mon": {
+          "prog": "li monitor",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "dispatch": {
+          "prog": "li dispatch",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "doctor": {
+          "prog": "li doctor",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "stats": {
+          "prog": "li stats",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "plugin": {
+          "prog": "li plugin",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "hooks": {
+          "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
           "actions": [
             {
               "option_strings": [
@@ -12621,6 +13536,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -12984,6 +13900,24 @@
         },
         "hooks": {
           "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
           "actions": [
             {
               "option_strings": [
@@ -13150,6 +14084,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -13513,6 +14448,24 @@
         },
         "hooks": {
           "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
           "actions": [
             {
               "option_strings": [
@@ -13677,6 +14630,7 @@
             "invoke",
             "kill",
             "lifecycle",
+            "lionagi-dir",
             "mcp",
             "mirror",
             "mon",
@@ -14040,6 +14994,24 @@
         },
         "hooks": {
           "prog": "li hooks",
+          "actions": [
+            {
+              "option_strings": [
+                "-h",
+                "--help"
+              ],
+              "dest": "help",
+              "required": false,
+              "nargs": 0,
+              "default": "==SUPPRESS==",
+              "choices": null,
+              "help": "show this help message and exit"
+            }
+          ],
+          "subparsers": {}
+        },
+        "lionagi-dir": {
+          "prog": "li lionagi-dir",
           "actions": [
             {
               "option_strings": [

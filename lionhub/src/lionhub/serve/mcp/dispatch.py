@@ -24,6 +24,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
+from lionagi import _lionagi_dir_trust as lionagi_dir_trust
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
@@ -1220,7 +1221,58 @@ def _resolve_hooks_from(
     return {"file": hooks_file, "plan": plan, "format": fmt, "carry": list(carried)}
 
 
-def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+def _refuse_untrusted_settings_layer(cwd: str | None) -> None:
+    """Load the project settings layer the job will load, so an untrusted one refuses here.
+
+    Called only for a gated submission. Anything else wrong with the file is left to the run to
+    report, as it is with the gate off.
+    """
+    from lionagi._settings import load_settings
+
+    try:
+        load_settings(project_dir=cwd)
+    except lionagi_dir_trust.UntrustedLionagiDirError:
+        raise
+    except Exception:  # noqa: BLE001, S110 — a malformed file is the run's to report, as before
+        pass
+
+
+def _refuse_untrusted_playbook_agent(
+    schema: dict[str, Any], args: dict[str, Any], cwd: str | None
+) -> None:
+    """Resolve the profile a named playbook's ``agent`` field selects, for a gated submission.
+
+    ``_refuse_unknown_profile`` reads only the submission's own ``agent``. A playbook that names
+    one the submission does not override is resolved here the same way, and only a refusal of an
+    untrusted directory stops the submission; a name that does not resolve is the run's to
+    report, as it is with the gate off.
+    """
+    path = schema.get("x-playbook-path")
+    if path is None or args.get("agent"):
+        return
+    from lionagi._flow_spec import load_flow_spec
+    from lionhub.orchestration.spawn import (
+        AgentProfileNotFoundError,
+        AmbiguousProfileNameError,
+        load_agent_profile,
+    )
+
+    try:
+        name = load_flow_spec(path).get("agent")
+    except ValueError:
+        return
+    if not isinstance(name, str) or not name:
+        return
+    with roster._resolving_under(cwd):
+        try:
+            load_agent_profile(name)
+        except (AgentProfileNotFoundError, AmbiguousProfileNameError, ValueError):
+            return
+
+
+def _run_spawn(
+    verb: Verb, schema: dict[str, Any], args: dict[str, Any], *, trust_gate: bool = False
+) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     resumes = bool(args.get("resume") or args.get("continue_last"))
     if resumes:
@@ -1241,6 +1293,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
+    if trust_gate:
+        _refuse_untrusted_settings_layer(cwd)
+        _refuse_untrusted_playbook_agent(schema, args, cwd)
     default_name = None
     if (
         verb.job_kind in {"flow", "fanout"}
@@ -1294,6 +1349,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             **({"hooks_from": hooks_from} if hooks_from is not None else {}),
             **({"replay_mcp_choice": True} if resumes else {}),
             **({"graph_source": graph_source} if graph_source is not None else {}),
+            **({"lionagi_dir_gate": True} if trust_gate else {}),
         )
     except NestedAgentRefusedError as exc:
         # Well-formed, and refused for where the caller runs, which no retry changes.
@@ -1684,20 +1740,25 @@ async def _run_one(entry: Any) -> dict[str, Any]:
         # A named playbook resolves where the run will, under the submitted cwd (the
         # spawned child starts there), not under this server's own working directory.
         playbook_cwd = _playbook_cwd(args) if playbook is not None else None
-        with roster._resolving_under(playbook_cwd):
+        # With lionagi_dir_trust.gate set to mcp, a submission resolves project .lionagi files
+        # the way its gated job will, so one project gets one answer at both (ADR-0088
+        # Amendment 2).
+        trust_gate = verb.executor == "spawn" and lionagi_dir_trust.gate_setting() == "mcp"
+        with roster._resolving_under(playbook_cwd), lionagi_dir_trust.enforced(trust_gate):
             schema = verb_schema(verb, playbook=playbook)
-        if verb.executor == "spawn":
-            _require_fingerprint(
-                name,
-                verb,
-                schema,
-                entry.get("schema_fingerprint"),
-                playbook=playbook,
-                cwd=playbook_cwd,
-            )
+            if verb.executor == "spawn":
+                _require_fingerprint(
+                    name,
+                    verb,
+                    schema,
+                    entry.get("schema_fingerprint"),
+                    playbook=playbook,
+                    cwd=playbook_cwd,
+                )
         _validate(schema, args, verb)
         if verb.executor == "spawn":
-            result = _run_spawn(verb, schema, args)
+            with lionagi_dir_trust.enforced(trust_gate):
+                result = _run_spawn(verb, schema, args, trust_gate=trust_gate)
         elif verb.executor == "job":
             result = await _run_job(verb, args)
         elif verb.executor == "roster":
@@ -1706,6 +1767,10 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             result = _run_machine(verb, schema, args)
     except OpError as exc:
         return _op_error(name, exc, schema)
+    except lionagi_dir_trust.UntrustedLionagiDirError as exc:
+        return _op_error(name, OpError("invalid_input", str(exc)), schema)
+    except lionagi_dir_trust.LionagiDirTrustSettingError as exc:
+        return _op_error(name, OpError("unavailable", str(exc)), schema)
     except jobs.SpawnError as exc:
         # `unavailable`, not `invalid_input`: arguments were already accepted
         # by the schema; what failed is this machine's ability to start a

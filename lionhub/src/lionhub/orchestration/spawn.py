@@ -1064,10 +1064,12 @@ def build_agent_profile_catalog(
 ) -> dict[str, dict[str, Any]]:
     """Index discoverable profiles by name and resolved runtime configuration.
 
-    A profile refused because it chooses an account it may not choose is left out, so one such
-    file does not hide every other role; its reason, which names the file and the key, goes in
+    A profile refused because it chooses an account it may not choose, or because a gated run may
+    not take it from an untrusted project directory, is left out, so one such file does not hide
+    every other role; its reason, which names the file and the key, goes in
     *refused* when given, and is printed as a warning either way. Any other load error raises.
     """
+    from lionagi._lionagi_dir_trust import UntrustedLionagiDirError
     from lionhub.agent.subscription_accounts import SubscriptionAccountError
     from lionhub.orchestration.console import warn
 
@@ -1075,7 +1077,7 @@ def build_agent_profile_catalog(
     for name in list_agents():
         try:
             catalog[name] = profile_config(load_agent_profile(name))
-        except SubscriptionAccountError as exc:
+        except (SubscriptionAccountError, UntrustedLionagiDirError) as exc:
             warn(f"left out of the profile list: {exc}")
             if refused is not None:
                 refused[name] = str(exc)
@@ -1150,6 +1152,11 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
                 unreadable_symlinks=unreadable_symlinks,
             )
             if path is not None:
+                # Before the file is read: a run the MCP server started takes a profile
+                # only from a trusted directory (ADR-0088 Amendment 2).
+                from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+                check_lionagi_dir("agent profile", path, d)
                 _warn_if_shadowing_plugin_profile(name)
                 text = path.read_text()
                 profile = _parse_profile(name, text)
