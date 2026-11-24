@@ -25,7 +25,7 @@
       "__all__ = (\n    \"CodecError\",\n    \"FrozenArray\",\n    \"FrozenObject\",\n    \"JournalRecord\",\n    \"PatchOp\",\n    \"apply_patch\",\n    \"capture_context\",\n    \"decode_json\",\n    \"decode_record\",\n    \"diff_context\",\n    \"encode_record\",\n    \"freeze_json\",\n    \"thaw_json\",\n    \"validate_entry\",\n)"
     ],
     "lionagi/_checkpoint_version.py": [
-      "__all__ = (\"CHECKPOINT_VERSION\", \"UnsupportedCheckpointVersionError\", \"load_legacy_checkpoint_json\")"
+      "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"GRAPH_CHECKPOINT_VERSION\",\n    \"UnsupportedCheckpointVersionError\",\n    \"load_legacy_checkpoint_json\",\n)"
     ],
     "lionagi/_class_registry.py": [
       "__all__ = (\n    \"get_class\",\n    \"LION_CLASS_REGISTRY\",\n)",

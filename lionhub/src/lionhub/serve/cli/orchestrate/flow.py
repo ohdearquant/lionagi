@@ -40,6 +40,12 @@ from lionhub.orchestration.flow.checkpoint import (
     FlowResumeError,
     resolve_checkpoint_target,
 )
+from lionhub.orchestration.flow.graph import (
+    FlowGraphError,
+    GraphSource,
+    load_graph_record,
+    write_graph_copy,
+)
 from lionhub.orchestration.job import classify_exception
 from lionhub.orchestration.spawn import (
     _PROFILE_TOOL_FIELDS,
@@ -1116,7 +1122,8 @@ async def _build_dag(
         leg_expected = _leg_artifact_entries(agent_ids[i], role_defaults)
         role_artifact_entries.extend(leg_expected)
 
-        ctx: list = [{"original_task": prompt}]
+        # A written graph may run with no prompt; each node's own prompt is its task.
+        ctx: list = [{"original_task": prompt}] if prompt else []
         if ta.inputs:
             ctx.append({"assignment_inputs": list(ta.inputs)})
         artifact_note = _artifact_directive(env.run, agent_ids[i], leg_expected)
@@ -3301,9 +3308,14 @@ async def _run_flow(
     mcp_launch_dir_unrecorded: bool = False,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
+    graph_source: GraphSource | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
-    """Returns (output, terminal_status)."""
+    """Returns (output, terminal_status).
+
+    *graph_source*, a written graph already loaded and checked, replaces the planner: its
+    bytes are copied into this run's directory and recorded in the checkpoint config.
+    """
     from lionagi._cli_worker_context import _bind_cli_worker_recorder
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
 
@@ -3540,8 +3552,15 @@ async def _run_flow(
                 session_id = env._live_persist["session_id"]
                 hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
 
+            if graph_source is not None:
+                # The run reads only this copy; its digest in the checkpoint config is what
+                # a resume checks it against (ADR-0048 Amendment 1 H2 rule 6).
+                write_graph_copy(env.run.state_root, graph_source)
+                _checkpoint_config["graph"] = graph_source.record()
+
             inner_kw = dict(
                 env=env,
+                graph_source=graph_source,
                 with_synthesis=with_synthesis,
                 synthesis_model=synthesis_model,
                 max_concurrent=max_concurrent,
@@ -3796,8 +3815,13 @@ async def _run_flow_inner(
     allow_degraded_context: bool = False,
     retry_failed: bool = False,
     checkpoint_config: dict | None = None,
+    graph_source: GraphSource | None = None,
 ) -> str:
-    """Sequence the flow phases: plan → [dry-run] → build → execute → synthesize → finalize."""
+    """Sequence the flow phases: plan → [dry-run] → build → execute → synthesize → finalize.
+
+    With *graph_source* the plan is the written graph and the planner is never called; a
+    resume still replays the checkpoint's plan, never the graph file.
+    """
     t0 = time.monotonic()
 
     if resume_checkpoint is not None:
@@ -3836,6 +3860,15 @@ async def _run_flow_inner(
             env._name_counts[ta.assignee] = env._name_counts.get(ta.assignee, 0) + 1
         t_plan = 0.0
         progress(f"Resumed plan: {len(assignments)} assignments (planner skipped).")
+    elif graph_source is not None:
+        # A written graph enters where a resume does: the plan is given, so no planner
+        # call, no truncation and no dependency normalization (ADR-0069 Amendment 4).
+        graph_fields, agent_ids, dep_indices = graph_source.plan()
+        assignments = [TaskAssignment(**fields) for fields in graph_fields]
+        for ta in assignments:
+            env._name_counts[ta.assignee] = env._name_counts.get(ta.assignee, 0) + 1
+        t_plan = 0.0
+        progress(f"Written graph: {len(assignments)} nodes (planner skipped).")
     else:
         roster = available_roles()
         budget_note = ""
@@ -3916,15 +3949,16 @@ async def _run_flow_inner(
     # Says "as declared" because that is all it can say: no node exists yet for
     # any of these assignments, so this line is the planner's input to the build
     # and not an observation of the graph that will run.
+    declared_by = "the written graph" if graph_source is not None else "the planner"
     progress(
         f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments, dependencies as declared "
-        f"by the planner (the run graph is not built yet) — {' | '.join(dag_lines)}"
+        f"by {declared_by} (the run graph is not built yet) — {' | '.join(dag_lines)}"
     )
 
     if dry_run:
         lines = [
             f"Plan ({len(assignments)} assignments):",
-            "Dependencies below are the ones the planner declared. A dry run builds no run",
+            f"Dependencies below are the ones {declared_by} declared. A dry run builds no run",
             "graph, so nothing here has been checked against the structure that would run.",
             "",
         ]
@@ -4076,7 +4110,13 @@ async def _run_flow_inner(
     )
 
     synthesis_result = None
-    if (with_synthesis or exec_result.n_spawned) and exec_result.agent_results:
+    # A written graph's result is each node's output: it has no synthesis pass, and a
+    # graph that wants a summary writes a node for it.
+    if (
+        graph_source is None
+        and (with_synthesis or exec_result.n_spawned)
+        and exec_result.agent_results
+    ):
         synthesis_result = await _synthesize(
             env,
             prompt,
@@ -4119,6 +4159,14 @@ async def _resume_flow(
     overrides); every other _run_flow kwarg replays the persisted config."""
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
+    # A written graph's run: its plan is replayed from the checkpoint, and the copy of the
+    # graph in the run's directory must still hold the bytes the checkpoint recorded.
+    graph_source: GraphSource | None = None
+    if "graph" in config:
+        try:
+            graph_source = load_graph_record(config.pop("graph"), _run_dir.state_root)
+        except FlowGraphError as exc:
+            raise FlowResumeError(f"Cannot resume this written-graph run: {exc}") from None
     # Internal replay controls are derived from stored fields, never trusted
     # as authorizations or provenance claims in the checkpoint itself.
     config.pop("reject_legacy_mcp_snapshot", None)
@@ -4209,6 +4257,7 @@ async def _resume_flow(
             resume_checkpoint=checkpoint,
             allow_degraded_context=allow_degraded_context,
             retry_failed=retry_failed,
+            **({"graph_source": graph_source} if graph_source is not None else {}),
             **config,
         )
     except LegacyMcpReplayError as exc:
