@@ -151,6 +151,7 @@ def _run(
     home: Path,
     config: Path,
     cwd: Path,
+    claude_tmp: Path,
 ) -> tuple[dict[str, tuple[str, bool] | None], dict[str, Any]]:
     """One claude run: step name to the tool result the child sent back (None when it never
     did), and what the run was given and what reached the two listeners."""
@@ -159,12 +160,13 @@ def _run(
     settings = _settings(rules)
     argv = read_probe._argv(binary, settings)
     with read_probe._serve(stand_in) as base_url, read_probe._serve(proxy) as proxy_url:
-        env = read_probe._env(base_url, proxy_url, home, config)
+        env = read_probe._env(base_url, proxy_url, home, config, claude_tmp)
         status = runner(argv, env, cwd)
     results = {name: stand_in.results.get(f"toolu_probe_{i}") for i, (name, _) in enumerate(steps)}
     run = {
         "argv": argv,
         "env_names": sorted(env),
+        "claude_tmp": str(claude_tmp),
         "exit_status": status,
         "requests": list(stand_in.seen),
         "proxied": list(proxy.seen),
@@ -186,7 +188,11 @@ def _probe(
     project, leg = root / "project", root / "leg"
     homes = {n: root / f"home-{n}" for n in ("control", "rules")}
     configs = {n: root / f"config-{n}" for n in ("control", "rules")}
-    for path in (project / ".claude", leg, *configs.values()):
+    # Each run gets its own Claude Code temp directory, as the read probe's runs do. Short
+    # names: Claude Code is documented to give Bash the system temp directory instead of an
+    # override path it finds too long.
+    temps = {n: root / f"t{n[0]}" for n in ("control", "rules")}
+    for path in (project / ".claude", leg, *configs.values(), *temps.values()):
         path.mkdir(parents=True)
     marks: dict[str, str] = {}
     for name, _, relative in _READS:
@@ -234,6 +240,7 @@ def _probe(
         home=homes["control"],
         config=configs["control"],
         cwd=leg,
+        claude_tmp=temps["control"],
     )
     ruled, rules_run = _run(
         binary,
@@ -243,6 +250,7 @@ def _probe(
         home=homes["rules"],
         config=configs["rules"],
         cwd=leg,
+        claude_tmp=temps["rules"],
     )
 
     arms: dict[str, dict[str, Any]] = {}

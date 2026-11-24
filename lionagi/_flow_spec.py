@@ -19,6 +19,7 @@ FLOW_SPEC_FIELDS = frozenset(
         "description",
         "dry_run",
         "effort",
+        "github_pr",
         "max_agents",
         "max_ops",
         "model",
@@ -35,6 +36,14 @@ FLOW_SPEC_FIELDS = frozenset(
     }
     | {"bypass", "links", "permission_mode", "steps", "use", "yolo"}
 )
+
+#: Keys of the ``github-pr`` field: the pull request (a number, URL or branch), its repository
+#: in ``[HOST/]OWNER/REPO`` form, and the style the launcher posts the run's report in. Each value
+#: is a string and may name the playbook's arguments as ``{name}`` placeholders, filled at launch.
+GITHUB_PR_KEYS = frozenset({"pr", "repo", "comment"})
+
+#: How the launcher posts a ``github-pr`` run's report; ``none`` posts nothing.
+GITHUB_PR_COMMENT_STYLES: tuple[str, ...] = ("none", "brief", "substantive", "full")
 
 _PRESERVE_DASHED = frozenset({"argument-hint"})
 
@@ -108,6 +117,27 @@ def validate_flow_args_schema(args_schema: Any) -> str | None:
     return None
 
 
+def _validate_github_pr(value: Any) -> str | None:
+    """Check the ``github-pr`` field's shape; placeholders are filled and checked at launch."""
+    if not isinstance(value, dict):
+        return f"spec field 'github_pr' must be a dict, got {type(value).__name__}"
+    for key, item in value.items():
+        if key not in GITHUB_PR_KEYS:
+            accepted = ", ".join(sorted(GITHUB_PR_KEYS))
+            return f"spec field 'github_pr' has unknown key {key!r}; accepted keys: {accepted}"
+        if not isinstance(item, str):
+            return f"spec field 'github_pr.{key}' must be a string, got {type(item).__name__}"
+    if not value.get("pr"):
+        return "spec field 'github_pr' must name the pull request in 'pr', for example '{input}'"
+    comment = value.get("comment")
+    if comment is not None and "{" not in comment and comment not in GITHUB_PR_COMMENT_STYLES:
+        return (
+            f"spec field 'github_pr.comment' must be one of {list(GITHUB_PR_COMMENT_STYLES)} "
+            f"or a placeholder such as '{{comment}}', got {comment!r}"
+        )
+    return None
+
+
 def validate_flow_spec_fields(spec: dict[str, Any]) -> str | None:
     """Validate the top-level fields shared by every flow-spec surface."""
     for key in spec:
@@ -175,6 +205,11 @@ def validate_flow_spec_fields(spec: dict[str, Any]) -> str | None:
             value = spec[str_field]
             if not isinstance(value, str):
                 return f"spec field {str_field!r} must be a string, got {type(value).__name__}"
+
+    if "github_pr" in spec:
+        github_pr_err = _validate_github_pr(spec["github_pr"])
+        if github_pr_err is not None:
+            return github_pr_err
 
     if "artifacts" in spec:
         artifacts = spec["artifacts"]

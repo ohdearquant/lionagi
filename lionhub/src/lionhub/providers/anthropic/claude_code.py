@@ -494,6 +494,15 @@ class ClaudeCodeRequest(BaseModel):
             "refused."
         ),
     )
+    carried_deny: SkipJsonSchema[tuple[str, ...]] = Field(
+        default=(),
+        exclude=True,
+        description=(
+            "Permission deny rules carried from a hooks file named when the leg was submitted, "
+            "already rendered for this leg. They join the one --settings value as "
+            "permissions.deny, whether the child sandbox is on or off."
+        ),
+    )
 
     # Legacy fields (kept for backward compat, unused in CLI args)
     mcp_tools: list[str] = Field(default_factory=list, exclude=True)
@@ -739,6 +748,8 @@ class ClaudeCodeRequest(BaseModel):
 
             updates["settings"] = None
             updates["setting_sources"] = _child_setting_sources(self.setting_sources)
+        elif self.carried_deny:
+            updates["settings"] = self._with_carried_deny(self.settings)
         source = self.model_copy(update=updates) if updates else self
         args.extend(source._build_declarative_args())
         if sandbox_settings is not None:
@@ -845,7 +856,23 @@ class ClaudeCodeRequest(BaseModel):
             text = str.__str__(existing) if isinstance(existing, str) else str(existing)
             if not text.lstrip().startswith("{"):
                 base_dir = self.cwd()
-        return claude_settings_argument(policy, existing, base_dir, self.cwd())
+        value = claude_settings_argument(policy, existing, base_dir, self.cwd())
+        return self._with_carried_deny(value) if self.carried_deny else value
+
+    def _with_carried_deny(self, existing: Any) -> str:
+        """``existing`` with the carried deny rules added to ``permissions.deny``, as inline JSON.
+
+        ``existing`` is inline JSON or a path read against the workspace, as for the sandbox's
+        own merge; lists gain entries and nothing already there is dropped.
+        """
+        from lionhub.agent.child_sandbox import _merge, _read_settings_value
+
+        base: dict[str, Any] = {}
+        if existing:
+            text = str.__str__(existing) if isinstance(existing, str) else str(existing)
+            base_dir = None if text.lstrip().startswith("{") else self.cwd()
+            base = _read_settings_value(existing, base_dir)
+        return json.dumps(_merge(base, {"permissions": {"deny": list(self.carried_deny)}}))
 
     def _scratch_root(self) -> str | None:
         """The run's scratch directory as a resolved path, or None when there is none to add.

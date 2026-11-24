@@ -111,6 +111,7 @@ AGENT_HELP_FLAGS = [
     "--fast",
     "--form",
     "--help",
+    "--hooks-from-snapshot",
     "--idle-timeout",
     "--image",
     "--invocation",

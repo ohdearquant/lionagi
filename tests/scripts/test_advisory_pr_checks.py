@@ -1322,6 +1322,7 @@ CI_GATE_CONDITIONAL_GATES = {
     "compat-deps": "compat",
     "lionrs": "lionrs",
     "lion1": "lion1",
+    "core-without-hub": "code",
 }
 
 # The aggregate job's own keys, its one step's keys, and the path filters the

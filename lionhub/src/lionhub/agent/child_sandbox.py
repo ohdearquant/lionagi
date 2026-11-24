@@ -301,7 +301,9 @@ def run_state_paths() -> tuple[str, ...]:
     A resumed branch takes its model, and the sandbox policy stored with it, from these files,
     so a child that rewrote them could hand a later run a policy of its choosing. The copy of a
     named MCP config is among them for the same reason: a resume hands its servers to the next
-    run. A run's ``artifacts`` directory, where flow and fanout workers run, is not among them.
+    run. So is the server snapshot the MCP server writes for a submitted job, which an agent
+    resume reads through the branch record and a flow resume through its checkpoint. A run's
+    ``artifacts`` directory, where flow and fanout workers run, is not among them.
     """
     from lionagi._paths import LIONAGI_HOME
 
@@ -311,6 +313,7 @@ def run_state_paths() -> tuple[str, ...]:
             f"{home}/runs/*/{name}"
             for name in ("run.json", "checkpoint.json", "branches", "stream", "mcp-config.json")
         ),
+        f"{home}/mcp/jobs/*/mcp-servers.json",
         f"{home}/logs/agents",
         f"{home}/last_branch.json",
     )
