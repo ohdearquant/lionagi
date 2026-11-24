@@ -1,6 +1,6 @@
 # ADR-0088: Plugin system (directory-bundle manifest with lazy activation)
 
-- **Status**: Accepted, amended 2026-10-11 (see Amendment 1); Amendment 2 proposed 2026-11-23
+- **Status**: Accepted, amended 2026-10-11 (see Amendment 1); Amendment 2 accepted 2026-11-24
 - **Kind**: Aspirational
 - **Area**: substrates
 - **Date**: 2026-07-12
@@ -66,7 +66,7 @@ The user-level trust records of D5 and the plugin settings of D7 stay in
 
 ## Amendment 2 (2026-11-23): project files on runs a model started need a trusted .lionagi directory
 
-**Status**: Proposed.
+**Status**: Accepted (2026-11-24).
 
 This amendment also changes two existing trust steps: `li plugin trust` (D5) and `li hooks trust` (ADR-0048 D7) refuse inside a run the MCP server started with the gate on. ADR-0048's Relations line gains one sentence saying so, in the same PR.
 
@@ -152,7 +152,7 @@ Gate on:
 - the server's terminal hook does not run a project `notify.on_terminal` from an untrusted directory;
 - a trusted directory passes, and so does the same directory reached through a link;
 - trusting a parent directory's `.lionagi` does not admit one in a subdirectory, and the reverse;
-- a flow whose planner assigns a worker role that exists only as an untrusted project profile refuses when that worker is built, and the job records the refusal;
+- a flow whose planner assigns a worker role that exists only as an untrusted project profile refuses when that worker is built: the run ends failed, and the process prints the refusal, naming the worker, and exits 1;
 - a graph node naming an untrusted project profile refuses at submit;
 - a person-typed `li agent -a x` in the same untrusted directory, without the variable, runs;
 - the variable alone, with the setting `off`, gates a person-typed `li agent -a x`;

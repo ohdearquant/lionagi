@@ -571,6 +571,22 @@ def _report_broken_environment(exc: _EnvironmentFault, *, exit_code: int, argv: 
     return exit_code
 
 
+def _caused_by(exc: BaseException, kind: type[BaseException]) -> bool:
+    """Whether *exc*, or an exception it was raised from, is a *kind*.
+
+    Follows ``__cause__`` only: an exception raised ``from`` another one carries it on
+    purpose, as a worker build failure carries the refusal that stopped the build.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, kind):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``li`` console script.
 
@@ -601,10 +617,12 @@ def main(argv: list[str] | None = None) -> int:
         return _report_broken_environment(exc, exit_code=EXIT_CODE_ENVIRONMENT_ERROR, argv=argv)
     except Exception as exc:
         # A gated run's refusal of an untrusted project .lionagi directory (ADR-0088
-        # Amendment 2) is its answer, printed whole; anything else propagates unchanged.
-        # Looked up in sys.modules so startup imports nothing new for it.
+        # Amendment 2) is its answer, printed whole, also when it arrives as the cause of
+        # a flow or fanout worker's build failure, whose text names the worker; anything
+        # else propagates unchanged. Looked up in sys.modules so startup imports nothing
+        # new for it.
         trust = sys.modules.get("lionagi._lionagi_dir_trust")
-        if trust is None or not isinstance(exc, trust.UntrustedLionagiDirError):
+        if trust is None or not _caused_by(exc, trust.UntrustedLionagiDirError):
             raise
         log_error(str(exc))
         return 1

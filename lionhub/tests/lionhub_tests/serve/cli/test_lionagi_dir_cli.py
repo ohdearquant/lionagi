@@ -14,6 +14,10 @@ from lionagi._lionagi_dir_trust import GATE_ENV_VAR, RECORD_KEY, UntrustedLionag
 from lionagi.plugins._user_settings import read_user_settings
 from lionhub.serve.cli import lionagi_dir as lionagi_dir_cli
 from lionhub.serve.cli.main import main as cli_main
+from lionhub.serve.cli.orchestrate._orchestration import (
+    WorkerBuildError,
+    attribute_worker_build_failure,
+)
 
 pytestmark = pytest.mark.usefixtures("plugin_home")
 
@@ -164,6 +168,39 @@ def test_a_refusal_raised_under_a_command_exits_one_with_its_text(capsys, monkey
     assert cli_main(["lionagi-dir", "list"]) == 1
     captured = capsys.readouterr()
     assert str(refusal) in captured.out + captured.err
+
+
+def _build_worker(cause: Exception) -> int:
+    """Fail the way a flow or fanout worker build fails: attributed, raised from *cause*."""
+    try:
+        raise cause
+    except Exception as exc:
+        attribute_worker_build_failure(exc, agent_id="worker-1", role="worker")
+        raise
+
+
+def test_a_refusal_that_stopped_a_worker_build_exits_one_with_its_text(
+    capsys, monkeypatch, project
+):
+    lionagi_dir = project / ".lionagi"
+    refusal = UntrustedLionagiDirError(
+        "agent profile", lionagi_dir / "agents" / "worker.md", lionagi_dir
+    )
+    monkeypatch.setattr(lionagi_dir_cli, "_run_list", lambda: _build_worker(refusal))
+    assert cli_main(["lionagi-dir", "list"]) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert str(refusal) in output
+    assert "worker-1" in output
+    assert "Traceback" not in output
+
+
+def test_a_worker_build_failure_with_another_cause_still_propagates(monkeypatch, project):
+    cause = RuntimeError("could not resolve model spec 'nope/nope'")
+    monkeypatch.setattr(lionagi_dir_cli, "_run_list", lambda: _build_worker(cause))
+    with pytest.raises(WorkerBuildError) as caught:
+        cli_main(["lionagi-dir", "list"])
+    assert caught.value.__cause__ is cause
 
 
 # Only a step a person runs writes the record; nothing the MCP server runs does.
