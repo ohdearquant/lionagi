@@ -93,44 +93,45 @@ def test_load_hooks_empty_or_none_returns_empty_map():
     assert load_hooks_for_agent({}) == {}
 
 
-def test_build_session_bus_uses_defaults_when_no_profile():
+def test_build_session_bus_without_a_profile_has_no_handlers():
+    """A session used through the SDK persists nothing by default."""
     bus = build_session_bus(None)
-    for point, handlers in DEFAULT_HOOKS.items():
-        assert bus.handlers_for(point) == handlers
+    for point in HookPoint:
+        assert bus.handlers_for(point) == []
 
 
-def test_build_session_bus_profile_overrides_defaults():
-    """Profile listing a hook point REPLACES the default for that point."""
+def test_build_session_bus_profile_handlers_are_the_only_handlers_at_their_point():
+    """A profile's list for a point is exactly what that point runs; other points stay empty."""
     bus = build_session_bus(
         {"session.start": ["log_api_metrics"]}  # bogus mapping; just testing override
     )
-    # session.start now has only log_api_metrics, NOT persist_session_start.
-    handlers = bus.handlers_for(HookPoint.SESSION_START)
-    assert len(handlers) == 1
-    # Other defaults are untouched.
-    assert bus.handlers_for(HookPoint.SESSION_END) == DEFAULT_HOOKS[HookPoint.SESSION_END]
-    assert bus.handlers_for(HookPoint.BRANCH_END) == DEFAULT_HOOKS[HookPoint.BRANCH_END]
+    assert bus.handlers_for(HookPoint.SESSION_START) == [resolve_handler("log_api_metrics")]
+    assert bus.handlers_for(HookPoint.SESSION_END) == []
+    assert bus.handlers_for(HookPoint.BRANCH_END) == []
 
 
 def test_build_session_bus_empty_list_leaves_point_unregistered():
     bus = build_session_bus({"message.add": []})
     assert bus.handlers_for(HookPoint.MESSAGE_ADD) == []
-    # Defaults at other points still present.
-    assert bus.handlers_for(HookPoint.SESSION_START) != []
-
-
-def test_build_session_bus_empty_list_disables_an_existing_default():
-    """``session.start: []`` is the documented way to turn off a hook point
-    that DOES have a default handler -- this is the actual "override with an
-    empty list zeroes out an existing default" branch of build_session_bus's
-    ``if point in overrides: ... for handler in overrides[point]`` loop.
-    (message.add has no default since persist_message left DEFAULT_HOOKS, so
-    asserting an empty list against it can't exercise this branch.)"""
-    bus = build_session_bus({"session.start": []})
     assert bus.handlers_for(HookPoint.SESSION_START) == []
-    # Other defaults untouched.
-    assert bus.handlers_for(HookPoint.SESSION_END) == DEFAULT_HOOKS[HookPoint.SESSION_END]
-    assert bus.handlers_for(HookPoint.BRANCH_CREATE) == DEFAULT_HOOKS[HookPoint.BRANCH_CREATE]
+
+
+def test_build_session_bus_wires_the_persistence_handlers_by_name():
+    """A caller that owns a Session bus can still opt in to persistence by naming the handlers."""
+    bus = build_session_bus(
+        {
+            "session.start": ["persist_session_start"],
+            "session.end": ["persist_session_end"],
+            "branch.create": ["persist_branch_provenance"],
+            "branch.end": ["persist_branch_end"],
+        }
+    )
+    assert bus.handlers_for(HookPoint.SESSION_START) == [resolve_handler("persist_session_start")]
+    assert bus.handlers_for(HookPoint.SESSION_END) == [resolve_handler("persist_session_end")]
+    assert bus.handlers_for(HookPoint.BRANCH_CREATE) == [
+        resolve_handler("persist_branch_provenance")
+    ]
+    assert bus.handlers_for(HookPoint.BRANCH_END) == [resolve_handler("persist_branch_end")]
 
 
 def test_build_session_bus_adds_handlers_for_non_default_points():
@@ -140,14 +141,9 @@ def test_build_session_bus_adds_handlers_for_non_default_points():
     assert len(bus.handlers_for(HookPoint.TOOL_PRE)) == 1
 
 
-def test_default_hooks_only_cover_session_lifecycle_and_persistence():
-    """ADR-0047 D3 — pinned set."""
-    assert set(DEFAULT_HOOKS) == {
-        HookPoint.SESSION_START,
-        HookPoint.SESSION_END,
-        HookPoint.BRANCH_CREATE,
-        HookPoint.BRANCH_END,
-    }
+def test_default_hooks_are_empty():
+    """ADR-0047, amendment of 2026-11-25: the SDK wires no persistence by default."""
+    assert DEFAULT_HOOKS == {}
 
 
 def test_build_session_bus_returns_fresh_instance_each_call():

@@ -124,6 +124,7 @@ _PRELOAD_MODULES = (
     "lionhub.orchestration.job",
     "lionhub.orchestration.mcp_config",
     "lionhub.orchestration.project_store",
+    "lionhub.orchestration.run_persistence",
     "lionhub.orchestration.runs",
     "lionhub.orchestration.schedule.declaration",
     "lionhub.orchestration.schedule.execution_root",

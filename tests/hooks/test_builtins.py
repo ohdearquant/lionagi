@@ -1026,10 +1026,18 @@ class TestBranchEndEmission:
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
 
-class TestDefaultHookBusEmissions:
-    """build_session_bus wires all three handlers; each fires on the correct point."""
+_PERSISTENCE_BY_NAME = {
+    "session.start": ["persist_session_start"],
+    "session.end": ["persist_session_end"],
+    "branch.create": ["persist_branch_provenance"],
+    "branch.end": ["persist_branch_end"],
+}
 
-    async def test_session_start_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+
+class TestPersistenceHandlersWiredByName:
+    """Each persistence handler, wired by name, fires on its point and writes its row."""
+
+    async def test_session_start_handler_wired_by_name(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
         from lionagi.hooks.loader import build_session_bus
 
@@ -1040,7 +1048,7 @@ class TestDefaultHookBusEmissions:
             sid, prog_id = "dbus-ss-1", "prog-dbus-1"
             await _seed_session(db, sid, prog_id)
 
-            bus = build_session_bus()
+            bus = build_session_bus(_PERSISTENCE_BY_NAME)
             handlers = bus.handlers_for(HookPoint.SESSION_START)
             assert len(handlers) == 1
             await bus.emit(HookPoint.SESSION_START, session_id=sid, model="x", provider="y")
@@ -1055,7 +1063,7 @@ class TestDefaultHookBusEmissions:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
-    async def test_session_end_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+    async def test_session_end_handler_wired_by_name(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
         from lionagi.hooks.loader import build_session_bus
 
@@ -1066,7 +1074,7 @@ class TestDefaultHookBusEmissions:
             sid, prog_id = "dbus-se-1", "prog-dbus-2"
             await _seed_session(db, sid, prog_id, status="running")
 
-            bus = build_session_bus()
+            bus = build_session_bus(_PERSISTENCE_BY_NAME)
             handlers = bus.handlers_for(HookPoint.SESSION_END)
             assert len(handlers) == 1
             await bus.emit(HookPoint.SESSION_END, session_id=sid, status="completed")
@@ -1081,7 +1089,7 @@ class TestDefaultHookBusEmissions:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
-    async def test_branch_create_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+    async def test_branch_create_handler_wired_by_name(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
         from lionagi.hooks.loader import build_session_bus
 
@@ -1094,7 +1102,7 @@ class TestDefaultHookBusEmissions:
             await _seed_session(db, sid, sprog)
             await _seed_branch(db, bid, sid, bprog)
 
-            bus = build_session_bus()
+            bus = build_session_bus(_PERSISTENCE_BY_NAME)
             handlers = bus.handlers_for(HookPoint.BRANCH_CREATE)
             assert len(handlers) == 1
             await bus.emit(HookPoint.BRANCH_CREATE, branch_id=bid, model="m2", provider="p2")
@@ -1109,7 +1117,7 @@ class TestDefaultHookBusEmissions:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
-    async def test_branch_end_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+    async def test_branch_end_handler_wired_by_name(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
         from lionagi.hooks.loader import build_session_bus
 
@@ -1122,7 +1130,7 @@ class TestDefaultHookBusEmissions:
             await _seed_session(db, sid, sprog)
             await _seed_branch(db, bid, sid, bprog)
 
-            bus = build_session_bus()
+            bus = build_session_bus(_PERSISTENCE_BY_NAME)
             handlers = bus.handlers_for(HookPoint.BRANCH_END)
             assert len(handlers) == 1
             await bus.emit(HookPoint.BRANCH_END, branch_id=bid, status="failed")

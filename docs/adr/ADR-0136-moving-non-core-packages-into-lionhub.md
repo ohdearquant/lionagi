@@ -434,6 +434,9 @@ the core would need its default builder supplied by a bootstrap, and an injected
 drop those defaults. These five modules and the package initializer stay in the core under their current
 paths, with no table row.
 
+ADR-0047's amendment of 2026-11-25 removes the default handlers this reason rests on: a core `Session` bus
+now starts empty, and the hub run path installs the persistence handlers itself.
+
 `lionagi.hooks.external` (883 lines) runs configured hook commands and reads plugin settings. It is what D7's
 `lionhub/hooks/` slot describes, and it moves there in wave 3 as `lionhub.hooks.external`, one module with one
 table row. The core `hooks` initializer does not import it, before or after the move. In the same change, the

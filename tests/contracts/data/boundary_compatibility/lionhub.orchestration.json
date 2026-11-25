@@ -123,6 +123,9 @@
     "lionhub/src/lionhub/orchestration/prompts.py": [
       "__all__ = (\n    \"DECOMPOSE_INSTRUCTION\",\n    \"DECOMPOSE_DAG_INSTRUCTION\",\n    \"DECOMPOSE_DISCIPLINE\",\n    \"SPAWN_GUIDANCE\",\n    \"SYNTHESIS_INSTRUCTION\",\n)"
     ],
+    "lionhub/src/lionhub/orchestration/run_persistence.py": [
+      "__all__ = (\"RUN_PERSISTENCE_HOOKS\", \"install_run_persistence\")"
+    ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "__all__ = (\"SCRATCH_DIRNAME\", \"SCRATCH_MODES\", \"RunScratch\", \"remove_scratch\")"
     ],
@@ -339,6 +342,9 @@
     ],
     "lionhub/src/lionhub/orchestration/project_store.py": [
       "get_project"
+    ],
+    "lionhub/src/lionhub/orchestration/run_persistence.py": [
+      "install_run_persistence"
     ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "RunScratch",
