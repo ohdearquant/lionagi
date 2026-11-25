@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import lionagi._flow_spec as flow_spec
+import lionhub.orchestration.flow.spec as flow_spec
 import lionhub.serve.cli.orchestrate as orch_mod
 import lionhub.serve.cli.orchestrate._github_pr as github_pr_mod
 from lionhub.agent.child_sandbox import DEFAULT_DENY_READ

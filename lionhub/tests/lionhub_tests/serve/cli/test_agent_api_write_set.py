@@ -673,7 +673,7 @@ def test_uv_probe_uses_the_supplied_declared_names_at_policy_construction(monkey
 
 
 def test_uv_probe_without_branch_names_uses_the_owned_declarations(monkeypatch, tmp_path):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
     captured = _capture_fixed_child(monkeypatch)
@@ -716,7 +716,7 @@ def test_confined_writer_keeps_the_prepared_mapping_and_fixed_child_arguments(
 
 
 def test_confined_writer_without_a_mapping_uses_owned_names_and_no_grants(monkeypatch, tmp_path):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
     before = dict(parent)

@@ -9,14 +9,6 @@
       "layer": "root",
       "owner": "application_discovery"
     },
-    "lionagi._checkpoint_v3_codec": {
-      "layer": "contracts",
-      "owner": "checkpoint_contracts"
-    },
-    "lionagi._checkpoint_version": {
-      "layer": "contracts",
-      "owner": "checkpoint_contracts"
-    },
     "lionagi._class_registry": {
       "layer": "foundation",
       "owner": "class_registry"
@@ -25,14 +17,6 @@
       "layer": "adapter",
       "owner": "worker_context"
     },
-    "lionagi._command_env": {
-      "layer": "adapter",
-      "owner": "command_environment"
-    },
-    "lionagi._command_env_metadata": {
-      "layer": "contracts",
-      "owner": "command_environment"
-    },
     "lionagi._errors": {
       "layer": "contracts",
       "owner": "errors"
@@ -40,10 +24,6 @@
     "lionagi._feature_errors": {
       "layer": "contracts",
       "owner": "errors"
-    },
-    "lionagi._flow_spec": {
-      "layer": "contracts",
-      "owner": "flow_contracts"
     },
     "lionagi._lionagi_dir_trust": {
       "layer": "sdk",
@@ -72,6 +52,10 @@
     "lionagi._spec_limits": {
       "layer": "contracts",
       "owner": "specification_limits"
+    },
+    "lionagi._state_refusal": {
+      "layer": "contracts",
+      "owner": "errors"
     },
     "lionagi._types": {
       "layer": "foundation",

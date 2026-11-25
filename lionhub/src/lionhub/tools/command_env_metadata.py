@@ -22,12 +22,12 @@ def configured_command_env_names(
     names, and global lookup names. Credential values are never read. Global
     lookup configuration is loaded separately from project-local hook settings.
     """
-    from lionagi._command_env import credential_env_names
     from lionagi._errors import ConfigurationError
     from lionagi._settings import load_settings
     from lionagi.config import settings
     from lionagi.service.accounts._secret_resolution import resolve_secret_lookup_config
     from lionagi.service.connections.registry import EndpointRegistry
+    from lionhub.tools.command_env import credential_env_names
 
     try:
         global_settings = load_settings(include_project=False)
@@ -68,7 +68,7 @@ def command_environment(
     command_env_allowlist: Sequence[str] = (),
 ) -> dict[str, str]:
     """Prepare a command mapping from explicit declarations or their owned defaults."""
-    from lionagi._command_env import scrub_command_env
+    from lionhub.tools.command_env import scrub_command_env
 
     names = configured_command_env_names() if declared_names is None else declared_names
     return scrub_command_env(

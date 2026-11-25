@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
+from lionhub.orchestration.flow.spec import normalize_flow_spec_keys, validate_flow_spec_fields
 
 
 def validate_rate_limit(value: Any) -> tuple[int, int] | None:

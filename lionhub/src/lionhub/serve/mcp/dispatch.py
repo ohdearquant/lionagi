@@ -66,9 +66,9 @@ _STARTED_MONOTONIC = time.time()
 # answers anything, so a later change to the installed source cannot leave the process holding
 # some of its modules from before the change and failing to import the others.
 _PRELOAD_MODULES = (
-    "lionagi._command_env",
-    "lionagi._command_env_metadata",
-    "lionagi._flow_spec",
+    "lionhub.tools.command_env",
+    "lionhub.tools.command_env_metadata",
+    "lionhub.orchestration.flow.spec",
     "lionagi._paths",
     "lionagi._provider_errors",
     "lionagi._types",
@@ -1070,7 +1070,7 @@ def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
     if path is None:
         return
 
-    from lionagi._flow_spec import load_flow_spec, validate_flow_spec
+    from lionhub.orchestration.flow.spec import load_flow_spec, validate_flow_spec
 
     name = schema.get("x-playbook")
     try:
@@ -1250,7 +1250,7 @@ def _refuse_untrusted_playbook_agent(
     path = schema.get("x-playbook-path")
     if path is None or args.get("agent"):
         return
-    from lionagi._flow_spec import load_flow_spec
+    from lionhub.orchestration.flow.spec import load_flow_spec
     from lionhub.orchestration.spawn import (
         AgentProfileNotFoundError,
         AmbiguousProfileNameError,

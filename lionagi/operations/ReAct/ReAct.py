@@ -659,7 +659,7 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         # round's reply is not its answer.
         raise
     except Exception as exc:
-        from lionagi.state.compat import refusal_in  # noqa: PLC0415
+        from lionagi._state_refusal import refusal_in  # noqa: PLC0415
 
         # The call's own path can wrap the refusal in a task group, so it is looked up however
         # deeply nested rather than read off the outermost error alone.

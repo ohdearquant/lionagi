@@ -434,7 +434,7 @@ class TestUpdatePlaybookSpecFieldValidation:
 
     def test_editor_write_through_covers_every_canonical_playbook_field(self):
         import lionagi_studio.services.playbooks as svc
-        from lionagi._flow_spec import FLOW_SPEC_FIELDS, normalize_flow_spec_keys
+        from lionhub.orchestration.flow.spec import FLOW_SPEC_FIELDS, normalize_flow_spec_keys
 
         expected_fields = FLOW_SPEC_FIELDS - {
             "description",

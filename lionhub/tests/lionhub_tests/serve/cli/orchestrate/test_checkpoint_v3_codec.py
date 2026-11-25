@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from lionagi import _checkpoint_v3_codec as codec
-from lionagi._checkpoint_v3_codec import (
+from lionhub.orchestration.flow import checkpoint_codec as codec
+from lionhub.orchestration.flow.checkpoint_codec import (
     CodecError,
     FrozenArray,
     FrozenObject,

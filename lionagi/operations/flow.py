@@ -128,7 +128,7 @@ def _refusal(error: BaseException) -> BaseException | None:
     failure while others happened without a trace. Cancellations are the group's ordinary
     teardown noise and are not reported as errors.
     """
-    from lionagi.state.compat import refusal_in  # noqa: PLC0415
+    from lionagi._state_refusal import refusal_in  # noqa: PLC0415
 
     refusal = refusal_in(error)
     if refusal is None:
@@ -731,7 +731,7 @@ class DependencyAwareExecutor:
                             elapsed,
                             operation.execution.error,
                         )
-                    from lionagi.state.compat import refusal_in  # noqa: PLC0415
+                    from lionagi._state_refusal import refusal_in  # noqa: PLC0415
 
                     refusal = refusal_in(operation.execution.error)
                     if refusal is not None:
@@ -757,7 +757,7 @@ class DependencyAwareExecutor:
             raise
 
         except Exception as e:
-            from lionagi.state.compat import refusal_in  # noqa: PLC0415
+            from lionagi._state_refusal import refusal_in  # noqa: PLC0415
 
             refusal = refusal_in(e)
             if refusal is not None:

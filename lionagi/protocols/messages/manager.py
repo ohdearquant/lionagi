@@ -35,8 +35,8 @@ def _raise_callback_errors(errors: list[BaseException]) -> NoReturn:
     """
     if len(errors) == 1:
         raise errors[0]
+    from lionagi._state_refusal import refusal_in  # noqa: PLC0415
     from lionagi.ln.concurrency import is_cancelled  # noqa: PLC0415
-    from lionagi.state.compat import refusal_in  # noqa: PLC0415
 
     for error in errors:
         refusal = refusal_in(error)

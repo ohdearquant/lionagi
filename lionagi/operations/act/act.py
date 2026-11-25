@@ -220,8 +220,8 @@ async def _act(
             )
 
     except Exception as e:
+        from lionagi._state_refusal import refusal_in
         from lionagi.protocols.action.gate import GateDeniedError
-        from lionagi.state.compat import refusal_in
 
         # A hook or the call itself can wrap the refusal in a task group, so it is looked up
         # however deeply nested rather than read off the outermost error alone.

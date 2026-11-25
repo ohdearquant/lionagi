@@ -391,14 +391,14 @@ Exact persistence semantics:
   checkpoint task exceptions at drain time, so checkpoint freshness is not guaranteed when a
   write fails.
 - `lionhub/src/lionhub/orchestration/flow/checkpoint.py::load_checkpoint` uses
-  `lionagi/_checkpoint_version.py::load_legacy_checkpoint_json` to read single-file snapshots.
+  `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::load_legacy_checkpoint_json` to read single-file snapshots.
   An explicit top-level `version` must be the integer 1 or 2. An omitted `version` retains legacy
   parsing. An unsupported value or duplicate top-level `version` key raises
-  `lionagi/_checkpoint_version.py::UnsupportedCheckpointVersionError`, which the flow loader wraps
+  `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::UnsupportedCheckpointVersionError`, which the flow loader wraps
   as `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError`
   before graph construction.
 
-`CHECKPOINT_VERSION = 2` (`lionagi/_checkpoint_version.py::CHECKPOINT_VERSION`) is the current shape: 2 adds
+`CHECKPOINT_VERSION = 2` (`lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::CHECKPOINT_VERSION`) is the current shape: 2 adds
 the spawn-reconstruction fields resume reads (`operation`, `assignee`, `instruction`, `parent_id`,
 `spawn_id`, and the later `context`) that `record_spawned` writes
 (`lionhub/src/lionhub/orchestration/flow/checkpoint.py::CheckpointWriter.record_spawned`). No rationale beyond initial format versioning is
@@ -1023,7 +1023,7 @@ The planner is never called. Reactive growth is off. `_synthesize` is not run (f
 
 The checkpoint holds the plan as it holds any plan. Its `config` records the run's settings, and a resume passes them back as the run's keyword arguments (D5; the `**config` call in the resume path of `flow.py`). A written graph's checkpoint config carries `with_synthesis: false` and reactive off, as any run's config carries those settings, so a resume makes no synthesis call and grows nothing. It also carries one new field, `graph`, holding `sha256` (the digest of the copy in the job directory), `path` (as given) and `resolved`. That field is what says the run is a written graph. A resume reads the plan from the checkpoint and never from the file. It hashes the copy and refuses on a mismatch with `graph.sha256`, as H2 rule 6 requires of every resume, so an edit to the file after submit reaches no run.
 
-The checkpoint version. A written graph's checkpoint is written as version 4, and every other checkpoint stays at version 2, so nothing a released reader can resume today changes. Version 3 is not used: Amendment 2 specifies it as the journaled format, and it stays refused until that amendment is implemented, which also decides how a journaled written-graph run is versioned. Both writer values live in one module, `lionagi/_checkpoint_version.py`: `CHECKPOINT_VERSION = 2` stays, `GRAPH_CHECKPOINT_VERSION = 4` is added, the supported set becomes {1, 2, 4}, and the import-time assertion there covers both writer values. The other readers of a checkpoint take the set from that module, so they accept 4 with no change of their own: the run detail reader (`lionhub/src/lionhub/serve/mcp/_run_detail.py`, through `load_legacy_checkpoint_json`) and the daemon's resume service (`lionhub/src/lionhub/serve/daemon/services/run_resume.py`, through `lionhub/src/lionhub/orchestration/flow/checkpoint.py::resolve_checkpoint_target`).
+The checkpoint version. A written graph's checkpoint is written as version 4, and every other checkpoint stays at version 2, so nothing a released reader can resume today changes. Version 3 is not used: Amendment 2 specifies it as the journaled format, and it stays refused until that amendment is implemented, which also decides how a journaled written-graph run is versioned. Both writer values live in one module, `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py`: `CHECKPOINT_VERSION = 2` stays, `GRAPH_CHECKPOINT_VERSION = 4` is added, the supported set becomes {1, 2, 4}, and the import-time assertion there covers both writer values. The other readers of a checkpoint take the set from that module, so they accept 4 with no change of their own: the run detail reader (`lionhub/src/lionhub/serve/mcp/_run_detail.py`, through `load_legacy_checkpoint_json`) and the daemon's resume service (`lionhub/src/lionhub/serve/daemon/services/run_resume.py`, through `lionhub/src/lionhub/orchestration/flow/checkpoint.py::resolve_checkpoint_target`).
 
 Version and field agree at read, both ways, in `load_legacy_checkpoint_json`: a version 4 checkpoint whose `config` has no `graph` field refuses, and a version 1 or 2 checkpoint whose `config` carries one refuses. Without this the version would only be a label, and a hand-edited version 2 checkpoint with a `graph` field would resume with no digest check.
 

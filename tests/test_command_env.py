@@ -56,7 +56,7 @@ def test_credential_names_use_resolved_annotations_and_explicit_metadata(monkeyp
 
     from pydantic import SecretStr
 
-    from lionagi._command_env import credential_env_names
+    from lionhub.tools.command_env import credential_env_names
 
     annotation = {
         "scalar": SecretStr,
@@ -106,7 +106,7 @@ def test_unresolved_secret_annotations_are_refused(shape):
 
     from pydantic import SecretStr
 
-    from lionagi._command_env import credential_env_names
+    from lionhub.tools.command_env import credential_env_names
 
     annotation = "SecretStr" if shape == "string" else Union[SecretStr, ForwardRef("Other")]
     with pytest.raises(ValueError, match="already be resolved"):
@@ -117,7 +117,7 @@ def test_unresolved_secret_annotations_are_refused(shape):
 def test_unsupported_settings_name_translations_are_explicitly_refused(shape):
     from pydantic import SecretStr
 
-    from lionagi._command_env import credential_env_names
+    from lionhub.tools.command_env import credential_env_names
 
     metadata = _settings_metadata(
         SecretStr,
@@ -132,8 +132,8 @@ def test_owned_sources_supply_names_without_constructing_or_resolving_secrets(mo
     import lionagi._settings as settings_source
     import lionagi.config as config
     import lionagi.service.accounts._secret_resolution as secret_resolution
-    from lionagi._command_env_metadata import configured_command_env_names
     from lionagi.service.connections.registry import EndpointRegistry
+    from lionhub.tools.command_env_metadata import configured_command_env_names
 
     isolated = config.AppSettings.model_construct(
         ANTHROPIC_ACCOUNTS=(SimpleNamespace(key_env="GH_TOKEN"),)
@@ -214,7 +214,7 @@ def test_owned_sources_supply_names_without_constructing_or_resolving_secrets(mo
     ],
 )
 def test_operator_allowlist_accepts_only_literal_portable_names(names, error_type):
-    from lionagi._command_env import normalize_command_env_allowlist
+    from lionhub.tools.command_env import normalize_command_env_allowlist
 
     with pytest.raises(error_type) as caught:
         normalize_command_env_allowlist(names)
@@ -222,7 +222,7 @@ def test_operator_allowlist_accepts_only_literal_portable_names(names, error_typ
 
 
 def test_operator_allowlist_preserves_case_order_and_exact_deduplication():
-    from lionagi._command_env import normalize_command_env_allowlist
+    from lionhub.tools.command_env import normalize_command_env_allowlist
 
     names = ["UPPER", "mixed_Name", "UPPER", "mixed_name"]
     assert normalize_command_env_allowlist(names) == ("UPPER", "mixed_Name", "mixed_name")
@@ -233,7 +233,7 @@ def test_operator_allowlist_preserves_case_order_and_exact_deduplication():
     "grant", ["SOMEVENDOR_API_KEY", "somevendor_api_key"], ids=["upper", "lower"]
 )
 def test_operator_grants_are_exact_and_never_restore_state_store_settings(grant):
-    from lionagi._command_env import scrub_command_env
+    from lionhub.tools.command_env import scrub_command_env
 
     parent = {
         "SOMEVENDOR_API_KEY": "synthetic-upper",
@@ -271,8 +271,8 @@ def test_unknown_declarations_refuse_instead_of_using_a_partial_deny_set(
     monkeypatch, global_metadata, detail
 ):
     import lionagi._settings as settings_source
-    from lionagi._command_env_metadata import command_environment
     from lionagi._errors import ConfigurationError
+    from lionhub.tools.command_env_metadata import command_environment
 
     file_text = "synthetic-value-quoted-by-the-parser"
 
@@ -298,7 +298,7 @@ def test_unknown_declarations_refuse_instead_of_using_a_partial_deny_set(
 
 @pytest.mark.parametrize("declared", [False, True], ids=["undeclared", "declared"])
 def test_gh_token_is_denied_only_when_declared(declared):
-    from lionagi._command_env import scrub_command_env
+    from lionhub.tools.command_env import scrub_command_env
 
     parent = {"GH_TOKEN": "synthetic-account-key", "MY_TOKENIZER_PATH": "synthetic-path"}
     result = scrub_command_env(parent, declared_names=("gh_token",) if declared else ())
@@ -309,7 +309,7 @@ def test_gh_token_is_denied_only_when_declared(declared):
 
 @pytest.mark.parametrize("granted", [False, True], ids=["default", "exact-startup-grant"])
 def test_shell_startup_names_require_an_exact_operator_grant(granted):
-    from lionagi._command_env import scrub_command_env
+    from lionhub.tools.command_env import scrub_command_env
 
     parent = {"BASH_ENV": "/synthetic/bashrc", "ENV": "/synthetic/envrc", "KEEP": "unchanged"}
     result = scrub_command_env(
@@ -320,8 +320,8 @@ def test_shell_startup_names_require_an_exact_operator_grant(granted):
 
 
 def test_scrub_uses_mcp_pattern_object(monkeypatch):
-    from lionagi._command_env import scrub_command_env
     from lionagi.service.connections import mcp_wrapper
+    from lionhub.tools.command_env import scrub_command_env
 
     iterations = []
     fully_copied = []
@@ -405,10 +405,11 @@ def test_command_env_import_does_not_load_service(tmp_path):
         import sys
 
         root = Path(sys.argv[1]).resolve()
+        sys.path.insert(0, str(root / 'lionhub/src'))
         sys.path.insert(0, str(root))
-        module = importlib.import_module('lionagi._command_env')
+        module = importlib.import_module('lionhub.tools.command_env')
         services = sorted(name for name in sys.modules if name == 'lionagi.service' or name.startswith('lionagi.service.'))
-        assert Path(module.__file__).resolve() == root / 'lionagi/_command_env.py'
+        assert Path(module.__file__).resolve() == root / 'lionhub/src/lionhub/tools/command_env.py'
         assert not services, services
         print(json.dumps({'file': str(Path(module.__file__).resolve()), 'services': services, 'isolated': sys.flags.isolated}))
         """
@@ -436,7 +437,7 @@ def test_command_env_import_does_not_load_service(tmp_path):
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
     assert observed == {
-        "file": str(checkout / "lionagi/_command_env.py"),
+        "file": str(checkout / "lionhub/src/lionhub/tools/command_env.py"),
         "services": [],
         "isolated": 1,
     }

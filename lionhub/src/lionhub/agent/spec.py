@@ -151,7 +151,7 @@ class AgentSpec(HooksMixin):
         max_tokens: int | None = None,
     ) -> AgentSpec:
         """Build an AgentSpec from a role name/object; ``emits=None`` uses role's declared contract."""
-        from lionagi._command_env import normalize_command_env_allowlist
+        from lionhub.tools.command_env import normalize_command_env_allowlist
 
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
@@ -273,7 +273,7 @@ class AgentSpec(HooksMixin):
 
     def to_yaml(self, path: str | Path) -> None:
         """Save spec to YAML (without hook callables — those are code-only)."""
-        from lionagi._command_env import normalize_command_env_allowlist
+        from lionhub.tools.command_env import normalize_command_env_allowlist
 
         data = {
             "role": self.profile.role.name,
