@@ -22,7 +22,6 @@ import pytest
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
 from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     compute_schedule_health,
     create_schedule,
@@ -30,12 +29,13 @@ from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     list_schedules,
     update_schedule,
 )
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

@@ -151,7 +151,7 @@ def _load_saved_artifact_text(session_row: dict) -> str | None:
         except (ValueError, TypeError):
             return None
 
-    from lionagi.state.artifact_verifier import verify_artifact_contract
+    from lionhub.state.artifact_verifier import verify_artifact_contract
 
     verification = verify_artifact_contract(contract, artifacts_root=artifacts_root)
     if not verification or not verification["produced"]:
@@ -254,7 +254,7 @@ async def _resolve_one(db, ref: str) -> ContextCandidate:
 
 
 async def resolve_context_refs(refs: Sequence[str]) -> list[ContextCandidate]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         return [await _resolve_one(db, ref) for ref in refs]

@@ -599,9 +599,9 @@ async def test_application_mcp_generic_value_error_scrubs_known_env_secret_value
 
 @pytest.mark.asyncio
 async def test_application_mcp_launch_blocks_on_real_durable_human_proposal(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.application_mcp import launch_playbook
     from lionagi_studio.services import playbooks as playbooks_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -704,9 +704,9 @@ async def test_application_mcp_launch_blocks_on_real_durable_human_proposal(tmp_
 async def test_application_mcp_playbook_mutation_after_proposal_conflicts_before_execution(
     tmp_path, monkeypatch
 ):
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.application_mcp import launch_playbook
     from lionagi_studio.services import playbooks as playbooks_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -796,9 +796,9 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
     tmp_path, monkeypatch
 ):
     """The default coordinator owns execution and audit in one cancellation scope."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator import cancel_run as cancel_module
     from lionagi_studio.operator.cancel_run import cancel_run
+    from lionhub.state.db import StateDB
 
     wait_for_cancel = cancel_module.await_cancel_completion
     scopes = []
@@ -885,8 +885,8 @@ async def test_application_mcp_cancel_run_deny_leaves_run_untouched_via_real_coo
     branch (and therefore `apply_cancel_command`) is never invoked -- a
     denied proposal cannot reach the mutation regardless of which command
     type it names."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.cancel_run import cancel_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -950,9 +950,9 @@ async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monk
     import uuid
 
     import lionhub.serve.daemon.services.run_resume as resume_svc
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.application_mcp import _dispatch
     from lionagi_studio.operator.resume_run import resume_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1087,9 +1087,9 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
 
     import lionhub.orchestration.flow.checkpoint as ckmod
     import lionhub.serve.daemon.services.run_resume as resume_svc
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.application_mcp import _dispatch
     from lionagi_studio.operator.resume_run import resume_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1224,8 +1224,8 @@ async def test_application_mcp_resume_run_rejects_instruction_for_flow_kind_befo
     a later execution failure."""
     import uuid
 
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.resume_run import resume_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1327,8 +1327,8 @@ async def test_cancel_run_full_id_of_a_foreign_run_is_refused_with_no_project(
     for a run in another project: cancellation mutates that run, so the turn
     is refused before the reference is resolved, and no proposal is created
     for a human to approve."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.cancel_run import cancel_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1360,8 +1360,8 @@ async def test_rename_session_full_id_of_a_foreign_run_is_refused_with_no_projec
 ):
     """Same fence on the rename path: a full id of another project's run gets
     no rename proposal from a turn that declares no project."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.rename_session import rename_session
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1393,8 +1393,8 @@ async def test_resume_run_full_id_of_a_foreign_run_is_refused_with_no_project(
     """Same fence on the resume path: a full id of another project's run gets
     no resume proposal from a turn that declares no project -- and nothing is
     launched for it."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.resume_run import resume_run
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1478,7 +1478,7 @@ async def _wait_frame(
 
 
 async def _audit_decisions(proposal_id: str) -> list[str]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(readonly=True) as db:
         events = await db.list_admin_events(target_id=proposal_id)
@@ -1490,8 +1490,8 @@ async def _audit_decisions(proposal_id: str) -> list[str]:
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
@@ -1548,7 +1548,7 @@ async def test_default_store_reinitializes_schema_when_database_file_changes(
     monkeypatch,
 ):
     """A process-global store must not carry schema readiness across test/DB files."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     first_path = tmp_path / "first.db"
     second_path = tmp_path / "second.db"
@@ -1641,12 +1641,12 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
     branch_id = link["payload"]["result"]["branchId"]
 
     from lionagi.session.branch import Branch
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.runs import find_branch
     from lionhub.serve.daemon.services.run_resume import (
         _ensure_branch_snapshot_available,
         _resolve_branch,
     )
+    from lionhub.state.db import StateDB
 
     # The Operator's canonical Run is not display-only: the exact branch
     # and DB run mapping consumed by `li agent -r` already exist.
@@ -1916,7 +1916,7 @@ async def test_model_failure_points_at_the_run_it_created(tmp_path, monkeypatch)
     assert "daemon logs" not in error["message"]
 
     # The pointer resolves: a real, durable run exists under that id.
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(readonly=True) as db:
         session = await db.get_session(run_id)
@@ -1962,7 +1962,7 @@ async def test_model_failure_after_session_commit_points_at_the_orphaned_run(tmp
     recorded, and the row must not be left "running" forever."""
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
 
     async def broken_create_branch(self, *_args, **_kwargs):
         raise RuntimeError("branch insert exploded")
@@ -2001,8 +2001,8 @@ async def test_application_command_failure_points_at_its_invocation(tmp_path, mo
     """A command failure after its invocation was recorded must name that invocation."""
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.coordinator import ApplicationCommandError
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         await db.create_invocation(
@@ -2209,7 +2209,7 @@ async def test_concurrent_allow_claims_and_executes_application_command_once(tmp
             expected_command_hash="0" * 64,
             expected_target_version=None,
         )
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(readonly=True) as db:
         assert await db.list_admin_events(target_id=proposal["id"]) == []
@@ -2707,10 +2707,10 @@ async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart
     """Drive the daemon's shutdown entry while an Operator store write owns SQLite's lock."""
     import sqlite3
 
-    import lionagi.state.engine as state_engine
     import lionagi_studio.services.operator as operator_service
-    from lionagi.state.db import StateDB
+    import lionhub.state.engine as state_engine
     from lionhub.orchestration.state_store import open_db
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -3634,8 +3634,8 @@ async def test_second_turn_on_a_conversation_reuses_the_same_branch_and_appends(
     (asserted end to end, from the store through the actual sessions/
     branches reader), and the second turn's messages must be appended to
     the first turn's progression, never overwrite it."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.runs import list_runs
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -3765,8 +3765,8 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     really dispatches to `rename_session.execute_rename_session_command`
     end to end, and that the run's explicit label changes without advancing
     activity once a human allows the proposal."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.rename_session import rename_session
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -3841,8 +3841,8 @@ async def test_application_mcp_rename_session_deny_leaves_run_untouched_via_real
     the run's name must be left exactly as it was and
     `execute_rename_session_command` must never run, regardless of which
     command type a proposal names."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.rename_session import rename_session
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -3899,8 +3899,8 @@ async def test_rename_session_not_found_reports_reason_without_creating_a_propos
     """An unresolvable run reference is a distinct reported outcome, not a
     generic failure -- and critically, never reaches the proposal flow at
     all, so nothing is ever offered to a human for approval."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.rename_session import rename_session
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -4004,14 +4004,14 @@ def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(nam
 
 async def _state_db_with_admin_events(path: Path) -> None:
     """Apply the StateDB schema this daemon writes its audit trail into."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(str(path)):
         pass
 
 
 async def _audit_rows(path: Path, proposal_id: str) -> list[dict]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(str(path)) as db:
         events = await db.list_admin_events(target_id=proposal_id)
@@ -4402,7 +4402,7 @@ async def _start_proposal_turn(
     risk: str = "execute",
 ) -> tuple[OperatorStore, str, str, dict[str, Any]]:
     """A running turn holding one pending proposal on a complete state DB."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(path):
         pass

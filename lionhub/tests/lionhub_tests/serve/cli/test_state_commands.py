@@ -18,7 +18,6 @@ import pytest
 
 from lionagi.config import settings
 from lionagi.ln.concurrency import run_async
-from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionhub.serve.cli.state import (
     _checkpoint,
     _doctor,
@@ -28,6 +27,7 @@ from lionhub.serve.cli.state import (
     _prune,
     _vacuum,
 )
+from lionhub.state.db import SCHEMA_VERSION, StateDB
 
 # Fixtures
 
@@ -36,7 +36,7 @@ from lionhub.serve.cli.state import (
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp file DB: patches DEFAULT_DB_PATH so li state uses a throw-away file."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -47,7 +47,7 @@ def test_state_migrate_upgrades_the_configured_store(temp_db_path, monkeypatch, 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LIONAGI_STATE_AUTO_MIGRATE", raising=False)
     monkeypatch.setattr(
-        "lionagi.state.db.settings",
+        "lionhub.state.db.settings",
         settings.model_copy(update={"LIONAGI_STATE_DB_URL": str(store)}),
     )
 
@@ -255,7 +255,7 @@ async def test_stats_reports_no_db_message_when_missing(
 ):
     """When state.db does not yet exist, stats prints a helpful hint instead of crashing."""
     db_path = tmp_path / "never_created.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     await _print_stats()
     out = capsys.readouterr().out
     assert "no state.db yet" in out
@@ -1056,7 +1056,7 @@ async def test_doctor_does_not_overwrite_session_that_completed_post_select(
     """A session that completes AFTER _doctor's SELECT but BEFORE its UPDATE must NOT be overwritten back to 'aborted'.
     The fix folds the stale predicate into the UPDATE itself so it only fires when the row is still stale-running.
     """
-    from lionagi.state.db import StateDB as _SDB
+    from lionhub.state.db import StateDB as _SDB
 
     now = time.time()
     old = now - (48 * 3600)
@@ -1114,7 +1114,7 @@ async def test_doctor_status_and_ended_at_are_atomic(
     not leave a terminal-status row with ``ended_at`` still NULL — status and
     ``ended_at`` must land in the same transaction, not two sequential ones.
     """
-    from lionagi.state.db import StateDB as _SDB
+    from lionhub.state.db import StateDB as _SDB
 
     now = time.time()
     old = now - (48 * 3600)

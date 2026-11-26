@@ -27,7 +27,7 @@ ENUMS = [
     ("lionagi.service.connections._chat_schemas", "ChatRole"),
     ("lionagi.service.resilience", "CircuitState"),
     ("lionagi.session.control", "LoopDirective"),
-    ("lionagi.state.health", "SessionHealth"),
+    ("lionhub.state.health", "SessionHealth"),
     ("lionhub.tools.base", "ResourceCategory"),
     ("lionhub.tools.code.search", "SearchAction"),
     ("lionhub.tools.coding", "SandboxAction"),

@@ -13,7 +13,6 @@ from fastapi import HTTPException
 from lionagi.libs.path_safety import safe_join
 from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import sleep
-from lionagi.state.session_naming import resolve_display_name
 from lionhub.orchestration.scheduler.settings import SHOWS_ROOT
 from lionhub.orchestration.scheduler.show_artifacts import (
     _SHOW_TERMINAL_STATUSES,  # noqa: F401 -- preserve the compatibility import
@@ -31,6 +30,7 @@ from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.serve.daemon.services._io import read_json_file_checked as _read_json_checked
 from lionhub.serve.daemon.services._path_safety import public_path, safe_path_join
 from lionhub.serve.daemon.services._sse import sse_response
+from lionhub.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 
@@ -476,8 +476,8 @@ async def import_shows() -> dict[str, int]:
     if not SHOWS_ROOT.exists():
         return {"shows_imported": 0, "plays_imported": 0}
 
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import PlayReasons, ShowReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import PlayReasons, ShowReasons
 
     shows_count = 0
     plays_count = 0

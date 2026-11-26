@@ -13,7 +13,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 # Shared fixture helpers
 
@@ -221,7 +221,7 @@ def test_maintenance_prune_success(tmp_path, monkeypatch):
 
 def test_maintenance_vacuum_live_existing_db(tmp_path, monkeypatch):
     """vacuum on an existing initialized DB returns status='ok' and writes an audit event."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     # _make_client patches everything to tmp_path/"state.db"
     client, db_path = _make_client(tmp_path, monkeypatch)
@@ -243,14 +243,14 @@ def test_maintenance_vacuum_live_existing_db(tmp_path, monkeypatch):
 
 
 async def _async_init_db(db_path):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path):
         pass
 
 
 async def _async_list_events(db_path, *, action):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         return await db.list_admin_events(action=action, limit=5)
@@ -286,7 +286,7 @@ def test_maintenance_checkpoint_db_absent(tmp_path, monkeypatch):
 @pytest.mark.parametrize("action", ["vacuum", "checkpoint", "prune"])
 def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
     """All three actions return 409 when another writer holds the DB lock (busy_timeout=100ms)."""
-    import lionagi.state.engine as engine_mod
+    import lionhub.state.engine as engine_mod
 
     # _make_client patches everything to tmp_path/"state.db".
     client, db_path = _make_client(tmp_path, monkeypatch)

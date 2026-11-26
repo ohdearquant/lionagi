@@ -8,7 +8,7 @@ import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lionagi.state.session_naming import validate_name_characters
+from lionhub.state.session_naming import validate_name_characters
 
 __all__ = ("UpdateConversationInput", "normalize_description")
 

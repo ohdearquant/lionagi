@@ -285,8 +285,8 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
     raised. The guard covers the open alone — the caller's own body runs outside
     it, and a bug in a reader still surfaces as the crash it is.
     """
-    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
-    from lionagi.state.engine import mask_db_url
+    from lionhub.state.db import StateDB, read_only_open_supported, state_db_known_absent
+    from lionhub.state.engine import mask_db_url
 
     # Asked of the configured store, not of the default path: the open below
     # honours LIONAGI_STATE_DB_URL, so a guard that consulted the file would
@@ -328,8 +328,8 @@ def state_db_absent() -> dict[str, Any]:
     command would have read. Naming it in full would print its password, so the
     name it gives is the masked one.
     """
-    from lionagi.state.db import StateDB
-    from lionagi.state.engine import mask_db_url
+    from lionhub.state.db import StateDB
+    from lionhub.state.engine import mask_db_url
 
     return unavailable(
         REASON_NOT_FOUND,
@@ -518,7 +518,7 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     record no end. `terminal` needs every row to have ended, because a run that
     persisted two sessions is over only when both are.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     sessions = [
         {
@@ -615,13 +615,13 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
     opened.
     """
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import (
+    from lionhub.state.db import (
         StateDB,
         read_only_open_supported,
         state_db_file,
         state_db_known_absent,
     )
-    from lionagi.state.engine import mask_credentials
+    from lionhub.state.engine import mask_credentials
 
     if state_db_known_absent():
         # No store at all is absence of every record, not evidence about this
@@ -791,13 +791,13 @@ def dispatch_machine(argv: list[str]) -> int:
             if isinstance(exc, ModuleNotFoundError):
                 channel.emit(failure("internal", "a required module is not installed"))
             else:
-                from lionagi.state.engine import mask_credentials
+                from lionhub.state.engine import mask_credentials
 
                 # A missing feature's message names the feature and its install
                 # guidance. It is masked like any other message this sink prints.
                 channel.emit(failure("internal", mask_credentials(f"{type(exc).__name__}: {exc}")))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
-            from lionagi.state.engine import mask_credentials
+            from lionhub.state.engine import mask_credentials
 
             # The only sink that prints a message from code we do not own. The
             # producers we do own mask at the source; a driver that quotes the

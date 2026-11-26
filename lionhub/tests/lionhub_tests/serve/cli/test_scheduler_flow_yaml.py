@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 # subprocess.build_argv tests
 
@@ -236,7 +236,7 @@ def test_flow_yaml_db_roundtrip():
     import tempfile
     import uuid
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     yaml_spec = "prompt: round-trip check\nworkers: 1\n"
     schedule_id = str(uuid.uuid4())
@@ -292,7 +292,7 @@ def test_legacy_schedules_table_upgraded_and_flow_yaml_insert_succeeds():
 
     import aiosqlite
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -353,8 +353,8 @@ def test_legacy_rebuild_yields_full_canonical_columns():
 
     import aiosqlite
 
-    from lionagi.state.db import StateDB
-    from lionagi.state.schema_meta import schedules as schedules_table
+    from lionhub.state.db import StateDB
+    from lionhub.state.schema_meta import schedules as schedules_table
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:

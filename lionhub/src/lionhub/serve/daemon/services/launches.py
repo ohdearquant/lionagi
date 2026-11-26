@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 from lionagi.ln import short_id
 from lionagi.ln.concurrency.errors import shield_quietly
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.execution_root import _is_usable_execution_root
 from lionhub.orchestration.scheduler import settings as config
 from lionhub.orchestration.scheduler.subprocess import build_argv, resolve_li_executable
@@ -24,6 +23,7 @@ from lionhub.serve.daemon import leg_host
 from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services import engine_lookup
 from lionhub.serve.daemon.services.engine_lookup import is_registered_engine_kind
+from lionhub.state.db import StateDB
 
 from ..services.schedules import (
     _svc_validate_action_model,
@@ -369,11 +369,11 @@ async def _spawn_detached(
     leg's allow-listed environment, keeps its standard output as the result, and has the
     worktree removed on every way out, cancellation included.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.subprocess import (
         SubprocessDeadlineExceededError,
         spawn_and_wait,
     )
+    from lionhub.state.reasons import RunReasons
 
     output_tail = ""
     try:

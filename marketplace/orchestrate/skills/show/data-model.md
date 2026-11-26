@@ -22,7 +22,7 @@ plays table:
 ```
 
 Source: the `CREATE TABLE shows` and `CREATE TABLE plays` declarations in
-`lionagi/state/schema.sql`.
+`lionhub/src/lionhub/state/schema.sql`.
 
 ## Status enums
 

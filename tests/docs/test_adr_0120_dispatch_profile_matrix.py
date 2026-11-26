@@ -81,9 +81,9 @@ PUBLIC_IMPORTS = (
     ("lionagi.protocols.types", "MessageManager", "lionagi.protocols.messages.manager"),
     ("lionagi.session.observer", "SessionObserver", "lionagi.session.observer"),
     (
-        "lionagi.state.lifecycle",
+        "lionhub.state.lifecycle",
         "TerminalCallbackRegistry",
-        "lionagi.state.lifecycle.callbacks",
+        "lionhub.state.lifecycle.callbacks",
     ),
     (
         "lionhub.orchestration.scheduler.signals",

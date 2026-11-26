@@ -17,13 +17,13 @@ import pytest
 from sqlalchemy import event
 
 from lionagi.ln.concurrency import move_on_after
-from lionagi.state import engine as state_engine
-from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import teardown_persist
 from lionhub.serve.cli.monitor import _session_to_row
 from lionhub.serve.cli.orchestrate import flow
 from lionhub.serve.cli.orchestrate._control import _enqueue_control_inner
 from lionhub.serve.cli.status import EXIT_UNKNOWN
+from lionhub.state import engine as state_engine
+from lionhub.state.db import StateDB
 
 from .._worker_fixtures import create_worker_session
 from .test_control_poller import (
@@ -38,8 +38,8 @@ from .test_flow_phases import _FakeBranch, _make_env
 @pytest.fixture
 def db_path(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
-    monkeypatch.setattr("lionagi.state.db.settings", SimpleNamespace(LIONAGI_STATE_DB_URL=None))
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.settings", SimpleNamespace(LIONAGI_STATE_DB_URL=None))
     return path
 
 
@@ -126,11 +126,11 @@ async def test_foreground_prints_persisted_session_before_inner_run(
     monkeypatch.setattr(flow, "start_live_persist", start)
     monkeypatch.setattr(flow, "_run_flow_inner", inner)
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     caplog.set_level("INFO", logger="lionagi.cli.hint")
@@ -285,7 +285,7 @@ async def test_terminal_write_clears_phase_in_same_statement(db_path, monkeypatc
         "BEGIN SELECT RAISE(ABORT, 'terminal status requires cleared phase'); END"
     )
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     session_updates = []
@@ -503,11 +503,11 @@ async def test_teardown_opens_the_store_writable_only_with_a_control_to_close(
     monkeypatch.setattr(flow, "start_live_persist", start)
     monkeypatch.setattr(flow, "_run_flow_inner", inner)
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     opens.clear()
@@ -568,11 +568,11 @@ async def test_teardown_closes_controls_even_when_its_status_write_raises(
     monkeypatch.setattr(flow, "stop_live_persist", stop_then_raise)
     monkeypatch.setattr(flow, "_run_flow_inner", inner)
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     with pytest.raises(OSError, match="run manifest write failed"):
@@ -830,9 +830,9 @@ async def test_marker_write_that_landed_then_stalled_is_not_reported_stale(db_pa
 
 @pytest.mark.parametrize("route", ["compatibility", "service"])
 async def test_terminal_phase_allowlist_does_not_admit_unrelated_field(db_path, route):
-    from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
-    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
+    from lionhub.state.lifecycle.service import SQLAlchemyLifecycleService
+    from lionhub.state.reasons import RunReasons
 
     async with StateDB(db_path) as db:
         sid = await _make_session(db)
@@ -959,7 +959,7 @@ async def test_double_native_cancel_has_no_standalone_phase_clear_barrier(
     monkeypatch.setattr(flow, "stop_live_persist", stop)
     monkeypatch.setattr(flow, "plan", plan)
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     task = asyncio.create_task(flow._run_flow("fake/model", "work"))
@@ -1044,8 +1044,8 @@ async def test_kill_writer_clears_the_live_phase_with_the_terminal_status(db_pat
     what terminalizes that row, and the phase clear has to ride its one status
     write rather than a separate statement that can be skipped.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.serve.cli.kill import _persist_cancel
+    from lionhub.state.reasons import RunReasons
 
     async with StateDB(db_path) as db:
         sid = await _make_session(db)
@@ -1203,11 +1203,11 @@ async def test_teardown_closes_a_control_its_poller_never_applied(db_path, tmp_p
     monkeypatch.setattr(flow, "start_live_persist", start)
     monkeypatch.setattr(flow, "_run_flow_inner", inner)
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     result, _status = await flow._run_flow("fake/model", "work")

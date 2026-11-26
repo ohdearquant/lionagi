@@ -29,7 +29,11 @@ runs:
       id: postgres-fixture
       shell: bash
       run: |
-        fixture="$GITHUB_WORKSPACE/tests/state/conftest.py"
+        # The state tests moved under lionhub/tests; an older revision keeps them in tests/state.
+        fixture="$GITHUB_WORKSPACE/lionhub/tests/lionhub_tests/state/conftest.py"
+        if [[ ! -e "$fixture" ]]; then
+          fixture="$GITHUB_WORKSPACE/tests/state/conftest.py"
+        fi
         supported=false
         if [[ ! -e "$fixture" ]]; then
           echo "Using the checked-out tests' PostgreSQL setup: fixture file was absent."

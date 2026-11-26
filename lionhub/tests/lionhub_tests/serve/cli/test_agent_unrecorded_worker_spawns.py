@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._provider_errors import _WorkerSpawnAdmissionError
-from lionagi.state.compat import Closure, CompatibilityProfile
+from lionhub.state.compat import Closure, CompatibilityProfile
 
 from .test_agent_notify_without_persistence import _wire_agent_stubs
 
@@ -38,7 +38,7 @@ async def test_a_setup_result_that_declares_unrecorded_spawns_runs_with_no_recor
 ):
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
-    from lionagi._cli_worker_context import _get_cli_worker_recorder
+    from lionhub.state.cli_worker_context import _get_cli_worker_recorder
 
     _wire_agent_stubs(
         monkeypatch,

@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 # Helpers shared with test_sessions_detail.py conventions
 
@@ -517,7 +517,7 @@ async def test_bind_db_persistence_unbind_stops_writes(tmp_path):
 
 async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
     """setup_agent_persist() calls bind_db_persistence so emitted signals reach session_signals."""
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     _real_StateDB = db_mod.StateDB
     _real_DEFAULT = db_mod.DEFAULT_DB_PATH
@@ -940,7 +940,7 @@ async def test_concurrent_emit_and_update_status_no_failures(tmp_path):
     """100 concurrent emits + 100 update_status calls on the same DB produce zero failures (regression: BEGIN IMMEDIATE race)."""
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeStarted
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     session_id = "race-status-sess"
@@ -1170,7 +1170,7 @@ async def test_payload_byte_cap_final_form_plain(tmp_path):
     """100 k plain 'x' chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
     from lionagi.session.signal import NodeCompleted
-    from lionagi.state.db import _to_json_column
+    from lionhub.state.db import _to_json_column
 
     big_name = "x" * 100_000
     sig = NodeCompleted(op_id="op-plain", name=big_name, elapsed=0.1)
@@ -1187,7 +1187,7 @@ async def test_payload_byte_cap_final_form_quotes(tmp_path):
     """100k double-quote chars: final stored size must be <= _PAYLOAD_BYTE_CAP after JSON-escaping overhead."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
     from lionagi.session.signal import NodeCompleted
-    from lionagi.state.db import _to_json_column
+    from lionhub.state.db import _to_json_column
 
     # A name field filled with double-quotes: each char becomes \" in JSON.
     big_name = '"' * 100_000
@@ -1205,7 +1205,7 @@ async def test_payload_byte_cap_final_form_backslashes(tmp_path):
     """100k backslash chars: final stored size must be <= _PAYLOAD_BYTE_CAP after JSON-escaping overhead."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
     from lionagi.session.signal import NodeCompleted
-    from lionagi.state.db import _to_json_column
+    from lionhub.state.db import _to_json_column
 
     big_name = "\\" * 100_000
     sig = NodeCompleted(op_id="op-bslash", name=big_name, elapsed=0.1)

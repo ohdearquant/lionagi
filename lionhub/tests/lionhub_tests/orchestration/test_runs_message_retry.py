@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from lionagi.hooks._message_retry import MessagePersistRetryQueue
+from lionhub.state.message_retry import MessagePersistRetryQueue
 from tests._runs_message_retry_test_support import _deferred_queue as _deferred_queue
 from tests._runs_message_retry_test_support import _event as _event
 from tests._runs_message_retry_test_support import _FakeDB as _FakeDB

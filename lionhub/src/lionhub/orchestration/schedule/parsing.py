@@ -23,9 +23,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi._log_channels import warn
 from lionagi.ln import now_utc
 from lionhub.orchestration.arguments import JsonArgument
+from lionhub.state.log_channels import warn
 
 _warned_api_suffix = False
 

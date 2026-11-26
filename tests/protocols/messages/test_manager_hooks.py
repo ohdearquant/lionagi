@@ -459,8 +459,8 @@ async def test_built_response_callback_failure_drains_remaining_callbacks(mm):
 
 
 async def test_built_response_callback_refusal_keeps_priority_and_drains_callbacks(mm):
+    from lionagi._state_refusal import StateCompatibilityRefused
     from lionagi.protocols.messages import ActionResponse
-    from lionagi.state.compat import StateCompatibilityRefused
 
     response = ActionResponse(content={"function": "reader", "output": "kept"})
     refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")

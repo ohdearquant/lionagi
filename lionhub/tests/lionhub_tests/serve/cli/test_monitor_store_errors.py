@@ -11,10 +11,10 @@ from contextlib import contextmanager
 
 import pytest
 
-from lionagi.state import db as state_db
 from lionhub.serve.cli import monitor
 from lionhub.serve.cli.main import main
 from lionhub.serve.cli.status import EXIT_UNKNOWN
+from lionhub.state import db as state_db
 
 
 @pytest.fixture

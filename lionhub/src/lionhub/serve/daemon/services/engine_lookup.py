@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import lionhub.orchestration.engine_definitions as _engine_registry
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionhub.state.db import StateDB, state_db_known_absent
 
 __all__ = (
     "get_engine_def",

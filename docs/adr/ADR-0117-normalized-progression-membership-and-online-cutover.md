@@ -17,12 +17,12 @@ ADR-0055 D3 stores an ordered collection of message identifiers as one JSON-arra
 This gives a simple full reconstruction and idempotent append, but append work grows with the
 history already stored. SQLite scans membership and reconstructs the array; PostgreSQL expands
 the text as JSON, checks membership, appends and serializes it again
-(`lionagi/state/db.py::StateDB._progression_append_sql`). Live persistence normally updates both a branch progression and
-a session progression in one transaction (`lionagi/state/db.py::StateDB._persist_live_message`).
+(`lionhub/src/lionhub/state/db.py::StateDB._progression_append_sql`). Live persistence normally updates both a branch progression and
+a session progression in one transaction (`lionhub/src/lionhub/state/db.py::StateDB._persist_live_message`).
 
 Bulk insertion already avoids one rewrite per message: it decodes a string-ID collection,
 deduplicates a batch with a set and rewrites the collection once
-(`lionagi/state/db.py::StateDB._extend_progression_in_tx`). This improves amortization but retains full-history work per batch.
+(`lionhub/src/lionhub/state/db.py::StateDB._extend_progression_in_tx`). This improves amortization but retains full-history work per batch.
 
 ### Measured cost and population
 
@@ -152,7 +152,7 @@ Deleting a progression deletes its membership; deleting a session must continue 
 progression still shared by another surviving owner.
 
 The canonical runtime schema remains SQLAlchemy metadata, with the compatibility DDL kept in
-parity (`lionagi/state/schema_meta.py::progressions`; `lionagi/state/schema.sql:71`). Existing progression
+parity (`lionhub/src/lionhub/state/schema_meta.py::progressions`; `lionhub/src/lionhub/state/schema.sql:71`). Existing progression
 IDs, timestamps and owner references remain unchanged.
 
 Each progression has a storage-state row (`progression_storage_state`) with these defined fields:
@@ -233,7 +233,7 @@ full normalized list to construct a Python set.
 Bulk append preserves incoming order and admits each new ID once, including duplicate IDs within
 the batch. Indexed membership checks and insert work scale with batch size and index access, not
 the entire prior collection. Message upsert, both progression updates, and session-activity
-updates retain their current transaction boundary (`lionagi/state/db.py::StateDB.insert_messages`, `lionagi/state/db.py::StateDB._persist_live_message`). A
+updates retain their current transaction boundary (`lionhub/src/lionhub/state/db.py::StateDB.insert_messages`, `lionhub/src/lionhub/state/db.py::StateDB._persist_live_message`). A
 duplicate membership does not suppress an otherwise valid message-content upsert.
 
 In `json`, preserve legacy append and bulk behavior. Increment the JSON revision only when the
@@ -248,14 +248,14 @@ cost intentionally remains during this finite phase. A target failure must not b
 a committed JSON-only append presented as a successful dual write.
 
 In native stores, creation preserves `ON CONFLICT DO NOTHING`: re-creating an existing progression
-does not reset its representation or content (`lionagi/state/db.py::StateDB._create_progression_in_tx`). In compatibility
-mode, creation refuses an existing row (`lionagi/state/db.py::StateDB.create_progression`, `lionagi/state/db.py::StateDB._insert_new_row`). Newly created progressions may use
+does not reset its representation or content (`lionhub/src/lionhub/state/db.py::StateDB._create_progression_in_tx`). In compatibility
+mode, creation refuses an existing row (`lionhub/src/lionhub/state/db.py::StateDB.create_progression`, `lionhub/src/lionhub/state/db.py::StateDB._insert_new_row`). Newly created progressions may use
 `items` only after the store's compatibility gate enables that default. Their supplied collection
 is materialized in input order, preserving duplicates, and their initial JSON value is an exact
 frozen prefix. Empty creation uses an empty prefix. No count is inferred from message existence.
 
 `set_progression` remains a wholesale replacement and a missing-row no-op
-(`lionagi/state/db.py::StateDB.set_progression`). It locks the progression, increments generation and JSON revision,
+(`lionhub/src/lionhub/state/db.py::StateDB.set_progression`). It locks the progression, increments generation and JSON revision,
 and invalidates pending snapshots and verification. It preserves phase:
 
 - `json`: replace JSON; reset migration evidence. Any abandoned shadow is ineligible for use.
@@ -417,9 +417,9 @@ Keeping that column current would retain the performance defect.
    equivalent indexed read design is accepted; silently changing stream order is prohibited.
 4. **Full readers and last-ID consumers.** Route `lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::setup_agent_persist` and
    `lionhub/src/lionhub/serve/cli/_context_from.py::_candidate_from_branch` through complete authority. Replace the last-ID-only load
-   at `lionagi/state/_mirror_common.py::reconcile_status` with an indexed one-item tail. Do not describe
+   at `lionhub/src/lionhub/state/_mirror_common.py::reconcile_status` with an indexed one-item tail. Do not describe
    intentionally complete reconstruction or role aggregation as constant-time work.
-5. **Deletion and shared references.** Adapt `lionagi/state/db.py::StateDB.delete_imported_session`,
+5. **Deletion and shared references.** Adapt `lionhub/src/lionhub/state/db.py::StateDB.delete_imported_session`,
    `lionagi/studio/services/db_maintenance.py:328@e1800c3b` and `lionhub/src/lionhub/serve/cli/state.py::_prune`
    before any JSON freeze. Candidate and survivor reference checks must include target-only
    tail items, including shared progressions and retained references to absent message rows. The line numbers are at `e1800c3be46fcd082d8ced7c4c7811f1971fe455`.
@@ -512,7 +512,7 @@ Required implementation evidence:
   conditions and backend settings. At least 200 measured live calls per size after warm-up;
   enough independent repetitions to report dispersion. Alternate size/variant order. Require
   100k live append p95 no greater than twice 1k p95 on each backend after cutover.
-- Exercise `insert_messages` separately at b=1, b=10 and the production mirror chunk size of 500 (`lionagi/state/_mirror_common.py::MIRROR_WRITE_CHUNK`).
+- Exercise `insert_messages` separately at b=1, b=10 and the production mirror chunk size of 500 (`lionhub/src/lionhub/state/_mirror_common.py::MIRROR_WRITE_CHUNK`).
   Compare like batch sizes across histories; require the same 2x 100k/1k ratio for each admitted
   fixed batch size. Do not divide batch p95 by batch size and present it as single-append p95.
 - Structural evidence that no target-only live or bulk append reads, rewrites, serializes or

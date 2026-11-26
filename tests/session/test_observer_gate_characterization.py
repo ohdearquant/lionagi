@@ -362,44 +362,32 @@ async def test_persistence_failure_is_swallowed_and_later_subscribers_still_run(
     assert await obs.emit(Signal(data="x")) == ["after", None, "after-async"]
 
 
-async def test_unbound_persistence_skips_a_store_known_to_be_absent(monkeypatch):
-    import lionagi.state.db as state_db
-
-    opened: list = []
-    monkeypatch.setattr(state_db, "state_db_known_absent", lambda: True)
-    monkeypatch.setattr(state_db, "StateDB", lambda: opened.append(1))
+async def test_a_binding_without_a_store_writes_nothing_and_says_so(caplog):
     obs = SessionObserver()
-    obs.bind_db_persistence("sess-1")
+    with caplog.at_level("WARNING", logger="lionagi.session.observer"):
+        obs.bind_db_persistence("sess-1")
 
-    assert await obs.emit(Signal(data="x")) == [None]
-    assert opened == []
+    assert await obs.emit(Signal(data="x")) == []
+    assert obs.persist_dropped == 0
+    assert obs.persist_refusal is None
+    warnings = [r for r in caplog.records if r.name == "lionagi.session.observer"]
+    assert len(warnings) == 1
+    assert warnings[0].levelname == "WARNING"
+    assert "sess-1" in warnings[0].getMessage()
+    assert "db=" in warnings[0].getMessage()
 
 
-async def test_unbound_persistence_opens_a_fresh_store_per_signal(monkeypatch):
-    import lionagi.state.db as state_db
-
+async def test_a_binding_without_a_store_replaces_an_earlier_sink():
+    obs = SessionObserver()
     db = _RecordingDb()
-    entered: list[str] = []
-
-    class _FreshStore:
-        async def __aenter__(self):
-            entered.append("enter")
-            return db
-
-        async def __aexit__(self, *exc):
-            entered.append("exit")
-
-    monkeypatch.setattr(state_db, "state_db_known_absent", lambda: False)
-    monkeypatch.setattr(state_db, "StateDB", _FreshStore)
-    obs = SessionObserver()
-    obs.bind_db_persistence("sess-1")
-
+    obs.bind_db_persistence("sess-1", db=db)
     await obs.emit(Signal(data="x"))
+
+    obs.bind_db_persistence("sess-2")
     await obs.emit(Signal(data="y"))
 
-    assert entered == ["enter", "exit", "enter", "exit"]
-    assert [r["session_id"] for r in db.rows] == ["sess-1", "sess-1"]
-    assert [r["payload"]["data"] for r in db.rows] == ["x", "y"]
+    assert [r["payload"]["data"] for r in db.rows] == ["x"]
+    assert [r["session_id"] for r in db.rows] == ["sess-1"]
 
 
 async def test_unbind_removes_persistence_but_not_other_subscribers():

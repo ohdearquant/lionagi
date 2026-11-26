@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+from lionhub.state.message_retry import MessagePersistRetryQueue, PendingMessageEvent
 from tests._runs_message_retry_test_support import _deferred_queue as _deferred_queue
 from tests._runs_message_retry_test_support import _event as _event
 from tests._runs_message_retry_test_support import _FakeDB as _FakeDB
@@ -361,7 +361,7 @@ async def test_a_write_the_store_refuses_is_raised_and_stays_queued():
     """A compatibility-mode refusal is the same on every retry, and the run must not go on as
     if the message were written (ADR-0128 D6): it is raised, the event stays at the head, and
     the teardown flush raises it again."""
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     class _RefusingDB:
         def __init__(self) -> None:
@@ -395,7 +395,7 @@ class _LockedThenRefusingDB:
         self.calls = 0
 
     async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
-        from lionagi.state.compat import StateCompatibilityRefused
+        from lionhub.state.compat import StateCompatibilityRefused
 
         self.calls += 1
         if self.calls <= 3:
@@ -405,7 +405,7 @@ class _LockedThenRefusingDB:
 
 def _compatibility_profile():
     """The type of object a store actually carries in its ``compatibility`` attribute."""
-    from lionagi.state.compat import Closure, CompatibilityProfile
+    from lionhub.state.compat import Closure, CompatibilityProfile
 
     return CompatibilityProfile(
         name="synthetic", version=1, closure=Closure(tables=()), writes={}, operations={"op"}
@@ -419,7 +419,7 @@ async def test_a_deferred_queue_attempts_its_head_only_in_compatibility_mode(com
     """Deferred after three ordinary failures, a queue on a compatibility-mode store still attempts
     its head on each submit, so a refusal stops the run then rather than at teardown (ADR-0128 D6);
     natively it waits for the teardown flush as before."""
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     db = _LockedThenRefusingDB(compatibility)
     queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")

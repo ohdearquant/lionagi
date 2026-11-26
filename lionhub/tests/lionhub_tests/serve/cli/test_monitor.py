@@ -14,11 +14,6 @@ from typing import Any
 
 import pytest
 
-from lionagi.state.db import (
-    PLAY_ACTIVE_STATUSES,
-    PLAY_TERMINAL_STATUSES,
-    StateDB,
-)
 from lionhub.serve.cli.monitor import (
     _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
@@ -45,6 +40,11 @@ from lionhub.serve.cli.monitor import (
     _stdout_is_tty,
     _trunc,
 )
+from lionhub.state.db import (
+    PLAY_ACTIVE_STATUSES,
+    PLAY_TERMINAL_STATUSES,
+    StateDB,
+)
 
 
 class _FakeStdout:
@@ -65,7 +65,7 @@ class _FakeStdout:
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(
         "lionhub.serve.cli.monitor._run_table", _run_table
     )  # identity; force DB path
@@ -1197,7 +1197,7 @@ async def test_find_entity_not_found(temp_db_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_table_no_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     missing = tmp_path / "nonexistent.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", missing)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", missing)
     output = await _run_table(since=None, entity_type=None, project=None)
     # Should return a graceful "no state.db" message
     assert "state.db" in output or "no" in output.lower()
@@ -1561,7 +1561,7 @@ async def test_run_detail_play_surfaces_branch_legs(temp_db_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_detail_no_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     missing = tmp_path / "gone.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", missing)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", missing)
     output = await _run_detail("some-id")
     assert "state.db" in output or "not found" in output.lower() or "error" in output.lower()
 

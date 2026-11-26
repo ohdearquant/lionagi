@@ -30,10 +30,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from lionagi.state.db import StateDB
-
-from .fixtures import seed_filesystem_fixtures, seed_state_db
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_LIONAGI_HOME = Path("~/.lionagi").expanduser().resolve()
 
@@ -86,6 +82,12 @@ def _free_port() -> int:
 
 
 async def _seed(db_path: Path, tmp_dir: Path) -> None:
+    # The seed data needs the state store, which lionhub carries; the rest of this
+    # harness does not, so a test that skips seeding runs without lionhub.
+    from lionhub.state.db import StateDB  # noqa: PLC0415
+
+    from .fixtures import seed_filesystem_fixtures, seed_state_db  # noqa: PLC0415
+
     seed_filesystem_fixtures(tmp_dir)
     db = StateDB(db_path)
     await db.open()

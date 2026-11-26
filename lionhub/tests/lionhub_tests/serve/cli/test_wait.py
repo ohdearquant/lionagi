@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 
 from lionagi._paths import RUNS_ROOT
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.status import EXIT_UNKNOWN
 from lionhub.serve.cli.wait import format_wait_line, run_wait, wait_for_terminal
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 # Fixtures
 
@@ -23,7 +23,7 @@ from lionhub.serve.cli.wait import format_wait_line, run_wait, wait_for_terminal
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

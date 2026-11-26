@@ -157,8 +157,8 @@ def test_build_session_bus_returns_fresh_instance_each_call():
 
 async def test_direct_session_message_emission_has_no_context_incompatible_default(caplog):
     """A Session-owned bus does not assume persistence context its Branch lacks."""
-    from lionagi.hooks.builtins import persist_message
     from lionagi.session.session import Session
+    from lionhub.orchestration.run_persistence import persist_message
 
     session = Session()
     bus = session.hooks

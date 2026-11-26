@@ -22,9 +22,9 @@ from typing import Any
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln import compute_hash, parse_duration
 from lionagi.ln._json_dump import raise_if_non_finite
-from lionagi.state.session_naming import sanitize_prompt_name
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.serve.mirror_settings import MIRROR_PREVIEW_CHARS
+from lionhub.state.session_naming import sanitize_prompt_name
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
@@ -397,7 +397,7 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     See docs/internals/cli.md#mirror.py. Project and artifacts_path backfill
     independently — a row can already carry one while missing the other, so
     each is (re)written only when actually missing."""
-    from lionagi.state.claude_mirror import session_db_id
+    from lionhub.state.claude_mirror import session_db_id
 
     state.project, state.project_source = _resolve_project_for_mirror(cwd)
     state.cwd = cwd
@@ -423,7 +423,7 @@ async def _attribute_idle_codex(db, state: _FileState) -> None:
     at EOF, e.g. after a restart) it returns before ever calling
     ``mirror_session`` — the only other place ``set_session_provenance`` runs.
     Without this, such a row's artifacts_path stays NULL forever."""
-    from lionagi.state.codex_mirror import session_db_id
+    from lionhub.state.codex_mirror import session_db_id
 
     if not state.session_uid or not state.cwd:
         return
@@ -455,7 +455,7 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
 
 
 async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
-    from lionagi.state.claude_mirror import mirror_session
+    from lionhub.state.claude_mirror import mirror_session
 
     events, sources, new_offset, unreadable = _read_new_events(path, state)
     if unreadable:
@@ -545,7 +545,7 @@ async def _one_pass(db, root: Path, states, *, since, live_window, lineage=None)
             continue
         except Exception as exc:  # one bad transcript must not kill the tail
             log_error(f"mirror failed for {path.name}: {exc}")
-    from lionagi.state.claude_mirror import link_session_lineage, reconcile_session_status
+    from lionhub.state.claude_mirror import link_session_lineage, reconcile_session_status
 
     for uid, candidates in reconcile.items():
         settled = await reconcile_session_status(db, uid, now=now, live_window=live_window)
@@ -570,7 +570,7 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
     arriving even if the bytes so far happen to parse. A newline-terminated
     line that fails to parse is permanently corrupt and settles as headerless.
     """
-    from lionagi.state.codex_mirror import session_meta
+    from lionhub.state.codex_mirror import session_meta
 
     try:
         with path.open("rb") as fh:
@@ -607,7 +607,7 @@ def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> 
 
 def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
     """First real user turn in a rollout, skipping codex's injected context blocks."""
-    from lionagi.state.codex_mirror import messages_for_record
+    from lionhub.state.codex_mirror import messages_for_record
 
     for r in records:
         for m in messages_for_record(r, "probe", {}):
@@ -622,7 +622,7 @@ def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
 
 async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str, str]) -> int:
     """Mirror new records from one rollout file; returns messages written."""
-    from lionagi.state.codex_mirror import (
+    from lionhub.state.codex_mirror import (
         SKIPPED_ORIGINATORS,
         absorb_orchestrated_session,
         link_session_lineage,
@@ -735,7 +735,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
 
 async def _codex_pass(db, root: Path, states, *, since, live_window, threads) -> int:
     """One sweep over the codex rollout tree; mirrors new records and reconciles status."""
-    from lionagi.state.codex_mirror import reconcile_session_status
+    from lionhub.state.codex_mirror import reconcile_session_status
 
     now = time.time()
     total = 0
@@ -779,7 +779,7 @@ async def _absorb_backfill(db) -> bool:
     True, else one bad pass retires the backfill for the process lifetime.
     Errors are logged, never raised: reconciliation must not keep the mirror down.
     """
-    from lionagi.state.codex_mirror import absorb_orchestrated_backfill
+    from lionhub.state.codex_mirror import absorb_orchestrated_backfill
 
     try:
         removed, failed = await absorb_orchestrated_backfill(db)
@@ -812,7 +812,7 @@ async def mirror_forever(
     so codex is opt-in. Studio's in-process entry point; ``li mirror`` keeps
     its own loop in ``lionhub.serve.cli.mirror._run``. See docs/internals/cli.md#mirror.py.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     if source not in ("both", "claude", "codex"):
         raise ValueError(f"unknown mirror source: {source!r}")

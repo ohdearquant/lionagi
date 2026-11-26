@@ -1724,8 +1724,8 @@ async def test_a_branch_status_write_that_never_returns_cannot_hold_the_synthesi
 
     Waiting on it without a bound would keep `_synthesize` from returning and, because the
     drain is shielded, keep the flow's own timeout from firing."""
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
@@ -1872,8 +1872,8 @@ async def test_a_cancel_before_the_escalation_links_are_drained_gives_them_the_g
     links, drained after them, under the grace period instead of their retry budget."""
     import time
 
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 500)
@@ -1883,7 +1883,7 @@ async def test_a_cancel_before_the_escalation_links_are_drained_gives_them_the_g
     async def _link_that_never_returns(*_args, **_kwargs):
         await asyncio.Event().wait()
 
-    with patch("lionagi.state.claude_mirror.link_escalation_session", _link_that_never_returns):
+    with patch("lionhub.state.claude_mirror.link_escalation_session", _link_that_never_returns):
         task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db, escalated=True))
         await db.write_started.wait()
         await asyncio.sleep(0.05)
@@ -1905,8 +1905,8 @@ async def test_a_cancel_while_the_escalation_links_are_drained_cuts_their_wait_t
     from then on, not the rest of the budget."""
     import time
 
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 500)
@@ -1917,7 +1917,7 @@ async def test_a_cancel_while_the_escalation_links_are_drained_cuts_their_wait_t
         link_started.set()
         await asyncio.Event().wait()
 
-    with patch("lionagi.state.claude_mirror.link_escalation_session", _link_that_never_returns):
+    with patch("lionhub.state.claude_mirror.link_escalation_session", _link_that_never_returns):
         task = asyncio.ensure_future(_executed_with_live_observers(tmp_path, db, escalated=True))
         await link_started.wait()
         # every other write is immediate, so by now the drain is waiting on the links
@@ -1938,8 +1938,8 @@ async def test_a_status_write_that_ignores_every_cancel_is_abandoned_after_the_g
 ):
     """A write that absorbs each cancel the drain sends and goes on waiting is left behind, so
     the synthesis still returns."""
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
@@ -1977,8 +1977,8 @@ async def test_a_status_write_is_cancelled_once_and_then_given_the_grace_period(
     a store write needs only one, unwinding once its statement returns, and a further one would
     only land in its cleanup. The grace period here is three re-cancel intervals, so a repeated
     cancel would show."""
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 3 * flow_mod._DRAIN_RECANCEL_SECONDS)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 50)
@@ -2044,8 +2044,8 @@ async def test_an_escalation_link_that_ignores_every_cancel_is_abandoned_after_t
 ):
     """A link past its retry budget is cancelled again every re-cancel interval of the grace
     period, and one that absorbs every cancel is left behind once the grace period ends."""
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 3.5 * flow_mod._DRAIN_RECANCEL_SECONDS)
     monkeypatch.setattr(flow_mod, "_ESCALATION_LINK_RETRY_INTERVAL", 0.01)
@@ -2064,7 +2064,7 @@ async def test_an_escalation_link_that_ignores_every_cancel_is_abandoned_after_t
 
     try:
         with patch(
-            "lionagi.state.claude_mirror.link_escalation_session", _link_that_ignores_every_cancel
+            "lionhub.state.claude_mirror.link_escalation_session", _link_that_ignores_every_cancel
         ):
             task = asyncio.ensure_future(
                 _executed_with_live_observers(tmp_path, _SlowStatusDB(), escalated=True)
@@ -2090,8 +2090,8 @@ async def test_status_writes_queued_behind_a_link_on_the_write_lock_still_land(
     Here an escalation link takes the lock first and holds it until the drain has started, so
     the link and both status writes are running then: the status writes get three writer waits
     and the grace period, and land behind the link."""
-    import lionagi.state.engine as engine_mod
     import lionhub.serve.cli.orchestrate.flow as flow_mod
+    import lionhub.state.engine as engine_mod
 
     monkeypatch.setattr(flow_mod, "_DRAIN_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 1000)
@@ -2113,7 +2113,7 @@ async def test_status_writes_queued_behind_a_link_on_the_write_lock_still_land(
         return True
 
     db.update_branch = _update_branch
-    with patch("lionagi.state.claude_mirror.link_escalation_session", _link):
+    with patch("lionhub.state.claude_mirror.link_escalation_session", _link):
         await _executed_with_live_observers(tmp_path, db, escalated=True)
 
     assert held == ["link", "running", "completed"]
@@ -2339,7 +2339,7 @@ async def test_a_cancel_the_execution_drain_holds_stays_pending_on_the_task(tmp_
 @pytest.fixture
 def _flow_phase_state_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -2362,7 +2362,6 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     non-empty file is written — the actual enforcement the role declaration
     exists for, now that the spawned node is told its artifact dir up front."""
     from lionagi import Branch, Session
-    from lionagi.state.db import StateDB
     from lionhub.agent.casts.pattern import Role
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.runs import allocate_run
@@ -2371,6 +2370,7 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
         start_live_persist,
         stop_live_persist,
     )
+    from lionhub.state.db import StateDB
 
     orc_branch = Branch(name="orchestrator")
     session = Session(default_branch=orc_branch)
@@ -2481,13 +2481,13 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
 
     from lionagi import Branch, Session
     from lionagi.session.signal import NodeCompleted, NodeStarted
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.engines import PlanningEngine
     from lionhub.orchestration.runs import allocate_run
     from lionhub.serve.cli.orchestrate._orchestration import (
         OrchestrationEnv,
         start_live_persist,
     )
+    from lionhub.state.db import StateDB
 
     orc_branch = Branch(name="orchestrator")
     worker_branch = Branch(name="researcher")

@@ -112,7 +112,7 @@ def _flow_control_poller_state(session: dict[str, Any]) -> str | None:
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB, state_db_known_absent
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
@@ -325,7 +325,7 @@ def _resolving_actor(explicit: str | None = None) -> str:
 async def _resolve_control_inner(
     *, control_id: str, outcome: str, actor: str | None = None
 ) -> tuple[str, int]:
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionhub.state.db import StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN

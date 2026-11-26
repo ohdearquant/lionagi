@@ -1,0 +1,1027 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for engine.py URL utilities and schema_meta.py MetaData parity."""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from lionhub.state.engine import (
+    _RollbackOnCloseConnection,
+    dialect_of,
+    make_engine,
+    make_readonly_engine,
+    mask_db_url,
+    normalize_state_db_url,
+)
+from lionhub.state.schema_meta import metadata
+
+# normalize_state_db_url
+
+
+def test_normalize_none_returns_sqlite_default():
+    url = normalize_state_db_url(None)
+    assert url.startswith("sqlite+aiosqlite:///")
+    assert "state.db" in url
+
+
+def test_normalize_path_object():
+    p = Path("/tmp/test_lion.db")
+    url = normalize_state_db_url(p)
+    assert url.startswith("sqlite+aiosqlite:///")
+    assert "test_lion.db" in url
+    # The path portion must be absolute.
+    path_part = url[len("sqlite+aiosqlite:///") :]
+    assert Path(path_part).is_absolute()
+
+
+def test_normalize_bare_string_path():
+    url = normalize_state_db_url("/tmp/foo.db")
+    assert url.startswith("sqlite+aiosqlite:///")
+    assert "foo.db" in url
+
+
+def test_normalize_bare_string_relative():
+    url = normalize_state_db_url("relative/path.db")
+    assert url.startswith("sqlite+aiosqlite:///")
+    assert "path.db" in url
+    # Must be absolute after normalization.
+    stripped = url[len("sqlite+aiosqlite:///") :]
+    assert Path(stripped).is_absolute()
+
+
+def test_normalize_sqlite_plain_scheme():
+    # Four-slash (absolute) and three-slash (relative) must preserve slash count;
+    # a regression re-introduces the "sqlite+aiosqlite://////" corruption.
+    assert normalize_state_db_url("sqlite:////tmp/x.db") == "sqlite+aiosqlite:////tmp/x.db"
+    assert normalize_state_db_url("sqlite:///rel.db") == "sqlite+aiosqlite:///rel.db"
+
+
+def test_normalize_sqlite_already_qualified():
+    original = "sqlite+aiosqlite:////tmp/y.db"
+    assert normalize_state_db_url(original) == original
+
+
+def test_normalize_postgres_short_scheme():
+    url = normalize_state_db_url("postgres://user:pw@host/db")
+    assert url.startswith("postgresql+asyncpg://")
+
+
+def test_normalize_postgresql_scheme():
+    url = normalize_state_db_url("postgresql://user:pw@host/db")
+    assert url.startswith("postgresql+asyncpg://")
+
+
+def test_normalize_postgresql_asyncpg_already_qualified():
+    original = "postgresql+asyncpg://user:pw@host/db"
+    assert normalize_state_db_url(original) == original
+
+
+# mask_db_url
+
+
+def test_mask_no_password():
+    url = "sqlite+aiosqlite:////tmp/state.db"
+    assert mask_db_url(url) == url
+
+
+def test_mask_password_replaced():
+    url = "postgresql+asyncpg://user:supersecretpassword@localhost/db"
+    masked = mask_db_url(url)
+    assert masked == "postgresql+asyncpg://user:***@localhost/db"
+
+
+def test_mask_short_password():
+    url = "postgresql+asyncpg://admin:abc@host/db"
+    masked = mask_db_url(url)
+    assert masked == "postgresql+asyncpg://admin:***@host/db"
+
+
+# dialect_of
+
+
+def test_dialect_sqlite():
+    assert dialect_of("sqlite+aiosqlite:////tmp/x.db") == "sqlite"
+    assert dialect_of("sqlite:///x.db") == "sqlite"
+
+
+def test_dialect_postgresql():
+    assert dialect_of("postgresql+asyncpg://host/db") == "postgresql"
+    assert dialect_of("postgres://host/db") == "postgresql"
+
+
+# make_engine (SQLite only — sync verification)
+
+
+def test_make_engine_sqlite_creates_engine():
+    url = "sqlite+aiosqlite:///:memory:"
+    engine = make_engine(url)
+    assert engine is not None
+    assert "sqlite" in str(engine.url)
+    # Cleanup.
+    import asyncio
+
+    asyncio.run(engine.dispose())
+
+
+# make_readonly_engine
+
+
+def test_make_readonly_engine_rejects_postgres():
+    with pytest.raises(ValueError, match="only supports sqlite"):
+        make_readonly_engine("postgresql+asyncpg://host/db")
+
+
+def test_make_readonly_engine_rejects_memory():
+    with pytest.raises(ValueError, match=":memory:"):
+        make_readonly_engine("sqlite+aiosqlite:///:memory:")
+
+
+async def test_make_readonly_engine_can_read_existing_file(tmp_path):
+    db_file = tmp_path / "ro_test.db"
+    write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
+    async with write_engine.begin() as conn:
+        await conn.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+        await conn.execute(sa.text("INSERT INTO t (v) VALUES ('hello')"))
+    await write_engine.dispose()
+
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with ro_engine.connect() as conn:
+            rows = (await conn.execute(sa.text("SELECT v FROM t"))).all()
+            assert [r[0] for r in rows] == ["hello"]
+    finally:
+        await ro_engine.dispose()
+
+
+@pytest.mark.parametrize("name", ["a#b.db", "p%41.db", "q r.db"])
+async def test_make_readonly_engine_reads_the_file_its_path_names(tmp_path, name):
+    """Written raw into the URI, '#' starts a fragment that also drops mode=ro, and '%' starts an
+    escape, so another file was opened, and created, in place of this one."""
+    db_file = tmp_path / name
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('here')")
+    conn.commit()
+    conn.close()
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with ro_engine.connect() as conn:
+            assert (await conn.execute(sa.text("SELECT v FROM t"))).scalar() == "here"
+    finally:
+        await ro_engine.dispose()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [name]
+
+
+async def test_make_readonly_engine_rejects_writes(tmp_path):
+    db_file = tmp_path / "ro_write_test.db"
+    write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
+    async with write_engine.begin() as conn:
+        await conn.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+    await write_engine.dispose()
+
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        with pytest.raises(Exception, match="readonly|read-only"):
+            async with ro_engine.begin() as conn:
+                await conn.execute(sa.text("INSERT INTO t (v) VALUES ('nope')"))
+    finally:
+        await ro_engine.dispose()
+
+
+# SQLite close lifecycle and connection options
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["uncommitted", "committed"])
+def test_native_close_preserves_rows_with_an_unfinished_cursor(tmp_path, committed):
+    path = tmp_path / "retained-cursor.db"
+    connection = sqlite3.connect(path, isolation_level=None, factory=_RollbackOnCloseConnection)
+    connection.execute("CREATE TABLE probe (x INTEGER)")
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("INSERT INTO probe VALUES (1)")
+    if committed:
+        connection.execute("COMMIT")
+    cursor = connection.execute("SELECT x FROM probe")
+    try:
+        connection.close()
+        connection.close()  # native close remains idempotent
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            assert external.execute("SELECT x FROM probe").fetchall() == (
+                [(1,)] if committed else []
+            )
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+        assert cursor is not None  # retained until after the external writer succeeds
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("error_type", [sqlite3.OperationalError, RuntimeError])
+def test_native_close_logs_a_rollback_error_and_still_closes(caplog, error_type):
+    class BrokenRollback(_RollbackOnCloseConnection):
+        def rollback(self):
+            raise error_type("controlled rollback failure")
+
+    connection = sqlite3.connect(":memory:", isolation_level=None, factory=BrokenRollback)
+    connection.execute("BEGIN")
+    connection.close()
+    assert "Could not roll back SQLite transaction before closing" in caplog.text
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+    connection.close()
+
+
+@pytest.mark.parametrize("readonly", [False, True], ids=["writable", "readonly"])
+@pytest.mark.parametrize("custom_factory", [False, True], ids=["default-factory", "custom-factory"])
+async def test_sqlite_engine_default_factory_preserves_connection_options(
+    tmp_path, readonly, custom_factory
+):
+    path = tmp_path / "options.db"
+    sqlite3.connect(path).close()
+    supplied = {"timeout": 0.25}
+    seen = []
+
+    def factory(*args, **kwargs):
+        seen.append(kwargs.copy())
+        return sqlite3.Connection(*args, **kwargs)
+
+    if custom_factory:
+        supplied["factory"] = factory
+    original = supplied.copy()
+    maker = make_readonly_engine if readonly else make_engine
+    engine = maker(f"sqlite+aiosqlite:///{path}", connect_args=supplied)
+    try:
+        async with engine.connect() as connection:
+            raw = await connection.get_raw_connection()
+            native = raw.driver_connection._conn
+            if custom_factory:
+                assert type(native) is sqlite3.Connection
+                assert seen[0]["timeout"] == 0.25
+            else:
+                assert isinstance(native, _RollbackOnCloseConnection)
+        assert supplied == original
+    finally:
+        await engine.dispose()
+
+
+# Schema-parity: MetaData vs schema.sql (SQLite leg, always runs)
+
+ALL_TABLES = {
+    "schema_meta",
+    "message_types",
+    "messages",
+    "progressions",
+    "projects",
+    "sessions",
+    "cli_worker_spawns",
+    "branches",
+    "definitions",
+    "shows",
+    "plays",
+    "teams",
+    "team_messages",
+    "invocations",
+    "schedules",
+    "schedule_runs",
+    "admin_events",
+    "artifacts",
+    "status_transitions",
+    "terminal_consumers",
+    "terminal_deliveries",
+    "session_signals",
+    "engine_runs",
+    "engine_defs",
+    "workflow_defs",
+    "session_controls",
+    "dispatch_outbox",
+    "run_tags",
+    "approvals",
+    "approval_evidence",
+    "workers",
+    "attention_dispositions",
+    "attention_disposition_history",
+    "attention_disposition_revisions",
+}
+
+
+@pytest_asyncio.fixture
+async def sqlite_meta_engine(tmp_path):
+    """AsyncEngine pointing at a fresh SQLite file for MetaData.create_all."""
+    db_file = tmp_path / "meta_test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+async def test_metadata_creates_all_tables(sqlite_meta_engine):
+    """metadata.create_all() builds every expected table in SQLite."""
+    async with sqlite_meta_engine.connect() as conn:
+        tables = await conn.run_sync(lambda sync_conn: set(sa.inspect(sync_conn).get_table_names()))
+    assert ALL_TABLES == tables
+
+
+async def test_metadata_column_parity_vs_schema_sql(tmp_path, sqlite_meta_engine):
+    """Column sets from MetaData match column sets from real schema.sql."""
+    from lionhub.state.db import _SCHEMA_PATH  # existing constant in db.py
+
+    # Build a second SQLite DB from the raw schema.sql script.
+    raw_db = tmp_path / "raw_schema.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    conn_raw = sqlite3.connect(str(raw_db))
+    # Strip PRAGMAs so executescript doesn't complain about schema state.
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn_raw.executescript("\n".join(lines))
+    conn_raw.commit()
+
+    # Collect columns from the raw DB.
+    raw_cols: dict[str, set[str]] = {}
+    cursor = conn_raw.cursor()
+    for table in ALL_TABLES:
+        cursor.execute(f"PRAGMA table_info({table})")  # noqa: S608
+        raw_cols[table] = {row[1] for row in cursor.fetchall()}
+    conn_raw.close()
+
+    # Collect columns from the MetaData DB.
+    def _get_meta_cols(sync_conn):
+        insp = sa.inspect(sync_conn)
+        return {t: {c["name"] for c in insp.get_columns(t)} for t in ALL_TABLES}
+
+    async with sqlite_meta_engine.connect() as conn:
+        meta_cols = await conn.run_sync(_get_meta_cols)
+
+    mismatches: list[str] = []
+    for table in sorted(ALL_TABLES):
+        only_raw = raw_cols[table] - meta_cols[table]
+        only_meta = meta_cols[table] - raw_cols[table]
+        if only_raw or only_meta:
+            mismatches.append(
+                f"{table}: only_in_schema_sql={only_raw!r} only_in_metadata={only_meta!r}"
+            )
+
+    assert not mismatches, "Column-set mismatch:\n" + "\n".join(mismatches)
+
+
+async def test_branches_index_matches_runtime_migration_definition(tmp_path, sqlite_meta_engine):
+    """The provisioned branches session index matches the runtime migration.
+
+    Target 3 (perf-baseline ranked_targets.md): idx_branches_session used to
+    be a bare (session_id) index, forcing a temp B-tree sort for the
+    session-detail branch listing (ORDER BY created_at). schema.sql and
+    schema_meta.py must both declare the same composite/covering
+    (session_id, created_at) index as schema_migrations.MIGRATION_INDEXES,
+    with no bare idx_branches_session left in either provisioning definition
+    and no table/column change.
+    """
+    import re
+
+    from lionhub.state.db import _SCHEMA_PATH
+    from lionhub.state.schema_migrations import MIGRATION_INDEXES
+
+    # Raw schema.sql indexes.
+    raw_db = tmp_path / "raw_branches_idx.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn_raw = sqlite3.connect(str(raw_db))
+    conn_raw.executescript("\n".join(lines))
+    conn_raw.commit()
+    cursor = conn_raw.cursor()
+    cursor.execute("PRAGMA index_list(branches)")
+    raw_index_names = {row[1] for row in cursor.fetchall()}
+    cursor.execute("PRAGMA index_info(idx_branches_session_created)")
+    raw_composite_cols = [row[2] for row in cursor.fetchall()]
+    conn_raw.close()
+
+    assert "idx_branches_session_created" in raw_index_names
+    assert "idx_branches_session" not in raw_index_names
+    assert raw_composite_cols == ["session_id", "created_at"]
+
+    # SQLAlchemy metadata indexes.
+    def _get_meta_indexes(sync_conn):
+        insp = sa.inspect(sync_conn)
+        return {idx["name"]: idx["column_names"] for idx in insp.get_indexes("branches")}
+
+    async with sqlite_meta_engine.connect() as conn:
+        meta_indexes = await conn.run_sync(_get_meta_indexes)
+
+    assert "idx_branches_session_created" in meta_indexes
+    assert "idx_branches_session" not in meta_indexes
+    assert meta_indexes["idx_branches_session_created"] == raw_composite_cols
+
+    # Runtime migration definition (schema_migrations.MIGRATION_INDEXES) must
+    # declare the identical column order.
+    (composite_sql,) = (
+        sql for sql in MIGRATION_INDEXES["sqlite"] if "idx_branches_session_created" in sql
+    )
+    migration_cols = [
+        c.strip() for c in re.search(r"branches\(([^)]+)\)", composite_sql).group(1).split(",")
+    ]
+    assert migration_cols == raw_composite_cols
+
+
+async def test_invocation_reaper_index_matches_every_schema_path(tmp_path, sqlite_meta_engine):
+    """Fresh SQL, metadata, and runtime repair all install the seek index."""
+    import re
+
+    from lionhub.state.db import _SCHEMA_PATH, StateDB
+    from lionhub.state.schema_migrations import MIGRATION_INDEXES
+
+    expected_columns = ["status", "started_at", "id"]
+
+    raw_db = tmp_path / "raw_invocation_reaper_idx.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    with sqlite3.connect(raw_db) as conn:
+        conn.executescript("\n".join(lines))
+        raw_columns = [row[2] for row in conn.execute("PRAGMA index_info(idx_invocations_reaper)")]
+    assert raw_columns == expected_columns
+
+    def _metadata_indexes(sync_conn):
+        return {
+            idx["name"]: idx["column_names"]
+            for idx in sa.inspect(sync_conn).get_indexes("invocations")
+        }
+
+    async with sqlite_meta_engine.connect() as conn:
+        metadata_indexes = await conn.run_sync(_metadata_indexes)
+    assert metadata_indexes["idx_invocations_reaper"] == expected_columns
+
+    for dialect in ("sqlite", "postgresql"):
+        (migration_sql,) = (
+            sql for sql in MIGRATION_INDEXES[dialect] if "idx_invocations_reaper" in sql
+        )
+        migration_columns = [
+            value.strip()
+            for value in re.search(r"invocations\(([^)]+)\)", migration_sql).group(1).split(",")
+        ]
+        assert migration_columns == expected_columns
+
+    # metadata.create_all() does not restore an index on an existing table;
+    # reopening after a simulated old/missing index exercises MIGRATION_INDEXES.
+    repaired_db = tmp_path / "repaired_invocation_reaper_idx.db"
+    async with StateDB(repaired_db):
+        pass
+    with sqlite3.connect(repaired_db) as conn:
+        conn.execute("DROP INDEX idx_invocations_reaper")
+        conn.commit()
+    async with StateDB(repaired_db):
+        pass
+    with sqlite3.connect(repaired_db) as conn:
+        repaired_columns = [
+            row[2] for row in conn.execute("PRAGMA index_info(idx_invocations_reaper)")
+        ]
+    assert repaired_columns == expected_columns
+
+
+_PRUNE_REFERENCE_INDEXES = (
+    ("idx_sched_runs_chain_parent", "schedule_runs", "chain_parent_id"),
+    ("idx_dispatch_outbox_schedule_run", "dispatch_outbox", "schedule_run_id"),
+    ("idx_dispatch_outbox_session", "dispatch_outbox", "session_id"),
+)
+
+
+def _flat_sql(sql: str) -> str:
+    """Collapse whitespace and drop the space before an opening parenthesis, so DDL
+    written by hand and DDL rendered from the table metadata compare equal."""
+    return " ".join(sql.split()).replace(" (", "(")
+
+
+def _index_statements(db_path) -> dict[str, str]:
+    """Map every index name in the store to its CREATE statement, normalised by `_flat_sql`."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+        ).fetchall()
+    return {name: _flat_sql(sql) for name, sql in rows}
+
+
+async def test_prune_reference_indexes_match_every_schema_path(tmp_path, sqlite_meta_engine):
+    """Each index in the prune-reference list is declared alike in schema.sql, the
+    table metadata and the runtime index list, and a bare UPDATE nulling its column
+    plans as a SEARCH on it in a store opened through StateDB. The six statements a
+    session chunk runs to clear or delete its session references are planned as the
+    prune issues them by test_session_chunk_checks_terminal_status_by_session_id
+    in lionhub/tests/lionhub_tests/orchestration/scheduler/test_db_maintenance.py."""
+    from lionhub.state.db import _SCHEMA_PATH, StateDB
+    from lionhub.state.schema_migrations import MIGRATION_INDEXES
+
+    raw_db = tmp_path / "raw_prune_reference_idx.db"
+    schema_lines = [
+        ln
+        for ln in _SCHEMA_PATH.read_text().splitlines()
+        if not ln.strip().upper().startswith("PRAGMA")
+    ]
+    with sqlite3.connect(raw_db) as conn:
+        conn.executescript("\n".join(schema_lines))
+    raw_indexes = _index_statements(raw_db)
+
+    def _metadata_indexes(sync_conn):
+        inspector = sa.inspect(sync_conn)
+        return {
+            table: {idx["name"]: idx["column_names"] for idx in inspector.get_indexes(table)}
+            for table in ("schedule_runs", "dispatch_outbox")
+        }
+
+    async with sqlite_meta_engine.connect() as conn:
+        metadata_indexes = await conn.run_sync(_metadata_indexes)
+
+    store_db = tmp_path / "store_prune_reference_idx.db"
+    async with StateDB(store_db):
+        pass
+    store_indexes = _index_statements(store_db)
+
+    for name, table, column in _PRUNE_REFERENCE_INDEXES:
+        predicate = f"{table}({column}) WHERE {column} IS NOT NULL"
+        assert predicate in raw_indexes.get(name, ""), name
+        assert metadata_indexes[table].get(name) == [column], name
+        assert predicate in store_indexes.get(name, ""), name
+        for dialect in ("sqlite", "postgresql"):
+            statements = [_flat_sql(sql) for sql in MIGRATION_INDEXES[dialect] if name in sql]
+            assert len(statements) == 1 and predicate in statements[0], (dialect, name)
+
+        nullify = f"UPDATE {table} SET {column} = NULL WHERE {column} IN (?, ?)"
+        with sqlite3.connect(store_db) as conn:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + nullify, ("a", "b"))]
+        assert any("SEARCH" in detail and name in detail for detail in plan), plan
+        assert not any(detail.startswith("SCAN") for detail in plan), plan
+
+
+async def test_reopening_a_store_without_prune_reference_indexes_adds_them(tmp_path):
+    """A store that predates the prune-reference indexes gains them when StateDB opens it."""
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "pre_prune_reference_idx.db"
+    async with StateDB(db_path):
+        pass
+    with sqlite3.connect(db_path) as conn:
+        for name, _table, _column in _PRUNE_REFERENCE_INDEXES:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+    assert not {name for name, _t, _c in _PRUNE_REFERENCE_INDEXES} & set(_index_statements(db_path))
+
+    async with StateDB(db_path):
+        pass
+    reopened = _index_statements(db_path)
+    for name, table, column in _PRUNE_REFERENCE_INDEXES:
+        assert f"{table}({column}) WHERE {column} IS NOT NULL" in reopened.get(name, ""), name
+
+
+async def test_a_schedule_runs_table_without_chain_parent_id_gains_it_before_its_index(tmp_path):
+    """A schedule_runs table built without chain_parent_id still opens: the column is
+    added first, then the partial index on it, and the existing row is kept."""
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "no_chain_parent.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE schedule_runs (
+                id              TEXT PRIMARY KEY,
+                schedule_id     TEXT,
+                invocation_id   TEXT,
+                trigger_context JSON NOT NULL,
+                action_kind     TEXT NOT NULL,
+                action_args     JSON NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'running'
+                    CHECK(status IN ('queued', 'waiting_dependency',
+                          'running', 'retry_wait', 'completed',
+                          'failed', 'timed_out', 'skipped',
+                          'cancelled')),
+                fired_at        REAL NOT NULL,
+                created_at      REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO schedule_runs (id, trigger_context, action_kind, action_args, "
+            "status, fired_at, created_at) VALUES ('r1', '{}', 'agent', '[]', 'completed', 0, 0)"
+        )
+        conn.commit()
+
+    async with StateDB(db_path):
+        pass
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule_runs)")}
+        rows = conn.execute("SELECT id, chain_parent_id FROM schedule_runs").fetchall()
+    assert "chain_parent_id" in columns
+    assert rows == [("r1", None)]
+    assert "schedule_runs(chain_parent_id) WHERE chain_parent_id IS NOT NULL" in (
+        _index_statements(db_path).get("idx_sched_runs_chain_parent", "")
+    )
+
+
+async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_meta_engine):
+    """Enum CHECK value-sets from MetaData match those from real schema.sql."""
+    import re
+
+    from lionhub.state.db import _SCHEMA_PATH
+
+    in_re = re.compile(r"(\w+)\s+IN\s*\(([^)]+)\)", re.IGNORECASE)
+
+    def _norm(vals):
+        return frozenset(p.strip().strip("'").strip() for p in vals.split(",") if p.strip())
+
+    def _checks(rows):
+        out = {}
+        for name, sql in rows:
+            if not sql:
+                continue
+            for col, vals in in_re.findall(sql):
+                out[(name, col)] = _norm(vals)
+        return out
+
+    raw_db = tmp_path / "raw_checks.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn_raw = sqlite3.connect(str(raw_db))
+    conn_raw.executescript("\n".join(lines))
+    raw_checks = _checks(
+        conn_raw.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
+        ).fetchall()
+    )
+    conn_raw.close()
+
+    def _meta_rows(sync_conn):
+        return list(
+            sync_conn.exec_driver_sql(
+                "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
+            )
+        )
+
+    async with sqlite_meta_engine.connect() as conn:
+        meta_checks = _checks(await conn.run_sync(_meta_rows))
+
+    # Guard against the regex silently extracting nothing (would make equality trivial).
+    assert len(raw_checks) == 20, f"expected 20 enum CHECK columns, got {len(raw_checks)}"
+    drift = {
+        k: {
+            "schema_sql": sorted(raw_checks.get(k) or []),
+            "metadata": sorted(meta_checks.get(k) or []),
+        }
+        for k in set(raw_checks) | set(meta_checks)
+        if raw_checks.get(k) != meta_checks.get(k)
+    }
+    assert not drift, f"CHECK enum drift:\n{drift}"
+
+
+async def test_python_enum_sets_match_schema_sql_checks(tmp_path):
+    """The Python vocabularies the writers validate against carry the same values
+    as the CHECK constraints in schema.sql.
+
+    The metadata-parity guard above covers the SQLAlchemy mirror only, so a value
+    added to schema.sql and the mirror alone would be legal in the database and
+    still refused by ``create_session`` — accepted by the store, rejected by the
+    only code that writes to it.
+    """
+    import re
+    import sqlite3
+
+    from lionhub.state.db import _INVOCATION_KINDS, _SCHEMA_PATH, _SOURCE_KINDS
+
+    raw_db = tmp_path / "python_enum_parity.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn = sqlite3.connect(str(raw_db))
+    conn.executescript("\n".join(lines))
+    sessions_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+    ).fetchone()[0]
+    conn.close()
+
+    in_re = re.compile(r"(\w+)\s+IN\s*\(([^)]+)\)", re.IGNORECASE)
+    found = {
+        col: frozenset(p.strip().strip("'").strip() for p in vals.split(",") if p.strip())
+        for col, vals in in_re.findall(sessions_sql)
+    }
+
+    expected = {"source_kind": _SOURCE_KINDS, "invocation_kind": _INVOCATION_KINDS}
+    # Fail closed: a column whose CHECK the regex missed must not read as parity.
+    assert set(expected) <= set(found), f"no CHECK parsed for {set(expected) - set(found)}"
+    assert {col: found[col] for col in expected} == expected
+
+
+def test_studio_schedule_action_kinds_match_schema_checks():
+    import re
+
+    from sqlalchemy.dialects import postgresql
+
+    from lionhub.serve.daemon.services.schedules import _PERSISTED_ACTION_KINDS
+    from lionhub.state.db import _SCHEMA_PATH
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        (sqlite_ddl,) = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+        ).fetchone()
+
+    postgres_ddl = str(
+        sa.schema.CreateTable(metadata.tables["schedules"]).compile(dialect=postgresql.dialect())
+    )
+    action_check = re.compile(r"\bCHECK\s*\(\s*action_kind\s+IN\s*\(([^)]+)\)\s*\)", re.I)
+    for source, ddl in (("schema.sql", sqlite_ddl), ("schema_meta.py", postgres_ddl)):
+        checks = action_check.findall(ddl)
+        assert len(checks) == 1, f"expected one schedules.action_kind CHECK in {source}"
+        kinds = frozenset(value.strip().strip("'") for value in checks[0].split(","))
+        assert kinds == _PERSISTED_ACTION_KINDS, source
+
+
+async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
+    """The three natural-key uniqueness rules are enforced (constraint or index)."""
+    expected = {
+        ("definitions", ("kind", "name", "version")),
+        ("plays", ("show_id", "name")),
+        ("session_signals", ("session_id", "seq")),
+    }
+
+    def _unique_keys(sync_conn):
+        insp = sa.inspect(sync_conn)
+        found = set()
+        for table in {"definitions", "plays", "session_signals"}:
+            for uc in insp.get_unique_constraints(table):
+                found.add((table, tuple(uc["column_names"])))
+            for ix in insp.get_indexes(table):
+                if ix.get("unique"):
+                    found.add((table, tuple(ix["column_names"])))
+        return found
+
+    async with sqlite_meta_engine.connect() as conn:
+        found = await conn.run_sync(_unique_keys)
+
+    for key in expected:
+        assert key in found, f"missing unique enforcement: {key}; found={found}"
+
+
+# Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL)
+
+
+async def test_metadata_create_all_postgres(pg_url):
+    """metadata.create_all() succeeds against a live Postgres instance."""
+    engine = create_async_engine(pg_url, echo=False)
+    try:
+        # Use an isolated schema to avoid polluting the default public schema.
+        test_schema = "lionagi_test_pass1"
+        async with engine.begin() as conn:
+            await conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {test_schema}"))
+
+        # Reflect our unscoped metadata into the test schema for creation.
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda sync_conn: _create_in_schema(sync_conn, test_schema))
+
+        # Verify tables exist.
+        async with engine.connect() as conn:
+            tables = await conn.run_sync(
+                lambda sync_conn: set(sa.inspect(sync_conn).get_table_names(schema=test_schema))
+            )
+
+        assert ALL_TABLES == tables, f"Missing: {ALL_TABLES - tables}"
+
+    finally:
+        # Drop test schema and all its tables.
+        async with engine.begin() as conn:
+            await conn.execute(sa.text(f"DROP SCHEMA IF EXISTS {test_schema} CASCADE"))
+        await engine.dispose()
+
+
+def _create_in_schema(sync_conn, schema_name: str) -> None:
+    """Create all MetaData tables in *schema_name* on a sync connection."""
+    from lionhub.state.schema_meta import metadata as _meta
+
+    # Build a schema-scoped MetaData by cloning table defs with the target schema.
+    scoped = sa.MetaData(schema=schema_name)
+    for table in _meta.sorted_tables:
+        table.tometadata(scoped)
+    scoped.create_all(sync_conn, checkfirst=True)
+
+
+# WAL-reset precondition
+
+
+@pytest.mark.parametrize(
+    ("version_info", "fixed"),
+    [
+        ((3, 6, 23), True),  # predates WAL; journal_mode=WAL is not honoured
+        ((3, 7, 0), False),  # first WAL release, first affected release
+        ((3, 44, 5), False),
+        ((3, 44, 6), True),  # backport branch
+        ((3, 45, 0), False),  # later than the 3.44 backport, still unfixed
+        ((3, 46, 0), False),
+        ((3, 50, 6), False),
+        ((3, 50, 7), True),  # backport branch
+        ((3, 51, 0), False),
+        ((3, 51, 2), False),  # last affected release
+        ((3, 51, 3), True),  # fix
+        ((3, 53, 0), True),
+    ],
+)
+def test_has_wal_reset_fix(version_info, fixed):
+    from lionhub.state.engine import has_wal_reset_fix
+
+    assert has_wal_reset_fix(version_info) is fixed
+
+
+class _RecordingLog:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+    def info(self, *_args):
+        pass
+
+
+def _record_sqlite_version(monkeypatch, version_info, version_str):
+    import lionhub.state.engine as engine_mod
+
+    recorder = _RecordingLog()
+    monkeypatch.setattr(engine_mod, "_log", recorder)
+    monkeypatch.setattr(engine_mod, "_wal_reset_warning_emitted", False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", version_info)
+    monkeypatch.setattr(sqlite3, "sqlite_version", version_str)
+    return recorder
+
+
+def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str, *, url=None):
+    recorder = _record_sqlite_version(monkeypatch, version_info, version_str)
+    engine = make_engine(url or f"sqlite+aiosqlite:///{tmp_path / 'v.db'}")
+    return recorder, engine
+
+
+async def test_make_engine_warns_on_unfixed_sqlite(monkeypatch, tmp_path):
+    """Enabling WAL on a library that still carries the WAL-reset race is
+    reported, not assumed away."""
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
+    try:
+        assert recorder.warnings == []
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+            assert await conn.scalar(sa.text("PRAGMA wal_autocheckpoint")) == 1000
+        assert len(recorder.warnings) == 1
+        warning = recorder.warnings[0]
+        assert "3.46.0" in warning
+        assert "3.51.3" in warning
+        assert "Python runtime" in warning
+        assert "docs/internals/runtime.md#sqlite-wal-reset-policy" in warning
+    finally:
+        await engine.dispose()
+
+
+async def test_make_engine_warns_once_per_process(monkeypatch, tmp_path):
+    import lionhub.state.engine as engine_mod
+
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
+    second = engine_mod.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'v2.db'}")
+    try:
+        assert recorder.warnings == []
+        for candidate in (engine, second):
+            async with candidate.connect() as conn:
+                assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+        assert len(recorder.warnings) == 1
+    finally:
+        await engine.dispose()
+        await second.dispose()
+
+
+@pytest.mark.parametrize("version_info", [(3, 44, 6), (3, 50, 7), (3, 51, 3)])
+async def test_make_engine_silent_on_fixed_sqlite(monkeypatch, tmp_path, version_info):
+    version_str = ".".join(map(str, version_info))
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str)
+    try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+        assert recorder.warnings == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite+aiosqlite://",
+        "sqlite+aiosqlite:///file:wal-warning?mode=memory&cache=shared&uri=true",
+    ],
+    ids=["memory", "empty-database", "memory-uri"],
+)
+async def test_make_engine_silent_without_wal(monkeypatch, tmp_path, url):
+    recorder, engine = _engine_with_recorded_log(
+        monkeypatch, tmp_path, (3, 46, 0), "3.46.0", url=url
+    )
+    try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "memory"
+        assert recorder.warnings == []
+        file_engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'after-memory.db'}")
+        try:
+            async with file_engine.connect() as conn:
+                assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+            assert len(recorder.warnings) == 1
+        finally:
+            await file_engine.dispose()
+    finally:
+        await engine.dispose()
+
+
+async def test_make_readonly_engine_silent_on_unfixed_sqlite(monkeypatch, tmp_path):
+    path = tmp_path / "readonly-wal.db"
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        conn.execute("CREATE TABLE retained (id INTEGER)")
+        conn.execute("INSERT INTO retained VALUES (1)")
+        conn.commit()
+    recorder = _record_sqlite_version(monkeypatch, (3, 46, 0), "3.46.0")
+    engine = make_readonly_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("SELECT id FROM retained")) == 1
+            assert await conn.scalar(sa.text("PRAGMA query_only")) == 1
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+        assert recorder.warnings == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+async def test_compatibility_wal_warning_leaves_journal_mode_unchanged(
+    monkeypatch, tmp_path, journal
+):
+    from lionhub.state.compat import CompatibilityProfile, StateCompatibilityRefused, read_closure
+    from lionhub.state.db import StateDB
+
+    path = tmp_path / "managed.db"
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute(f"PRAGMA journal_mode = {journal}").fetchone()[0] == journal
+        conn.executescript(
+            "CREATE TABLE retained (id INTEGER PRIMARY KEY);"
+            "INSERT INTO retained VALUES (1);"
+            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT INTO schema_meta VALUES ('lineage', 'manager');"
+        )
+        profile = CompatibilityProfile(
+            name="wal-warning",
+            version=1,
+            closure=read_closure(conn, ["retained"]),
+            writes={},
+            operations={"probe"},
+        )
+    recorder = _record_sqlite_version(monkeypatch, (3, 46, 0), "3.46.0")
+    db = StateDB(path, compatibility=profile)
+    try:
+        if journal == "delete":
+            with pytest.raises(StateCompatibilityRefused, match="journal_mode is delete"):
+                await db.open()
+            assert db._engine is None
+        else:
+            await db.open()
+            assert await db.fetch_one("SELECT id FROM retained") == {"id": 1}
+        assert len(recorder.warnings) == 1
+        warning = recorder.warnings[0]
+        assert "Concurrent WAL connections may trigger this race" in warning
+        assert "Compatibility opens leave journal_mode unchanged" in warning
+        assert "refuse non-WAL stores" in warning
+    finally:
+        await db.close()
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal
+        assert conn.execute("SELECT id FROM retained").fetchall() == [(1,)]
+
+
+# mask_db_url: the blanked view
+
+
+@pytest.mark.parametrize(
+    ("url", "masked", "views"),
+    [
+        ("postgresql+asyncpg://admin:abc@host/db", "postgresql+asyncpg://admin:***@host/db", 1),
+        ("postgresql://u@h/db?password=pw123", "postgresql://u@h/db?password=***", 2),
+    ],
+)
+def test_mask_reads_a_blanked_view_only_when_a_query_value_is_masked(
+    monkeypatch, url, masked, views
+):
+    import lionhub.state.engine as engine_mod
+
+    real = engine_mod._URL_USER
+    scanned: list[str] = []
+
+    class _CountingPattern:
+        def finditer(self, s):
+            scanned.append(s)
+            return real.finditer(s)
+
+    monkeypatch.setattr(engine_mod, "_URL_USER", _CountingPattern())
+    assert mask_db_url(url) == masked
+    assert len(scanned) == views

@@ -137,7 +137,7 @@ def _settings_notifier(monkeypatch, handler=None, reason=None):
 
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_kw: SimpleNamespace(reason=reason, handler=handler),
     )
 

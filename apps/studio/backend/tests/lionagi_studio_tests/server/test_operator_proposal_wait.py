@@ -228,7 +228,7 @@ async def test_proposal_tools_use_the_shared_decision_reader(monkeypatch, module
         monkeypatch.setattr(module, "_kind_argument_mismatch", lambda *_args: None)
 
     if module_name in {"rename_session", "resume_run"}:
-        state_db = importlib.import_module("lionagi.state.db")
+        state_db = importlib.import_module("lionhub.state.db")
 
         class ReadStore:
             def __init__(self, **_kwargs):

@@ -836,7 +836,7 @@ async def _make_session(
 
 @pytest.mark.asyncio
 async def test_metric_value_failed_sessions_counts_only_in_window():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -854,7 +854,7 @@ async def test_metric_value_failed_sessions_counts_only_in_window():
 
 @pytest.mark.asyncio
 async def test_metric_value_total_cost_usd_sums_only_in_window():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -877,7 +877,7 @@ async def test_metric_unreported_sessions_counts_null_cost_terminal_sessions_in_
     COALESCE(total_cost_usd, 0), so this session's absence is invisible to
     it -- metric_unreported_sessions is the only thing that surfaces it.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -927,7 +927,7 @@ async def test_metric_unreported_sessions_counts_null_cost_terminal_sessions_in_
 
 @pytest.mark.asyncio
 async def test_metric_value_p95_latency_ms_window_and_percentile():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -957,7 +957,7 @@ async def test_metric_value_p95_latency_ms_window_and_percentile():
 
 @pytest.mark.asyncio
 async def test_metric_value_p95_latency_ms_empty_window_returns_zero():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -970,7 +970,7 @@ async def test_metric_value_p95_latency_ms_empty_window_returns_zero():
 
 @pytest.mark.asyncio
 async def test_metric_value_unknown_metric_raises():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -999,7 +999,7 @@ async def _make_github_schedule(state, sched_id: str, **overrides):
 
 @pytest.mark.asyncio
 async def test_metric_value_github_poll_healthy_age_minutes_small_age_after_recent_stamp():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1008,7 +1008,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_small_age_after_rece
     await _make_github_schedule(state, "sched-gh-1")
     await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 60)  # 1 minute ago
 
-    with patch("lionagi.state.db.time.time", return_value=now):
+    with patch("lionhub.state.db.time.time", return_value=now):
         age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
     assert age == 1.0
 
@@ -1017,7 +1017,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_small_age_after_rece
 
 @pytest.mark.asyncio
 async def test_metric_value_github_poll_healthy_age_minutes_large_after_stale_stamp():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1027,7 +1027,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_large_after_stale_st
     # Stamped healthy 2 hours ago -- e.g. an auth_error poll never moved it since.
     await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 7200)
 
-    with patch("lionagi.state.db.time.time", return_value=now):
+    with patch("lionhub.state.db.time.time", return_value=now):
         age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
     assert age == 120.0
 
@@ -1038,7 +1038,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_large_after_stale_st
 async def test_metric_value_github_poll_healthy_age_minutes_sentinel_when_no_github_schedule():
     """No github_poll schedule exists at all -- must not report a large,
     alarm-triggering age; there is nothing to be blind about."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1054,7 +1054,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_sentinel_when_never_
     """A github_poll schedule exists but has never recorded a healthy poll
     (last_healthy_poll_at still NULL) -- same no-alarm sentinel as no
     schedule at all, not a crash on the NULL."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1071,7 +1071,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_sentinel_when_never_
 async def test_metric_value_github_poll_healthy_age_minutes_ignores_disabled_schedules():
     """A disabled github_poll schedule's stamp doesn't count -- only enabled
     schedules are actually being observed."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1090,7 +1090,7 @@ async def test_metric_value_github_poll_healthy_age_minutes_ignores_disabled_sch
 
 @pytest.mark.asyncio
 async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1118,7 +1118,7 @@ async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
 
 @pytest.mark.asyncio
 async def test_schedule_round_trips_threshold_config_and_watermarks():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1170,8 +1170,8 @@ async def test_every_valid_metric_is_answered_by_metric_value():
     VALID_METRICS without a query or a branch broke nothing until a schedule
     used it.
     """
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.threshold import VALID_METRICS
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1185,8 +1185,8 @@ async def test_every_valid_metric_is_answered_by_metric_value():
 def test_threshold_metric_queries_serve_only_metrics_the_scheduler_accepts():
     """The other direction. A keyed query for a metric validate_threshold_config
     rejects is dead code that reads as a supported feature."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.threshold import VALID_METRICS
+    from lionhub.state.db import StateDB
 
     assert set(StateDB._THRESHOLD_METRIC_QUERIES) <= VALID_METRICS
 
@@ -1378,7 +1378,7 @@ async def test_a_fanout_sharing_one_invocation_and_one_wall_is_one_cause():
     them, that is one thing going wrong reported many times, and counting rows
     makes any fan-out wider than the threshold breach it by construction.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1405,7 +1405,7 @@ async def test_failures_carrying_no_invocation_are_not_merged_together():
     a single row, which silently disables the alarm for the bulk of the
     population. Unknown groupings stay apart.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1421,7 +1421,7 @@ async def test_failures_carrying_no_invocation_are_not_merged_together():
 
 @pytest.mark.asyncio
 async def test_one_invocation_meeting_two_different_walls_is_two_causes():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1456,7 +1456,7 @@ async def test_a_session_id_cannot_answer_for_another_sessions_invocation_id():
     with separately assigned ids, and equality between them carries no meaning
     at all.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1477,7 +1477,7 @@ async def test_a_session_id_cannot_answer_for_another_sessions_invocation_id():
 @pytest.mark.asyncio
 async def test_cause_counting_still_respects_the_window_and_the_status_filter():
     """The grouping change must not widen or narrow what is eligible to count."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -1513,7 +1513,7 @@ async def test_cause_counting_still_respects_the_window_and_the_status_filter():
 async def test_metric_value_p95_latency_excludes_cancelled_observation_time(
     tmp_path, include_finished
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_invocation(
@@ -1561,7 +1561,7 @@ async def test_p95_latency_reads_only_object_entries_as_reaper_evidence(tmp_path
     string element must not be unquoted and parsed as if it were the entry. The
     row's own latency stands.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_invocation(
@@ -1584,7 +1584,7 @@ async def test_p95_latency_still_excludes_a_reaper_tagged_row(tmp_path):
     """The exclusion still holds for the shape the reaper writes: an object
     member of the evidence array tagged ``{"kind": "invocation"}`` whose latency
     is an observation rather than a run time."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(tmp_path / "state.db") as db:
         await db.create_invocation(
@@ -1615,7 +1615,7 @@ async def test_p95_latency_still_excludes_a_reaper_tagged_row(tmp_path):
 async def test_p95_latency_keeps_a_run_recorded_timeout(tmp_path):
     """A run's own deadline write carries no reaper evidence entry, so its
     recorded duration still enters the sample."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     async with StateDB(path) as db:

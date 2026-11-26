@@ -13,9 +13,9 @@ import subprocess
 import anyio
 import pytest
 
-from lionagi.state.lifecycle import notify_settings, settings_delivery
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome
 from lionhub.orchestration.scheduler import terminal_reconciliation as service
+from lionhub.state.lifecycle import notify_settings, settings_delivery
+from lionhub.state.lifecycle.reconciler import DeliveryOutcome
 
 
 def _forbid(*_args, **_kwargs):
@@ -167,10 +167,10 @@ async def test_no_remaining_diagnostic_budget_reports_exhaustion_once_without_re
 async def test_python_build_rejection_records_global_and_leaves_ledger_owed(
     tmp_path, monkeypatch, built, reason
 ):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
-    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import is_acknowledged, register_consumer
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
 
     def build(_ref):
         if built == "missing":
@@ -228,10 +228,10 @@ async def test_python_execution_outcome_does_not_record_global(monkeypatch, valu
 
 @pytest.mark.asyncio
 async def test_never_returning_diagnostic_follows_real_ledger_ack(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
-    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import is_acknowledged, register_consumer
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
 
     seen = []
     monkeypatch.setattr(

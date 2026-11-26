@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ADR_PATH = ROOT / "docs/adr/ADR-0070-studio-scheduling-and-dispatch-delivery.md"
-SCHEMA_PATH = ROOT / "lionagi/state/schema.sql"
+SCHEMA_PATH = ROOT / "lionhub/src/lionhub/state/schema.sql"
 EXPECTED_TRIGGERS = ("cron", "interval", "github_poll", "at")
 _TRIGGER_CHECK = re.compile(r"CHECK\(trigger_type IN \((?P<values>[^)]+)\)\)")
 

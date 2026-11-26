@@ -34,9 +34,9 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _list_shows_db() returns no rows (forcing the filesystem fallback that
     reads from the patched SHOWS_ROOT, not the real state.db).
     """
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.shows as shows_mod
+    import lionhub.state.db as state_db_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
     fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
@@ -506,9 +506,9 @@ async def test_watch_show_invalid_topic_yields_done(tmp_path, monkeypatch):
 @pytest.fixture()
 def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """TestClient backed by a real SQLite DB with one show row (status_source == 'sqlite' path)."""
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.shows as shows_mod
+    import lionhub.state.db as state_db_mod
 
     shows_root = tmp_path / "shows"
     shows_root.mkdir(parents=True)
@@ -579,9 +579,9 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     This is the exact regression that caused every topic from list_shows() to
     return 404 in Docker.
     """
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.shows as shows_mod
+    import lionhub.state.db as state_db_mod
 
     # shows_root is created but show subdirectories are intentionally absent.
     shows_root = tmp_path / "shows"
@@ -668,10 +668,10 @@ def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):
     it via a raw INSERT. The bad play is skipped (loud log, not a crash);
     every write that does land is a member of the declared vocabulary.
     """
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.shows as shows_mod
-    from lionagi.state.db import VALID_STATUSES_BY_ENTITY_TYPE, StateDB
+    import lionhub.state.db as state_db_mod
+    from lionhub.state.db import VALID_STATUSES_BY_ENTITY_TYPE, StateDB
 
     shows_root = tmp_path / "shows"
     topic = "undeclared-status-show"
@@ -733,9 +733,9 @@ def spa_mounted_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.Monkey
     variable is read at app construction and a raw write would survive teardown
     into every later test in the same worker.
     """
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.shows as shows_mod
+    import lionhub.state.db as state_db_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)

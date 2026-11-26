@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.state.claude_mirror import session_db_id  # noqa: E402
-from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB  # noqa: E402
+from lionhub.state.claude_mirror import session_db_id  # noqa: E402
+from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB  # noqa: E402
 
 # Shared test data
 
@@ -611,8 +611,8 @@ async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
     """ADR-0057: list_sessions must carry the reason fields the detail path does."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-failed", status="running")
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     async with StateDB(db_path) as db:
         await db.update_status(

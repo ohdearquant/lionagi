@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RECORD = ROOT / "docs/adr/ADR-0118-declared-entity-schema-as-single-authority.md"
-DB = "lionagi/state/db.py"
+DB = "lionhub/src/lionhub/state/db.py"
 
 
 def test_schema_citations_point_to_the_column_sets_and_schema_work() -> None:

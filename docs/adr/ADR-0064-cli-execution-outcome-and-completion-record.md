@@ -259,7 +259,7 @@ created_at      REAL NOT NULL,
 metadata        JSON
 ```
 
-Reason codes come from `lionagi/state/reasons.py`. The execution teardown's base mapping
+Reason codes come from `lionhub/src/lionhub/state/reasons.py`. The execution teardown's base mapping
 is:
 
 | In-memory status/condition | Durable reason |
@@ -301,8 +301,8 @@ EXIT_CODE_BY_STATUS = {
 - `li wait` supports session, invocation, play, and schedule-run records. Show and team
   terminal sets exist in StateDB but are not wait-target kinds.
 - The terminal and valid-status maps used by `update_status` are sourced from the
-  lifecycle policy registry (`lionagi/state/db.py::TERMINAL_STATUSES_BY_ENTITY_TYPE`, `lionagi/state/db.py::VALID_STATUSES_BY_ENTITY_TYPE`,
-  `lionagi/state/lifecycle/policy.py::build_default_registry`), which carries the full schema
+  lifecycle policy registry (`lionhub/src/lionhub/state/db.py::TERMINAL_STATUSES_BY_ENTITY_TYPE`, `lionhub/src/lionhub/state/db.py::VALID_STATUSES_BY_ENTITY_TYPE`,
+  `lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`), which carries the full schema
   vocabulary including `timed_out`, `waiting_dependency`, and `retry_wait`. `li wait`
   reads the same registry-sourced terminal map, so a `timed_out` schedule run is
   recognized as terminal (`lionhub/src/lionhub/serve/cli/wait.py::wait_for_terminal`).
@@ -776,7 +776,7 @@ claiming the derived path or reused row is a complete execution model.
 | 1 | Bind every CLI execution to one persisted run id and workspace, write a minimal manifest before streaming, and store the workspace link on the execution record; acceptance: `li wait`, monitor tails, context import, and state import resolve the stored link and never synthesize an unverified path. | M | (filled at issue-open time) |
 | 2 | Separate reusable conversation branches from immutable execution outcomes; acceptance: every manual resume creates or deliberately appends to a modeled execution record, and its final outcome is persisted before the command returns an exit code. | M | (filled at issue-open time) |
 | 3 | Introduce a lifecycle-owned persistence scope for CLI and Studio execution; acceptance: one-shot cleanup retains its connection/thread reclamation tests while concurrent long-lived runs cannot close one another's StateDB handle. | M | (filled at issue-open time) |
-| 4 | Align the schedule-run schema, `VALID_STATUSES_BY_ENTITY_TYPE`, and `TERMINAL_STATUSES_BY_ENTITY_TYPE`; acceptance: every schema-valid terminal schedule status, including `timed_out`, is writable through `update_status` and causes `li wait` to terminate with the documented success/failure class. | S | Resolved on main (`lionagi/state/lifecycle/policy.py`) |
+| 4 | Align the schedule-run schema, `VALID_STATUSES_BY_ENTITY_TYPE`, and `TERMINAL_STATUSES_BY_ENTITY_TYPE`; acceptance: every schema-valid terminal schedule status, including `timed_out`, is writable through `update_status` and causes `li wait` to terminate with the documented success/failure class. | S | Resolved on main (`lionhub/src/lionhub/state/lifecycle/policy.py`) |
 | 5 | Make creation and terminalization of CLI/orchestration persistence records resilient to bounded SQLite writer contention without globally retrying arbitrary `StateDB` transactions; acceptance: five concurrent jobs under transient contention either persist through idempotent bounded retry/spooling or return one explicit persistence failure, setup never silently disables persistence for the run, and every recorded terminal outcome remains queryable. | M | (filled at issue-open time) |
 
 ## Alternatives considered
@@ -845,7 +845,7 @@ changes.
 
 ## Notes
 
-An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionhub/src/lionhub/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
 
 The current `artifact_dir` field name is historical and stronger than its implementation:
 it is a derived run-directory candidate, not the session's stored `artifacts_path` and

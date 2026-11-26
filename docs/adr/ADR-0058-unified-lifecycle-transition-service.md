@@ -531,7 +531,7 @@ the crash windows documented in ADR-0057 and ADR-0059.
 
 ### D5 — Facade-preserving staged migration
 
-`StateDB.update_status()` and `lionagi/state/transitions.py` remain compatibility wrappers until all
+`StateDB.update_status()` and `lionhub/src/lionhub/state/transitions.py` remain compatibility wrappers until all
 callers use the service. They do not retain independent policy.
 
 **The contract.** Compatibility mapping is:
@@ -864,15 +864,15 @@ migration, making parity defects harder to isolate.
 ## Notes
 
 This is a target-state ADR, partially implemented. The first two phases shipped in the proposed
-module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
+module layout (`lionhub/src/lionhub/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
 the policy registry covering eight entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
 route through the service. Creation-path initialization is further along than an earlier revision
 of this note recorded. `initialize_in_transaction` is reached through
-`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py::StateDB._initialize_managed_entity_in_tx`), and that helper has eight
-call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
+`StateDB._initialize_managed_entity_in_tx` (`lionhub/src/lionhub/state/db.py::StateDB._initialize_managed_entity_in_tx`), and that helper has eight
+call sites in `lionhub/src/lionhub/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
 `play`. Schedule uses its specialized definition adapter. Two other policies are outside
-the creation helper: `team`, which has no creation path in `lionagi/state/db.py`
+the creation helper: `team`, which has no creation path in `lionhub/src/lionhub/state/db.py`
 at all, and `dispatch`, whose rows are inserted by a raw statement in
 `lionhub/src/lionhub/orchestration/dispatch/outbox.py::enqueue_dispatch` that never reaches the lifecycle service. Those two, plus the
 remaining migration phases, are what is still open. Implementation is complete only when the

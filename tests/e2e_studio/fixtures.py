@@ -12,8 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 # Stable, greppable names the Playwright specs assert on by accessible text.
 SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report"

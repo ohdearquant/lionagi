@@ -18,20 +18,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.state.lifecycle import notify_settings
-from lionagi.state.lifecycle.callbacks import (
-    EntityRef,
-    RunTerminalEnvelope,
-    TerminalCallbackRegistry,
-)
-from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler, build_handler
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import RunDir
 from lionhub.serve.cli.orchestrate._notify import (
     deliver_flow_notify_now,
     register_flow_notify_scope,
     unregister_flow_notify_scope,
 )
+from lionhub.state.lifecycle import notify_settings
+from lionhub.state.lifecycle.callbacks import (
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackRegistry,
+)
+from lionhub.state.lifecycle.notify_settings import ResolvedNotifyHandler, build_handler
+from lionhub.state.reasons import RunReasons
 
 
 def _capture_command(out_file: Path) -> str:
@@ -403,7 +403,7 @@ async def test_timeout_is_swallowed_and_logged(caplog, monkeypatch: pytest.Monke
     # before the registry's outer per-emit budget (left at the default 10s)
     # so this exercises the handler's own "timed out" diagnostic, not just
     # the registry's generic external cancellation.
-    import lionagi.state.lifecycle.notify_settings as notify_settings_mod
+    import lionhub.state.lifecycle.notify_settings as notify_settings_mod
 
     monkeypatch.setattr(notify_settings_mod, "HANDLER_BUDGET_SECONDS", 0.2)
 

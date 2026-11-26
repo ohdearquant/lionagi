@@ -100,8 +100,8 @@ async def test_cli_resume_allows_callback_during_checkpoint_read(tmp_path, monke
 
 
 async def test_session_fallback_allows_callback_during_checkpoint_read(tmp_path, monkeypatch):
-    from lionagi.state import db as state_db
     from lionhub.orchestration import inspection
+    from lionhub.state import db as state_db
 
     path, data = _checkpoint_fixture(tmp_path, monkeypatch)
 
@@ -136,8 +136,8 @@ async def test_studio_preflight_allows_callback_during_checkpoint_read(tmp_path,
 
 def _stub_mcp_session(tmp_path, monkeypatch):
     from lionagi import _paths
-    from lionagi.state import db as state_db
     from lionhub.serve.daemon.services import sessions
+    from lionhub.state import db as state_db
 
     async def get_session(session_id):
         assert session_id == "synthetic-session"

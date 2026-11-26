@@ -13,14 +13,14 @@ import pytest
 import pytest_asyncio
 
 import lionhub.orchestration.scheduler.liveness as scheduler_liveness
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 
 @pytest_asyncio.fixture
 async def label_client(tmp_path, monkeypatch):
     httpx = pytest.importorskip("httpx")
     pytest.importorskip("fastapi")
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
     from lionagi_studio.app import create_app
 
     path = tmp_path / "state.db"
@@ -242,7 +242,7 @@ async def test_state_open_adds_nullable_label_and_preserves_existing_writes(tmp_
 
 
 async def test_old_session_check_rebuild_keeps_the_new_label_column(tmp_path):
-    from lionagi.state.db import _SCHEMA_PATH
+    from lionhub.state.db import _SCHEMA_PATH
 
     path = tmp_path / "old-check.db"
     # This store predates both explicit labels and the engine invocation kind.

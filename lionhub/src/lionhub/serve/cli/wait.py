@@ -14,8 +14,6 @@ from typing import Any
 
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln.concurrency import sleep
-from lionagi.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
-from lionagi.state.reasons import VALID_REASON_CODES
 from lionhub.orchestration.console import log_error
 from lionhub.orchestration.inspection import (
     EXIT_RUNNING,
@@ -24,6 +22,8 @@ from lionhub.orchestration.inspection import (
     resolve_primary_session,
 )
 from lionhub.orchestration.job import AmbiguousIdError
+from lionhub.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
+from lionhub.state.reasons import VALID_REASON_CODES
 
 from .monitor import _resolve_schedule_run, _split_watched_ids
 
@@ -134,7 +134,7 @@ async def wait_for_terminal(
 
     See docs/internals/cli.md for the on_result/should_stop callback contract.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     order: list[str] = []
     outcomes: dict[str, dict[str, Any]] = {}
@@ -229,7 +229,7 @@ def run_wait(argv: list[str]) -> int:
     See docs/internals/cli.md for the SIGINT/SIGTERM handling contract.
     """
     from lionagi.ln.concurrency import SigtermInterrupt, run_async
-    from lionagi.state.db import state_db_known_absent
+    from lionhub.state.db import state_db_known_absent
 
     parser = argparse.ArgumentParser(prog="li wait", add_help=True)
     parser.add_argument(

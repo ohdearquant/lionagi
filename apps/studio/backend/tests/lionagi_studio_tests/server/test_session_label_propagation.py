@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 import lionhub.orchestration.scheduler.liveness as scheduler_liveness
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 PROJECT = "label-project"
 SID = "abcde000-0000-4000-8000-000000000001"
@@ -22,7 +22,7 @@ FOREIGN = "abcde000-0000-4000-8000-000000000003"
 
 @pytest.fixture
 def db_path(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)

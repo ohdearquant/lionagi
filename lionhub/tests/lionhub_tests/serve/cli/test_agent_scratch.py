@@ -242,7 +242,7 @@ def _stubbed_claude(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(child_sandbox, "check_sandbox_backend", lambda: None)
     monkeypatch.setattr(child_sandbox, "_global_settings", lambda: {})
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
 
 
 def _request(repo: Path, **kwargs):

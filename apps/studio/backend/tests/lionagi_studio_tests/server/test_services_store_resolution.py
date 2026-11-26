@@ -28,9 +28,9 @@ pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionhub_tests.orchestration._test_support_state_store import _configure, _run, _seed
 
-import lionagi.state.db as state_db_mod  # noqa: E402
-from lionagi.state.db import StateDB  # noqa: E402
+import lionhub.state.db as state_db_mod  # noqa: E402
 from lionhub.orchestration.state_store import store_exists, store_path  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def test_health_and_data_answers_come_from_the_same_store(tmp_path, monkeypatch):

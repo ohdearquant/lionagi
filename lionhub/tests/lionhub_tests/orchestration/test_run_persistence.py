@@ -8,18 +8,21 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from lionagi.hooks import HookPoint
-from lionagi.hooks.builtins import (
-    persist_branch_end,
-    persist_branch_provenance,
-    persist_session_end,
-    persist_session_start,
-)
+import pytest
+
+from lionagi import Branch
+from lionagi.hooks import HookPoint, register_handler, resolve_handler, route_message_persistence
+from lionagi.hooks import loader as hook_loader
 from lionagi.session.session import Session
 from lionhub.orchestration import runs
 from lionhub.orchestration.run_persistence import (
     RUN_PERSISTENCE_HOOKS,
     install_run_persistence,
+    persist_branch_end,
+    persist_branch_provenance,
+    persist_message,
+    persist_session_end,
+    persist_session_start,
 )
 
 _LIFECYCLE = (
@@ -69,6 +72,40 @@ def test_handlers_already_on_the_bus_stay_ahead():
         caller_handler,
         persist_session_end,
     ]
+
+
+async def _on_message(message=None, **_kwargs):
+    return None
+
+
+@pytest.mark.parametrize("registered", ["before the bus is built", "after the bus is built"])
+def test_a_handler_registered_under_the_store_name_stays_when_a_route_is_made(
+    monkeypatch, registered
+):
+    """Routing live persistence removes the store's own message handler and nothing else."""
+
+    async def replacement(**_kwargs):
+        return None
+
+    # Puts the store's own handler back under its name when the test ends.
+    monkeypatch.setitem(
+        hook_loader._REGISTRY, "persist_message", resolve_handler("persist_message")
+    )
+    branch = Branch(name="b1")
+    session = Session(default_branch=branch)
+    if registered == "before the bus is built":
+        register_handler("persist_message", replacement)
+        bus = session.hooks
+        bus.on(HookPoint.MESSAGE_ADD, resolve_handler("persist_message"))
+    else:
+        bus = session.hooks
+        bus.on(HookPoint.MESSAGE_ADD, replacement)
+        register_handler("persist_message", replacement)
+    bus.on(HookPoint.MESSAGE_ADD, persist_message)
+
+    handler = route_message_persistence(session, branch, _on_message)
+
+    assert bus.handlers_for(HookPoint.MESSAGE_ADD) == [replacement, handler]
 
 
 def _lifecycle_emits_without_install(path: Path) -> list[int]:

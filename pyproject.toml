@@ -27,7 +27,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
     # lionagi/state/engine.py reads the private Connection._thread; widen the
-    # bound once a new release is checked (tests/state/test_failed_open_worker.py).
+    # bound once a new release is checked (lionhub/tests/lionhub_tests/state/test_failed_open_worker.py).
     "aiosqlite>=0.22.0,<0.23",
     # 2.0.38 is the first release whose aiosqlite dialect pools file databases;
     # compatibility mode is tested only with pooled connections.
@@ -192,7 +192,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.
-"!{lionagi/_auto,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionagi/service/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionagi/state/lifecycle/callbacks,lionagi/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
+"!{lionagi/_auto,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionagi/service/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionhub/src/lionhub/state/lifecycle/callbacks,lionhub/src/lionhub/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)

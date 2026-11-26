@@ -28,15 +28,22 @@ DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {}
 
 
 _REGISTRY: dict[str, HookHandler] = {
-    "persist_session_start": _builtins.persist_session_start,
-    "persist_session_end": _builtins.persist_session_end,
-    "persist_branch_provenance": _builtins.persist_branch_provenance,
-    "persist_branch_end": _builtins.persist_branch_end,
-    "persist_message": _builtins.persist_message,
     "log_api_metrics": _builtins.log_api_metrics,
     "log_tool_call": _builtins.log_tool_call,
     "log_tool_use": _builtins.log_tool_use,
 }
+
+# The state-store persistence handlers are registered under these names by the hub module that
+# defines them, when it is imported; the core names them only to say so when one is missing.
+_PERSISTENCE_HANDLER_NAMES = frozenset(
+    {
+        "persist_session_start",
+        "persist_session_end",
+        "persist_branch_provenance",
+        "persist_branch_end",
+        "persist_message",
+    }
+)
 
 
 def register_handler(name: str, handler: Callable[..., Awaitable[Any]]) -> None:
@@ -49,7 +56,30 @@ def resolve_handler(name: str) -> HookHandler:
     try:
         return _REGISTRY[name]
     except KeyError as exc:
+        if name in _PERSISTENCE_HANDLER_NAMES:
+            raise KeyError(
+                f"Hook handler {name!r} is not registered: the state-store persistence handlers "
+                "are registered by the module lionhub.orchestration.run_persistence, which must "
+                "be imported first."
+            ) from exc
         raise KeyError(f"Unknown hook handler {name!r}. Registered: {sorted(_REGISTRY)}") from exc
+
+
+# The store's own MESSAGE_ADD handler, handed over by the hub module that defines it when that
+# module is imported. It is kept apart from the name registry, where the last writer wins, so a
+# caller who registers a handler of their own under the same name does not replace it here.
+_STORE_MESSAGE_HANDLER: HookHandler | None = None
+
+
+def _set_store_message_handler(handler: HookHandler) -> None:
+    """Record the store's own MESSAGE_ADD handler; the hub module that defines it calls this."""
+    global _STORE_MESSAGE_HANDLER
+    _STORE_MESSAGE_HANDLER = handler
+
+
+def _store_message_handler() -> HookHandler | None:
+    """The store's own MESSAGE_ADD handler, or None when its module was never imported."""
+    return _STORE_MESSAGE_HANDLER
 
 
 def load_hooks_for_agent(

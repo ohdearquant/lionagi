@@ -1311,6 +1311,47 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"SessionTailRegistry", "capture_frontiers"}),
     ),
+    MoveContract(old="lionagi.state", new="lionhub.state", kind="package"),
+    MoveContract(
+        old="lionagi._log_channels",
+        new="lionhub.state.log_channels",
+        kind="module",
+        public_names=frozenset({"hint", "log_error", "progress", "warn"}),
+        shared_values=frozenset(
+            {"ERROR_LOGGER_NAME", "HINT_LOGGER_NAME", "PROGRESS_LOGGER_NAME", "WARN_LOGGER_NAME"}
+        ),
+    ),
+    MoveContract(
+        old="lionagi._cli_worker_context",
+        new="lionhub.state.cli_worker_context",
+        kind="module",
+        private_names=frozenset({"_bind_cli_worker_recorder", "_get_cli_worker_recorder"}),
+        shared_values=frozenset({"_CLI_WORKER_RECORDER"}),
+    ),
+    MoveContract(
+        old="lionagi.hooks._message_retry",
+        new="lionhub.state.message_retry",
+        kind="module",
+        public_names=frozenset({"MessagePersistRetryQueue", "PendingMessageEvent"}),
+        private_names=frozenset({"_describe_failure"}),
+    ),
+    MoveContract(
+        old="lionagi.hooks._persistence_handlers",
+        new="lionhub.orchestration.run_persistence",
+        kind="module",
+        public_names=frozenset(
+            {
+                "install_run_persistence",
+                "persist_branch_end",
+                "persist_branch_provenance",
+                "persist_message",
+                "persist_session_end",
+                "persist_session_start",
+            }
+        ),
+        private_names=frozenset({"_db"}),
+        shared_values=frozenset({"RUN_PERSISTENCE_HOOKS"}),
+    ),
 )
 
 

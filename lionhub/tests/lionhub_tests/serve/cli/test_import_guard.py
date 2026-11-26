@@ -154,7 +154,7 @@ def test_unresolved_or_unrelated_calls_do_not_report_command_imports(tmp_path: P
     "line",
     [
         "from ._providers import add_common_cli_args",
-        "from lionagi.state.db import StateDB",
+        "from lionhub.state.db import StateDB",
         "from . import _providers",
         "import json",
     ],

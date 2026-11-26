@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from lionagi.state.artifact_verifier import (
+from lionhub.state.artifact_verifier import (
     ArtifactPathError,
     stale_artifact_markers,
     verify_artifact_contract,
 )
-from lionagi.state.db import SESSION_TERMINAL_STATUSES
+from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
 __all__ = ("provisional_artifact_verification", "resolve_artifact_verification")
 

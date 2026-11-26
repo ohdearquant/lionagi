@@ -249,7 +249,7 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
     monkeypatch.setattr(flow, "start_live_persist", AsyncMock())
     monkeypatch.setattr(flow, "stop_live_persist", AsyncMock(return_value="completed"))
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     calls = []

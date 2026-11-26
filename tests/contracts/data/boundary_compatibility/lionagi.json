@@ -25,21 +25,15 @@
       "__all__ = (\n    \"get_class\",\n    \"LION_CLASS_REGISTRY\",\n)",
       "_LAZY = (\n    \"its module is imported and may supply the name through a module-level \"\n    \"__getattr__, which is called only for a module under an allowed prefix; allow \"\n    \"its package with lionagi.ln.register_type_prefix(), giving its prefix with the \"\n    'trailing dot (\"mypkg.\")'\n)"
     ],
-    "lionagi/_cli_worker_context.py": [
-      "__all__ = ()"
-    ],
     "lionagi/_errors.py": [
       "__all__ = (\n    \"LionError\",\n    \"ValidationError\",\n    \"NotFoundError\",\n    \"ExistsError\",\n    \"ObservationError\",\n    \"ResourceError\",\n    \"RateLimitError\",\n    \"RelationError\",\n    \"OperationError\",\n    \"ExecutionError\",\n    \"ProviderStreamError\",\n    \"ConfigurationError\",\n    \"RequireHooksRefusedError\",\n    \"CredentialMissingError\",\n    \"ContainmentRefusedError\",\n    \"TimeoutError\",\n    \"EmptyOutgoingContentError\",\n    \"CLIInputRefusedError\",\n    \"InputTokenCapError\",\n    \"FailedRoundError\",\n    \"ItemNotFoundError\",\n    \"ItemExistsError\",\n)"
     ],
     "lionagi/_lionagi_dir_trust.py": [
       "__all__ = (\n    \"GATE_ENV_VAR\",\n    \"GATE_SETTING\",\n    \"RECORD_KEY\",\n    \"LionagiDirTrustSettingError\",\n    \"UntrustedLionagiDirError\",\n    \"check_lionagi_dir\",\n    \"enforced\",\n    \"gate_active\",\n    \"gate_setting\",\n    \"is_trusted\",\n    \"trust_step_refusal\",\n    \"trusted_lionagi_dirs\",\n)"
     ],
-    "lionagi/_log_channels.py": [
-      "__all__ = (\n    \"ERROR_LOGGER_NAME\",\n    \"HINT_LOGGER_NAME\",\n    \"PROGRESS_LOGGER_NAME\",\n    \"WARN_LOGGER_NAME\",\n    \"hint\",\n    \"log_error\",\n    \"progress\",\n    \"warn\",\n)"
-    ],
     "lionagi/_moved.py": [
-      "__all__ = (\"MOVED\", \"Moved\", \"install\", \"resolve\", \"resolve_legacy\", \"still_on_disk\")",
-      "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n    }\n)"
+      "__all__ = (\n    \"ATTRIBUTE_FORWARDING_ROWS\",\n    \"MOVED\",\n    \"Moved\",\n    \"install\",\n    \"resolve\",\n    \"resolve_legacy\",\n    \"still_on_disk\",\n)",
+      "_LAZY_EXPORT_FRAMES = frozenset(\n    {\n        (os.path.join(os.path.dirname(__file__), \"__init__.py\"), \"__getattr__\"),\n        (os.path.join(os.path.dirname(__file__), \"ln\", \"_lazy_init.py\"), \"lazy_import\"),\n        (os.path.join(os.path.dirname(__file__), \"hooks\", \"builtins.py\"), \"__getattr__\"),\n    }\n)"
     ],
     "lionagi/_paths.py": [
       "__all__ = (\n    \"AmbiguousProfileNameError\",\n    \"LIONAGI_HOME\",\n    \"RUNS_ROOT\",\n    \"ensure_lionagi_dir\",\n    \"find_lionagi_dirs\",\n    \"is_account_home\",\n    \"is_account_lionagi_dir\",\n    \"is_user_lionagi_dir\",\n)"
@@ -117,12 +111,6 @@
       "is_trusted",
       "trust_step_refusal",
       "trusted_lionagi_dirs"
-    ],
-    "lionagi/_log_channels.py": [
-      "hint",
-      "log_error",
-      "progress",
-      "warn"
     ],
     "lionagi/_moved.py": [
       "Moved",

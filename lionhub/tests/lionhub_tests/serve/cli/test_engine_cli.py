@@ -263,9 +263,9 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
     """--export-dir is written to the DB for 'coding' (CodeResultRecorded has no export_dir field)."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -334,9 +334,9 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
 
 async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
     """--export-dir is written to the DB for 'hypothesis' (engine returns a plain string)."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -394,9 +394,9 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
 
 async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     """No --export-dir → export_dir=None in the DB update (not a stale string)."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -457,9 +457,9 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
 
 async def test_cancelled_error_marks_row_cancelled(monkeypatch):
     """asyncio.CancelledError → row status='cancelled', db closed, error re-raised."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -516,9 +516,9 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
 
 async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     """KeyboardInterrupt → row status='cancelled', db closed, re-raised."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -573,9 +573,9 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
 
 async def test_db_insert_called_on_success(monkeypatch, capsys):
     """With no_persist=False, insert_engine_run and update_engine_run are called."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -613,7 +613,7 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
         ):
             update_calls.append({"run_id": run_id, "status": status})
 
-    # Patch StateDB in the db module so the `from lionagi.state.db import StateDB`
+    # Patch StateDB in the db module so the `from lionhub.state.db import StateDB`
     # inside _do_engine_run picks up the mock.
     monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
 
@@ -628,9 +628,9 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
 
 async def test_no_persist_skips_db(monkeypatch, capsys):
     """--no-persist flag means no DB calls are made."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -665,9 +665,9 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
 
 async def test_import_failure_closes_db(monkeypatch):
     """When import_engine_class raises, the open DB handle must still be closed."""
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -810,11 +810,11 @@ def test_engine_run_terminal_notice_uses_cli_sender(
 ):
     pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-    import lionagi.state.db as db_mod
     import lionhub.serve.cli.engine as engine_mod
-    from lionagi.state.lifecycle import notify_settings
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    import lionhub.state.db as db_mod
     from lionhub.serve.cli.main import main
+    from lionhub.state.lifecycle import notify_settings
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
     db_path = tmp_path / "state.db"
     output_dir = tmp_path / "export"
@@ -904,7 +904,7 @@ async def test_engine_run_signals_land_in_session_signals(tmp_path):
 
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeCompleted, NodeStarted, RunStart
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     run_id = "engine-sig-test-001"
@@ -954,10 +954,10 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
     import functools
     import uuid as uuid_mod
 
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import StateDB
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     # warn is imported into engine.py's namespace; patch it there.
@@ -1028,8 +1028,8 @@ async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_pat
     timestamp, not whatever time.time() the centralizer stamps on its own."""
     pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.engine import _maybe_update_db
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     run_id = "engine-ended-at-test-001"
@@ -1076,8 +1076,8 @@ async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_pat
 async def test_actual_engine_import_failure_is_logged_stored_and_closed(
     engine_import_package, monkeypatch, failure
 ):
-    import lionagi.state.db as db_module
     import lionhub.serve.cli.engine as engine_module
+    import lionhub.state.db as db_module
 
     package, _ = engine_import_package
     (package / "engine.py").write_text(f"from . import {failure}\nraise {failure}\n")

@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 from lionhub.serve.mcp import config, dispatch
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def call(**kwargs):

@@ -12,8 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.claude_mirror import _det, messages_for_event, mirror_session, session_db_id
-from lionagi.state.db import StateDB
 from lionhub.serve.mirror import (
     _derive_metadata,
     _fallback_project,
@@ -28,6 +26,8 @@ from lionhub.serve.mirror import (
     _seed_lineage,
     _since_window,
 )
+from lionhub.state.claude_mirror import _det, messages_for_event, mirror_session, session_db_id
+from lionhub.state.db import StateDB
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests._mirror_test_support import _OVERSIZED_TEXT as _OVERSIZED_TEXT
 from tests._mirror_test_support import SID as SID
@@ -275,7 +275,7 @@ async def test_idle_transcript_status_reconciliation_quiesces_after_cold_pass(
 
     monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
-        "lionagi.state.claude_mirror.reconcile_session_status",
+        "lionhub.state.claude_mirror.reconcile_session_status",
         _record_reconcile,
     )
 
@@ -318,7 +318,7 @@ async def test_live_transcript_reconciles_until_one_final_idle_check(
 
     monkeypatch.setattr(service_mod.time, "time", lambda: modified_at)
     monkeypatch.setattr(
-        "lionagi.state.claude_mirror.reconcile_session_status",
+        "lionhub.state.claude_mirror.reconcile_session_status",
         _record_reconcile,
     )
 
@@ -364,7 +364,7 @@ async def test_an_unwindowed_pass_does_not_stat_for_a_window_it_will_not_read(
 
     monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
-        "lionagi.state.claude_mirror.reconcile_session_status",
+        "lionhub.state.claude_mirror.reconcile_session_status",
         _settled_reconcile,
     )
 
@@ -418,7 +418,7 @@ async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
 
     monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
-        "lionagi.state.codex_mirror.reconcile_session_status",
+        "lionhub.state.codex_mirror.reconcile_session_status",
         _settled_reconcile,
     )
 
@@ -473,7 +473,7 @@ async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
 
     monkeypatch.setattr(service_mod.time, "time", lambda: now)
     monkeypatch.setattr(
-        "lionagi.state.codex_mirror.reconcile_session_status",
+        "lionhub.state.codex_mirror.reconcile_session_status",
         _record_reconcile,
     )
 
@@ -494,7 +494,7 @@ async def test_one_pass_reprocesses_batch_when_write_fails(
     uid = "ffffffff-0000-0000-0000-00000000000a"
     _write_session_file(root / "-w-proj" / f"{uid}.jsonl", uid, age_secs=5)
 
-    from lionagi.state import claude_mirror as cm
+    from lionhub.state import claude_mirror as cm
 
     real_mirror_session = cm.mirror_session
     fail = {"on": True}
@@ -504,7 +504,7 @@ async def test_one_pass_reprocesses_batch_when_write_fails(
             raise RuntimeError("db down")
         return await real_mirror_session(*a, **k)
 
-    monkeypatch.setattr("lionagi.state.claude_mirror.mirror_session", _maybe_fail)
+    monkeypatch.setattr("lionhub.state.claude_mirror.mirror_session", _maybe_fail)
 
     states: dict[str, _FileState] = {}
     async with StateDB() as db:
@@ -535,8 +535,8 @@ async def test_mirror_forever_retries_after_connection_open_failure(
     # transient open error killed the tail permanently and invisibly.
     import asyncio
 
-    import lionagi.state.db as dbmod
     import lionhub.serve.mirror as service_mod
+    import lionhub.state.db as dbmod
 
     monkeypatch.setattr(dbmod, "DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "mirror" / "offsets.json")
@@ -1060,7 +1060,7 @@ async def test_a_failed_codex_batch_is_re_read_in_the_turn_it_started_in(
     # The walk updates the turn as it meets turn_context records. A batch whose write fails
     # after a turn change must be re-read from the turn it started in, or its leading
     # messages are attributed to the later turn.
-    import lionagi.state.codex_mirror as codex_mod
+    import lionhub.state.codex_mirror as codex_mod
     from lionhub.serve.mirror import _mirror_one_codex
 
     def turn(turn_id: str, model: str) -> dict:
@@ -1198,8 +1198,8 @@ async def test_codex_file_that_mirrors_nothing_is_reported_not_skipped(tmp_path,
     """
     import logging
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "rollout-legacy.jsonl"
     # Flat legacy records: a type at the top level and no payload envelope.
@@ -1229,8 +1229,8 @@ async def test_orchestrated_rollout_is_never_mirrored(tmp_path):
     """A `codex exec` rollout is an orchestrator's run — the run that spawned it
     already has a session of its own, so mirroring it would show the same work
     twice (the agent's session plus an extra "codex" one)."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000001"
     path = tmp_path / "rollout-exec.jsonl"
@@ -1258,8 +1258,8 @@ async def test_an_imported_rollout_is_named_from_its_first_prompt(tmp_path):
     halves each look right in isolation, and it is the seam between them that
     carried the defect.
     """
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-00000000000a"
     path = tmp_path / "rollout-named.jsonl"
@@ -1286,8 +1286,8 @@ async def test_a_rollout_with_no_real_prompt_keeps_the_generic_name(tmp_path):
     """
     import json as _json
 
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-00000000000b"
     lines = _codex_rollout_lines(uid, "Codex Desktop").splitlines()
@@ -1311,9 +1311,9 @@ async def test_a_rollout_with_no_real_prompt_keeps_the_generic_name(tmp_path):
 async def test_orchestrated_rollout_absorbs_an_earlier_import(tmp_path):
     """A row imported before this rule existed is removed the first time the
     mirror reclassifies its rollout, so old double entries heal on upgrade."""
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000002"
     path = tmp_path / "rollout-exec-old.jsonl"
@@ -1337,9 +1337,9 @@ async def test_orchestrated_rollout_absorbs_an_earlier_import(tmp_path):
 async def test_interactive_rollout_still_mirrors(tmp_path):
     """The skip is scoped to orchestrated originators: desktop/TUI/IDE history —
     the mirror's actual subject — keeps mirroring exactly as before."""
-    from lionagi.state.codex_mirror import SOURCE_KIND as CODEX_SOURCE_KIND
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import SOURCE_KIND as CODEX_SOURCE_KIND
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000003"
     path = tmp_path / "rollout-desktop.jsonl"
@@ -1358,8 +1358,8 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
 async def test_interactive_rollout_records_artifacts_path_from_header_cwd(tmp_path):
     # the session_meta header's cwd is the rollout's artifact root,
     # the same gap claude_mirror had.
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000005"
     path = tmp_path / "rollout-artifacts.jsonl"
@@ -1379,9 +1379,9 @@ async def test_idle_codex_rollout_backfills_artifacts_path_from_header_cwd(tmp_p
     # yields no records even though the header (re-read on this fresh
     # _FileState) still carries cwd. Without an idle backfill this row's
     # artifacts_path would never be set.
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000007"
     path = tmp_path / "rollout-idle.jsonl"
@@ -1411,10 +1411,10 @@ async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path
     set_session_provenance failure (e.g. a DB hiccup) permanently blocks
     retry for the rest of that process, even though the flag's own docstring
     promise is "attempted", not "attempted once and given up on"."""
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve import mirror as service_mod
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000010"
     path = tmp_path / "rollout-idle-flaky.jsonl"
@@ -1458,8 +1458,8 @@ async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_
     """A rollout whose first line is still being written must not settle its
     classification: committing the head check on an unreadable header would let
     an orchestrated rollout mirror forever once the header completed."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000004"
     full = _codex_rollout_lines(uid, "codex_exec")
@@ -1483,9 +1483,9 @@ async def test_reclassification_absorbs_a_row_keyed_by_the_stem_fallback(tmp_pat
     """An earlier version that failed the header peek imported the file under
     its path stem. When classification finally lands, that stem-keyed row is
     absorbed too, not just the rollout-uid one."""
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000005"
     path = tmp_path / "rollout-stem-import.jsonl"
@@ -1514,8 +1514,8 @@ async def test_torn_header_defers_mirroring_so_one_rollout_stays_one_session(tmp
     """When the header is torn the whole file waits: writing records under the
     path stem while the real UID arrives next pass would split one interactive
     rollout into two sessions."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000006"
     full = _codex_rollout_lines(uid, "Codex Desktop")
@@ -1541,8 +1541,8 @@ async def test_headerless_rollout_still_mirrors_under_the_stem(tmp_path):
     """A complete first line that is not a session_meta settles classification:
     an append-only file never gains a header later, so the stem fallback is
     correct and the file keeps mirroring."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     full = _codex_rollout_lines("ignored-uid", "x")
     body = "".join(full.splitlines(keepends=True)[1:])  # drop the meta line
@@ -1561,8 +1561,8 @@ async def test_complete_corrupt_header_settles_headerless_and_mirrors_the_body(t
     """A newline-terminated first line that cannot parse is permanently corrupt
     (append-only file), not torn: the file settles as headerless and its valid
     body records still mirror instead of being suppressed forever."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     full = _codex_rollout_lines("ignored-uid", "x")
     body = "".join(full.splitlines(keepends=True)[1:])  # the two valid records
@@ -1591,8 +1591,8 @@ async def test_valid_but_unterminated_header_stays_torn_until_the_newline(tmp_pa
     """A first line that parses as session_meta but has no trailing newline is
     still being written — appended bytes could extend or corrupt it — so the
     file defers instead of spending the identity fence on a provisional parse."""
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
     from lionhub.serve.mirror import _FileState, _mirror_one_codex, _peek_codex_head
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000007"
     full = _codex_rollout_lines(uid, "Codex Desktop")
@@ -1641,7 +1641,7 @@ async def test_a_failed_absorption_does_not_retire_the_file(tmp_path, monkeypatc
 
     monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
     monkeypatch.setattr(
-        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+        "lionhub.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
     )
 
     async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
@@ -1690,7 +1690,7 @@ async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_
 
     monkeypatch.setattr(mirror_mod, "absorb_orchestrated_session", flaky_absorb, raising=False)
     monkeypatch.setattr(
-        "lionagi.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
+        "lionhub.state.codex_mirror.absorb_orchestrated_session", flaky_absorb, raising=False
     )
 
     async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
@@ -1716,7 +1716,7 @@ async def test_live_claude_ingest_bounds_oversized_message_via_one_pass(
     """`_one_pass` (claude_mirror.py's live ingestion sweep) must write a bounded
     preview plus a resolvable source pointer for an oversized message, not the
     raw unbounded text."""
-    from lionagi.state._mirror_common import resolve_mirrored_content
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     uid = "0199dddd-0000-0000-0000-000000000001"
     root = tmp_path / "projects"
@@ -1754,10 +1754,10 @@ async def test_live_codex_ingest_bounds_oversized_message_via_mirror_one_codex(
 ) -> None:
     """`_mirror_one_codex` (codex_mirror.py's live ingestion path) must write a
     bounded preview plus a resolvable source pointer for an oversized message."""
-    from lionagi.state._mirror_common import resolve_mirrored_content
-    from lionagi.state.codex_mirror import _det as codex_det
-    from lionagi.state.codex_mirror import messages_for_record
     from lionhub.serve.mirror import _mirror_one_codex
+    from lionhub.state._mirror_common import resolve_mirrored_content
+    from lionhub.state.codex_mirror import _det as codex_det
+    from lionhub.state.codex_mirror import messages_for_record
 
     uid = "0199dddd-0000-0000-0000-000000000002"
     root = tmp_path / "codex"
@@ -1801,9 +1801,9 @@ async def test_an_imported_rollout_leaves_the_role_field_empty(tmp_path):
     Both rows are asserted. The session and the branch each carried the label,
     so checking only the session would pass while the branch kept it.
     """
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
-    from lionagi.state.session_naming import resolve_display_name
     from lionhub.serve.mirror import _FileState, _mirror_one_codex
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
+    from lionhub.state.session_naming import resolve_display_name
 
     uid = "0199cccc-0000-0000-0000-00000000000b"
     path = tmp_path / "rollout-role.jsonl"

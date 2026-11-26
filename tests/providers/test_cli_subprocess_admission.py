@@ -287,9 +287,9 @@ async def test_a_child_that_fails_before_its_start_time_reads_reports_its_own_ex
 async def test_an_exited_child_whose_run_records_its_worker_is_still_refused(capped, monkeypatch):
     """The exited-child rule is the subagent admission's alone: a spawn that also writes a
     worker record for its run needs the start time, so it refuses the child exited or not."""
-    from lionagi._cli_worker_context import _bind_cli_worker_recorder
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
     from lionhub.providers import _cli_subprocess
+    from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
     recorded = []
     finished = []

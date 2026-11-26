@@ -59,7 +59,7 @@ def _mock_chat_branch(name: str = "workflow-default"):
 
 @pytest.fixture
 def patched_env(tmp_path: Path, monkeypatch):
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -138,7 +138,7 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
     )
 
     # Query a FRESH StateDB connection (ctx["db"] is closed by teardown)
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(db_path)
     await db.open()
@@ -231,7 +231,7 @@ async def test_transient_only_message_failure_flushes_before_completion_evidence
 
     await _teardown_run_persist(ctx, status="completed", exception=None)
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     check_db = StateDB(db_path)
     await check_db.open()

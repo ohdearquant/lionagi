@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from lionagi._provider_errors import _WorkerSpawnAdmissionError
-from lionagi.state.cli_workers import _consume_worker_spawn_continuation, _WorkerSpawnOwner
+from lionhub.state.cli_workers import _consume_worker_spawn_continuation, _WorkerSpawnOwner
 
 
 class RecordingWorkerStore:

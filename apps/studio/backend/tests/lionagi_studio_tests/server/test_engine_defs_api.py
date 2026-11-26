@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
@@ -32,7 +32,7 @@ async def _seed_engine_def(
 ) -> str:
     import time
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     def_id = _rid()
     now = time.time()
@@ -58,12 +58,12 @@ async def _seed_engine_def(
 @pytest.fixture
 def patched_svc(tmp_path: Path, monkeypatch):
     import lionagi_studio.services.engine_defs as svc
-    from lionagi.state.db import DEFAULT_DB_PATH
+    from lionhub.state.db import DEFAULT_DB_PATH
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # Also patch db module's DEFAULT_DB_PATH so StateDB() picks up the temp path.
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     return svc, db_path
@@ -198,8 +198,8 @@ def patched_app(tmp_path: Path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.engine_defs as ed_svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -544,7 +544,7 @@ async def test_create_refuses_option_unused_by_kind(patched_app):
 
 
 async def _raw_engine_row(db_path: Path, def_id: str) -> dict[str, Any]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         async with db._read() as conn:
@@ -561,7 +561,7 @@ async def _raw_engine_row(db_path: Path, def_id: str) -> dict[str, Any]:
 
 
 async def _replace_raw_options(db_path: Path, def_id: str, raw: str) -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         async with db._tx() as conn:

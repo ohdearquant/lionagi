@@ -112,9 +112,9 @@ async def test_direct_run_resolution_rejects_unsupported_version(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_session_resolution_rejects_unsupported_version(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db
     import lionhub.orchestration.flow.checkpoint as checkpoint_mod
     import lionhub.orchestration.inspection as inspection_mod
+    import lionhub.state.db as state_db
 
     _write_fixture(tmp_path, json.dumps(_base(3)))
     monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", tmp_path)

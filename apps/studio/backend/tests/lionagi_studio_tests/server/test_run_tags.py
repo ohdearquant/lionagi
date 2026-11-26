@@ -15,7 +15,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -27,7 +27,7 @@ def _run(coro):
 
 
 def _patch_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -415,9 +415,9 @@ def test_pruning_a_session_cascades_its_tags(tmp_path, monkeypatch):
 
     # admin freezes its own _DB / DEFAULT_DB_PATH at import; _patch_db does not
     # touch them, so point prune at the tmp db too.
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.services.run_tags as run_tags
     import lionhub.serve.daemon.services.admin as admin
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

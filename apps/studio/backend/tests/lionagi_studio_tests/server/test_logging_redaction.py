@@ -39,7 +39,7 @@ async def test_an_unreadable_definition_store_is_logged_by_error_class_only(
     monkeypatch, caplog, read, logged
 ):
     pytest.importorskip("fastapi", reason="studio extra not installed")
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
     from lionagi_studio.services import definitions
 
     monkeypatch.setattr(db_mod, "StateDB", _UnreadableStore)

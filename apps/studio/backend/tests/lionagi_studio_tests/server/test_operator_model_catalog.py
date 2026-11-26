@@ -31,8 +31,8 @@ class ScriptedEngine:
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")

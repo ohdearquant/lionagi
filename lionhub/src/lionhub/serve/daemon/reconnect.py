@@ -71,7 +71,7 @@ def state_dir() -> Path:
     place a private socket beside, so the LionAGI home directory is used then.
     """
     from lionagi._paths import LIONAGI_HOME
-    from lionagi.state import db as state_db_mod
+    from lionhub.state import db as state_db_mod
 
     path = state_db_mod.state_db_file()
     return path.parent if path is not None else LIONAGI_HOME

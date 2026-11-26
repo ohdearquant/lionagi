@@ -22,7 +22,6 @@ pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.dispatch import (
     ack_dispatch,
     backoff_seconds,
@@ -34,6 +33,7 @@ from lionhub.orchestration.dispatch import (
     purge_dispatches,
     retry_dispatch,
 )
+from lionhub.state.db import StateDB
 
 _SUCCESS_TEMPLATE = [
     sys.executable,
@@ -269,7 +269,7 @@ async def test_max_attempts_produces_dead_letter(tmp_path: Path):
 async def test_dead_letter_records_reason_code_in_status_transitions(tmp_path: Path):
     from sqlalchemy import text
 
-    from lionagi.state.reasons import DispatchReasons
+    from lionhub.state.reasons import DispatchReasons
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
@@ -349,8 +349,8 @@ async def test_no_notify_template_configured_is_a_transport_failure(tmp_path: Pa
 
 async def test_illegal_transition_is_rejected(tmp_path: Path):
     """transition() with a from_state mismatch is a no-op CAS conflict, not a write."""
-    from lionagi.state.reasons import DispatchReasons
-    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+    from lionhub.state.reasons import DispatchReasons
+    from lionhub.state.transitions import Actor, StateReason, TransitionRequest, transition
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
@@ -503,7 +503,7 @@ async def test_ack_required_with_no_expiry_is_bounded_by_max_attempts(tmp_path: 
     transport failures."""
     from sqlalchemy import text
 
-    from lionagi.state.reasons import DispatchReasons
+    from lionhub.state.reasons import DispatchReasons
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
@@ -580,7 +580,7 @@ async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path)
     for a row recovered from a stale 'delivering' claim: the claim must be
     exclusive via a guarded attempt-counter CAS, not a same-state
     'delivering -> delivering' no-op match."""
-    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+    from lionhub.state.transitions import Actor, StateReason, TransitionRequest, transition
 
     hits = tmp_path / "hits.txt"
     template = [
@@ -598,7 +598,7 @@ async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path)
         # already 'delivering' but the attempt counter was never bumped, as
         # a bare transition() call (bypassing the outbox's atomic claim)
         # would leave it.
-        from lionagi.state.reasons import DispatchReasons
+        from lionhub.state.reasons import DispatchReasons
 
         await transition(
             db,
@@ -671,8 +671,8 @@ async def test_transition_patch_guard_is_atomic_under_concurrent_claim(tmp_path:
     columns (attempt reset + next_attempt_at + cleared last_error) land as a
     single consistent write — never a status flip with the other caller's
     stale counters visible in between."""
-    from lionagi.state.reasons import DispatchReasons
-    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+    from lionhub.state.reasons import DispatchReasons
+    from lionhub.state.transitions import Actor, StateReason, TransitionRequest, transition
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
@@ -1095,7 +1095,7 @@ async def test_delivery_loop_records_the_caller_supplied_actor(tmp_path: Path):
     """A caller that is not the scheduler tick must be able to say so: the actor
     it passes is what the history attributes every one of the loop's writes to.
     """
-    from lionagi.state.transitions import Actor
+    from lionhub.state.transitions import Actor
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:

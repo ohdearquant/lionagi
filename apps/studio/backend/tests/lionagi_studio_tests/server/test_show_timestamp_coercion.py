@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state import db as db_mod
-from lionagi.state.db import StateDB
 from lionagi_studio.services import shows as shows_mod
+from lionhub.state import db as db_mod
+from lionhub.state.db import StateDB
 
 UTC_EPOCH = 1704067200.0
 FIELDS = ("started_at", "ended_at", "merged_at")

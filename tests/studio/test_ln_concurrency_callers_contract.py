@@ -109,10 +109,10 @@ async def _cancel_while_worker_is_blocked(subject, probe, *, abandon):
 
 
 def _admin_subject(monkeypatch, tmp_path, site, probe):
-    from lionagi.state import db as state_db
-    from lionagi.state.reasons import SessionReasons
     from lionhub.serve import diagnostics
     from lionhub.serve.daemon.services import admin, sessions
+    from lionhub.state import db as state_db
+    from lionhub.state.reasons import SessionReasons
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -198,7 +198,7 @@ def _admin_subject(monkeypatch, tmp_path, site, probe):
             return "", {}
 
         def _lifecycle_service(self):
-            from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+            from lionhub.state.lifecycle.service import SQLAlchemyLifecycleService
 
             class Callbacks:
                 async def emit(_self, envelope):
@@ -447,7 +447,7 @@ async def test_monitor_status_shields_the_default_worker_wait(monkeypatch):
 
 
 def _delivery_subject(monkeypatch, tmp_path, consumer, handler):
-    from lionagi.state.lifecycle.callbacks import (
+    from lionhub.state.lifecycle.callbacks import (
         EntityRef,
         RunTerminalEnvelope,
         TerminalCallbackRegistry,
@@ -570,7 +570,7 @@ async def test_terminal_delivery_abandons_a_cancelled_sync_wait(monkeypatch, tmp
 
 @pytest.mark.asyncio
 async def test_terminal_callback_deadline_returns_before_the_sync_worker_finishes():
-    from lionagi.state.lifecycle.callbacks import (
+    from lionhub.state.lifecycle.callbacks import (
         EntityRef,
         RunTerminalEnvelope,
         TerminalCallbackRegistry,
@@ -880,8 +880,8 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
         monkeypatch.setattr(concurrency, "run_sync", delegated)
         subject = monitor._subagent_status
     else:
-        from lionagi.state.lifecycle import callbacks
         from lionhub.serve.cli.orchestrate import _notify
+        from lionhub.state.lifecycle import callbacks
 
         probe = _WorkerProbe(None)
         subject, _ = _delivery_subject(monkeypatch, tmp_path, site, probe.worker)

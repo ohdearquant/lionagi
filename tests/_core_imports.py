@@ -79,9 +79,14 @@ def _literal_call(node: ast.Call, call: str, package: str) -> str | None:
 
 
 def package_imports(
-    path: Path, target: str, source: str | None = None, *, root: Path = ROOT
+    path: Path,
+    target: str,
+    source: str | None = None,
+    *,
+    root: Path = ROOT,
+    top: str = "lionagi",
 ) -> list[str]:
-    """Find statements and literal dynamic calls importing one ``lionagi`` package.
+    """Find statements and literal dynamic calls importing one package under ``top``.
 
     TYPE_CHECKING and function bodies count. Computed targets are not resolved;
     concrete catalogs and configurable loaders need their own census. Logger and
@@ -102,7 +107,7 @@ def package_imports(
             if alias.name == "import_module" and alias.asname
         }
     )
-    prefix = f"lionagi.{target}"
+    prefix = f"{top}.{target}"
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
+from lionhub.state.reasons import RunReasons
 
 
 def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
@@ -105,7 +105,7 @@ def captured_notify(monkeypatch):
     async def spawn(_argv, _env, _marker):
         return SimpleNamespace(communicate=communicate, returncode=0), None
 
-    monkeypatch.setattr("lionagi.state.lifecycle.notify_settings._spawn_in_group", spawn)
+    monkeypatch.setattr("lionhub.state.lifecycle.notify_settings._spawn_in_group", spawn)
     return payloads
 
 
@@ -117,7 +117,7 @@ async def test_agent_notice_carries_the_last_assistant_message(
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
     from lionagi.protocols.messages import AssistantResponse
-    from lionagi.state.lifecycle.callbacks import (
+    from lionhub.state.lifecycle.callbacks import (
         DEFAULT_TERMINAL_CALLBACKS,
         EntityRef,
         RunTerminalEnvelope,
@@ -132,7 +132,7 @@ async def test_agent_notice_carries_the_last_assistant_message(
     run = _wire_agent_stubs(monkeypatch, tmp_path, persist=persist)
     if persist is not None:
         # The session stub has no database for the post-notification sweep.
-        monkeypatch.setattr("lionagi.state.compat.is_compatibility_store", lambda _db: True)
+        monkeypatch.setattr("lionhub.state.compat.is_compatibility_store", lambda _db: True)
 
         async def teardown(_ctx, *, status, **_kwargs):
             await DEFAULT_TERMINAL_CALLBACKS.emit(
@@ -183,8 +183,8 @@ async def test_agent_configured_exec_notice_uses_its_run_context(
     monkeypatch, tmp_path, captured_notify
 ):
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.state.lifecycle import notify_settings
-    from lionagi.state.lifecycle.callbacks import (
+    from lionhub.state.lifecycle import notify_settings
+    from lionhub.state.lifecycle.callbacks import (
         DEFAULT_TERMINAL_CALLBACKS,
         EntityRef,
         RunTerminalEnvelope,
@@ -196,7 +196,7 @@ async def test_agent_configured_exec_notice_uses_its_run_context(
         tmp_path,
         persist={"session_id": session_id, "worker_spawns_unrecorded": True},
     )
-    monkeypatch.setattr("lionagi.state.compat.is_compatibility_store", lambda _db: True)
+    monkeypatch.setattr("lionhub.state.compat.is_compatibility_store", lambda _db: True)
     monkeypatch.setattr(DEFAULT_TERMINAL_CALLBACKS, "_registrations", {})
     monkeypatch.setattr(
         notify_settings,

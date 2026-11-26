@@ -130,7 +130,7 @@
       "__all__ = (\n    \"DECOMPOSE_INSTRUCTION\",\n    \"DECOMPOSE_DAG_INSTRUCTION\",\n    \"DECOMPOSE_DISCIPLINE\",\n    \"SPAWN_GUIDANCE\",\n    \"SYNTHESIS_INSTRUCTION\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/run_persistence.py": [
-      "__all__ = (\"RUN_PERSISTENCE_HOOKS\", \"install_run_persistence\")"
+      "__all__ = (\n    \"RUN_PERSISTENCE_HOOKS\",\n    \"install_run_persistence\",\n    \"persist_branch_end\",\n    \"persist_branch_provenance\",\n    \"persist_message\",\n    \"persist_session_end\",\n    \"persist_session_start\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "__all__ = (\"SCRATCH_DIRNAME\", \"SCRATCH_MODES\", \"RunScratch\", \"remove_scratch\")"
@@ -378,7 +378,12 @@
       "get_project"
     ],
     "lionhub/src/lionhub/orchestration/run_persistence.py": [
-      "install_run_persistence"
+      "install_run_persistence",
+      "persist_branch_end",
+      "persist_branch_provenance",
+      "persist_message",
+      "persist_session_end",
+      "persist_session_start"
     ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "RunScratch",

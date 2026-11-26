@@ -47,9 +47,9 @@ async def test_cli_resume_rejects_unsupported_checkpoint_before_flow(tmp_path, m
 @pytest.mark.parametrize("version", [2, "graph4", 3, 4, 999, "duplicate"])
 async def test_mcp_detail_reports_unsupported_checkpoint(tmp_path, monkeypatch, version):
     from lionagi import _paths
-    from lionagi.state import db as state_db
     from lionhub.serve.daemon.services import sessions as sessions_svc
     from lionhub.serve.mcp._run_detail import build_run_detail
+    from lionhub.state import db as state_db
 
     if version == "duplicate":
         contents = '{"version":3,"vers\\u0069on":2,"spawned":[]}'

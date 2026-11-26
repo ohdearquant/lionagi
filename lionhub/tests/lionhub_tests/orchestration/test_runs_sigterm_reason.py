@@ -25,8 +25,8 @@ import pytest
 
 import lionagi.ln.concurrency.utils as cu
 from lionagi.ln.concurrency.utils import SigtermInterrupt
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import resolve_run_reason
+from lionhub.state.reasons import RunReasons
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 

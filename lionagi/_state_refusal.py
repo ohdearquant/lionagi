@@ -5,7 +5,7 @@
 
 Operations, the message manager, the hook bus and the session observer check a failure for this
 refusal. They import it from here, a module with no store dependencies, so those checks do not
-load the store. ``lionagi.state.compat`` re-exports both names, and the class is the same object
+load the store. ``lionhub.state.compat`` re-exports both names, and the class is the same object
 under either path.
 """
 

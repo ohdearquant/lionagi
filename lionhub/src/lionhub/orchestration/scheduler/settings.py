@@ -237,5 +237,5 @@ def _env_flag(env_var: str, *, default: bool) -> bool:
 # Durable replay of terminal notifications into the global settings notifier. Off by
 # default: the push path does not yet record what it delivered, so with this on a pass
 # replays every pushed notification and each configured notifier runs a second time.
-# The consumer API in lionagi.state.lifecycle is unaffected.
+# The consumer API in lionhub.state.lifecycle is unaffected.
 TERMINAL_RECONCILE_ENABLED: bool = _env_flag("LIONAGI_STUDIO_TERMINAL_RECONCILE", default=False)

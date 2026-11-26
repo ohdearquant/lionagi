@@ -22,13 +22,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.github import (
     GithubPollItem,
     GithubPollResult,
     _cursor_for,
 )
+from lionhub.state.reasons import RunReasons
 from tests._scheduler_claims import fire_with_claim
 
 CURSOR_AT_TICK_START = "2026-07-07T09:00:00Z"

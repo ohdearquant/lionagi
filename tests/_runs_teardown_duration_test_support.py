@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest_asyncio
 
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 
 @pytest_asyncio.fixture

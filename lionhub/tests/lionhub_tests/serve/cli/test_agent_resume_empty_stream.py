@@ -467,10 +467,10 @@ async def test_a_resumed_turn_failing_before_the_cli_reports_a_session_stays_fai
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch, iModel
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session
-    from lionagi.state.db import StateDB
+    from lionhub.state.claude_mirror import mirror_session
+    from lionhub.state.db import StateDB
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     previous_turn_session = "7d1c2e90-5b3a-4f6e-9a8d-0c1b2a3d4e5f"
 
     saved = Branch(

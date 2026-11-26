@@ -12,11 +12,11 @@ from pydantic import BaseModel
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln.concurrency import run_sync
+from lionhub.serve.daemon.services._path_safety import safe_path_join, validate_name_component
 
 # Imported eagerly: the state package resolves attributes lazily, so this
 # reaches the small URL-handling module without pulling the database layer in.
-from lionagi.state.engine import mask_credentials
-from lionhub.serve.daemon.services._path_safety import safe_path_join, validate_name_component
+from lionhub.state.engine import mask_credentials
 
 from ..registry import studio_route
 from .agents import _canonicalize_casts, _read_agent_for_write
@@ -105,7 +105,7 @@ async def _read_history(kind: str, name: str) -> list[dict[str, Any]]:
     is a claim about the store. A caller told "no versions" reasonably concludes
     nothing was ever saved.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     try:
         async with StateDB() as db:
@@ -188,7 +188,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
             entry["disk_path"] = abbreviate_path(entry["disk_path"])
 
     if result:
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         try:
             async with StateDB() as db:
@@ -319,7 +319,7 @@ async def _read_version_row(kind: str, name: str, version: int) -> dict[str, Any
     a rollback has to write the real content back -- consuming already-
     redacted content would persist the placeholder text as the new version.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     try:
         async with StateDB() as db:
@@ -371,7 +371,7 @@ async def _write_version(
 ) -> dict[str, Any]:
     """Store a new version, then write it to *disk_file*. The caller holds the
     (kind, name) lock, so history is never behind disk."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     now = time.time()
 
@@ -512,7 +512,7 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     if not old:
         return None
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     # The read above already refused if the store was unreadable, so reaching
     # here means it answered once. It can still go away between the two reads,

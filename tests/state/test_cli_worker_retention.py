@@ -14,9 +14,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-import lionagi.state.db as state_db_mod
 import lionhub.orchestration.scheduler.settings as scheduler_settings
-from lionagi.state.db import StateDB
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture

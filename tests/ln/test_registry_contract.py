@@ -795,7 +795,7 @@ def test_exports_and_cold_import_do_not_activate_domains_or_optional_models():
     source = """
 import sys, importlib.abc, importlib.util, importlib.metadata, asyncio, builtins
 sys.path.insert(0, ROOT)
-blocked = ("pydantic", "sqlalchemy", "lionagi.state", "lionhub.serve.cli",
+blocked = ("pydantic", "sqlalchemy", "lionhub.state", "lionhub.serve.cli",
            "lionagi.studio", "lionagi_studio", "lionhub.providers", "openai", "anthropic")
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

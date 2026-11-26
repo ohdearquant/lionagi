@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 from lionhub.orchestration.scheduler.subprocess import SubprocessDeadlineExceededError
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -619,7 +619,7 @@ class TestSpawnDetachedTerminalUpdate:
     )
     def test_reason_code_is_registered(self, exit_code, spawn_exc, want_status):
         """Every terminal path must emit a reason_code the registry validates."""
-        from lionagi.state.reasons import validate_reason_code
+        from lionhub.state.reasons import validate_reason_code
 
         captured = self._capture_update(exit_code=exit_code, spawn_exc=spawn_exc)
         assert captured["new_status"] == want_status
@@ -818,7 +818,7 @@ class TestShutdownDrains:
     def test_spawn_detached_cancelled_writes_terminal_row(self):
         """When _spawn_detached is cancelled, it writes a cancelled row before re-raising."""
         import lionhub.serve.daemon.services.launches as svc
-        from lionagi.state.reasons import RunReasons, validate_reason_code
+        from lionhub.state.reasons import RunReasons, validate_reason_code
 
         captured = {}
 
@@ -1398,7 +1398,7 @@ class TestLaunchCancelRetrySmoke:
         import contextlib
 
         import lionhub.serve.daemon.services.launches as svc
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         terminal_rows: list[dict] = []
 

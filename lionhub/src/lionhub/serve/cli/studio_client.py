@@ -17,9 +17,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from lionagi._log_channels import warn
 from lionagi.ln._ssrf import _is_loopback_host
 from lionhub.orchestration.schedule.parsing import _base_url
+from lionhub.state.log_channels import warn
 
 __all__ = (
     "STUDIO_TOKEN_ENV",

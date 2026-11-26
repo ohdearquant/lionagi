@@ -179,7 +179,7 @@ async def _build_view(
         last_activity = row.get("updated_at")
 
     if entity_type == "session":
-        from lionagi.state.session_naming import resolve_display_name
+        from lionhub.state.session_naming import resolve_display_name
 
         project = row.get("project")
         label = resolve_display_name(row)
@@ -389,7 +389,7 @@ def _render_human(view: dict[str, Any]) -> str:
 async def _run_status_inner(
     *, command: str, entity_id: str | None, as_json: bool
 ) -> tuple[str, int]:
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionhub.state.db import StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return f"state.db not found — no {command} runs recorded yet", EXIT_UNKNOWN
@@ -487,7 +487,7 @@ async def _audit_degraded(db: Any) -> dict[str, Any]:
 
 def _dispatch_audit(*, as_json: bool) -> int:
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionhub.state.db import StateDB, state_db_known_absent
 
     if state_db_known_absent():
         log_error("state.db not found — no runs recorded yet")

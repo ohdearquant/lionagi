@@ -2358,7 +2358,7 @@ def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
     """
     if not isinstance(value, dict):
         return None
-    from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+    from lionhub.state.lifecycle.policy import DEFAULT_REGISTRY
 
     status = value.get("status")
     code = value.get("reason_code")

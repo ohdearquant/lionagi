@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.invoke import InvocationEnd, _end_invocation, run_invoke
+from lionhub.state.reasons import RunReasons
 
 
 def _error_records():
@@ -61,7 +61,7 @@ async def test_end_invocation_writes_terminal_status_and_ended_at_through_guard(
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-    monkeypatch.setattr("lionagi.state.db.StateDB", FakeStateDB)
+    monkeypatch.setattr("lionhub.state.db.StateDB", FakeStateDB)
     monkeypatch.setattr("lionhub.serve.cli.invoke.time.time", lambda: 123.0)
 
     result = await _end_invocation(
@@ -109,7 +109,7 @@ async def test_end_invocation_reports_a_refused_guard_and_keeps_metadata_untouch
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-    monkeypatch.setattr("lionagi.state.db.StateDB", FakeStateDB)
+    monkeypatch.setattr("lionhub.state.db.StateDB", FakeStateDB)
 
     result = await _end_invocation("invocation-1", status="completed", metadata={"late": True})
 
@@ -156,10 +156,10 @@ def test_run_invoke_end_reports_a_refused_end_on_the_real_store(tmp_path, monkey
     """Ending an invocation another writer already closed must not read as a
     successful close: the status and --metadata this call carried are not
     recorded, and the command has to say so instead of exiting 0."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -193,10 +193,10 @@ def test_run_invoke_end_rejects_an_already_terminal_row_without_rewriting_it(
     tmp_path, monkeypatch
 ) -> None:
     """The stored row and metadata survive a refused end untouched."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -233,10 +233,10 @@ def test_run_invoke_end_records_metadata_on_a_same_status_close(tmp_path, monkey
     """Ending an invocation that is already in the requested terminal status
     still saves the --metadata, without moving the stored end time: the status
     write is refused, but the closer's payload is merged onto the row it names."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -276,10 +276,10 @@ def test_run_invoke_end_same_status_without_metadata_exits_zero(tmp_path, monkey
     it reports the stored status and exits 0 rather than refusing."""
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -313,10 +313,10 @@ def test_run_invoke_end_still_refuses_a_different_terminal_status(tmp_path, monk
     """A close naming a different terminal status than the stored one is still
     refused: it does not overwrite the row another writer closed, and it does
     not merge the metadata it could not record."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -370,10 +370,10 @@ def test_same_status_close_merges_past_a_racing_closer(tmp_path, monkeypatch) ->
     """
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -435,10 +435,10 @@ def test_run_invoke_end_merges_metadata_a_start_wrote_as_escapes(tmp_path, monke
     """
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     start_args = argparse.Namespace(
         invoke_command="start",
@@ -483,10 +483,10 @@ def test_run_invoke_end_keeps_a_stored_scalar_metadata_under_discarded(
     """
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -529,10 +529,10 @@ def test_run_invoke_end_two_same_status_closes_keep_both_keys(tmp_path, monkeypa
     """
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -582,10 +582,10 @@ def test_run_invoke_end_records_metadata_when_the_row_has_no_node_metadata(
     an object, so an absent value is merged into rather than reported lost."""
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:
@@ -625,10 +625,10 @@ def test_run_invoke_end_same_status_close_merges_onto_a_row_without_node_metadat
     from."""
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def seed():
         async with StateDB(db_path) as db:

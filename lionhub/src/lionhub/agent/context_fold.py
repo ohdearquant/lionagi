@@ -317,7 +317,7 @@ class ContextFold:
                         }
                     )
         except Exception as exc:  # noqa: BLE001 — the cap still refuses an oversized request
-            from lionagi.state.compat import refusal_in
+            from lionhub.state.compat import refusal_in
 
             refusal = refusal_in(exc)
             if refusal is exc:

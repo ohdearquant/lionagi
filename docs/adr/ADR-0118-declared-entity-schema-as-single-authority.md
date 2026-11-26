@@ -26,12 +26,12 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    lines and declares 34 tables, 408 directly declared columns and 93 named `Index(...)` objects
    in a SQLAlchemy `MetaData`. Its own docstring calls it the "single source of truth for schema
    DDL". It is what production creates from: `await conn.run_sync(metadata.create_all)` at
-   `lionagi/state/db.py::StateDB._apply_schema_changes`.
+   `lionhub/src/lionhub/state/db.py::StateDB._apply_schema_changes`.
 2. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, `lionagi/state/schema.sql` has 1,102
    lines and contains 34 `CREATE TABLE` and 97 `CREATE [UNIQUE] INDEX` statements describing the
    schema in DDL text.
    Its header line reads `-- lionagi state schema v1` while line 22 seeds `version` `'6'`.
-   It is bound to `_SCHEMA_PATH` (`lionagi/state/db.py::_SCHEMA_PATH`) and read only by tests; production open
+   It is bound to `_SCHEMA_PATH` (`lionhub/src/lionhub/state/db.py::_SCHEMA_PATH`) and read only by tests; production open
    never executes it.
 3. 16 hand-written `CREATE TABLE` statements across 6 files in 3 packages that bypass both, of
    three distinct kinds: 3 rebuild targets in `state/db.py` (`sessions_new`, `invocations_new`,
@@ -44,13 +44,13 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`lionagi/state/db.py::_SESSION_COLUMNS`,
-   `lionagi/state/db.py::_INVOCATION_COLUMNS`, `lionagi/state/db.py::_SHOW_COLUMNS`,
-   `lionagi/state/db.py::_PLAY_COLUMNS`, `lionagi/state/db.py::_BRANCH_COLUMNS`) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`lionhub/src/lionhub/state/db.py::_SESSION_COLUMNS`,
+   `lionhub/src/lionhub/state/db.py::_INVOCATION_COLUMNS`, `lionhub/src/lionhub/state/db.py::_SHOW_COLUMNS`,
+   `lionhub/src/lionhub/state/db.py::_PLAY_COLUMNS`, `lionhub/src/lionhub/state/db.py::_BRANCH_COLUMNS`) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
-6. `ALL_TABLES` in `tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
+6. `ALL_TABLES` in `lionhub/tests/lionhub_tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
    at `bb57cc9619765bd03e7dd2b3369725335d48af21`. The metadata table-name assertion compares
    the whole created table set to it; the column-name parity assertion iterates over it. A
    table omitted from both the set and the metadata population is not discovered by that
@@ -64,7 +64,7 @@ requests) are the failure mode this multiplicity produces: each copy encodes a s
 different belief about the schema.
 
 **P2 — the parity guard compares names, so the drift that exists today passes it.**
-`tests/state/test_engine_schema.py` builds one database from `MetaData` and another from
+`lionhub/tests/lionhub_tests/state/test_engine_schema.py` builds one database from `MetaData` and another from
 `schema.sql`. It checks the metadata table-name set (`test_metadata_creates_all_tables`),
 per-table column-*name* sets (`test_metadata_column_parity_vs_schema_sql:336`), the columns
 of two named indexes (`test_branches_index_matches_runtime_migration_definition:377` and
@@ -80,10 +80,10 @@ membership and key direction. Two divergences are present at
   `idx_sessions_run_id`. The recorded 2026-08-15 totals of 87 and 83 have not been reverified.
 - At `79c9772930`, `schema.sql` declared 15 indexes with a `DESC` key, while `schema_meta.py`
   declared none with `.desc()`. At `bb57cc9619765bd03e7dd2b3369725335d48af21`, the respective
-  source counts are 17 and one, `idx_engine_runs_started_id` (`lionagi/state/schema_meta.py` `Index("idx_engine_runs_started_id", engine_runs.c.started_at.desc(),`). These are
+  source counts are 17 and one, `idx_engine_runs_started_id` (`lionhub/src/lionhub/state/schema_meta.py` `Index("idx_engine_runs_started_id", engine_runs.c.started_at.desc(),`). These are
   source counts, not a count of mismatched definitions. For example, `idx_sessions_updated` and
   `idx_sessions_recent_visible` use descending SQL keys (`schema.sql:203-208`) but ascending
-  metadata keys (`lionagi/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`). Physical catalog state and query-plan consequences
+  metadata keys (`lionhub/src/lionhub/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`). Physical catalog state and query-plan consequences
   require separate measurement.
 
 A guard that passes while its two subjects disagree is worse than no guard, because it is
@@ -123,20 +123,20 @@ fixed tuple, or enum check. This conclusion is no stronger than the inventory be
 not reverified at `bb57cc96` either. The
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
-(`lionagi/state/lifecycle/models.py::LifecyclePolicy`), the registry does not validate them as identifiers, and
-they are interpolated into SQL at `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.initialize_in_transaction`, `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write` and elsewhere.
+(`lionhub/src/lionhub/state/lifecycle/models.py::LifecyclePolicy`), the registry does not validate them as identifiers, and
+they are interpolated into SQL at `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.initialize_in_transaction`, `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._write` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
 for changes SQLite's `ALTER TABLE` cannot express. `_reconcile_columns` inspects table and
-column presence and raises on inspection failures (`lionagi/state/db.py::StateDB._reconcile_columns`).
+column presence and raises on inspection failures (`lionhub/src/lionhub/state/db.py::StateDB._reconcile_columns`).
 When the open sequence applies schema changes, it reconciles columns in
-`lionagi/state/db.py::StateDB._apply_schema_changes` before writing `SCHEMA_VERSION` in
-`lionagi/state/db.py::StateDB._stamp_schema_version` (`lionagi/state/db.py::StateDB._apply_schema`).
+`lionhub/src/lionhub/state/db.py::StateDB._apply_schema_changes` before writing `SCHEMA_VERSION` in
+`lionhub/src/lionhub/state/db.py::StateDB._stamp_schema_version` (`lionhub/src/lionhub/state/db.py::StateDB._apply_schema`).
 The version integer still describes a migration level. The three schedules checks share one rebuild
 that derives the target table from `schema_meta.py` via `to_metadata`
-(`lionagi/state/db.py::StateDB._rebuild_legacy_schedules_check`). The definitions rebuild uses the
-same approach (`lionagi/state/db.py::StateDB._drop_legacy_definitions_kind_check`).
+(`lionhub/src/lionhub/state/db.py::StateDB._rebuild_legacy_schedules_check`). The definitions rebuild uses the
+same approach (`lionhub/src/lionhub/state/db.py::StateDB._drop_legacy_definitions_kind_check`).
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
 At `bb57cc96`, tracked Python files under `lionagi/state/` comprise 24,659 lines in 33 files,
@@ -425,8 +425,8 @@ used to bypass ownership.
 
 The current rebuilds read the live catalog and replay it. The shared rebuild function assembles the
 copy statement's column list from catalog-read names and re-executes index DDL strings taken from
-`sqlite_master` (`lionagi/state/db.py::StateDB._sqlite_rebuild_table`). The legacy sessions rebuild is
-one caller (`lionagi/state/db.py::StateDB._rebuild_legacy_sessions_table`). This preserves indexes
+`sqlite_master` (`lionhub/src/lionhub/state/db.py::StateDB._sqlite_rebuild_table`). The legacy sessions rebuild is
+one caller (`lionhub/src/lionhub/state/db.py::StateDB._rebuild_legacy_sessions_table`). This preserves indexes
 absent from the declared schema, so a rebuild can carry drift forward. It is also the one place where
 identifiers reach SQL from a source no allow-list covers.
 
@@ -603,7 +603,7 @@ owns exactly one code prefix: `RunReasons` → `run.` (33 codes), `SessionReason
 and the per-entity `reason_prefixes` in the lifecycle policy — is keyed on *entity type*. The
 two keyings do not line up, and every mismatch is load-bearing somewhere:
 
-- `run` is the largest domain and is not an entity at all. `lionagi/state/reasons.py::ENTITY_ROUTE_ALIASES` declares it a
+- `run` is the largest domain and is not an entity at all. `lionhub/src/lionhub/state/reasons.py::ENTITY_ROUTE_ALIASES` declares it a
   frontend route alias for `session`, because `/runs/<id>` renders a session.
 - `invocation` is a canonical entity type with no domain of its own; invocation rows carry
   `run.` codes.
@@ -985,7 +985,7 @@ the next five rows are unverified estimates, not measured current totals.
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
 | `state/schema_meta.py` | 34 tables, 408 direct columns, 93 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21` | via `create_all` | — | what production builds from; PK, FK, CHECK, unique, partial-index and server-default counts need a fresh same-pin inventory — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
-| `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `lionagi/state/db.py::_SCHEMA_PATH`; not executed by writable open |
+| `state/schema.sql` | 34 tables, 97 indexes at `bb57cc9619765bd03e7dd2b3369725335d48af21`; pragma and seed totals require a fresh inventory | tests only | — | `_SCHEMA_PATH` at `lionhub/src/lionhub/state/db.py::_SCHEMA_PATH`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 9,539 lines and 73 physical lines containing `S608` at `bb57cc96` (see scan below); 5 `_*_COLUMNS` allow-lists |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |

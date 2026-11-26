@@ -164,7 +164,7 @@ consumer of the claim check in the tree uses `startswith("applying")` for exactl
 and equality would stop matching the claims that identify who holds them. And `abandoned` is a
 terminal outcome that this ADR never contemplated, reachable only through a human resolution.
 
-Unrelated despite the name: `lionagi/state/lifecycle/` carries its own `result` with the values
+Unrelated despite the name: `lionhub/src/lionhub/state/lifecycle/` carries its own `result` with the values
 `applied`, `rejected`, and `conflict`. That is the session-status transition service and it never
 touches `session_controls`; the shared field name is a coincidence and the vocabularies are not
 the same one.
@@ -174,8 +174,8 @@ handle registry. Restricting insertion to running flow/play sessions prevents co
 pending forever against runners with no consumer.
 
 Code anchors: `lionagi/cli/orchestrate/_control.py`; `lionagi/cli/orchestrate/flow.py`
-(`_control_poll_loop`, `_apply_session_control`); `lionagi/state/db.py` (session-control methods);
-`lionagi/state/schema.sql`.
+(`_control_poll_loop`, `_apply_session_control`); `lionhub/src/lionhub/state/db.py` (session-control methods);
+`lionhub/src/lionhub/state/schema.sql`.
 
 ### D2 — Pause and resume are idempotent operation-boundary effects
 
@@ -560,12 +560,12 @@ against the artifact set a node declared, it does not make.
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
   ADR-0064 D3 has a flow write
   (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
-  `lionagi/state/schema.sql:193`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
+  `lionhub/src/lionhub/state/schema.sql:193`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
   before execution (`lionagi/cli/orchestrate/flow.py:1102-1103@ee589cb2`, `lionagi/cli/orchestrate/flow.py:1197-1208@ee589cb2`). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
   session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2858@ee589cb2`, `lionagi/cli/orchestrate/flow.py:2860-2872@ee589cb2`).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
-  is skipped (`lionagi/state/schema.sql:192`) — so an absent or unreadable record is not evidence
+  is skipped (`lionhub/src/lionhub/state/schema.sql:192`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
 - **A node that declared no artifact contract.** There is nothing independent to check, so it keeps
   today's status replay like any other completed node. The settle-check delta rows cover only nodes
@@ -586,10 +586,10 @@ against the artifact set a node declared, it does not make.
   the new root, and with a `--save` naming a directory other than the original run's they are absent
   there too. Delta row 9 covers threading the original root. The line numbers are at `ee589cb22c388b2dc3cfa7ceb877670170b68277`.
 - **What the live verifier proves.** Presence and a non-zero size, not content: it reads
-  `(size := os.path.getsize(full)) > 0` (`lionagi/state/artifact_verifier.py::verify_artifact_contract`), and the currency check
+  `(size := os.path.getsize(full)) > 0` (`lionhub/src/lionhub/state/artifact_verifier.py::verify_artifact_contract`), and the currency check
   beside it compares mtime and size and says itself that this "narrows, but doesn't close" the
   window a rewrite preserving both leaves (`stale_artifact_markers`,
-  `lionagi/state/artifact_verifier.py::stale_artifact_markers`). A byte-level check is delta row 7.
+  `lionhub/src/lionhub/state/artifact_verifier.py::stale_artifact_markers`). A byte-level check is delta row 7.
 - **A declared artifact above the hash size limit.** `compute_hash` refuses a payload above
   `MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` by default (`lionagi/ln/_hash.py::MAX_HASH_INPUT_BYTES`, `lionagi/ln/_hash.py::compute_hash`), and
   ADR-0050 records that a caller hashing larger content either opts out with `max_bytes=None` or
@@ -597,7 +597,7 @@ against the artifact set a node declared, it does not make.
   (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:886-889`).
 
 **Builder notes for the rows.** A check that re-reads the declared set would read it through the
-same verifier a live run uses (`verify_artifact_contract`, `lionagi/state/artifact_verifier.py::verify_artifact_contract`),
+same verifier a live run uses (`verify_artifact_contract`, `lionhub/src/lionhub/state/artifact_verifier.py::verify_artifact_contract`),
 against the contract the run persisted rather than one re-derived from the live roles. The rows
 build on decisions this ADR already carries: D4 keys planned nodes by stable `agent_id`
 (`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2`) and spawned nodes in a

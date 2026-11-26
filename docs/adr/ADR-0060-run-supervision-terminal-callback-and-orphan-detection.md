@@ -56,7 +56,7 @@ prior-art review cited below recommends as the minimum local process identity â€
 already exists in lionagi, unused outside `li kill`.
 
 Sessions, unlike schedule runs, already have a guarded health-sweep path:
-`lionagi/state/reasons.py`'s `SessionReasons` health vocabulary
+`lionhub/src/lionhub/state/reasons.py`'s `SessionReasons` health vocabulary
 (`HEALTH_STALE_NO_HEARTBEAT`, `HEALTH_ORPHANED_NO_PROCESS`, `HEALTH_ZOMBIE_STALE_LOCKS`,
 `HEALTH_PHANTOM_PROCESS_DEAD`, `HEALTH_PHANTOM_MISSING_ARTIFACTS`) is written through
 the guarded `update_status()` CAS by both the Studio phantom reaper

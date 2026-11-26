@@ -260,7 +260,7 @@ import sys
 from pathlib import Path
 
 from lionagi.config import settings
-from lionagi.state.db import StateDB, state_db_file
+from lionhub.state.db import StateDB, state_db_file
 
 
 async def _open_default_store():

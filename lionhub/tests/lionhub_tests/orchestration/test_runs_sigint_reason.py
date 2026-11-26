@@ -22,8 +22,8 @@ def _fresh_sigterm_latch(monkeypatch):
 
 def test_resolve_run_reason_aborted_returns_cancelled_sigint():
     """Status "aborted" (KeyboardInterrupt / SIGINT) → CANCELLED_SIGINT."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     code, summary, evidence = _resolve_run_reason(status="aborted", exception=None)
     assert code == RunReasons.CANCELLED_SIGINT, (
@@ -34,8 +34,8 @@ def test_resolve_run_reason_aborted_returns_cancelled_sigint():
 
 def test_resolve_run_reason_aborted_not_aborted_user():
     """ABORTED_USER must NOT be written for SIGINT — it is reserved for other user aborts."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     code, _, _ = _resolve_run_reason(status="aborted", exception=None)
     assert code != RunReasons.ABORTED_USER, (
@@ -45,7 +45,7 @@ def test_resolve_run_reason_aborted_not_aborted_user():
 
 def test_resolve_run_reason_cancelled_sigint_is_defined():
     """Sanity: CANCELLED_SIGINT must be defined in RunReasons."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     assert hasattr(RunReasons, "CANCELLED_SIGINT")
     assert RunReasons.CANCELLED_SIGINT == "run.cancelled.sigint"
@@ -53,8 +53,8 @@ def test_resolve_run_reason_cancelled_sigint_is_defined():
 
 def test_resolve_run_reason_other_statuses_unaffected():
     """Non-aborted statuses must still resolve to their existing reason codes."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason as _resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     code, _, _ = _resolve_run_reason(status="completed", exception=None)
     assert code == RunReasons.COMPLETED_OK

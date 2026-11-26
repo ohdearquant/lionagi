@@ -630,7 +630,7 @@ async def test_a_run_in_a_configured_store_is_found_there(home, monkeypatch):
     "no such run" gets neither. The run below exists and is finished; the only
     reason it could be missed is that the answer came from the wrong file.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     configured = home / "elsewhere" / "configured.db"
     configured.parent.mkdir(parents=True)

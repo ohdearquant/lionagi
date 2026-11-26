@@ -2,7 +2,7 @@
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
-  Amendment 6 (2026-11-26) proposed
+  Amendment 6 (2026-11-26) accepted 2026-11-26
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -41,7 +41,7 @@
 
 ## Amendment 6 (2026-11-26): the state store and the persistence handlers move into lionhub
 
-**Status**: Proposed.
+**Status**: Accepted (2026-11-26).
 
 Instructions this amendment serves, from the maintainer on 2026-11-25:
 

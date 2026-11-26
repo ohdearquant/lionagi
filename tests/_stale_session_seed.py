@@ -14,7 +14,7 @@ async def _seed_stale_session(
     last_message_at: float | None = None,
     updated_at: float | None = None,
 ) -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())

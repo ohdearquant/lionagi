@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import _teardown_common, find_incomplete_session_for_run
+from lionhub.state.db import StateDB
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 from tests._runs_teardown_duration_test_support import db as db
 
@@ -115,7 +115,7 @@ async def test_find_incomplete_session_for_run_populates_duration_ms(tmp_path, m
     before it raised is still 'running' forever unless recovered here -- the
     recovery write must also carry a duration, not just a terminal status."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     started_at = time.time() - 4.0
     async with StateDB(db_path) as db:

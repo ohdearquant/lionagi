@@ -8,10 +8,10 @@ import asyncio
 
 import pytest
 
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.invoke import _end_invocation
 from lionhub.serve.daemon.services import launches
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 
 @pytest.mark.parametrize("writer", ["invoke", "launch_exit", "launch_cancel"])
@@ -20,7 +20,7 @@ async def test_terminal_writers_preserve_concurrent_terminal_outcome(
     tmp_path, monkeypatch, writer, winner
 ):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_invocation(
             {
@@ -90,7 +90,7 @@ async def test_terminal_writers_preserve_concurrent_terminal_outcome(
 @pytest.mark.parametrize("writer", ["invoke", "launch_exit", "launch_cancel"])
 async def test_terminal_writers_finish_running_invocation(tmp_path, monkeypatch, writer):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_invocation(
             {"id": "run", "skill": "example", "started_at": 100.0, "status": "running"}
@@ -121,7 +121,7 @@ async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
     import logging
 
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_invocation(
             {"id": "run", "skill": "example", "started_at": 100.0, "status": "running"}
@@ -157,7 +157,7 @@ async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplo
     import logging
 
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_invocation(
             {"id": "run", "skill": "example", "started_at": 100.0, "status": "running"}

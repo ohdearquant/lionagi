@@ -448,7 +448,7 @@ async def lifespan(app_instance):
         _emit_startup_warnings()
         await _refuse_or_prepare_leg_host()
         # The second of the two settings-driven notify bootstrap points (CLI is the first).
-        from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+        from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
         register_settings_terminal_callback()
         # The scheduler's INFO lines (a schedule firing) print on stderr however the app is

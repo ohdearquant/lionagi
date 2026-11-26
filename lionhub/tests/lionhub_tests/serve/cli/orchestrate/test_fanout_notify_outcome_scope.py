@@ -14,10 +14,10 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 
-from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
+from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
+from lionhub.state.reasons import RunReasons
 
 from .test_fanout_artifacts import _fanout_env
 
@@ -25,7 +25,7 @@ from .test_fanout_artifacts import _fanout_env
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

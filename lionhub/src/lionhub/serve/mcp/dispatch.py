@@ -74,7 +74,7 @@ _PRELOAD_MODULES = (
     "lionagi._types",
     "lionagi.adapters.pandas_",
     "lionagi.hooks",
-    "lionagi.hooks._message_retry",
+    "lionhub.state.message_retry",
     "lionagi.hooks.bus",
     "lionagi.libs.file.process",
     "lionagi.libs.frontmatter",
@@ -94,15 +94,15 @@ _PRELOAD_MODULES = (
     "lionagi.service.providers",
     "lionagi.service.token_calculator",
     "lionagi.session.prompts",
-    "lionagi.state.cli_workers",
-    "lionagi.state.compat",
-    "lionagi.state.completion_evidence",
-    "lionagi.state.db",
-    "lionagi.state.engine",
-    "lionagi.state.health",
-    "lionagi.state.lifecycle.notify_settings",
-    "lionagi.state.lifecycle.policy",
-    "lionagi.state.reasons",
+    "lionhub.state.cli_workers",
+    "lionhub.state.compat",
+    "lionhub.state.completion_evidence",
+    "lionhub.state.db",
+    "lionhub.state.engine",
+    "lionhub.state.health",
+    "lionhub.state.lifecycle.notify_settings",
+    "lionhub.state.lifecycle.policy",
+    "lionhub.state.reasons",
     "lionagi.version",
     "lionhub.agent",
     "lionhub.agent._email_in_headers",
@@ -1456,8 +1456,8 @@ def _machine_environment_error(
     cli_path: str, completed: subprocess.CompletedProcess[bytes]
 ) -> OpError:
     """Classify a startup refusal from its exit status and keep usable diagnostics."""
-    from lionagi.state.engine import mask_credentials
     from lionhub.serve.cli._machine_envelope import _CONTRACT_VERSION
+    from lionhub.state.engine import mask_credentials
 
     stderr = mask_credentials(completed.stderr.decode("utf-8", "replace"))[-_MACHINE_STDERR_TAIL:]
     detail = {"exit_code": completed.returncode, "stderr": stderr}

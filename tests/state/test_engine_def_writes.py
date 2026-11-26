@@ -18,7 +18,7 @@ import pytest_asyncio
 from sqlalchemy import JSON, bindparam, event, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 _BORROWED_DB: contextvars.ContextVar[StateDB | None] = contextvars.ContextVar(
     "engine_write_test_db", default=None
@@ -367,7 +367,7 @@ async def test_engine_update_cancellation_rolls_back_and_releases_the_writer(
 async def test_engine_in_transaction_writer_binds_json_and_reports_missing(stores):
     # Import inside the test so the behavioral red arms remain runnable before
     # the new private storage helpers have been introduced.
-    from lionagi.state.db import _update_engine_def_in_tx
+    from lionhub.state.db import _update_engine_def_in_tx
 
     async with stores.first.transaction() as conn:
         assert (
@@ -401,7 +401,7 @@ async def test_engine_direct_storage_update_remains_unvalidated(stores):
 
 async def test_engine_locked_read_uses_bound_id_raw_options_and_dialect_lock():
     """Inspect the actual generated statements without requiring a PG server."""
-    from lionagi.state.db import _get_engine_def_for_update_in_tx
+    from lionhub.state.db import _get_engine_def_for_update_in_tx
 
     class Database:
         def __init__(self, dialect):

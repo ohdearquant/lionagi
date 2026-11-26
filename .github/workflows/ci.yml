@@ -638,7 +638,7 @@ jobs:
             - '.github/workflows/ci.yml'
           adr:
             - 'docs/adr/**'
-            - 'lionagi/state/lifecycle/**'
+            - 'lionhub/src/lionhub/state/lifecycle/**'
           imports:
             - 'lionagi/**'
             - 'lionhub/**'
@@ -650,11 +650,11 @@ jobs:
             - 'uv.lock'
             # The lionagi code the compatibility tests import directly. These
             # entries are the packages and modules named by the imports (including
-            # imports inside functions) in every .py file under lionagi/state and in
-            # the three tests/ entries below: `X/**` for a package, `X.py` for a
+            # imports inside functions) in every .py file under lionhub/src/lionhub/state
+            # and in the test entries below: `X/**` for a package, `X.py` for a
             # module, and lionagi/__init__.py for `import lionagi` or
-            # `from lionagi import ...`. A relative import counts when it leads out of
-            # lionagi/state. Importing any lionagi module runs lionagi/__init__.py
+            # `from lionagi import ...`. A relative import in those files stays inside
+            # lionhub and names no lionagi entry. Importing any lionagi module runs lionagi/__init__.py
             # first, so the packages and modules that file imports when it loads count
             # as imported by every source: its imports under `if TYPE_CHECKING:` and
             # inside functions do not. What those packages import in turn is not
@@ -662,9 +662,7 @@ jobs:
             # tests/scripts/test_advisory_pr_checks.py recomputes the list from the
             # sources and fails when this one differs.
             - 'lionagi/__init__.py'
-            - 'lionagi/_cli_worker_context.py'
             - 'lionagi/_lionagi_dir_trust.py'
-            - 'lionagi/_log_channels.py'
             - 'lionagi/_moved.py'
             - 'lionagi/_paths.py'
             - 'lionagi/_provider_errors.py'
@@ -679,7 +677,6 @@ jobs:
             - 'lionagi/protocols/**'
             - 'lionagi/service/**'
             - 'lionagi/session/**'
-            - 'lionagi/state/**'
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
             # The filter test follows module-load imports from the LionHub modules
@@ -712,6 +709,7 @@ jobs:
             - 'lionhub/src/lionhub/orchestration/patterns.py'
             - 'lionhub/src/lionhub/orchestration/project.py'
             - 'lionhub/src/lionhub/orchestration/prompts.py'
+            - 'lionhub/src/lionhub/orchestration/run_persistence.py'
             - 'lionhub/src/lionhub/orchestration/runs.py'
             - 'lionhub/src/lionhub/orchestration/spawn.py'
             - 'lionhub/src/lionhub/orchestration/spec_limits.py'
@@ -724,6 +722,7 @@ jobs:
             - 'lionhub/src/lionhub/serve/mcp/__init__.py'
             - 'lionhub/src/lionhub/serve/mcp/_errors.py'
             - 'lionhub/src/lionhub/serve/mcp/config.py'
+            - 'lionhub/src/lionhub/state/**'
             - 'lionhub/src/lionhub/tools/__init__.py'
             - 'lionhub/src/lionhub/tools/base.py'
             - 'lionhub/src/lionhub/tools/communication/__init__.py'
@@ -731,10 +730,10 @@ jobs:
             # A compatibility test that imports the Studio application needs its
             # import root, which lives outside lionagi/ and lionhub/.
             - 'apps/studio/backend/src/lionagi_studio/**'
-            - 'tests/conftest.py'
+            - 'lionhub/tests/conftest.py'
             - 'tests/_shared_conftest.py'
-            - 'tests/state/conftest.py'
-            - 'tests/state/test_compatibility_*.py'
+            - 'lionhub/tests/lionhub_tests/state/conftest.py'
+            - 'lionhub/tests/lionhub_tests/state/test_compatibility_*.py'
             - '.github/workflows/ci.yml'
           lionrs:
             - 'lionrs/**'
@@ -995,7 +994,7 @@ jobs:
         uv run --no-sync pytest -n 0 --maxfail=0
         -m "not performance and not flaky_quarantine"
         --disable-warnings
-        tests/state/test_compatibility_*.py
+        lionhub/tests/lionhub_tests/state/test_compatibility_*.py
 
   lionrs:
     needs: changes

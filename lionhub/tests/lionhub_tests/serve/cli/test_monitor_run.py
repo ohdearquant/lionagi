@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
 from lionhub.serve.cli.monitor import (
     _advance_chains,
     _dispatch_wait,
@@ -35,6 +34,7 @@ from lionhub.serve.cli.monitor import (
     run_monitor_wait,
 )
 from lionhub.serve.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
+from lionhub.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
 
 # Fixtures
 
@@ -43,7 +43,7 @@ from lionhub.serve.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -2057,8 +2057,8 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
     engine row's status, not hang on its own frozen 'running' column."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
     async with StateDB() as db:
@@ -2095,7 +2095,7 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
     def _flip_engine_to_completed() -> None:
         import asyncio
 
-        from lionagi.state.claude_mirror import session_db_id
+        from lionhub.state.claude_mirror import session_db_id
 
         async def _go() -> None:
             async with StateDB() as db2:
@@ -2123,8 +2123,8 @@ async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
     """`li monitor run` resolving a profile session via its linked engine row must PERSIST the reconciled terminal status through StateDB.update_status(), not just synthesize it in memory for this one call, so the profile session's own DB row doesn't stay stuck at 'running' forever."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
     async with StateDB() as db:
@@ -2182,8 +2182,8 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
     rejected transition."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
     async with StateDB() as db:
@@ -2293,8 +2293,8 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     status; it must re-read and report the persisted row instead."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"
     async with StateDB() as db:

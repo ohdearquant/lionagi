@@ -14,6 +14,9 @@ import yaml
 
 GITHUB = Path(__file__).resolve().parents[2] / ".github"
 SETUP = ".github/actions/setup-python-tests"
+# The PostgreSQL fixture module, and where a checkout from before the state tests moved keeps it.
+PG_FIXTURE = Path("lionhub/tests/lionhub_tests/state/conftest.py")
+PRE_MOVE_PG_FIXTURE = Path("tests/state/conftest.py")
 PLAN_SHA = "${{ needs.plan.outputs.sha }}"
 WORKFLOW_SHA = "${{ github.workflow_sha }}"
 MATRIX_VERSION = "${{ matrix.python-version }}"
@@ -243,6 +246,7 @@ def test_all_shared_python_setup_callers_provision_local_postgres():
     ("checkout_fixture", "expected", "diagnostic"),
     [
         ("current", True, ""),
+        ("pre-move", True, ""),
         ("older", False, "marker was absent"),
         ("missing", False, "fixture file was absent"),
         ("read-error", False, "marker could not be read"),
@@ -256,11 +260,13 @@ def test_runner_postgres_capability_comes_from_the_test_checkout(
         step for step in action["runs"]["steps"] if step.get("id") == "postgres-fixture"
     )
     probe = capability["run"]
-    current = (GITHUB.parent / "tests" / "state" / "conftest.py").read_text()
+    current = (GITHUB.parent / PG_FIXTURE).read_text()
     workflow_source = tmp_path / "workflow"
     test_source = tmp_path / "tested"
-    source_fixture = workflow_source / "tests" / "state" / "conftest.py"
-    test_fixture = test_source / "tests" / "state" / "conftest.py"
+    source_fixture = workflow_source / PG_FIXTURE
+    test_fixture = test_source / (
+        PRE_MOVE_PG_FIXTURE if checkout_fixture == "pre-move" else PG_FIXTURE
+    )
     for fixture in (source_fixture, test_fixture):
         fixture.parent.mkdir(parents=True)
     source_fixture.write_text(current)
@@ -306,9 +312,7 @@ def test_runner_postgres_capability_comes_from_the_test_checkout(
 def test_runner_postgres_uses_one_database_per_worker_and_preserves_explicit_urls(
     token, worker, database
 ):
-    helper = runpy.run_path(str(GITHUB.parent / "tests" / "state" / "conftest.py"))[
-        "_runner_database_url"
-    ]
+    helper = runpy.run_path(str(GITHUB.parent / PG_FIXTURE))["_runner_database_url"]
     prefix = "postgresql+asyncpg://test_user@127.0.0.1:55432/"
     url = prefix + "test_db?ssl=disable"
     assert helper(url, token, worker) == prefix + database + "?ssl=disable"
@@ -316,7 +320,7 @@ def test_runner_postgres_uses_one_database_per_worker_and_preserves_explicit_url
 
 def test_runner_database_setup_works_inside_a_running_event_loop():
     """The session fixture can be set up from an async test, while a loop is running."""
-    namespace = runpy.run_path(str(GITHUB.parent / "tests" / "state" / "conftest.py"))
+    namespace = runpy.run_path(str(GITHUB.parent / PG_FIXTURE))
     set_up = namespace["_set_up_runner_database"]
     calls = []
 

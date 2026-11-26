@@ -26,12 +26,12 @@ from lionhub.serve.cli.machine import lifecycle_data
 
 
 def _redirect(monkeypatch, db_path: Path) -> None:
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
 
 def _make_store(db_path: Path) -> None:
     """A real, fully reconciled store, so a later open has nothing to migrate."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async def _open():
         async with StateDB(db_path) as db:
@@ -62,7 +62,7 @@ def test_reading_a_run_runs_none_of_the_schema_writes(monkeypatch, tmp_path):
     writes on the file would fail for an unrelated reason: SQLite in WAL mode
     needs to write a sidecar even for a genuine read-only read.
     """
-    from lionagi.state import db as db_module
+    from lionhub.state import db as db_module
 
     db_path = tmp_path / "state.db"
     _make_store(db_path)

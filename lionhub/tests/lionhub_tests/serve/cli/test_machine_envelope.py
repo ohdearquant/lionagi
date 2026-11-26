@@ -407,7 +407,7 @@ def test_startup_envelope_matches_the_masked_stderr_summary(
     original_import = builtins.__import__
 
     def _import_without_masker(name, *args, **kwargs):
-        if name == "lionagi.state.engine":
+        if name == "lionhub.state.engine":
             raise ModuleNotFoundError(name, name=name)
         return original_import(name, *args, **kwargs)
 

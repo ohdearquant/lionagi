@@ -1,0 +1,201 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""StateDB and legacy-transition compatibility mapping: both existing
+transition surfaces (``StateDB.update_status()``, ``state.transitions.
+transition()``) delegate their guarded write through
+``SQLAlchemyLifecycleService`` via this module's command construction and
+outcome-to-legacy-return mapping, so neither wrapper carries independent
+policy. ``TransitionRejectedError`` lives here (not in ``state/db.py``, which
+imports this package) to avoid a circular import; ``state/db.py`` re-exports
+the same class object. See docs/internals/runtime.md."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Literal
+
+from . import LifecycleNotFoundError, LifecycleValidationError
+from .models import (
+    ActorRecord,
+    OverrideRecord,
+    ReasonRecord,
+    TransitionCommand,
+    TransitionRejectionReason,
+)
+from .service import SQLAlchemyLifecycleService
+
+__all__ = (
+    "TransitionRejectedError",
+    "run_cancel_session_if_worker_generation",
+    "run_legacy_transition",
+    "run_update_status",
+)
+
+
+class TransitionRejectedError(RuntimeError):
+    """Raised when an applicable status write fails a lifecycle policy."""
+
+    def __init__(
+        self,
+        entity_type: str,
+        entity_id: str,
+        previous_status: str | None,
+        attempted_status: str,
+        *,
+        reason: TransitionRejectionReason | None = None,
+    ) -> None:
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.previous_status = previous_status
+        self.attempted_status = attempted_status
+        self.reason = reason or "no_override"
+        if self.reason == "no_override":
+            super().__init__(
+                f"transition rejected: {entity_type} {entity_id!r} is terminal "
+                f"at {previous_status!r}; refusing to write {attempted_status!r} "
+                "without override=True"
+            )
+        else:
+            super().__init__(
+                f"transition rejected: {entity_type} {entity_id!r} at {previous_status!r}; "
+                f"refusing to write {attempted_status!r} ({self.reason})"
+            )
+
+
+async def run_update_status(
+    service: SQLAlchemyLifecycleService,
+    *,
+    entity_type: str,
+    entity_id: str,
+    new_status: str,
+    reason_code: str,
+    reason_summary: str = "",
+    evidence_refs: list[dict[str, Any]] | None = None,
+    source: str,
+    actor: str | None,
+    metadata: dict[str, Any] | None,
+    expected_statuses: set[str | None] | frozenset[str | None] | None,
+    expected_updated_at: float | None,
+    extra_fields: dict[str, Any] | None,
+    override: bool,
+    override_actor: str | None,
+    override_justification: str | None,
+    fill_only_if_absent: frozenset[str] = frozenset(),
+    owned_links: tuple[tuple[str, str, str], ...] = (),
+    record_chain_decision: bool = False,
+) -> bool:
+    """Route StateDB.update_status()'s kwargs through the lifecycle service
+    and map the TransitionOutcome onto its legacy bool/raise contract."""
+    command = TransitionCommand(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        to_status=new_status,
+        reason=ReasonRecord(
+            code=reason_code,
+            summary=reason_summary,
+            evidence_refs=tuple(evidence_refs or []),
+            metadata=metadata or {},
+        ),
+        # actor id passed through as-is, including None (legacy behavior)
+        actor=ActorRecord(type=source, id=actor),  # type: ignore[arg-type]
+        expected_statuses=(frozenset(expected_statuses) if expected_statuses is not None else None),
+        expected_version=expected_updated_at,
+        patch=extra_fields or {},
+        record_chain_decision=record_chain_decision,
+        override=(
+            OverrideRecord(actor=override_actor or "", justification=override_justification or "")
+            if override
+            else None
+        ),
+    )
+    outcome = await service._transition(  # noqa: SLF001 -- same-package internal API
+        command,
+        raise_on_unguarded_conflict=True,
+        fill_only_if_absent=fill_only_if_absent,
+        owned_links=owned_links,
+    )
+    if outcome.result == "applied":
+        return True
+    if outcome.result == "rejected":
+        raise TransitionRejectedError(
+            entity_type,
+            entity_id,
+            outcome.previous_status,
+            new_status,
+            reason=outcome.rejection_reason,
+        )
+    # conflict: reachable here only for a guarded lost race; an unguarded
+    # zero-row write raises RuntimeError instead (raise_on_unguarded_conflict)
+    return False
+
+
+async def run_legacy_transition(
+    service: SQLAlchemyLifecycleService,
+    *,
+    entity_type: str,
+    entity_id: str,
+    from_state: str | None,
+    to_state: str,
+    reason_code: str,
+    reason_summary: str,
+    evidence_refs: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    actor_type: str,
+    actor_id: str,
+    guard: dict[str, Any] | None,
+    patch: dict[str, Any] | None,
+):
+    """Route `lionhub.state.transitions.transition()`'s request through the
+    lifecycle service, preserving its ``guard``/``patch`` per-column CAS via
+    the service's non-public ``extra_guard`` parameter."""
+    command = TransitionCommand(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        to_status=to_state,
+        reason=ReasonRecord(
+            code=reason_code,
+            summary=reason_summary,
+            evidence_refs=tuple(evidence_refs or []),
+            metadata=metadata or {},
+        ),
+        actor=ActorRecord(type=actor_type, id=actor_id),
+        expected_statuses=frozenset({from_state}) if from_state is not None else None,
+        patch=patch or {},
+    )
+    return await service._transition(  # noqa: SLF001
+        command, extra_guard=guard, enforce_edges=True, write_reason_columns=False
+    )
+
+
+async def run_cancel_session_if_worker_generation(
+    service: SQLAlchemyLifecycleService,
+    *,
+    session_id: str,
+    generation_id: str | None,
+    expected_runner_identity: Mapping[str, Any],
+    reason_code: str,
+    reason_summary: str,
+    evidence: dict[str, Any],
+) -> Literal["applied", "already_terminal", "conflict", "missing", "rejected"]:
+    """Bind cancellation to one execution, through the service's guarded transition.
+
+    ``already_terminal`` means the row observed by the guarded transition was
+    terminal and still carried the captured generation and runner identity.
+    Nothing is written; a later change to the row is not ruled out.
+    """
+    try:
+        outcome, terminal_same_execution = await service.guarded_cancel_session(
+            session_id=session_id,
+            generation_id=generation_id,
+            expected_runner_identity=expected_runner_identity,
+            reason=ReasonRecord(
+                code=reason_code, summary=reason_summary, evidence_refs=(dict(evidence),)
+            ),
+        )
+    except LifecycleNotFoundError:
+        return "missing"
+    except LifecycleValidationError:
+        return "rejected"
+    if outcome.result == "conflict" and terminal_same_execution:
+        return "already_terminal"
+    return outcome.result

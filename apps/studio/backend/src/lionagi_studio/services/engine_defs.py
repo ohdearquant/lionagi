@@ -17,16 +17,16 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 import lionhub.orchestration.engine_definitions as _engine_registry
 from lionagi.ln import short_id
-from lionagi.state.db import (
-    StateDB,
-    _get_engine_def_for_update_in_tx,
-    _update_engine_def_in_tx,
-    state_db_known_absent,
-)
 from lionhub.serve.daemon.services.engine_lookup import (  # noqa: F401
     get_engine_def,
     get_engine_def_by_name,
     is_registered_engine_kind,
+)
+from lionhub.state.db import (
+    StateDB,
+    _get_engine_def_for_update_in_tx,
+    _update_engine_def_in_tx,
+    state_db_known_absent,
 )
 
 from ..registry import studio_route
@@ -581,7 +581,7 @@ async def list_engine_catalog_presets(
     If every ID in the page is oversized, return that page with no cursor and include
     stop_reason only if additional rows exist.
     """
-    from lionagi.state.db import _list_engine_catalog_rows
+    from lionhub.state.db import _list_engine_catalog_rows
 
     _catalog_validate_kind(kind)
     after = _catalog_decode_cursor(cursor, kind) if cursor is not None else None
@@ -608,7 +608,7 @@ async def list_engine_catalog_presets(
 
 async def get_engine_catalog_preset(def_id: str) -> dict[str, Any] | None:
     """Return a text-ID preset independently of the loaded page."""
-    from lionagi.state.db import _get_engine_catalog_row
+    from lionhub.state.db import _get_engine_catalog_row
 
     if "\x00" in def_id or state_db_known_absent():
         return None

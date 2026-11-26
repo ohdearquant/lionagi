@@ -39,9 +39,9 @@ def _exemption_for_one_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
-    # The store path is fixed when lionagi.state.db is first imported, under whichever HOME
+    # The store path is fixed when lionhub.state.db is first imported, under whichever HOME
     # that was; the reconnect socket directory the deny list names sits beside it.
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     settings = {"child_sandbox": {"profiles": {"builder": {"allow_read": [EXEMPT]}}}}
