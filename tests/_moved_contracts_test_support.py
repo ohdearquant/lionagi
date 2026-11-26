@@ -55,7 +55,10 @@ class MoveContract:
     name is a package (its submodules are walked as well), ``module`` when it is one file,
     and ``value-only`` when the module exports constants and no definitions to pickle.
 
-    ``public_names`` and ``private_names`` name callables the new module defines itself.
+    ``public_names`` and ``private_names`` name callables the new module defines itself. A
+    ``module`` contract names at least one of them: a module whose only definitions are private
+    names them in ``private_names``, and the identity, cold-import and pickle checks then run
+    over those, so a contract that names nothing is still refused.
     ``shared_values`` name module-level state that must be one binding under both names:
     the same object, and a patch through either name seen through the other.
     ``state_consumers`` are further checks on that state. ``cold_orders`` are the import
@@ -94,6 +97,8 @@ class MoveContract:
                 raise ValueError(f"{self.old}: a value-only module declares values, not names")
         elif self.expected_values or self.environment:
             raise ValueError(f"{self.old}: only a value-only module carries expected values")
+        if self.kind == "module" and not (self.public_names or self.private_names):
+            raise ValueError(f"{self.old}: a module contract names at least one definition")
         if self.registers_routes and self.kind != "module":
             raise ValueError(f"{self.old}: only a module row registers routes")
 
@@ -1028,6 +1033,12 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="value-only",
         expected_values=(("MAX_SPEC_PROMPT_CHARS", 256 * 1024),),
     ),
+    MoveContract(
+        old="lionagi.ln._paths",
+        new="lionhub.tools._paths",
+        kind="module",
+        private_names=frozenset({"_resolve_workspace_root"}),
+    ),
     MoveContract(old="lionagi.studio", new="lionagi_studio", kind="package", cold_orders=()),
     MoveContract(
         old="lionagi.studio.services._schedule_validation",
@@ -1344,6 +1355,18 @@ def public_name_gaps(contract: MoveContract, module: ModuleType) -> list[str]:
     return sorted(contract.public_names - set(own_public_callables(module, contract.new)))
 
 
+def private_name_gaps(contract: MoveContract, module: ModuleType) -> list[str]:
+    """Declared private names that ``module`` does not define itself as callables."""
+    return sorted(
+        name
+        for name in contract.private_names
+        if not (
+            callable(getattr(module, name, None))
+            and getattr(getattr(module, name), "__module__", None) == contract.new
+        )
+    )
+
+
 def canonical_source(new: str, roots: Sequence[Path]) -> Path:
     """The source file of module ``new`` under the first of ``roots`` that holds it."""
     parts = new.split(".")
@@ -1498,7 +1521,7 @@ def run_cold_case(
     """
     if order not in contract.cold_orders:
         raise ValueError(f"{contract.old} does not run the {order} order")
-    if not (contract.public_names or contract.expected_values):
+    if not (contract.public_names or contract.private_names or contract.expected_values):
         raise ValueError(f"{contract.old} declares nothing for a cold run to check")
     if contract.kind != "value-only":
         program = cold_program(contract, order, register_row=register_row)

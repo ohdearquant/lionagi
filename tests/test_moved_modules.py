@@ -39,6 +39,7 @@ from tests._moved_contracts_test_support import (
     assert_contracts_match_moved,
     contract_for,
     own_public_callables,
+    private_name_gaps,
     public_name_gaps,
     readme_gaps,
     readme_rows,
@@ -266,8 +267,14 @@ def test_objects_are_shared_and_pickles_naming_the_old_path_load():
         importlib.import_module(old)
         assert sys.modules[old] is sys.modules[new]
         module = sys.modules[new]
+        contract = contract_for(old, CONTRACTS)
+        # A module whose only definitions are private is checked through the private names its
+        # contract declares; every other module through its public definitions.
+        private_subjects = contract.private_names if not contract.public_names else frozenset()
         for name, obj in vars(module).items():
-            if name.startswith("_") or getattr(obj, "__module__", None) != new:
+            if name.startswith("_") and name not in private_subjects:
+                continue
+            if getattr(obj, "__module__", None) != new:
                 continue
             if getattr(obj, "__qualname__", None) != name:
                 continue
@@ -495,10 +502,12 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
     module = importlib.import_module(new)
     public = own_public_callables(module, new)
     # Naming some of what the module offers keeps this check from passing on a module that
-    # defines nothing; every public callable the module does define is checked below.
-    assert contract.public_names
+    # defines nothing; every public callable the module does define is checked below. A module
+    # whose only definitions are private names them as private names, checked the same way.
+    assert contract.public_names or contract.private_names
     assert public_name_gaps(contract, module) == []
-    for name in public:
+    assert private_name_gaps(contract, module) == []
+    for name in sorted({*public, *contract.private_names}):
         namespace: dict = {}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
@@ -830,11 +839,47 @@ def test_a_declared_public_name_the_module_does_not_define_is_a_gap():
 
 def test_a_contract_cannot_be_emptied_into_a_run_that_checks_nothing():
     contract = next(row for row in MODULE_CONTRACTS if row.public_names)
-    emptied = replace(contract, public_names=frozenset())
+    # A module contract with no public names, no private names and no values is refused when
+    # it is made, so no run is ever asked to check nothing.
+    with pytest.raises(ValueError, match="names at least one definition"):
+        replace(contract, public_names=frozenset(), private_names=frozenset())
+    with pytest.raises(ValueError, match="names at least one definition"):
+        MoveContract(old="lionagi._synthetic_empty", new="synthetic_hub.empty", kind="module")
+    # The cold run refuses it as well, for a contract built around that check.
+    package = next(row for row in CONTRACTS if row.kind == "package")
     with pytest.raises(ValueError, match="declares nothing"):
-        run_cold_case(emptied, "old-first", root=ROOT)
+        run_cold_case(replace(package, cold_orders=("old-first",)), "old-first", root=ROOT)
     with pytest.raises(ValueError, match="value-only"):
         replace(VALUE_ONLY_CONTRACTS[0], expected_values=())
+
+
+def test_a_module_contract_may_name_only_private_definitions():
+    private_only = [row for row in MODULE_CONTRACTS if not row.public_names]
+    assert [row.old for row in private_only] == ["lionagi.ln._paths"]
+    for row in private_only:
+        assert row.private_names
+        module = importlib.import_module(row.new)
+        assert private_name_gaps(row, module) == []
+
+    module = ModuleType("synthetic_hub.private_definitions")
+
+    def _helper():
+        """Defined by the module."""
+
+    _helper.__module__ = module.__name__
+    module._helper = _helper
+    contract = MoveContract(
+        old="lionagi._synthetic_private",
+        new=module.__name__,
+        kind="module",
+        private_names=frozenset({"_helper"}),
+    )
+    assert private_name_gaps(contract, module) == []
+    # A private name the module only imports, or does not have, is a gap.
+    module._helper = json.dumps
+    assert private_name_gaps(contract, module) == ["_helper"]
+    del module._helper
+    assert private_name_gaps(contract, module) == ["_helper"]
 
 
 # `python -m <old name>` runs a package's __main__ without importing it, through the
