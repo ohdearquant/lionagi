@@ -21,7 +21,7 @@ import httpx
 import pytest
 
 import lionagi
-import lionagi.service.accounts._router as router_module
+import lionhub.providers.anthropic.accounts._router as router_module
 from lionagi.service.accounts._types import (
     _REJECTION_CLASSES,
     AccountRoutingError,

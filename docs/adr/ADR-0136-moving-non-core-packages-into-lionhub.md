@@ -2,7 +2,7 @@
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
-  Amendment 6 (2026-11-26) accepted 2026-11-26
+  Amendment 6 (2026-11-26) and Amendment 7 (2026-11-26) accepted 2026-11-26
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -37,7 +37,58 @@
   Amendment 5 moves the Studio application to its own import root before 1.0, bundled in the
   one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step;
   Amendment 6 moves the state store and the persistence handlers into `lionhub`, narrowing Amendment 1
-  A1, adding to D6 and D7, and moving the package ADR-0120 D5 names
+  A1, adding to D6 and D7, and moving the package ADR-0120 D5 names; Amendment 7 moves the Anthropic
+  account engine into `lionhub`, closing Amendment 3 C2's router row
+
+## Amendment 7 (2026-11-26): the Anthropic account engine moves into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+Amendment 3 C2 listed `service/accounts/_router.py` as a core consumer whose prompt-cache import a
+core-owned port would replace before 2.0, and said that `operations` and `service` never move. The
+port landed: the router takes cache evidence from the adapter through `lionagi.service._prompt_cache`
+and names no hub module. On 2026-11-26 the maintainer decided that the engine itself leaves the core.
+Routed accounts, the monthly budget ledger, dated pricing and key resolution serve the hub's Anthropic
+adapter alone, and a core without the hub has no use for them.
+
+### I1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.service.accounts._credentials` | `lionhub.providers.anthropic.accounts._credentials` |
+| `lionagi.service.accounts._ledger` | `lionhub.providers.anthropic.accounts._ledger` |
+| `lionagi.service.accounts._pricing` | `lionhub.providers.anthropic.accounts._pricing` |
+| `lionagi.service.accounts._router` | `lionhub.providers.anthropic.accounts._router` |
+
+The four rows are D3 table rows, deprecated in the release that ships the move and removed in 2.0.0.
+The ledger's logger keeps the name `lionagi.service.accounts._ledger` (D5). The ledger's store file, its
+schema and its default location do not change. The tests that exercise only the engine move into
+`lionhub/tests` (D6 item 7); the tests that drive a routed request through the core endpoint stay
+with the core tests and are listed as needing the hub. Symbol and quote citations of the four modules in
+ADR-0126 and ADR-0130 name the new paths; their pinned line citations keep the old paths, which is where
+the code was at the pinned commit.
+
+### I2. What stays in the core
+
+`lionagi.service.accounts` keeps the seam the core reads: `_types` (account specifications, scopes,
+quotes, usage and the routing errors), `_scope` (the routing scope a branch carries), `_request_guard`
+(the checks the endpoint runs on a routed request before a key is attached) and `_usage_shape` (the
+cache-write split the run telemetry reads), with `_secret_resolution` under Amendment 3 C1 item 1. The
+run telemetry takes a cost estimator from its caller rather than importing pricing. No core module
+imports the engine, and a test fails if an engine module comes back into the core package.
+
+### I3. What this changes in Amendment 3
+
+C2's `service/accounts/_router.py` row is closed, since the file is no longer in the core, and C3's
+relaxation for it ends with this move. `service` itself stays in the core; only these four modules
+leave it. C1 item 1's placement of secret resolution in `lionagi.service.accounts` is unchanged.
+
+### I4. What a caller sees
+
+An endpoint that is not routed sends as before, without the engine. Routed Anthropic requests go
+through the hub's adapter, which the one distribution installs through 1.x (D1). Old imports of the
+four modules keep working with D3's warning until 2.0.0. With the hub absent, the seam modules import
+and each old engine name fails as a missing `lionhub` does.
 
 ## Amendment 6 (2026-11-26): the state store and the persistence handlers move into lionhub
 

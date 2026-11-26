@@ -16,8 +16,6 @@ from uuid import uuid4
 import anyio
 import pytest
 
-from lionagi.service.accounts import _ledger as ledger_module
-from lionagi.service.accounts._ledger import CredentialLedger
 from lionagi.service.accounts._types import (
     AccountRoutingError,
     AccountSpec,
@@ -27,8 +25,10 @@ from lionagi.service.accounts._types import (
     RouterErrorCode,
     Scope,
 )
+from lionhub.providers.anthropic.accounts import _ledger as ledger_module
+from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
-_LOGGER_NAME = ledger_module.__name__
+_LOGGER_NAME = ledger_module._LOGGER.name
 _BOUND_S = 0.2
 _MARGIN_S = 1.5
 _TEST_DEADLINE_S = 3.0

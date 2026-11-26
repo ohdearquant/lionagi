@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Which parts of ``lionagi.service.accounts`` the rest of the core may import.
 
-The routing engine (router, ledger, credentials, pricing) is reached only from the hub's
-Anthropic adapter. The rest of the core reads four modules: the shared types, the routing scope,
-the request guard and the usage-shape helpers.
+The routing engine (router, ledger, credentials, pricing) lives in
+``lionhub.providers.anthropic.accounts`` and is reached only from the hub's Anthropic adapter.
+The core keeps four modules the rest of it reads (the shared types, the routing scope, the
+request guard and the usage-shape helpers) and secret resolution.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = "lionagi.service.accounts"
 SEAM = frozenset({"_types", "_scope", "_request_guard", "_usage_shape"})
+# Every file the core package holds: the seam, secret resolution and the package initializer.
+CORE_FILES = frozenset({"__init__.py", "_secret_resolution.py", *(f"{name}.py" for name in SEAM)})
 
 
 def _module_name(path: Path) -> str:
@@ -101,9 +104,9 @@ def test_scan_reports_an_engine_import(tmp_path, monkeypatch):
     assert _accounts_modules_used(target) == {"_router"}
 
 
-def test_old_names_resolve_to_the_seam_objects():
-    from lionagi.service.accounts import _pricing, _request_guard, _router, _usage_shape
-
-    assert _router.validate_routed_request is _request_guard.validate_routed_request
-    assert _pricing.cache_write_split is _usage_shape.cache_write_split
-    assert _pricing.CACHE_WRITE_LIFETIMES is _usage_shape.CACHE_WRITE_LIFETIMES
+def test_the_core_package_holds_only_the_seam():
+    """No engine module is left in, or comes back to, the core package."""
+    accounts = ROOT / "lionagi" / "service" / "accounts"
+    files = {path.name for path in accounts.iterdir() if path.suffix == ".py"}
+    assert "_types.py" in files, sorted(files)
+    assert files == CORE_FILES

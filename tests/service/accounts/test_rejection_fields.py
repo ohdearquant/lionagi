@@ -2,32 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """A routed request rejection carries two validated, closed-set fields.
 
-Covers their validation on ``AccountRoutingError`` and ``UnknownOutcome``, their carriage from the
-internal routed-attempt error to the public one, and their pass-through from
-``AccountRouter.settle_unknown`` to the ledger (ADR-0126, Amendment 7).
+Covers their validation on ``AccountRoutingError`` and ``UnknownOutcome`` and their carriage from
+the internal routed-attempt error to the public one (ADR-0126, Amendment 7). Their pass-through
+from ``AccountRouter.settle_unknown`` to the ledger is tested with the account engine.
 """
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
-from pydantic import SecretStr
 
 from lionagi.service.accounts import _types
-from lionagi.service.accounts._ledger import CredentialLedger
-from lionagi.service.accounts._pricing import CURRENT_REVISION
-from lionagi.service.accounts._router import AccountRouter, RouterAttempt
 from lionagi.service.accounts._types import (
     AccountRoutingError,
-    AccountSpec,
-    Quote,
-    Reservation,
     RouterErrorCode,
-    Scope,
     UnknownOutcome,
 )
 from lionagi.service.connections.endpoint import (
@@ -38,8 +27,6 @@ from lionagi.service.connections.endpoint import (
 
 ATTEMPT = UUID("00000000-0000-4000-8000-000000000001")
 SENTINEL = "zz-sentinel-4f1c9a"
-NOW = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
-ALPHA = AccountSpec("alpha", "ALPHA_KEY", 10**15)
 FIELDS = ["provider_error_type", "rejection_class"]
 
 
@@ -331,108 +318,3 @@ def test_the_public_failure_without_the_fields_keeps_its_message():
     )
     assert failure.provider_error_type is None
     assert failure.rejection_class is None
-
-
-# --- AccountRouter.settle_unknown -------------------------------------------------------------
-
-
-class SpyLedger:
-    """Records the evidence each settlement hands the ledger."""
-
-    def __init__(self) -> None:
-        self.settled: list[tuple[object, object, dict]] = []
-
-    async def settle(self, attempt_id, evidence, **kwargs):
-        self.settled.append((attempt_id, evidence, kwargs))
-
-
-def quote() -> Quote:
-    return Quote("model-a", 1, "price-a", "a" * 64)
-
-
-def spy_router() -> tuple[AccountRouter, SpyLedger, RouterAttempt]:
-    spy = SpyLedger()
-    router = AccountRouter(sources=None, ledger=spy, accounts=(ALPHA,), revision=CURRENT_REVISION)
-    reservation = Reservation(
-        uuid4(), Scope("branch", uuid4(), "anthropic"), "alpha", "2026-01", quote()
-    )
-    attempt = RouterAttempt(reservation, b"{}", frozenset(), SecretStr("test-key-0123456789"))
-    return router, spy, attempt
-
-
-@pytest.mark.asyncio
-async def test_settle_unknown_hands_the_ledger_both_fields():
-    router, spy, attempt = spy_router()
-
-    await router.settle_unknown(
-        attempt,
-        "request_rejected",
-        provider_error_type="invalid_request_error",
-        rejection_class="prompt_too_long",
-    )
-
-    expected = UnknownOutcome(
-        "request_rejected",
-        provider_error_type="invalid_request_error",
-        rejection_class="prompt_too_long",
-    )
-    assert spy.settled == [(attempt.attempt_id, expected, {})]
-    assert spy.settled[0][1].provider_error_type == "invalid_request_error"
-    assert spy.settled[0][1].rejection_class == "prompt_too_long"
-
-
-@pytest.mark.asyncio
-async def test_settle_unknown_without_the_fields_is_unchanged():
-    router, spy, attempt = spy_router()
-
-    await router.settle_unknown(attempt, "rate_limited")
-
-    assert spy.settled == [(attempt.attempt_id, UnknownOutcome("rate_limited"), {})]
-    assert spy.settled[0][1].provider_error_type is None
-    assert spy.settled[0][1].rejection_class is None
-
-
-@pytest.mark.asyncio
-async def test_settle_unknown_takes_the_fields_by_keyword_only():
-    router, spy, attempt = spy_router()
-
-    with pytest.raises(TypeError):
-        await router.settle_unknown(attempt, "request_rejected", "invalid_request_error")
-
-    assert spy.settled == []
-
-
-@pytest.mark.asyncio
-async def test_settle_unknown_refuses_the_fields_on_another_outcome():
-    router, spy, attempt = spy_router()
-
-    with pytest.raises(ValueError):
-        await router.settle_unknown(attempt, "rate_limited", rejection_class="other")
-
-    assert spy.settled == []
-
-
-@pytest.mark.asyncio
-async def test_the_ledger_settles_an_outcome_that_carries_the_fields(tmp_path):
-    path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: NOW)
-    reservation = await ledger.reserve(
-        Scope("branch", uuid4(), "anthropic"), uuid4(), quote(), (ALPHA,)
-    )
-    router = AccountRouter(
-        sources=None, ledger=ledger, accounts=(ALPHA,), revision=CURRENT_REVISION
-    )
-    attempt = RouterAttempt(reservation, b"{}", frozenset(), SecretStr("test-key-0123456789"))
-
-    await router.settle_unknown(
-        attempt,
-        "request_rejected",
-        provider_error_type="invalid_request_error",
-        rejection_class="prompt_too_long",
-    )
-
-    with closing(sqlite3.connect(path)) as connection:
-        row = connection.execute(
-            "SELECT outcome FROM attempt WHERE id = ?", (str(reservation.attempt_id),)
-        ).fetchone()
-    assert row == ("request_rejected",)

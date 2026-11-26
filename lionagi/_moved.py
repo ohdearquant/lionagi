@@ -370,6 +370,32 @@ MOVED: tuple[Moved, ...] = (
         "0.39.0",
         "2.0.0",
     ),
+    # The Anthropic account engine. Its seam (types, routing scope, request guard and usage
+    # shape) stays in lionagi.service.accounts.
+    Moved(
+        "lionagi.service.accounts._credentials",
+        "lionhub.providers.anthropic.accounts._credentials",
+        "0.39.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._ledger",
+        "lionhub.providers.anthropic.accounts._ledger",
+        "0.39.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._pricing",
+        "lionhub.providers.anthropic.accounts._pricing",
+        "0.39.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._router",
+        "lionhub.providers.anthropic.accounts._router",
+        "0.39.0",
+        "2.0.0",
+    ),
 )
 
 # Rows whose old name never existed as a file. ``lionagi.hooks.builtins`` serves its five former

@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.ln._hash import MAX_HASH_INPUT_BYTES
-from lionagi.service.accounts._pricing import CURRENT_REVISION, quote_ceiling
 from lionhub.orchestration.schedule.declaration import _digest_of
+from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION, quote_ceiling
 from lionhub.serve.cli.engine import _engine_outcome
 from lionhub.serve.mcp._child_actor import _CONFIG, mint_child_actor_config
 

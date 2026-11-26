@@ -760,7 +760,7 @@ def _resolve_api_input_cap(policy: object, chat_model) -> tuple[int | None, str]
     model = getattr(chat_model, "model_name", "") or ""
     config = getattr(getattr(chat_model, "endpoint", None), "config", None)
     if getattr(config, "provider", None) == "anthropic":
-        from lionagi.service.accounts._pricing import CURRENT_REVISION
+        from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 
         price = CURRENT_REVISION.models.get(model)
         if price is not None and len(price.tiers) > 1:
@@ -1813,7 +1813,7 @@ async def _subscription_switch_objection(refusal, api_account: str | None) -> st
     if refusal.code == RouterErrorCode.BUDGET_EXHAUSTED:
         return None
     try:
-        from lionagi.service.accounts._router import get_router
+        from lionhub.providers.anthropic.accounts._router import get_router
 
         statuses = await get_router().ledger.status("anthropic")
     except Exception as exc:  # noqa: BLE001 — a status that cannot be read ends the decision
@@ -3640,7 +3640,7 @@ async def _run_agent(
         _api_turn = None
         _api_fold = None
         if api_launch is not None:
-            from lionagi.service.accounts._pricing import estimate_response_cost
+            from lionhub.providers.anthropic.accounts._pricing import estimate_response_cost
 
             _api_turn_index = 0
 

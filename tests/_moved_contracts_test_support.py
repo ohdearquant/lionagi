@@ -1365,6 +1365,60 @@ CONTRACTS: tuple[MoveContract, ...] = (
         private_names=frozenset({"_db"}),
         shared_values=frozenset({"RUN_PERSISTENCE_HOOKS"}),
     ),
+    MoveContract(
+        old="lionagi.service.accounts._credentials",
+        new="lionhub.providers.anthropic.accounts._credentials",
+        kind="module",
+        public_names=frozenset({"CredentialSources", "resolve_account_key"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._ledger",
+        new="lionhub.providers.anthropic.accounts._ledger",
+        kind="module",
+        public_names=frozenset({"AccountStatus", "CredentialLedger", "default_ledger_path"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._pricing",
+        new="lionhub.providers.anthropic.accounts._pricing",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ModelPrice",
+                "PriceRevision",
+                "PriceTier",
+                "estimate_response_cost",
+                "freeze_request",
+                "price_usage",
+                "quote_ceiling",
+                "registered_revisions",
+                "request_ttls",
+                "revision_by_id",
+                "stream_usage_estimate",
+                "usage_outcome",
+            }
+        ),
+        shared_values=frozenset({"CURRENT_REVISION"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._router",
+        new="lionhub.providers.anthropic.accounts._router",
+        kind="module",
+        public_names=frozenset(
+            {
+                "AccountRouter",
+                "RoutedCacheEvidence",
+                "RouterAttempt",
+                "StreamTextRedactor",
+                "StreamingSecretRedactor",
+                "get_router",
+                "mask_joined_key_runs",
+                "mask_key_runs",
+                "provider_request_id",
+                "redact_value",
+            }
+        ),
+        shared_values=frozenset({"_router", "_test_ledger_path", "_test_sources"}),
+    ),
 )
 
 

@@ -446,7 +446,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
     ): "``Generic[T]``, the typing generic base",
     (
-        "lionagi.service.accounts._ledger",
+        "lionhub.providers.anthropic.accounts._ledger",
         "_TimedCall",
         "class-base-subscript",
         "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='_T', ctx=Load()), ctx=Load())",
@@ -545,7 +545,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='received', ctx=Store())",
     ): "a counter field on a dict-held object",
     (
-        "lionagi.service.accounts._router",
+        "lionhub.providers.anthropic.accounts._router",
         "StreamTextRedactor._feed",
         "attribute-owner-shape",
         "Attribute(value=Call(func=Attribute(value=Attribute(value=Name(id='join', ctx=Load()), attr='pending', ctx=Load()), attr='pop', ctx=Load()), args=[Constant(value=0)], keywords=[]), attr='open', ctx=Store())",
