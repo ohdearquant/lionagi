@@ -7,8 +7,8 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionhub.orchestration.console import log_error
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 
 def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:

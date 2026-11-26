@@ -14,7 +14,6 @@ from typing import Any
 
 import psutil
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln._proc import (
     _admit_recorded_worker_group,
     _finite_process_time,
@@ -53,6 +52,7 @@ from lionhub.orchestration.kill import (
     read_pid_from_entity,
     unaddressable_pid_reason,
 )
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.state._quarantine_identity import (
     QuarantineProbeError,
     _quarantine_status_label,

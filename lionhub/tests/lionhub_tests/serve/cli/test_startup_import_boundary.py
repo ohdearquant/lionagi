@@ -260,23 +260,23 @@ def test_catalog_missing_dependency_keeps_its_original_name(tmp_path: Path) -> N
 
         class RefuseCatalogDependency:
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'lionagi._auto':
+                if fullname == 'lionhub.serve.cli.registration':
                     assert 'lionhub.serve.cli.catalog' in sys.modules
                     refused.append(fullname)
                     raise ModuleNotFoundError(
-                        "No module named 'lionagi._auto'", name='lionagi._auto'
+                        "No module named 'lionhub.serve.cli.registration'", name='lionhub.serve.cli.registration'
                     )
                 return None
 
         sys.meta_path.insert(0, RefuseCatalogDependency())
         cli_main = import_main()
         code = cli_main.main(['doctor'])
-        assert refused == ['lionagi._auto']
+        assert refused == ['lionhub.serve.cli.registration']
         assert_no_startup_effects()
         sys.exit(code)
         """,
     )
-    _assert_environment_refusal(process, "lionagi._auto")
+    _assert_environment_refusal(process, "lionhub.serve.cli.registration")
     assert "lionhub/serve/cli/catalog.py" in process.stderr.replace("\\", "/")
 
 

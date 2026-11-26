@@ -8,7 +8,7 @@ import argparse
 from collections.abc import Callable
 from typing import Any
 
-from lionagi._auto import (
+from lionhub.serve.cli.registration import (
     CliBuild,
     CliParserResult,
     CliSeed,

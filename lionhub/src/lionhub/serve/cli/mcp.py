@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi._feature_errors import _declared_missing_import_root
 from lionhub.orchestration.console import log_error
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 __all__ = ("add_mcp_subparser", "run_mcp")
 

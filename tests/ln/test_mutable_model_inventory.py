@@ -204,7 +204,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # object's own field slot, none of them a class's ``__hash__`` or a class
     # authority:
     (
-        "lionagi._auto",
+        "lionhub.serve.cli.registration",
         "auto_register.<locals>.decorator",
         "setattr-arguments",
         "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='fn', ctx=Load()), Name(id='_MARKER_ATTR', ctx=Load()), Name(id='marker', ctx=Load())], keywords=[])",

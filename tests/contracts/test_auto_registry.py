@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Focused contract tests for lionagi/_auto.py's declaration compiler."""
+"""Focused contract tests for the CLI declaration types in lionhub.serve.cli.registration."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from lionagi import _auto
+from lionhub.serve.cli import registration as _auto
 
 
 def _make_module(name: str, source: str) -> types.ModuleType:

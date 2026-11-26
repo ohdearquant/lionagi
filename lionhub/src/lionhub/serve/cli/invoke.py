@@ -10,9 +10,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import short_id
 from lionhub.orchestration.console import hint, log_error
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 # ── async helpers ─────────────────────────────────────────────────────────────
 

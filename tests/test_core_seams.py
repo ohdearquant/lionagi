@@ -12,7 +12,7 @@ from tests._core_imports import ROOT, core_files, package_imports
 def test_the_core_does_not_import_tools():
     files = core_files()
     assert ROOT / "lionagi" / "__init__.py" in files
-    assert ROOT / "lionagi" / "_auto.py" in files
+    assert ROOT / "lionagi" / "_errors.py" in files
     assert ROOT / "lionagi" / "session" / "branch.py" in files
     hits = [hit for path in files for hit in package_imports(path, "tools")]
     assert hits == [], hits

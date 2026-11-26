@@ -191,7 +191,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.
-"!{lionagi/_auto,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionhub/src/lionhub/providers/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionhub/src/lionhub/state/lifecycle/callbacks,lionhub/src/lionhub/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
+"!{lionhub/src/lionhub/serve/cli/registration,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionhub/src/lionhub/providers/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionhub/src/lionhub/state/lifecycle/callbacks,lionhub/src/lionhub/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)

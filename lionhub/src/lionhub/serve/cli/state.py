@@ -10,10 +10,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import coerce_created_at, short_id
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 from lionhub.orchestration.runs import RUNS_ROOT, _manifest_run_id_matches
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionhub.state.session_naming import resolve_display_name
 

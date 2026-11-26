@@ -2,7 +2,8 @@
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
-  Amendment 6 (2026-11-26), Amendment 7 (2026-11-26) and Amendment 8 (2026-11-26) accepted 2026-11-26
+  Amendment 6 (2026-11-26), Amendment 7 (2026-11-26), Amendment 8 (2026-11-26) and Amendment 9
+  (2026-11-26) accepted 2026-11-26
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -14,11 +15,12 @@
   replaced the 46 interim module strings with `lionhub.providers.manifest`, read through
   `lionagi/service/connections/_provider_compat.py`, and the three hub imports C2 deferred to
   before 2.0 are gone (`service/providers.py`'s in #4745). The CLI provider tables and
-  `parse_model_spec` moved to `lionhub.providers.model_spec` (Amendment 8). `service` is the only core package that
-  imports the hub, through `_provider_compat`. Two root modules hold hub paths as data, resolved only
-  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths, and
-  `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
-  until 2.0.0. Other mentions of the hub under `lionagi/` are comments and docstrings. The Studio
+  `parse_model_spec` moved to `lionhub.providers.model_spec` (Amendment 8), the frontmatter parser to
+  `lionhub.orchestration.frontmatter` and the CLI declaration types to
+  `lionhub.serve.cli.registration` (Amendment 9). `service` is the only core package that
+  imports the hub, through `_provider_compat`. One root module holds hub paths as data, resolved only
+  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths. Other mentions of
+  the hub under `lionagi/` are comments and docstrings. The Studio
   application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
   `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is
   `tests/test_studio_frozen_inventory.py`; G4's fresh-install tests from the built wheel outside the
@@ -40,7 +42,52 @@
   Amendment 6 moves the state store and the persistence handlers into `lionhub`, narrowing Amendment 1
   A1, adding to D6 and D7, and moving the package ADR-0120 D5 names; Amendment 7 moves the Anthropic
   account engine into `lionhub`, closing Amendment 3 C2's router row; Amendment 8 moves the CLI
-  provider tables and `parse_model_spec` into `lionhub`, closing Amendment 3 C2's `service/providers.py` row
+  provider tables and `parse_model_spec` into `lionhub`, closing Amendment 3 C2's `service/providers.py` row;
+  Amendment 9 moves the frontmatter parser out of `lionagi.libs` into `lionhub.orchestration` and the
+  CLI declaration types out of `lionagi._auto` into `lionhub.serve.cli`, which ADR-0139 had kept in the core
+
+## Amendment 9 (2026-11-26): the frontmatter parser and the CLI declaration types move into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+`lionagi.libs.frontmatter` reads the YAML block at the top of agent, skill and plugin definition files.
+No core module imports it: its callers are the hub's spawn code, the `li skill` command, the MCP
+verb preload and the Studio services that read and save those files. `lionagi._auto` holds the CLI
+command declaration types, the `auto_register` decorator and the marker reader the hub's CLI catalog
+compiles commands from. Every module that declares a command, and the catalog itself, is in the hub,
+so no core module imports it either. On 2026-11-26 the maintainer decided that both leave the core
+with the other non-core code, while `lionagi.libs.credential_fields`, `lionagi.libs.path_safety` and
+the `testing` package stay.
+
+### K1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.libs.frontmatter` | `lionhub.orchestration.frontmatter` |
+| `lionagi._auto` | `lionhub.serve.cli.registration` |
+
+Each row is a D3 table row, deprecated in the release that ships the move and removed in 2.0.0. No
+module exists at either old path, and every caller in the repository imports the new one. The
+parser's tests move into `lionhub/tests`; the declaration types' contract tests import the new path.
+The parser is unchanged. The declaration types are unchanged except that the five deprecated catalog
+names `lionagi._auto` forwards name that old path in their warning directly, since the module's own
+name is now the new one.
+
+### K2. What a caller sees
+
+`parse_frontmatter` and `parse_frontmatter_strict` return what they returned before for every
+document. An import from `lionagi.libs.frontmatter` keeps working with D3's warning until 2.0.0 and
+returns the same module object as the new path. Nothing else in `lionagi.libs` changes.
+
+The declaration types, `auto_register` and the marker it attaches are unchanged, so a command
+declared before the move is compiled as before. `import lionagi._auto` keeps working with D3's
+warning until 2.0.0 and returns the new module. Its five deprecated catalog names (`build_cli_parser`,
+`command_exists`, `iter_cli_seeds`, `load_cli_command`, `seed_for`) still forward to
+`lionhub.serve.cli.catalog` with their own warning until 2.0.0, and the catalog stays unloaded until
+one of them is used. Importing the old name now loads the hub, since the module lives there.
+
+With the hub absent, an import of either old path fails as every D3 row whose new path is in the hub
+fails: with the missing-package error for `lionhub`.
 
 ## Amendment 8 (2026-11-26): the CLI provider tables and parse_model_spec move into lionhub
 

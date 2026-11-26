@@ -770,8 +770,8 @@ def test_main_routes_engine_command(monkeypatch):
     main_module = importlib.import_module("lionhub.serve.cli.main")
     engine_mod = importlib.import_module("lionhub.serve.cli.engine")
 
-    from lionagi._auto import _MARKER_ATTR
     from lionhub.serve.cli import catalog
+    from lionhub.serve.cli.registration import _MARKER_ATTR
 
     run_engine_calls = []
 

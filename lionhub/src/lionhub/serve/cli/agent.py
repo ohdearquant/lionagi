@@ -22,7 +22,6 @@ from uuid import UUID
 from pydantic import BaseModel, field_validator
 
 from lionagi import Branch
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import (
     ConfigurationError,
     FailedRoundError,
@@ -115,6 +114,7 @@ from lionhub.providers._subagent_admission import (
     NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.state import provenance as _provenance
 from lionhub.state.artifact_verifier import resolve_artifact_contract
 from lionhub.state.cli_worker_context import _bind_cli_worker_recorder

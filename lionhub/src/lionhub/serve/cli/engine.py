@@ -12,11 +12,11 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.ln import compute_hash
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.engine_definitions import KIND_META, import_engine_class
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
 if TYPE_CHECKING:

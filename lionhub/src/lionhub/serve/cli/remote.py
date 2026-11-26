@@ -26,8 +26,8 @@ from typing import Any
 
 import yaml
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionhub.orchestration.console import _refused_inside_an_agent
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.serve.cli.studio_client import STUDIO_TOKEN_ENV
 
 __all__ = (

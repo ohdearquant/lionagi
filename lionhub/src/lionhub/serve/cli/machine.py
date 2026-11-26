@@ -19,8 +19,8 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import import_module
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 from ._machine_envelope import _CONTRACT_VERSION, _ERROR_KINDS, _encode_envelope, _failure
 

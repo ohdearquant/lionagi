@@ -8,7 +8,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
@@ -28,6 +27,7 @@ from lionhub.orchestration.flow.spec import (
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.providers._subagent_admission import refuse_nested_agent
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation

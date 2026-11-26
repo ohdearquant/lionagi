@@ -142,7 +142,7 @@ def redact_agent_markdown(text: str, *, redact: bool) -> str:
     if not redact:
         return text
 
-    from lionagi.libs.frontmatter import parse_frontmatter
+    from lionhub.orchestration.frontmatter import parse_frontmatter
 
     fm, body = parse_frontmatter(text)
     fm = dict(fm)

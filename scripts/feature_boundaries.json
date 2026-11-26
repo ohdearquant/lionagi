@@ -5,10 +5,6 @@
       "layer": "sdk",
       "owner": "public_api"
     },
-    "lionagi._auto": {
-      "layer": "root",
-      "owner": "application_discovery"
-    },
     "lionagi._class_registry": {
       "layer": "foundation",
       "owner": "class_registry"
@@ -134,10 +130,6 @@
       "owner": "utilities"
     },
     "lionagi.libs.file.process": {
-      "layer": "foundation",
-      "owner": "utilities"
-    },
-    "lionagi.libs.frontmatter": {
       "layer": "foundation",
       "owner": "utilities"
     },
