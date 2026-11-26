@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.service._subagent_admission import admit_subagent
+from lionhub.providers._subagent_admission import admit_subagent
 from lionhub.serve.cli.monitor import _format_subagent_line, machine_result
 
 
@@ -21,14 +21,14 @@ def home(tmp_path, monkeypatch):
 
 
 def test_no_caps_and_no_slots_add_no_line(home):
-    from lionagi.service._subagent_admission import subagent_admission_status
+    from lionhub.providers._subagent_admission import subagent_admission_status
 
     assert _format_subagent_line(subagent_admission_status({})) is None
 
 
 @pytest.mark.asyncio
 async def test_the_line_counts_each_capped_pool(home):
-    from lionagi.service._subagent_admission import subagent_admission_status
+    from lionhub.providers._subagent_admission import subagent_admission_status
 
     env = {
         "LIONAGI_MAX_SUBAGENTS": "30",

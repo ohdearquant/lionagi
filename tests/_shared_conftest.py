@@ -311,12 +311,17 @@ def _outside_any_agent(monkeypatch: pytest.MonkeyPatch):
     a subprocess is not covered: the child reads its real ancestry and, under an agent, is
     refused, which is the behaviour, not a fault of the test.
     """
-    from lionagi.service import _subagent_admission
-
     # setenv first so teardown also removes a depth a test's stamp writes straight into
     # os.environ: delenv alone records nothing to restore when the name was absent.
     monkeypatch.setenv("LIONAGI_AGENT_DEPTH", "0")
     monkeypatch.delenv("LIONAGI_AGENT_DEPTH")
+    try:
+        from lionhub.providers import _subagent_admission
+    except ImportError:
+        # Without the hub nothing in this process starts a CLI agent, so no admission state
+        # is left to clear.
+        return
+
     monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 0)
     monkeypatch.setattr(_subagent_admission, "_ancestor_agent_depth", lambda: (0, None))
     monkeypatch.setattr(_subagent_admission, "_child_agent_depth", 1)

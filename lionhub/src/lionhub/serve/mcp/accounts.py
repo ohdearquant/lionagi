@@ -10,7 +10,7 @@ The counts are derived when the verb is called, from two places, and the reply s
 read them:
 
 - ``slots_held`` and the enforced cap come from the machine-wide admission pools
-  (``lionagi.service._subagent_admission``), which count every CLI agent on the account,
+  (``lionhub.providers._subagent_admission``), which count every CLI agent on the account,
   however it was started.
 - ``running``, ``completed_24h`` and ``last_limit`` come from this server's job records, read
   through ``job.status``: an agent job counts for the account its run resolved (its
@@ -26,8 +26,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lionagi.ln import now_utc
-from lionagi.service._subagent_admission import subagent_admission_status
 from lionhub.agent.subscription_accounts import list_accounts
+from lionhub.providers._subagent_admission import subagent_admission_status
 
 from . import jobs
 

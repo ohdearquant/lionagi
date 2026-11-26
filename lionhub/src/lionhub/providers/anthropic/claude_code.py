@@ -28,7 +28,6 @@ from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entrie
 from lionagi.libs.path_safety import check_path_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -56,6 +55,7 @@ from lionhub.providers._cli_subprocess import (
 from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import CLAUDE_CODE_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401

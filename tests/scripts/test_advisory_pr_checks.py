@@ -1396,6 +1396,7 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/spec_limits.py",
         "lionhub/src/lionhub/orchestration/team.py",
         "lionhub/src/lionhub/providers/__init__.py",
+        "lionhub/src/lionhub/providers/_subagent_admission.py",
         "lionhub/src/lionhub/providers/openai/__init__.py",
         "lionhub/src/lionhub/providers/openai/_codex_profile.py",
         "lionhub/src/lionhub/serve/__init__.py",

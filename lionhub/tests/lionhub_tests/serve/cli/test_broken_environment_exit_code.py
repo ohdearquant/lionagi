@@ -293,7 +293,7 @@ def test_li_agent_exits_78_when_the_ollama_package_is_absent(tmp_path):
         # which is what an interpreter without the package does.
         sys.modules["ollama"] = None
 
-        from lionagi.service import _subagent_admission as admission
+        from lionhub.providers import _subagent_admission as admission
 
         admission._INHERITED_AGENT_DEPTH = 0
         admission._ancestor_agent_depth = lambda: (0, None)
