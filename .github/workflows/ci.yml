@@ -766,7 +766,7 @@ jobs:
   # ci-gate treats any other skip/failure/cancellation of this job as a failure.
   studio-docker:
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.studio == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.studio == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -797,7 +797,7 @@ jobs:
   minimal-import:
     name: Bare install imports within budget
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -848,7 +848,7 @@ jobs:
   no-eager-heavies:
     name: Full install stays lazy
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -911,7 +911,7 @@ jobs:
   compat-deps:
     name: Compatibility mode (aiosqlite ${{ matrix.aiosqlite }}, SQLAlchemy ${{ matrix.sqlalchemy }}, Python ${{ matrix.python-version }})
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.compat == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.compat == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -1000,7 +1000,7 @@ jobs:
 
   lionrs:
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -1026,7 +1026,7 @@ jobs:
   # lion1/ or this workflow changes; ci-gate accepts its skip only then.
   lion1:
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lion1 == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.lion1 == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -1106,7 +1106,7 @@ jobs:
   core-without-hub:
     name: Core suite without lionhub
     needs: changes
-    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
