@@ -1383,6 +1383,7 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/flow/graph.py",
         "lionhub/src/lionhub/orchestration/flow/parsing.py",
         "lionhub/src/lionhub/orchestration/flow/spec.py",
+        "lionhub/src/lionhub/orchestration/frontmatter.py",
         "lionhub/src/lionhub/orchestration/inspection.py",
         "lionhub/src/lionhub/orchestration/job.py",
         "lionhub/src/lionhub/orchestration/json_file.py",

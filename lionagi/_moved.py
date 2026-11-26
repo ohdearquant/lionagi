@@ -399,6 +399,10 @@ MOVED: tuple[Moved, ...] = (
     # The CLI providers' tables and parse_model_spec. The effort vocabulary and the model-name
     # suffix grammar stay in lionagi.service.providers, which forwards the moved names.
     Moved("lionagi.service._model_spec", "lionhub.providers.model_spec", "0.39.0", "2.0.0"),
+    # The YAML frontmatter parser for agent, skill and plugin definition files.
+    Moved("lionagi.libs.frontmatter", "lionhub.orchestration.frontmatter", "0.39.0", "2.0.0"),
+    # The CLI command declaration types and the registration marker the catalog reads.
+    Moved("lionagi._auto", "lionhub.serve.cli.registration", "0.39.0", "2.0.0"),
 )
 
 # Rows whose old name never existed as a file. ``lionagi.hooks.builtins`` serves its five former

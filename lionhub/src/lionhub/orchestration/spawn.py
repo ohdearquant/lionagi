@@ -23,14 +23,14 @@ from lionagi._paths import (
     is_user_lionagi_dir,
 )
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
-from lionagi.libs.frontmatter import _strip_frontmatter_prefix
-from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
 from lionagi.service.providers import (
     EFFORT_LEVELS,
     normalize_effort,
 )
+from lionhub.orchestration.frontmatter import _strip_frontmatter_prefix
+from lionhub.orchestration.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionhub.providers.model_spec import (
     _CLAUDE_PROVIDER_NAMES,
@@ -1624,7 +1624,7 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
 
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT, _load_frontmatter_yaml
+    from lionhub.orchestration.frontmatter import _FM_SPLIT, _load_frontmatter_yaml
 
     def unreadable_yaml_has_sensitive_text(block: str) -> bool:
         # In unreadable YAML, no fragment can be reliably identified as a key
@@ -1909,7 +1909,7 @@ def _profile_body_blocks(
 def _read_profile_settings(block: str) -> tuple[bool, Any]:
     import yaml
 
-    from lionagi.libs.frontmatter import _load_frontmatter_yaml
+    from lionhub.orchestration.frontmatter import _load_frontmatter_yaml
 
     try:
         return True, _load_frontmatter_yaml(block)
@@ -2026,7 +2026,7 @@ def _check_readable_profile_settings(
     name: str, text: str, frontmatter: dict[str, Any], *, line_offset: int
 ) -> str:
     """Check the leading declaration names and the body, returning the leading source."""
-    from lionagi.libs.frontmatter import _FM_SPLIT
+    from lionhub.orchestration.frontmatter import _FM_SPLIT
 
     text = text.strip()
     delimiters = _FM_SPLIT.finditer(text)
@@ -2072,8 +2072,8 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     """
     import yaml
 
-    from lionagi.libs.frontmatter import _FM_SPLIT, parse_frontmatter_strict
     from lionhub.orchestration.console import warn
+    from lionhub.orchestration.frontmatter import _FM_SPLIT, parse_frontmatter_strict
 
     def containment_settings(block: str, document: Any) -> dict[str, Any]:
         if isinstance(document, dict):

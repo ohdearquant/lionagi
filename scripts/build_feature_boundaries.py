@@ -51,7 +51,6 @@ MODULE_RULES = {
 
 ROOT_MODULES = {
     "lionagi": ("sdk", "public_api"),
-    "lionagi._auto": ("root", "application_discovery"),
     "lionagi._class_registry": ("foundation", "class_registry"),
     "lionagi._errors": ("contracts", "errors"),
     "lionagi._feature_errors": ("contracts", "errors"),

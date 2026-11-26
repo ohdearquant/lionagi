@@ -77,7 +77,7 @@ _PRELOAD_MODULES = (
     "lionhub.state.message_retry",
     "lionagi.hooks.bus",
     "lionagi.libs.file.process",
-    "lionagi.libs.frontmatter",
+    "lionhub.orchestration.frontmatter",
     "lionagi.libs.schema.load_pydantic_model_from_schema",
     "lionagi.libs.schema.minimal_yaml",
     "lionagi.ln._proc",

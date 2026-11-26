@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 from unicodedata import category
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
 from lionagi.ln.concurrency import sleep
 from lionhub.orchestration.job import (
@@ -29,6 +28,7 @@ from lionhub.orchestration.job import pid_alive as _pid_alive_int
 from lionhub.orchestration.project import detect_project
 from lionhub.orchestration.runs import _resolved_run_state_dir
 from lionhub.orchestration.schedule import parsing
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.state.engine import mask_credentials
 
 __all__ = (

@@ -315,6 +315,10 @@
       "validate_flow_spec",
       "validate_flow_spec_fields"
     ],
+    "lionhub/src/lionhub/orchestration/frontmatter.py": [
+      "parse_frontmatter",
+      "parse_frontmatter_strict"
+    ],
     "lionhub/src/lionhub/orchestration/inspection.py": [
       "fetch_by_id",
       "resolve_agent_target",

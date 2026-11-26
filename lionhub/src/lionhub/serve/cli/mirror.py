@@ -7,8 +7,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionhub.orchestration.console import hint, progress, warn
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 # The loop below uses some of these; the rest stay importable from this module for its callers.
 from lionhub.serve.mirror import (  # noqa: F401

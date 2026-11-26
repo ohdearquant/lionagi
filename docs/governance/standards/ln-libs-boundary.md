@@ -146,7 +146,7 @@ Priority: H = high value and low risk; M = medium value or non-trivial risk; L =
 | C1 | Traversal-check logic in `acreate_path` / `create_path` | `ln/_utils.py` | Delegate to `libs/path_safety.py`; `ln` calls into `libs` OR extract shared helper into `ln` | Avoids duplicating the `..`-in-parts guard | Low: internal refactor, no API change | M |
 | C2 | `validate_boolean`, `to_num` | `libs/validate/` | Move to `ln/types/` or a new `ln/_coerce.py` | They are domain-free coercion utilities with no Pydantic or schema dependency; comparable scope to `fuzzy` | Low API risk; callers would need import update | M |
 | C3 | `nget`, `nset`, `npop`, `flatten`, `unflatten`, `deep_update`, `deep_merge` | `libs/nested.py` | Move to `ln/` as `ln/_nested.py`; export from `ln.__all__` | Generic data-structure utilities; the only `libs` dependency is `UNDEFINED` from `ln.types`, which would become a local import | Moderate churn (4 call sites); `libs.__init__` must re-export for compat | H |
-| C4 | `parse_frontmatter` | `libs/frontmatter.py` | Stay in `libs` (yaml dep is optional) | The yaml dependency is not appropriate for the zero-dep `ln` layer | N/A | not recommended |
+| C4 | `parse_frontmatter` | `lionhub/orchestration/frontmatter.py` (moved from `libs/frontmatter.py`, ADR-0136 Amendment 9) | Not `ln` | The yaml dependency is not appropriate for the zero-dep `ln` layer, and only the hub and Studio read definition files | N/A | done |
 | C5 | `is_ssrf_safe` | `ln/_ssrf.py` | Stay in `ln` | It is a network-safety primitive with no domain semantics, correctly placed | N/A | no change |
 
 ---

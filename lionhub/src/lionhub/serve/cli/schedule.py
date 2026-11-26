@@ -14,7 +14,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import (
     _base_url,
@@ -26,6 +25,7 @@ from lionhub.orchestration.schedule.parsing import (
     build_create_body,
     build_quick_create_parser,
 )
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 from lionhub.serve.cli.studio_client import studio_request, with_unauthorized_hint
 from lionhub.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 from lionhub.state.log_channels import log_error, warn

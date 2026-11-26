@@ -653,6 +653,14 @@ retained-module requirement in ADR-0138
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:188`).
 Unused HTTP machinery is handled in step 5, not converted into CLI discovery.
 
+Note (2026-11-26): by the maintainer's decision of 2026-11-26, `lionagi._auto` has left the core
+(ADR-0136 Amendment 9). The declaration types and the registration decorator now live at
+`lionhub.serve.cli.registration`, the module the catalog already reads. The old path stays
+importable through 1.x as a deprecated alias of that module, removed in 2.0.0, and like every other
+moved hub module it resolves only when lionhub is installed: without it, `import lionagi._auto`
+fails as the other hub rows of `lionagi/_moved.py` do. The paragraph above describes the module as it
+was before this move.
+
 **Failure tests:** `test_fresh_cli_catalog_discovery`,
 `test_catalog_loading_stays_lazy`, `test_cli_projection_uses_one_catalog`,
 and `test_core_contains_no_cli_targets`. Run the discovery cases in fresh

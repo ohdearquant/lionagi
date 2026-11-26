@@ -119,6 +119,20 @@ forwards each moved name with a warning that names the old path below.
 | --- | --- |
 | `lionagi.service._model_spec` | `lionhub.providers.model_spec` |
 
+The YAML frontmatter parser that agent, skill and plugin definition files are read with is
+deprecated at its old path in 0.39.0 and is scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.libs.frontmatter` | `lionhub.orchestration.frontmatter` |
+
+The CLI declaration types and the registration decorator below are deprecated at their old path
+in 0.39.0 and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._auto` | `lionhub.serve.cli.registration` |
+
 The prompt size bound below is deprecated at its old path in 0.39.0 and is scheduled for
 removal in 2.0.0.
 

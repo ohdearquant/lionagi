@@ -1447,6 +1447,44 @@ CONTRACTS: tuple[MoveContract, ...] = (
             {"BACKENDS", "PROVIDER_BYPASS_KWARGS", "PROVIDER_EFFORT_KWARG", "PROVIDER_YOLO_KWARGS"}
         ),
     ),
+    MoveContract(
+        old="lionagi.libs.frontmatter",
+        new="lionhub.orchestration.frontmatter",
+        kind="module",
+        public_names=frozenset({"parse_frontmatter", "parse_frontmatter_strict"}),
+        private_names=frozenset(
+            {
+                "_load_frontmatter_yaml",
+                "_parse_frontmatter",
+                "_parse_frontmatter_for_save",
+                "_strip_frontmatter_prefix",
+                "_trim_frontmatter_document",
+            }
+        ),
+        shared_values=frozenset({"_FM_OPENER", "_FM_SPLIT"}),
+    ),
+    MoveContract(
+        old="lionagi._auto",
+        new="lionhub.serve.cli.registration",
+        kind="module",
+        public_names=frozenset(
+            {
+                "CliBuild",
+                "CliDeclaration",
+                "CliParserFactory",
+                "CliSeed",
+                "DuplicateRegistrationError",
+                "HttpDeclaration",
+                "InvalidRegistrationError",
+                "Registration",
+                "RegistrationContractError",
+                "RegistrationError",
+                "auto_register",
+            }
+        ),
+        private_names=frozenset({"_Marker", "_read_registration_marker"}),
+        shared_values=frozenset({"_DEPRECATED_ALIASES", "_MARKER_ATTR"}),
+    ),
 )
 
 

@@ -1,6 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Private declaration types and the registration marker for CLI commands."""
+"""Declaration types and the registration marker for CLI commands.
+
+Until lionagi 2.0 this module is also importable as ``lionagi._auto``, its name before
+it moved out of the core, and that name still offers five deprecated catalog functions.
+"""
 
 from __future__ import annotations
 
@@ -161,6 +165,11 @@ def _read_registration_marker(obj: Any) -> RegistrationMarker | None:
     return getattr(obj, _MARKER_ATTR, None)
 
 
+# The catalog functions ``lionagi._auto`` exported before the catalog moved to
+# ``lionhub.serve.cli.catalog``. The old module name now serves this module, so they forward
+# from here, named by that old path, until it is removed.
+_OLD_NAME = "lionagi._auto"
+
 _DEPRECATED_ALIASES = {
     "build_cli_parser": ("lionhub.serve.cli.catalog.build_cli_parser", "2.0.0"),
     "command_exists": ("lionhub.serve.cli.catalog.command_exists", "2.0.0"),
@@ -180,7 +189,7 @@ def __getattr__(name: str) -> Any:
 
     target, removed_in = alias
     warnings.warn(
-        f"{__name__}.{name} is deprecated and will be removed in lionagi {removed_in}. "
+        f"{_OLD_NAME}.{name} is deprecated and will be removed in lionagi {removed_in}. "
         f"Import from {target} instead.",
         DeprecationWarning,
         stacklevel=2,

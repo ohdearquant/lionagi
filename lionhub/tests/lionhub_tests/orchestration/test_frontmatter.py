@@ -8,7 +8,7 @@ from datetime import date
 import pytest
 import yaml
 
-from lionagi.libs.frontmatter import parse_frontmatter, parse_frontmatter_strict
+from lionhub.orchestration.frontmatter import parse_frontmatter, parse_frontmatter_strict
 
 VALID = "---\nname: x\ndescription: y\n---\nBody.\n"
 BROKEN = "---\nname: [unterminated\n---\nBody.\n"

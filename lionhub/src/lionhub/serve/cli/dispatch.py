@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 __all__ = (
     "add_dispatch_subparser",

@@ -30,8 +30,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionhub.orchestration.console import log_error
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 __all__ = ("add_hooks_subparser", "run_hooks")
 

@@ -443,7 +443,7 @@ async def save_definition(
         reject_if_redacted_payload(content)
 
     if kind == "agent" and validate:
-        from lionagi.libs.frontmatter import _parse_frontmatter_for_save
+        from lionhub.orchestration.frontmatter import _parse_frontmatter_for_save
 
         new_fm, _ = _parse_frontmatter_for_save(content)
         _canonicalize_casts(dict(new_fm))
