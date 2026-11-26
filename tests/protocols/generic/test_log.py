@@ -9,14 +9,14 @@ from lionagi.protocols.generic.log import Log, LogManager, LogManagerConfig
 class TestLogManagerConfig:
     def test_default_initialization(self):
         config = LogManagerConfig()
-        assert config.persist_dir == "./data/logs"
+        assert config.persist_dir is None
         assert config.subfolder is None
         assert config.file_prefix is None
         assert config.capacity is None
         assert config.extension == ".json"
         assert config.use_timestamp is True
         assert config.hash_digits == 5
-        assert config.auto_save_on_exit is True
+        assert config.auto_save_on_exit is False
         assert config.clear_after_dump is True
 
     def test_custom_initialization(self):
@@ -127,7 +127,7 @@ class TestLogManager:
 
     def test_default_initialization(self):
         manager = LogManager()
-        assert manager._config.persist_dir == "./data/logs"
+        assert manager._config.persist_dir is None
         assert manager._config.capacity is None
         assert len(manager.logs) == 0
 

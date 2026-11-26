@@ -45,7 +45,6 @@ of it.
 """
 
 global_hook_logger = DataLogger(
-    persist_dir="./data/logs",
     subfolder="hooks",
     file_prefix="hook",
     capacity=100,

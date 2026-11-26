@@ -221,9 +221,8 @@ async def _run_fixed_inputs(
     # ``Branch.__init__`` builds a default chat model from the chat provider/model
     # settings, which read the environment and a ``.env`` file when lionagi.config is
     # imported, so a developer's choice would be in them. Patch the binding Branch
-    # reads instead. The same binding carries the log settings: a Branch registers
-    # its log to be saved into ./data/logs, resolved when the process exits, so the
-    # save is turned off rather than pointed elsewhere.
+    # reads instead. The same binding carries the log settings, and the save at exit
+    # stays off here even where a developer's environment turns it on.
     from lionagi.config import settings as app_settings
     from lionagi.session import branch as branch_module
 
