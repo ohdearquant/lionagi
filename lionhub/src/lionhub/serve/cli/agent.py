@@ -3640,13 +3640,17 @@ async def _run_agent(
         _api_turn = None
         _api_fold = None
         if api_launch is not None:
+            from lionagi.service.accounts._pricing import estimate_response_cost
+
             _api_turn_index = 0
 
             async def _api_turn(instruction: str, turn_timeout: float | None):
                 nonlocal _api_turn_index
                 _api_turn_index += 1
                 try:
-                    with collect_api_turn(_api_usage, _api_turn_index):
+                    with collect_api_turn(
+                        _api_usage, _api_turn_index, estimate_cost=estimate_response_cost
+                    ):
                         return await _run_api_turn(
                             branch,
                             instruction,

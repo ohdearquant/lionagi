@@ -33,7 +33,7 @@ from lionagi.protocols.messages import (
     Instruction,
 )
 from lionagi.service._subagent_admission import _on_subagent_admission
-from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
+from lionagi.service.accounts._usage_shape import CACHE_WRITE_LIFETIMES, cache_write_split
 from lionagi.service.connections import AgenticEndpoint
 from lionagi.service.connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -504,7 +504,7 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     nested ``usage.cache_creation`` cache-write lifetime map, which a provider
     may split across chunks; everything else is overwritten with the latest
     value. Each chunk's own split is read with
-    ``service.accounts._pricing.cache_write_split`` against that chunk's own
+    ``service.accounts._usage_shape.cache_write_split`` against that chunk's own
     cache-write total, so a sequence of chunks gives the same answer a single
     report with the summed counts would give. See the cache-write lifetime
     rule in docs/internals/core.md (``session/``).
