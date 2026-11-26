@@ -92,7 +92,7 @@ def test_relative_imports_use_the_containing_package(relative: str):
     assert package_imports(path, "tools", source) == [f"{relative}:1: lionagi.tools"]
 
 
-# Modules that left the core for lionhub in 0.39.0, by their old and their new names. The core
+# Modules that left the core for lionhub in 1.0.0, by their old and their new names. The core
 # keeps no import of either: the old names resolve only through the moved-module table.
 _STATE_MOVE = (
     ("lionagi", "state"),
