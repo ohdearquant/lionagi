@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.mcp import dispatch, jobs, verbs
 from tests.mcp._removed_surface import REMOVED_VERB_ALIASES
 

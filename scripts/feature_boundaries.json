@@ -49,10 +49,6 @@
       "layer": "sdk",
       "owner": "configuration"
     },
-    "lionagi._spec_limits": {
-      "layer": "contracts",
-      "owner": "specification_limits"
-    },
     "lionagi._state_refusal": {
       "layer": "contracts",
       "owner": "errors"

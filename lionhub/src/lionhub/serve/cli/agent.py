@@ -32,7 +32,6 @@ from lionagi._errors import (
 )
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
     SigtermInterrupt,
@@ -119,6 +118,7 @@ from lionhub.orchestration.spawn import (
     resolve_account_integrations,
     resolve_persisted_effort,
 )
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 from ._agent_depth import stamp_agent_depth
 from ._api_usage import APIUsageCollector

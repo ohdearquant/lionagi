@@ -1022,6 +1022,12 @@ CONTRACTS: tuple[MoveContract, ...] = (
             }
         ),
     ),
+    MoveContract(
+        old="lionagi._spec_limits",
+        new="lionhub.orchestration.spec_limits",
+        kind="value-only",
+        expected_values=(("MAX_SPEC_PROMPT_CHARS", 256 * 1024),),
+    ),
     MoveContract(old="lionagi.studio", new="lionagi_studio", kind="package", cold_orders=()),
     MoveContract(
         old="lionagi.studio.services._schedule_validation",

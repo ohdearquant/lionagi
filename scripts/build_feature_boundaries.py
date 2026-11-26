@@ -63,7 +63,6 @@ ROOT_MODULES = {
     "lionagi._paths": ("foundation", "path_configuration"),
     "lionagi._provider_errors": ("contracts", "errors"),
     "lionagi._settings": ("sdk", "configuration"),
-    "lionagi._spec_limits": ("contracts", "specification_limits"),
     "lionagi._state_refusal": ("contracts", "errors"),
     "lionagi._types": ("foundation", "types"),
     "lionagi.config": ("sdk", "configuration"),

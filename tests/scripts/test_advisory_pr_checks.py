@@ -1392,6 +1392,7 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/prompts.py",
         "lionhub/src/lionhub/orchestration/runs.py",
         "lionhub/src/lionhub/orchestration/spawn.py",
+        "lionhub/src/lionhub/orchestration/spec_limits.py",
         "lionhub/src/lionhub/orchestration/team.py",
         "lionhub/src/lionhub/providers/__init__.py",
         "lionhub/src/lionhub/providers/openai/__init__.py",

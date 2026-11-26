@@ -84,6 +84,13 @@ and are scheduled for removal in 2.0.0.
 | `lionagi._command_env` | `lionhub.tools.command_env` |
 | `lionagi._command_env_metadata` | `lionhub.tools.command_env_metadata` |
 
+The prompt size bound below is deprecated at its old path in 0.39.0 and is scheduled for
+removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._spec_limits` | `lionhub.orchestration.spec_limits` |
+
 The schedule services below are deprecated at their old paths in 0.38.0
 and are scheduled for removal in 2.0.0.
 
