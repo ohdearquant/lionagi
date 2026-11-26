@@ -128,8 +128,8 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
         # An empty set left this copy loading no user config, so the effort the
         # orchestrator's model derived from that config goes too, as it does for an
         # orchestrator handed an empty set (setup_orchestration).
-        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
         from lionhub.agent.factory import _canonical_provider
+        from lionhub.providers.model_spec import PROVIDER_EFFORT_KWARG
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(
             _canonical_provider(chat_model.endpoint.config.provider)

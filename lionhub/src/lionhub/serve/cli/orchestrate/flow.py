@@ -2563,8 +2563,8 @@ async def _execute_dag(
             # at what a planned worker with no role effort gets. An effort a codex
             # profile the orchestrator's spec names sets as an override stays, as it
             # does on a planned worker built from that spec.
-            from lionagi.service.providers import PROVIDER_EFFORT_KWARG
             from lionhub.agent.factory import _canonical_provider
+            from lionhub.providers.model_spec import PROVIDER_EFFORT_KWARG
 
             effort_kwarg = PROVIDER_EFFORT_KWARG.get(
                 _canonical_provider(chat_model.endpoint.config.provider)

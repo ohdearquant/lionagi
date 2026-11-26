@@ -264,8 +264,8 @@ class LegLaunch:
 def _profile_provider(agent: str) -> str | None:
     """The provider *agent*'s profile in ``~/.lionagi/agents`` runs on, or None if it names none."""
     from lionagi.service.connections.registry import EndpointRegistry
-    from lionagi.service.providers import parse_model_spec
     from lionhub.orchestration.spawn import load_agent_profile
+    from lionhub.providers.model_spec import parse_model_spec
 
     # Read from the account home, so only ~/.lionagi/agents is searched: a working
     # directory's project profiles never decide what a leg runs as.

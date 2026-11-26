@@ -242,7 +242,7 @@ class TestBackendsDefaultModel:
     """BACKENDS entries for gemini-cli must point to the newest agy family."""
 
     def test_gemini_cli_backends_use_4_argon(self):
-        from lionagi.service.providers import BACKENDS
+        from lionhub.providers.model_spec import BACKENDS
 
         assert BACKENDS["gemini-cli"] == "gemini_code/gemini-4-argon"
         assert BACKENDS["gemini_cli"] == "gemini_code/gemini-4-argon"
@@ -254,7 +254,7 @@ class TestCliProvidersSet:
     """gemini_code, gemini-cli, gemini_cli, gemini-code must be in CLI_PROVIDERS."""
 
     def test_gemini_cli_in_cli_providers(self):
-        from lionagi.service.providers import CLI_PROVIDERS
+        from lionhub.providers.model_spec import CLI_PROVIDERS
 
         for name in ("gemini_code", "gemini-code", "gemini_cli", "gemini-cli"):
             assert name in CLI_PROVIDERS, f"{name!r} not in CLI_PROVIDERS"

@@ -395,14 +395,14 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
     ],
 )
 def test_clamp_codex_effort_is_model_aware(model, effort, expected):
-    from lionagi.service.providers import _clamp_codex_effort
+    from lionhub.providers.model_spec import _clamp_codex_effort
 
     assert _clamp_codex_effort(effort, model) == expected
 
 
 @pytest.mark.parametrize("effort", [5, ["max"]], ids=["int", "list"])
 def test_clamp_codex_effort_leaves_a_non_string_for_validation(effort):
-    from lionagi.service.providers import _clamp_codex_effort
+    from lionhub.providers.model_spec import _clamp_codex_effort
 
     assert _clamp_codex_effort(effort, "gpt-5.3-codex-spark") is effort
 
@@ -468,7 +468,7 @@ def test_build_imodel_from_spec_codex_old_model_clamps_ultra(monkeypatch):
 
 def test_claude_ultra_clamps_to_max(monkeypatch):
     """Claude has no ultra tier: ultra clamps to max for every model."""
-    from lionagi.service.providers import _clamp_claude_effort
+    from lionhub.providers.model_spec import _clamp_claude_effort
 
     assert _clamp_claude_effort("ultra", "claude-opus-4-7") == "max"
     assert _clamp_claude_effort("ultra", "claude-sonnet-5") == "max"

@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.service.providers import _clamp_claude_effort, _normalize_model
+from lionhub.providers.model_spec import (
+    _clamp_claude_effort,
+    _normalize_model,
+)
 
 # Every spelling callers pass for a Claude model with a documented xhigh tier.
 # Callers pass the bare

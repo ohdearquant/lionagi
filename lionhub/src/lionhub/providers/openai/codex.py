@@ -2164,7 +2164,7 @@ class CodexCodeRequest(BaseModel):
         `Branch()`) reaches the CLI through this request model, so the fix
         belongs here rather than at each of them.
         """
-        from lionagi.service.providers import _clamp_codex_effort
+        from lionhub.providers.model_spec import _clamp_codex_effort
 
         _redact_codex_runtime_fields_in_place(values)
         values = cls._resolve_config_profile(values)
@@ -4613,6 +4613,8 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True
+    # The request field a model name's effort suffix ("gpt-5.4-max") sets; iModel reads it.
+    effort_kwarg = "reasoning_effort"
 
     @classmethod
     def unset_reasoning_effort(
@@ -4623,8 +4625,8 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     ) -> str | None:
         """The effort to emit for a codex request that sets none, for a caller without one.
 
-        ``lionagi.service.providers.codex_unset_effort_default`` reaches this by name through
-        the provider catalog, so the core names no codex module. It reads the configuration a
+        ``lionhub.providers.model_spec.codex_unset_effort_default`` reaches this by name
+        through the provider catalog, so that module names no codex module. It reads the configuration a
         request's own validation reads, from the codex home ``env`` names.
         """
         from ._codex_profile import codex_unset_effort_from_config

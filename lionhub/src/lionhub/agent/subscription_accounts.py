@@ -173,7 +173,7 @@ def validate_codex_home(raw: object, *, where: str = "codex_home") -> str:
 def account_provider(provider: str) -> str | None:
     """The account provider a model provider name uses, or None when it takes no account."""
     from lionagi.service.connections.registry import EndpointRegistry
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     canonical = EndpointRegistry.canonical_provider(provider)
     if canonical == "codex":

@@ -1735,7 +1735,7 @@ rather than stored with a misleading freshness label.
 from and the coordinator validates every turn's selection against before
 it reaches a provider CLI; model ids and effort ceilings are grounded in
 the provider request models themselves (`ClaudeEffort` for `claude_code`,
-the codex effort-ceiling tables in `service/providers.py` for `codex`, and
+the codex effort-ceiling tables in `lionhub.providers.model_spec` for `codex`, and
 `resolve_agy_model` — which folds effort into the model name rather than
 taking a separate parameter — for `gemini_code`). `model_effort_choices`
 derives the efforts it offers for a given model from the same clamp

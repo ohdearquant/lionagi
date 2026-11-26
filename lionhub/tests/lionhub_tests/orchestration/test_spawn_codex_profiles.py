@@ -427,7 +427,7 @@ class TestAProviderAliasBuildsAsItsProvider:
 
     @staticmethod
     def _flag_kwargs(flag):
-        from lionagi.service.providers import (
+        from lionhub.providers.model_spec import (
             PROVIDER_BYPASS_KWARGS,
             PROVIDER_FAST_KWARGS,
             PROVIDER_YOLO_KWARGS,

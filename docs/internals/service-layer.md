@@ -14,9 +14,10 @@ reasoning effort (`effort`, `reasoning_effort`, `thinking`, ...). This
 happens once, in `iModel.__init__`, so every construction site gets it for
 free without repeating the parsing.
 
-The suffix only strips when two conditions both hold: the resolved provider
-actually has an effort kwarg (`PROVIDER_EFFORT_KWARG`, in
-`lionagi/service/providers.py`), and the model name is written in lionagi's
+The suffix only strips when two conditions both hold: the endpoint class the
+provider catalog declares for the resolved provider names an `effort_kwarg`
+(read through `EndpointRegistry.declared_endpoint_class`, so a provider that
+declares none passes through without importing the hub), and the model name is written in lionagi's
 own `provider/model-effort` grammar rather than borrowed whole from another
 vendor's catalogue. The second check is `split_effort_suffix()`, and its rule
 is a single fact: lionagi's grammar spends its one `/` on the provider, so if
@@ -29,7 +30,10 @@ strip. Splitting it anyway would produce a model nobody serves. An explicit
 effort kwarg passed by the caller always wins over anything inferred from the
 suffix.
 
-Two providers clamp the extracted effort further, because their model
+The clamps below live in `lionhub.providers.model_spec`. `iModel` applies
+an endpoint class's `clamp_effort`, which only the Claude adapter declares;
+the Codex and Gemini clamps run in the hub's CLI adapters and spawn code.
+These providers clamp the extracted effort further, because their model
 catalogues don't support every level lionagi recognizes:
 
 - **Claude** (`_clamp_claude_effort`): only the Opus line, from Opus 4.7
