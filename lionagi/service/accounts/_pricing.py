@@ -32,6 +32,7 @@ from ._types import (
     UsageCounts,
     UsageRates,
 )
+from ._usage_shape import CACHE_WRITE_LIFETIMES, _is_count, cache_write_split
 
 __all__ = (
     "CACHE_WRITE_LIFETIMES",
@@ -40,6 +41,7 @@ __all__ = (
     "PriceRevision",
     "PriceTier",
     "cache_write_split",
+    "estimate_response_cost",
     "freeze_request",
     "price_usage",
     "quote_ceiling",
@@ -243,10 +245,6 @@ _THINKING_TYPES = frozenset({"adaptive", "disabled"})
 
 def _refuse() -> AccountRoutingError:
     return AccountRoutingError(RouterErrorCode.UNSUPPORTED_PRICING)
-
-
-def _is_count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _cache_ttl(control: Any, ttls: set[str]) -> None:
@@ -479,38 +477,6 @@ _USAGE_KEYS = frozenset(
         "output_tokens_details",
     }
 )
-# The two cache-write lifetimes a provider report may split by, in the order
-# the split is returned as ``(five_minute, one_hour)``.
-CACHE_WRITE_LIFETIMES = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
-_SPLIT_KEYS = frozenset(CACHE_WRITE_LIFETIMES)
-
-
-def cache_write_split(usage: Mapping[str, Any]) -> tuple[int, int] | None:
-    """Read one provider report's cache-write lifetime split.
-
-    Returns ``(five_minute, one_hour)`` as ints, or None when the report
-    states a split that cannot be certified. Keys must be a subset of
-    ``CACHE_WRITE_LIFETIMES``, each present value must be a non-negative int,
-    an absent lifetime reads 0, and the two must sum exactly to the report's
-    ``cache_creation_input_tokens``. A report with no ``cache_creation`` at all
-    claims no split and returns ``(0, 0)``. See the cache-write lifetime rule
-    in docs/internals/core.md (``session/``) for the consumer-facing meaning.
-    """
-    total = usage.get("cache_creation_input_tokens")
-    split = usage.get("cache_creation")
-    if split is None:
-        return 0, 0
-    if not isinstance(split, Mapping) or not set(split) <= _SPLIT_KEYS:
-        return None
-    if not _is_count(total):
-        return None
-    five_minute = split.get(CACHE_WRITE_LIFETIMES[0], 0)
-    one_hour = split.get(CACHE_WRITE_LIFETIMES[1], 0)
-    if not (_is_count(five_minute) and _is_count(one_hour)):
-        return None
-    if five_minute + one_hour != total:
-        return None
-    return five_minute, one_hour
 
 
 def _cache_writes(usage: Mapping[str, Any], ttls: frozenset[str]) -> tuple[int, int] | None:
@@ -713,3 +679,36 @@ def usage_outcome(
         cost_nusd=cost,
         request_id=request_id,
     )
+
+
+def estimate_response_cost(
+    served_model: str, usage: dict, payload: dict
+) -> tuple[int | None, str | None]:
+    """Estimate one Anthropic Messages response at the current revision, for usage telemetry.
+
+    Returns ``(cost_nusd, revision_id)``, or ``(None, None)`` when the response cannot be priced.
+    """
+    if served_model not in CURRENT_REVISION.models:
+        return None, None
+
+    # With no reported serving tier, only a standard_only request can be
+    # priced at the standard rate.
+    if usage.get("service_tier") is None and payload.get("service_tier") != "standard_only":
+        return None, None
+
+    # Read the submitted cache markers for any cache write lifetime.
+    try:
+        ttls = request_ttls({"service_tier": "standard_only", **payload})
+    except AccountRoutingError:
+        # The response can describe all cache activity even if the request
+        # shape cannot be used to infer a write lifetime.
+        if any(
+            usage.get(key) is None
+            for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
+        ):
+            return None, None
+        ttls = frozenset()
+    priced = price_usage(CURRENT_REVISION, ttls, served_model, usage)
+    if priced is None:
+        return None, None
+    return priced.cost_nusd, CURRENT_REVISION.id
