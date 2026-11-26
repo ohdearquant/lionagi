@@ -1624,6 +1624,7 @@ async def teardown_persist(
             raise signal_refusal
 
         from lionagi.hooks.bus import HookPoint
+        from lionhub.orchestration.run_persistence import install_run_persistence
 
         _unroute_message_hooks(ctx)
 
@@ -1661,7 +1662,7 @@ async def teardown_persist(
                 for _b in [_branch] if _branch is not None else _hook_branches:
                     if not _branch_end_is_this_runs(db, str(_b.id)):
                         continue
-                    await session_obj.hooks.emit(
+                    await install_run_persistence(session_obj.hooks).emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
                         status=final_status,
@@ -1669,7 +1670,7 @@ async def teardown_persist(
                         db=db,
                     )
 
-            await session_obj.hooks.emit(
+            await install_run_persistence(session_obj.hooks).emit(
                 HookPoint.SESSION_END,
                 session_id=ctx["session_id"],
                 status=final_status,
@@ -2420,12 +2421,16 @@ async def setup_agent_persist(
         if fresh_session:
             with owner.bind() if owner is not None else contextlib.nullcontext():
                 from lionagi.hooks.bus import HookPoint
+                from lionhub.orchestration.run_persistence import install_run_persistence
 
+                # A lionagi Session persists nothing by default; a hub run records itself, so the
+                # persistence handlers go on this session's bus before its first emit.
+                run_hooks = install_run_persistence(session.hooks)
                 # The run's own handle goes with both emits, as with the teardown's. The session
-                # and branch rows above already carry every field the default handlers write, so
+                # and branch rows above already carry every field the persistence handlers write, so
                 # handed a handle they write nothing: no process-wide store is reached, and no
                 # repeated write needs a grant this setup does not.
-                await session.hooks.emit(
+                await run_hooks.emit(
                     HookPoint.SESSION_START,
                     session_id=session_id,
                     model=model,
@@ -2436,7 +2441,7 @@ async def setup_agent_persist(
                     invocation_id=invocation_id,
                     db=db,
                 )
-                await session.hooks.emit(
+                await run_hooks.emit(
                     HookPoint.BRANCH_CREATE,
                     branch_id=branch_id,
                     model=model,

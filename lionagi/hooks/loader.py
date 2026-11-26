@@ -21,13 +21,10 @@ __all__ = (
     "build_session_bus",
 )
 
-# Default wiring per ADR-0047 D3.
-DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
-    HookPoint.SESSION_START: [_builtins.persist_session_start],
-    HookPoint.SESSION_END: [_builtins.persist_session_end],
-    HookPoint.BRANCH_CREATE: [_builtins.persist_branch_provenance],
-    HookPoint.BRANCH_END: [_builtins.persist_branch_end],
-}
+# A Session bus starts with no handlers, so a session used through the SDK writes nothing to the
+# state store. A run started through the hub installs the persistence handlers on its own session's
+# bus (ADR-0047, amendment of 2026-11-25). Every built-in stays addressable by name below.
+DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {}
 
 
 _REGISTRY: dict[str, HookHandler] = {

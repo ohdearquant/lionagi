@@ -16,7 +16,7 @@ logger = logging.getLogger("lionagi.hooks.builtins")
 
 
 async def _db(db: Any = None):
-    """The store a default handler writes through.
+    """The store a persistence handler writes through.
 
     A run hands its own open handle to these handlers on the event, so each writes through the
     run's handle and meets whatever the store requires of that run. A caller that carries no

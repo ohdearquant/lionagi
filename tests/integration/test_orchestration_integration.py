@@ -328,33 +328,26 @@ def test_error_handler_uses_cached_exc_class():
 
 
 def test_hook_bus_lifecycle_integration():
-    """Session.hooks returns a properly-wired bus with all DEFAULT_HOOKS registered.
+    """Session.hooks returns a bus bound to the observer, with no handlers wired by default.
 
     This is an end-to-end check of the bus lifecycle:
     1. session.hooks creates the bus
-    2. build_session_bus wires DEFAULT_HOOKS
+    2. build_session_bus wires no default handlers, so a session used through the SDK
+       persists nothing
     3. The bus is bound to the observer
-    4. Default hook points all have at least one handler
     """
-    from lionagi.hooks import DEFAULT_HOOKS, HookBus
+    from lionagi.hooks import DEFAULT_HOOKS, HookBus, HookPoint
     from lionagi.session.session import Session
 
     session = Session()
     bus = session.hooks
 
     assert isinstance(bus, HookBus)
-
-    # Every configured default point must include its declared handlers.
-    for point, default_handlers in DEFAULT_HOOKS.items():
-        handlers = bus.handlers_for(point)
-        assert len(handlers) >= 1, (
-            f"HookPoint.{point.name} must have at least one default handler registered; "
-            f"got {handlers!r}"
+    assert DEFAULT_HOOKS == {}
+    for point in HookPoint:
+        assert bus.handlers_for(point) == [], (
+            f"HookPoint.{point.name} has handlers on a plain Session bus"
         )
-        for h in default_handlers:
-            assert h in handlers, (
-                f"Default handler {h.__name__!r} missing from bus for {point.name}"
-            )
 
     # Bus must be bound to the session observer (ADR-0047)
     assert bus._observer is session.observer
