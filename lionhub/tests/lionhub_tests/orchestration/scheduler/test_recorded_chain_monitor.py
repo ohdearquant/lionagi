@@ -29,9 +29,9 @@ from lionhub.serve.cli.monitor import (
 from lionhub.state import db as db_mod
 from lionhub.state.db import StateDB
 from lionhub.state.reasons import RunReasons, ScheduleReasons
+from tests.state.test_chain_decision_readers import _isolated_postgres_store
 
 from ...state.conftest import pg_url  # noqa: F401
-from ...state.test_chain_decision_readers import _isolated_postgres_store
 from .test_scheduler_occurrence_atomicity import _schedule_row, _seed_dispatched_run_with_session
 
 _SCHEDULE = "chain-schedule"

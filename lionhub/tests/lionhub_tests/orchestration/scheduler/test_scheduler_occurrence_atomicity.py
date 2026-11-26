@@ -27,9 +27,9 @@ from lionhub.state import db as db_mod
 from lionhub.state.db import SCHEMA_VERSION, StateDB
 from lionhub.state.reasons import RunReasons
 from tests._scheduler_claims import claim_and_advance
+from tests.state.test_chain_decision_readers import _isolated_postgres_store
 
 from ...state.conftest import pg_url  # noqa: F401
-from ...state.test_chain_decision_readers import _isolated_postgres_store
 
 
 def _schedule_row(schedule_id: str, **overrides) -> dict:
