@@ -1,6 +1,6 @@
 # Install LionAGI
 
-LionAGI requires Python 3.10 or newer. Install the CLI in an isolated tool
+LionAGI requires Python 3.11 or newer. Install the CLI in an isolated tool
 environment, or add LionAGI to a Python project.
 
 ## CLI installation

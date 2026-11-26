@@ -202,10 +202,24 @@ def as_release_event(env):
 @pytest.mark.parametrize("prepare_image", [False, True], ids=["source", "image"])
 def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata, prepare_image):
     result = resolve_fixture(metadata, prepare_image=prepare_image)
-    assert json.loads(result.pop("python_versions")) == ["3.10", "3.11", "3.12", "3.13"]
+    assert json.loads(result.pop("python_versions")) == ["3.11", "3.12", "3.13", "3.14"]
     if prepare_image:
         assert result.pop("publish_latest") == "true"
     assert result == {"version": "1.2.3", "sha": SHA}
+
+
+@pytest.mark.parametrize(
+    ("version", "event", "expected"),
+    [
+        ("1.0.0", "release", ["3.11", "3.12", "3.13", "3.14"]),
+        ("1.0.0", "workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"]),
+        ("0.38.0", "release", ["3.10", "3.11", "3.12", "3.13", "3.14"]),
+        ("0.38.0", "workflow_dispatch", ["3.10", "3.11", "3.12", "3.13"]),
+    ],
+)
+def test_release_python_versions_follow_the_released_version(version, event, expected):
+    """A 0.x tag keeps the matrix it was released with; 1.0.0 and later start at 3.11."""
+    assert release.release_python_versions(version, event) == expected
 
 
 def test_metadata_command_failure_keeps_the_command_output():
@@ -374,7 +388,7 @@ def test_release_event_can_precede_pypi_and_publish_history(metadata):
     metadata[2].clear()
     del metadata[1][RUNS]
     result = resolve_fixture(metadata)
-    assert json.loads(result.pop("python_versions")) == ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    assert json.loads(result.pop("python_versions")) == ["3.11", "3.12", "3.13", "3.14"]
     assert result == {"version": "1.2.3", "sha": SHA}
     assert not any(service == "pypi" for service, _ in metadata[-1])
 
@@ -389,7 +403,7 @@ def test_release_image_accepts_a_published_wheel_after_upload_client_failure(met
         "version": "1.2.3",
         "sha": SHA,
         "publish_latest": "true",
-        "python_versions": json.dumps(["3.10", "3.11", "3.12", "3.13", "3.14"]),
+        "python_versions": json.dumps(["3.11", "3.12", "3.13", "3.14"]),
     }
     assert not any("/actions/" in path for service, path in metadata[-1] if service == "github")
 

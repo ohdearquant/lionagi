@@ -32,7 +32,7 @@ their servers with separate homes and separate filesystem access to those homes.
 
 ## Install and client registration
 
-Use Python 3.10 or later and install the optional `mcp` extra.
+Use Python 3.11 or later and install the optional `mcp` extra.
 
 ```bash
 pip install "lionagi[mcp]"

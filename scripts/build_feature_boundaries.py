@@ -102,7 +102,7 @@ REQUIREMENT_GROUPS = {
     (
         "root",
         "dependency_constraints",
-    ): "authlib python-multipart pyjwt urllib3 cryptography requests pygments pymdown-extensions opentelemetry-api",
+    ): "authlib python-multipart pyjwt urllib3 cryptography requests pygments pymdown-extensions opentelemetry-api dnspython joserfc",
 }
 
 

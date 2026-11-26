@@ -9,7 +9,7 @@ For what the server exposes once connected, see the
 
 ## 1. Install
 
-Use Python 3.10 or later and install the optional `mcp` extra.
+Use Python 3.11 or later and install the optional `mcp` extra.
 
 ```bash
 pip install "lionagi[mcp]"

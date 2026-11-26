@@ -96,7 +96,7 @@ existing warning-level diagnostics remain visible in the CI summary and the
    `uvx pre-commit run -a` for the full pipeline (file sanity hooks, ruff-format,
    ruff, pyupgrade, markdownlint, and frontend/marketplace hooks when relevant).
    `[tool.ruff]` in `pyproject.toml` is the source of truth — line length
-   **100**, target `py310`. CI tests Python 3.10-3.14 on PRs and on
+   **100**, target `py310`. CI tests Python 3.11-3.14 on PRs and on
    `main`/`develop` pushes. Merging into `main` requires the `ci-gate` status
    check, which aggregates every job in `ci.yml` except publishing and the
    advisory `performance` and `quarantine` lanes. The `Benchmarks`,

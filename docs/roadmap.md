@@ -29,7 +29,7 @@ The migration is backward compatible.
   When persistence is requested, lionagi's own SQLite state store stays the
   default. External stores plug in as adapters, and lionagi ships no store
   binary.
-- Code brought in from lion1 must run on Python 3.10, lionagi's minimum
+- Code brought in from lion1 must run on Python 3.11, lionagi's minimum
   supported version, and be typed on every public surface.
 
 ## The seven steps

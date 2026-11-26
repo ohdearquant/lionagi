@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 name = "lionagi-studio"
 version = "0.0.0"
 description = "Studio application root. In 1.x it ships inside the lionagi wheel and is not published on its own."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = ["Private :: Do Not Upload"]
 
 [tool.hatch.build.targets.wheel]

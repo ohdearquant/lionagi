@@ -38,8 +38,8 @@ The rebuild still resolves its base images, apt packages and Python dependencies
 on the dispatch day, so a repaired image matches the released one in the source
 it builds from, not byte for byte. The image job waits on the test job, so a
 repair also reruns the released commit's test matrix and a red test there blocks
-the image repair. Manual repairs use the historical Python 3.10–3.13 pytest
-path so they can run against tags that predate the current test setup.
+the image repair. Manual repairs use the historical pytest path (Python 3.10–3.13 for a 0.x tag,
+3.11–3.14 from 1.0.0) so they can run against tags that predate the current test setup.
 The manual repair requires all of:
 
 - A published, non-draft GitHub release with the exact version tag.
@@ -142,15 +142,15 @@ verification shell with mock HTTP responses. These checks do not publish images.
 
 ## Test lanes
 
-Pull requests into `dev/lionagi` run Python 3.10 and 3.14, with only 3.10 for
-documentation-only changes. The required full Python 3.10–3.14 set runs on
+Pull requests into `dev/lionagi` run Python 3.11 and 3.14, with only 3.11 for
+documentation-only changes. The required full Python 3.11–3.14 set runs on
 promotion pull requests and protected-branch pushes. A separate workflow
 runs the full set against the current `dev/lionagi` commit daily at 07:23 UTC and
 on manual dispatch. The scheduled run skips a commit already verified by the
 previous successful scheduled run and reports failures through a single labeled
 issue. The schedule starts once the workflow reaches the default branch.
-Manual runs of the required workflow can request 3.10 and 3.14 only.
-Python 3.10 carries coverage on pushes and manual runs, never on pull requests.
+Manual runs of the required workflow can request 3.11 and 3.14 only.
+Python 3.11 carries coverage on pushes and manual runs, never on pull requests.
 The required marker expression is:
 
 ```text

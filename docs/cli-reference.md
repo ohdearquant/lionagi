@@ -912,7 +912,7 @@ Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
 a control plane over this CLI: it submits `li` runs as **detached background
 jobs** and answers questions about them, so a submit returns a `run_id`
 immediately instead of blocking and the run keeps going in its own process
-group, surviving an MCP-server restart. Requires Python 3.10 or later and the
+group, surviving an MCP-server restart. Requires Python 3.11 or later and the
 `mcp` extra (`pip install "lionagi[mcp]"`). Source: `lionhub/src/lionhub/serve/mcp/`.
 
 ```bash
