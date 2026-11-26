@@ -21,12 +21,9 @@ import httpx
 import pytest
 
 import lionagi.config as config_module
-import lionagi.service.accounts._ledger as ledger_module
-import lionagi.service.accounts._router as router_module
+import lionhub.providers.anthropic.accounts._ledger as ledger_module
+import lionhub.providers.anthropic.accounts._router as router_module
 from lionagi.config import AppSettings
-from lionagi.service.accounts._credentials import CredentialSources
-from lionagi.service.accounts._ledger import CredentialLedger
-from lionagi.service.accounts._pricing import CURRENT_REVISION, freeze_request, quote_ceiling
 from lionagi.service.accounts._types import (
     AccountRoutingError,
     ProvenNotSent,
@@ -38,6 +35,13 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import _branch_routing_context, iModel
 from lionagi.service.resilience import RetryConfig
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic.accounts._credentials import CredentialSources
+from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
+from lionhub.providers.anthropic.accounts._pricing import (
+    CURRENT_REVISION,
+    freeze_request,
+    quote_ceiling,
+)
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 
 KEY_NAME = "LIONAGI_ROUTER_CANARY"
@@ -934,7 +938,7 @@ async def test_a_mapping_of_headers_is_read_by_its_items(monkeypatch, tmp_path, 
 async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
     monkeypatch, tmp_path, stream
 ):
-    from lionagi.service.accounts._ledger import CredentialLedger
+    from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
     path = _install_accounts(monkeypatch, tmp_path)
     if stream:
@@ -988,7 +992,7 @@ async def test_a_header_set_while_the_account_is_reserved_is_not_sent(
 async def test_a_url_method_or_timeout_set_while_the_account_is_reserved_is_not_used(
     monkeypatch, tmp_path, stream
 ):
-    from lionagi.service.accounts._ledger import CredentialLedger
+    from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
     path = _install_accounts(monkeypatch, tmp_path)
     if stream:
@@ -2331,7 +2335,7 @@ async def test_a_standard_only_tier_named_by_the_caller_is_sent(monkeypatch, tmp
 def test_the_stream_redactor_masks_a_key_that_straddles_its_cut():
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import StreamingSecretRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamingSecretRedactor
 
     redactor = StreamingSecretRedactor(SecretStr(CANARY))
     # One feed holding the whole key, ending two bytes past it. A tail of the key's
@@ -2605,7 +2609,7 @@ def _redacted(events, key=CANARY) -> list[tuple[str, list[str]]]:
     """Each event's pieces as sent, for events given as ``(name, [(kind, text)])``."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     redactor = StreamTextRedactor(SecretStr(key))
     out = []
@@ -3182,7 +3186,7 @@ async def test_a_quote_that_continues_the_key_masks_the_held_public_prefix(monke
 async def test_a_key_split_around_a_signature_never_reaches_the_joined_thinking(
     monkeypatch, tmp_path, cut
 ):
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     events = [
         _MESSAGE_START,
@@ -3261,7 +3265,7 @@ async def test_text_that_only_begins_like_the_key_keeps_its_place(monkeypatch, t
 async def test_a_long_key_beginning_is_masked_even_when_the_key_never_completes(
     monkeypatch, tmp_path
 ):
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     beginning = CANARY[: StreamTextRedactor.MIN_RUN]
     events = [
@@ -3328,7 +3332,7 @@ async def test_held_text_reaches_the_consumer_before_the_next_block_starts(monke
 
 def test_a_beginning_of_the_key_waits_only_for_the_next_event():
     """Held while the next event may continue the key; decided at an event with no text."""
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     run = StreamTextRedactor.MIN_RUN
     out = _redacted(
@@ -3424,7 +3428,7 @@ def test_no_join_ever_holds_more_than_a_short_beginning_of_the_key(seed):
     key appear before a mask, and the key never does."""
     import random
 
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     rng = random.Random(seed)
     alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
@@ -3478,7 +3482,7 @@ _RUN_KEY = "sk-ant-" + "QWXVJKPZBMHTRLYC" * 2
 
 
 def _no_run_of_the_key(joined: str, key: str) -> bool:
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     run = min(StreamTextRedactor.MIN_RUN, len(key))
     return not any(
@@ -3584,7 +3588,7 @@ def test_no_join_ever_shows_a_run_of_the_key_or_a_secret_beginning(seed, prefixe
 def test_mask_key_runs_masks_each_long_run_and_keeps_short_ones():
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_key_runs
 
     key = SecretStr(_RUN_KEY)
     assert mask_key_runs("x " + _RUN_KEY[10:20] + " y", key) == "x [REDACTED] y"
@@ -3704,7 +3708,7 @@ def test_a_chunk_join_links_a_piece_and_takes_text_no_piece_holds(cut):
     order: a key split between them is masked in both the piece and the chunk."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     redactor = StreamTextRedactor(SecretStr(_RUN_KEY))
     join = "text"
@@ -3846,7 +3850,7 @@ def test_an_events_raw_data_is_joined_only_with_other_raw_data():
     chunk's text is, once, so the data is not matched twice in a row."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import StreamTextRedactor
+    from lionhub.providers.anthropic.accounts._router import StreamTextRedactor
 
     key = "sk-ant-QWXVJKPZ" + "wxabcdabcd" + "MNHTRLYC"
     redactor = StreamTextRedactor(SecretStr(key))
@@ -4426,7 +4430,7 @@ def test_renaming_many_masked_names_rebuilds_the_object_once():
     another would number it, and the object is rebuilt once, not once per name."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_key_runs
     from lionhub.providers.anthropic.messages import _rename_masked_names
 
     key = SecretStr("sk-ant-api03-ab34567890123cd")
@@ -4518,7 +4522,7 @@ def test_a_masked_name_taking_a_recorded_place_still_masks_its_value():
     such name, is no exemption: the value of the renamed entry is still masked."""
     from pydantic import SecretStr
 
-    from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_key_runs
     from lionhub.providers.anthropic.messages import _mask_key_runs_in_strings
 
     key = SecretStr(CANARY)
@@ -5359,7 +5363,7 @@ async def test_a_truncated_stream_settles_its_observed_usage_estimate(monkeypatc
 @pytest.mark.parametrize("ending", ["truncated", "cancelled"])
 @pytest.mark.asyncio
 async def test_a_failed_estimate_keeps_the_open_ending_reason(monkeypatch, tmp_path, ending):
-    import lionagi.service.accounts._pricing as pricing
+    import lionhub.providers.anthropic.accounts._pricing as pricing
 
     path = _install_accounts(monkeypatch, tmp_path)
     delta = {"type": "message_delta", "usage": {"output_tokens": 5}}

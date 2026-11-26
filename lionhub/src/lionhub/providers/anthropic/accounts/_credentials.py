@@ -24,8 +24,7 @@ from lionagi.service.accounts._secret_resolution import (
     lookup_one_name,
     resolve_secret_lookup_config,
 )
-
-from ._types import AccountRoutingError, RouterErrorCode
+from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
 
 if TYPE_CHECKING:
     from lionagi.config import AppSettings

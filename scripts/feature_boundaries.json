@@ -745,23 +745,7 @@
       "layer": "adapter",
       "owner": "accounts"
     },
-    "lionagi.service.accounts._credentials": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._ledger": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._pricing": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
     "lionagi.service.accounts._request_guard": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._router": {
       "layer": "adapter",
       "owner": "accounts"
     },

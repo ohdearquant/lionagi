@@ -11,9 +11,9 @@ import pytest
 
 from lionagi.config import AppSettings
 from lionagi.service.accounts import _secret_resolution
-from lionagi.service.accounts._credentials import CredentialSources, resolve_account_key
 from lionagi.service.accounts._secret_resolution import resolve_secret_lookup_config
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode
+from lionhub.providers.anthropic.accounts._credentials import CredentialSources, resolve_account_key
 
 KEY = "LIONAGI_TEST_ACCOUNT_KEY"
 OTHER = "LIONAGI_TEST_OTHER_ACCOUNT_KEY"

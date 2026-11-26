@@ -139,7 +139,7 @@ def test_the_cap_a_leg_runs_under(policy, model, cap):
 
 def test_auto_is_the_pricing_table_s_first_tier():
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.service.accounts._pricing import CURRENT_REVISION
+    from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 
     tiers = CURRENT_REVISION.models["claude-haiku-5-5"].tiers
     assert len(tiers) > 1

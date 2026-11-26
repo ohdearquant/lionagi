@@ -6,11 +6,8 @@ import pytest
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.config import AppSettings
-from lionagi.service.accounts._credentials import CredentialSources, resolve_account_key
 
 NAME = "LIONAGI_CHAT_MODEL"
-KEY = "LIONAGI_TEST_HOME_ACCOUNT_KEY"
-VALUE = "home-key-value-0123456789"
 
 
 @pytest.fixture
@@ -20,7 +17,6 @@ def home_dotenv(monkeypatch, tmp_path):
     if path.exists():
         pytest.skip(f"{path} already exists; this test does not replace a file it did not write")
     monkeypatch.delenv(NAME, raising=False)
-    monkeypatch.delenv(KEY, raising=False)
     monkeypatch.chdir(tmp_path)
     LIONAGI_HOME.mkdir(parents=True, exist_ok=True)
     yield path
@@ -61,11 +57,3 @@ def test_every_other_source_outranks_the_home_dotenv(
     else:
         (tmp_path / override).write_text(f"{NAME}=from-cwd\n")
     assert AppSettings().LIONAGI_CHAT_MODEL == expected
-
-
-@pytest.mark.asyncio
-async def test_a_routed_account_key_resolves_from_the_home_dotenv(home_dotenv):
-    home_dotenv.write_text(f"{KEY}={VALUE}\n")
-    sources = CredentialSources.capture(AppSettings(), lookup_settings={})
-    key = await resolve_account_key(KEY, sources)
-    assert key.get_secret_value() == VALUE

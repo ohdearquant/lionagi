@@ -9,9 +9,9 @@ import json
 
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
-from lionagi.service.accounts._pricing import request_ttls
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from lionhub.providers.anthropic.accounts._pricing import request_ttls
 
 MODEL = "claude-sonnet-5-5"
 

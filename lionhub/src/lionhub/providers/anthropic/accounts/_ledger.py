@@ -57,7 +57,7 @@ _TABLES = {"account", "month", "binding", "attempt", "adjustment"}
 _REJECTION_COLUMNS = ("provider_error_type", "rejection_class")
 _EVIDENCE_COLUMNS = ("settlement_evidence_json", "http_status")
 _T = TypeVar("_T")
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger("lionagi.service.accounts._ledger")  # its name before the move
 # How long one ledger call waits for a worker thread before it is refused as busy. The
 # bound covers admission only; the SQLite lock wait is set by busy_timeout_s.
 _ADMISSION_BOUND_S = 5.0
@@ -1609,7 +1609,7 @@ class CredentialLedger:
         supplied_inputs = _pricing_inputs_dict(evidence.pricing_inputs)
         if retained_inputs != supplied_inputs or stored_model != evidence.served_model:
             raise ValueError("stream estimate pricing inputs differ from reservation")
-        from lionagi.service.accounts._pricing import stream_usage_estimate
+        from lionhub.providers.anthropic.accounts._pricing import stream_usage_estimate
 
         recomputed = stream_usage_estimate(
             revision,

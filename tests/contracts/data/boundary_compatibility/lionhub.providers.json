@@ -1,5 +1,8 @@
 {
   "environment_lookups": {
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "os.environ:key_env"
+    ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "os.environ.get:'PATH'"
     ],
@@ -59,6 +62,21 @@
     ],
     "lionhub/src/lionhub/providers/anthropic/_prompt_cache.py": [
       "__all__ = (\"CERT_VERSION\", \"LOOKBACK\", \"MAX_MARKS\", \"Point\", \"place\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/__init__.py": [
+      "__all__ = ()"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "__all__ = (\"CredentialSources\", \"resolve_account_key\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_ledger.py": [
+      "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py": [
+      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"estimate_response_cost\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"stream_usage_estimate\",\n    \"usage_outcome\",\n)"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_router.py": [
+      "__all__ = (\"AccountRouter\",)"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "__all__ = (\"ClaudeCodeRequest\", \"stream_claude_code_cli\", \"ClaudeCodeCLIEndpoint\")"
@@ -376,6 +394,41 @@
       "place",
       "points",
       "routed_cache_evidence"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "CredentialSources",
+      "resolve_account_key"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_ledger.py": [
+      "AccountStatus",
+      "CredentialLedger",
+      "default_ledger_path"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py": [
+      "ModelPrice",
+      "PriceRevision",
+      "PriceTier",
+      "estimate_response_cost",
+      "freeze_request",
+      "price_usage",
+      "quote_ceiling",
+      "registered_revisions",
+      "request_ttls",
+      "revision_by_id",
+      "stream_usage_estimate",
+      "usage_outcome"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_router.py": [
+      "AccountRouter",
+      "RoutedCacheEvidence",
+      "RouterAttempt",
+      "StreamTextRedactor",
+      "StreamingSecretRedactor",
+      "get_router",
+      "mask_joined_key_runs",
+      "mask_key_runs",
+      "provider_request_id",
+      "redact_value"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "ClaudeCodeCLIEndpoint",
