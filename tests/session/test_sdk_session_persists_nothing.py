@@ -9,6 +9,7 @@ from __future__ import annotations
 import lionagi.state.db as state_db
 from lionagi.hooks import HookPoint, build_session_bus
 from lionagi.session.session import Session
+from lionagi.testing import TestBranch
 
 
 def _record_store_opens(monkeypatch) -> list[tuple]:
@@ -33,7 +34,8 @@ async def _emit_lifecycle(bus, session_id: str, branch_id: str) -> None:
 
 async def test_sdk_session_lifecycle_never_opens_the_state_store(monkeypatch):
     opened = _record_store_opens(monkeypatch)
-    session = Session()
+    # A scripted branch keeps the default chat model from needing a provider lookup.
+    session = Session(default_branch=TestBranch.from_text("unused"))
 
     await _emit_lifecycle(session.hooks, str(session.id), "branch-sdk-1")
 
