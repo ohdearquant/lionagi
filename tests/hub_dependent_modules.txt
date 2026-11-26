@@ -289,6 +289,13 @@ tests/session/test_session_observer.py
 tests/session/test_signal_emit.py
 tests/session/test_system_template_deprecation.py
 tests/session/test_typed_gate_action.py
+tests/state/lifecycle/test_reconciler_end_to_end.py
+tests/state/test_chain_decision_readers.py
+tests/state/test_cli_worker_retention.py
+tests/state/test_compatibility_owner_ops.py
+tests/state/test_engine_catalog_keyset.py
+tests/state/test_engine_def_writes.py
+tests/state/test_state_db_url_guards.py
 tests/studio/test_daemon_log.py
 tests/studio/test_github_filter_validation.py
 tests/studio/test_ln_concurrency_callers_contract.py

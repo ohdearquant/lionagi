@@ -1,4 +1,4 @@
-"""Unit coverage for the seed-data builder and the harness safety assertion.
+"""Unit coverage for the Studio end-to-end harness in tests/e2e_studio: its seed data and its safety assertion.
 
 These run in-process against an in-memory StateDB (no subprocess, no
 browser) -- the Playwright specs are the actual end-to-end coverage; this
@@ -16,9 +16,8 @@ import pytest
 import pytest_asyncio
 
 from lionhub.state.db import StateDB
-
-from . import harness
-from .fixtures import (
+from tests.e2e_studio import harness
+from tests.e2e_studio.fixtures import (
     SESSION_STATUSES,
     SMOKE_EXECUTION_GRAPH,
     SMOKE_FAILING_SCHEDULE_NAME,
@@ -27,7 +26,7 @@ from .fixtures import (
     seed_filesystem_fixtures,
     seed_state_db,
 )
-from .harness import SeededDaemon, _seed
+from tests.e2e_studio.harness import SeededDaemon, _seed
 
 
 @pytest_asyncio.fixture

@@ -234,7 +234,7 @@ async def test_process_crash_after_effect_replays_same_event_before_ack(tmp_path
     child_tmp = tmp_path / "tmp"
     child_home.mkdir()
     child_tmp.mkdir()
-    root = Path(__file__).resolve().parents[5]
+    root = Path(__file__).resolve().parents[3]
     env = os.environ.copy()
     env.update(
         HOME=str(child_home),
