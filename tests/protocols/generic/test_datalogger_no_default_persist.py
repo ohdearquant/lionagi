@@ -87,10 +87,12 @@ def test_exit_save_requested_without_a_directory_writes_nothing(tmp_path, monkey
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_default_branch_logger_has_no_directory():
-    from lionagi.session.branch import Branch
+def test_the_settings_a_branch_logs_with_name_no_directory():
+    # Given no log_config, a Branch builds its logger from settings.LOG_CONFIG.
+    # The library runs below construct the Branch itself in a child process.
+    from lionagi.config import settings
 
-    config = Branch()._log_manager._config
+    config = DataLogger(**settings.LOG_CONFIG)._config
     assert config.persist_dir is None
     assert config.auto_save_on_exit is False
 
