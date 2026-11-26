@@ -36,7 +36,7 @@ hide:
       </div>
 
       <ul class="lion-proof" aria-label="LionAGI highlights">
-        <li>Python 3.10+</li>
+        <li>Python 3.11+</li>
         <li>CLI and SDK</li>
         <li>Apache-2.0</li>
       </ul>

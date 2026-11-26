@@ -62,7 +62,7 @@ def test_nightly_runs_each_supported_python_at_the_resolved_dev_sha():
     assert test["if"] == "needs.plan.outputs.run == 'true'"
     assert test["strategy"] == {
         "fail-fast": False,
-        "matrix": {"python-version": ["3.10", "3.11", "3.12", "3.13", "3.14"]},
+        "matrix": {"python-version": ["3.11", "3.12", "3.13", "3.14"]},
     }
     assert test["env"]["UV_PYTHON"] == MATRIX_VERSION
     assert _checkouts(test) == [
@@ -136,13 +136,13 @@ def test_nightly_and_required_tests_share_setup_and_keep_timed_suite_steps():
     )
     assert (
         required_plain["if"]
-        == "matrix.python-version != '3.10' || github.event_name == 'pull_request'"
+        == "matrix.python-version != '3.11' || github.event_name == 'pull_request'"
     )
     coverage = next(
         step for step in required["steps"] if step.get("run") == "scripts/ci.sh test-python-cov"
     )
     assert (
-        coverage["if"] == "matrix.python-version == '3.10' && github.event_name != 'pull_request'"
+        coverage["if"] == "matrix.python-version == '3.11' && github.event_name != 'pull_request'"
     )
     assert coverage["timeout-minutes"] == 60
     assert coverage["timeout-minutes"] < required["timeout-minutes"]

@@ -277,7 +277,7 @@ def test_a_reserved_identifier_nested_in_an_fstring_format_spec_is_reported(
     On interpreters below 3.12 the tokenizer hands the whole f-string over as
     one token and the literal segments are recovered by parsing it. Reading
     only the top-level values left anything inside a format spec unscanned, and
-    3.10 is the floor this project supports and runs in CI.
+    3.11 is the floor this project supports and runs in CI.
     """
     repo = _fake_repo(tmp_path)
     target = repo / "lionagi" / "render.py"
