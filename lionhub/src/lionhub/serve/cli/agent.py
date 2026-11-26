@@ -44,12 +44,6 @@ from lionagi.ln.concurrency import (
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.service._api_telemetry import collect_api_turn
-from lionagi.service._subagent_admission import (
-    DEFAULT_WORKLOAD,
-    WORKLOADS,
-    NestedAgentRefusedError,
-    SubagentAdmissionRefusedError,
-)
 from lionagi.service.imodel import _endpoint_routing_enabled
 from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration.arguments import BoundedInt
@@ -115,6 +109,12 @@ from lionhub.orchestration.spawn import (
     resolve_persisted_effort,
 )
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.providers._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    WORKLOADS,
+    NestedAgentRefusedError,
+    SubagentAdmissionRefusedError,
+)
 from lionhub.state import provenance as _provenance
 from lionhub.state.artifact_verifier import resolve_artifact_contract
 from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
@@ -3757,7 +3757,7 @@ async def _run_agent(
                     # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
                     # Code's own login token is kept. The names come from the API model's key
                     # reference, read before the branch's model is replaced.
-                    from lionagi.service._subagent_admission import without_account_names
+                    from lionhub.providers._subagent_admission import without_account_names
                     from lionhub.tools.command_env import scrub_command_env
                     from lionhub.tools.command_env_metadata import configured_command_env_names
 

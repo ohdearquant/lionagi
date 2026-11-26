@@ -725,6 +725,10 @@
       "layer": "sdk",
       "owner": "model_invocation"
     },
+    "lionagi.service._admission_notice": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
     "lionagi.service._api_telemetry": {
       "layer": "sdk",
       "owner": "model_invocation"
@@ -734,10 +738,6 @@
       "owner": "model_invocation"
     },
     "lionagi.service._prompt_cache": {
-      "layer": "sdk",
-      "owner": "model_invocation"
-    },
-    "lionagi.service._subagent_admission": {
       "layer": "sdk",
       "owner": "model_invocation"
     },

@@ -44,7 +44,7 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` |
 | `lionagi.providers._provider_errors` | `lionagi._provider_errors` |
 | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` |
-| `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` |
+| `lionagi.providers._subagent_admission` | `lionhub.providers._subagent_admission` |
 | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` |
 
 The CLI package and the shared CLI leaf modules below are deprecated at their old
@@ -123,6 +123,14 @@ The private workspace-root helper the tool constructors share is deprecated at i
 | Old import | Current import |
 | --- | --- |
 | `lionagi.ln._paths` | `lionhub.tools._paths` |
+
+The machine-wide admission for CLI agent subprocesses is deprecated at its old path in 0.39.0
+and is scheduled for removal in 2.0.0. The notice a run listens for while a worker waits for a
+slot stays in core, in `lionagi.service._admission_notice`.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service._subagent_admission` | `lionhub.providers._subagent_admission` |
 
 The schedule services below are deprecated at their old paths in 0.38.0
 and are scheduled for removal in 2.0.0.

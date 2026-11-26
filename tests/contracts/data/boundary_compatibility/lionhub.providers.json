@@ -1,5 +1,9 @@
 {
   "environment_lookups": {
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "os.environ.get:AGENT_DEPTH_ENV",
+      "os.environ:AGENT_DEPTH_ENV"
+    ],
     "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
       "os.environ:key_env"
     ],
@@ -32,6 +36,9 @@
     ],
     "lionhub/src/lionhub/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
+    ],
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
     ],
     "lionhub/src/lionhub/providers/ag2/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
@@ -360,6 +367,17 @@
       "empty_turn_chunk",
       "empty_turn_error",
       "is_empty_turn"
+    ],
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "SubagentLease",
+      "account_admission",
+      "admit_subagent",
+      "child_agent_depth",
+      "engine_cap_env",
+      "refuse_nested_agent",
+      "set_child_agent_depth",
+      "subagent_admission_status",
+      "without_account_names"
     ],
     "lionhub/src/lionhub/providers/ag2/_config.py": [
       "AG2Configs"

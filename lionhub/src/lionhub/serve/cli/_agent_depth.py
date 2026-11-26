@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from lionagi.service._subagent_admission import (
+from lionhub.providers._subagent_admission import (
     AGENT_DEPTH_ENV,
     refuse_nested_agent,
     set_child_agent_depth,

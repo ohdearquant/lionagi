@@ -1,9 +1,5 @@
 {
   "environment_lookups": {
-    "lionagi/service/_subagent_admission.py": [
-      "os.environ.get:AGENT_DEPTH_ENV",
-      "os.environ:AGENT_DEPTH_ENV"
-    ],
     "lionagi/service/connections/endpoint_config.py": [
       "os.getenv:name",
       "os.getenv:self.api_key",
@@ -22,14 +18,14 @@
       "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"APICalling\",\n    \"AssociatedEventInfo\",\n    \"Broadcaster\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HookDict\",\n    \"HookEvent\",\n    \"HookEventTypes\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"RateLimitedAPIExecutor\",\n    \"TokenCalculator\",\n    \"cache_intent\",\n    \"global_hook_logger\",\n    \"iModel\",\n    \"iModelManager\",\n)"
     ],
+    "lionagi/service/_admission_notice.py": [
+      "__all__ = ()"
+    ],
     "lionagi/service/_output_limit.py": [
       "__all__ = (\"read_output_limit_stop\",)"
     ],
     "lionagi/service/_prompt_cache.py": [
       "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
-    ],
-    "lionagi/service/_subagent_admission.py": [
-      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
     ],
     "lionagi/service/accounts/__init__.py": [
       "__all__ = ()"
@@ -166,17 +162,6 @@
       "prompt_cache_call",
       "protection",
       "settle"
-    ],
-    "lionagi/service/_subagent_admission.py": [
-      "SubagentLease",
-      "account_admission",
-      "admit_subagent",
-      "child_agent_depth",
-      "engine_cap_env",
-      "refuse_nested_agent",
-      "set_child_agent_depth",
-      "subagent_admission_status",
-      "without_account_names"
     ],
     "lionagi/service/accounts/_request_guard.py": [
       "header_pairs",
