@@ -532,7 +532,7 @@ async def create_agent(
                 extra[repo_kwarg] = spec.cwd
 
         if agent_env:
-            from lionagi.service._subagent_admission import without_account_names
+            from lionhub.providers._subagent_admission import without_account_names
 
             # The spawn reads an account and its cap from the environment it is handed; only a
             # named account's own environment may name one, so neither an inherited value nor

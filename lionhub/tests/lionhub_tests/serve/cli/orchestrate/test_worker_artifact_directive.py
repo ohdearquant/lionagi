@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionhub.orchestration.spawn import _add_workload_kwarg
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD
 from lionhub.serve.cli.orchestrate._common import (
     BARE_WORKER_SYSTEM,
     bare_worker_system,

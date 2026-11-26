@@ -27,7 +27,6 @@ from lionagi.libs.frontmatter import _strip_frontmatter_prefix
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -46,6 +45,7 @@ from lionagi.service.providers import (
     normalize_effort,
     parse_model_spec,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionhub.providers.openai._codex_profile import (
     codex_unset_effort_from_config,
     refuse_codex_profile_run_settings,
