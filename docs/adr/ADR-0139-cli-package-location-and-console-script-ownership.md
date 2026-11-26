@@ -310,7 +310,7 @@ The full 46-file partition is specified in D2.
 The populated catalog currently contains 21 canonical commands and a token map;
 a decorator only attaches metadata, and loading imports the module of an already
 selected seed (`lionagi/_auto.py:143@2a49c9fe`, `lionhub/src/lionhub/serve/cli/catalog.py::_cli_seeds`,
-`lionagi/_auto.py::auto_register`, `lionhub/src/lionhub/serve/cli/catalog.py::load_cli_command`).
+`lionhub/src/lionhub/serve/cli/registration.py::auto_register`, `lionhub/src/lionhub/serve/cli/catalog.py::load_cli_command`).
 This paragraph's line numbers are at `2a49c9fe`.
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
