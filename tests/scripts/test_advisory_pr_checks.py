@@ -744,7 +744,7 @@ def _pull_request_branch_filter(parsed: object) -> bool:
 # still runs every version before main moves. It is matched as this exact text
 # and removed before the scan, so any edit to it is refused here and has to be
 # argued again; its selections are pinned by the matrix tests below.
-SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.11\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.11\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.11\",\"3.14\"]' || '[\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
 
 
 def _sanctioned_matrix_removed(parsed: object) -> object:
@@ -902,7 +902,7 @@ def _test_matrix_versions(
     return eval(inner, {"__builtins__": {}}, scope)  # noqa: S307 - the pinned text above
 
 
-FULL_SET = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+FULL_SET = ["3.11", "3.12", "3.13", "3.14"]
 
 
 def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
@@ -913,19 +913,19 @@ def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
 @pytest.mark.parametrize(
     ("event", "base", "code", "matrix", "expected"),
     [
-        ("pull_request", "dev/lionagi", "true", "", ["3.10", "3.14"]),
+        ("pull_request", "dev/lionagi", "true", "", ["3.11", "3.14"]),
         ("pull_request", "main", "true", "", FULL_SET),
         ("pull_request", "release/x", "true", "", FULL_SET),
-        ("pull_request", "dev/lionagi", "false", "", ["3.10"]),
+        ("pull_request", "dev/lionagi", "false", "", ["3.11"]),
         ("pull_request", "main", "false", "", FULL_SET),
         ("pull_request", "release/x", "false", "", FULL_SET),
         # `changes` failed or was skipped: its output is empty.
-        ("pull_request", "dev/lionagi", "", "", ["3.10", "3.14"]),
+        ("pull_request", "dev/lionagi", "", "", ["3.11", "3.14"]),
         ("pull_request", "main", "", "", FULL_SET),
         ("push", "", "true", "", FULL_SET),
         ("push", "", "false", "", FULL_SET),
         ("workflow_dispatch", "", "", "full", FULL_SET),
-        ("workflow_dispatch", "", "", "endpoints", ["3.10", "3.14"]),
+        ("workflow_dispatch", "", "", "endpoints", ["3.11", "3.14"]),
     ],
 )
 def test_the_test_matrix_selection(event, base, code, matrix, expected) -> None:
@@ -1349,7 +1349,7 @@ CI_CHANGES_FILTERS = {
         ".dockerignore",
         ".github/workflows/ci.yml",
     ],
-    "adr": ["docs/adr/**", "lionagi/state/lifecycle/**"],
+    "adr": ["docs/adr/**", "lionhub/src/lionhub/state/lifecycle/**"],
     "imports": [
         "lionagi/**",
         "lionhub/**",
@@ -1379,8 +1379,11 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/console.py",
         "lionhub/src/lionhub/orchestration/flow/__init__.py",
         "lionhub/src/lionhub/orchestration/flow/checkpoint.py",
+        "lionhub/src/lionhub/orchestration/flow/checkpoint_version.py",
         "lionhub/src/lionhub/orchestration/flow/graph.py",
         "lionhub/src/lionhub/orchestration/flow/parsing.py",
+        "lionhub/src/lionhub/orchestration/flow/spec.py",
+        "lionhub/src/lionhub/orchestration/frontmatter.py",
         "lionhub/src/lionhub/orchestration/inspection.py",
         "lionhub/src/lionhub/orchestration/job.py",
         "lionhub/src/lionhub/orchestration/json_file.py",
@@ -1388,10 +1391,14 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/orchestration/patterns.py",
         "lionhub/src/lionhub/orchestration/project.py",
         "lionhub/src/lionhub/orchestration/prompts.py",
+        "lionhub/src/lionhub/orchestration/run_persistence.py",
         "lionhub/src/lionhub/orchestration/runs.py",
         "lionhub/src/lionhub/orchestration/spawn.py",
+        "lionhub/src/lionhub/orchestration/spec_limits.py",
         "lionhub/src/lionhub/orchestration/team.py",
         "lionhub/src/lionhub/providers/__init__.py",
+        "lionhub/src/lionhub/providers/_subagent_admission.py",
+        "lionhub/src/lionhub/providers/model_spec.py",
         "lionhub/src/lionhub/providers/openai/__init__.py",
         "lionhub/src/lionhub/providers/openai/_codex_profile.py",
         "lionhub/src/lionhub/serve/__init__.py",
@@ -1399,15 +1406,16 @@ CI_CHANGES_FILTERS = {
         "lionhub/src/lionhub/serve/mcp/__init__.py",
         "lionhub/src/lionhub/serve/mcp/_errors.py",
         "lionhub/src/lionhub/serve/mcp/config.py",
+        "lionhub/src/lionhub/state/**",
         "lionhub/src/lionhub/tools/__init__.py",
         "lionhub/src/lionhub/tools/base.py",
         "lionhub/src/lionhub/tools/communication/__init__.py",
         "lionhub/src/lionhub/tools/communication/messenger.py",
         "apps/studio/backend/src/lionagi_studio/**",
-        "tests/conftest.py",
+        "lionhub/tests/conftest.py",
         "tests/_shared_conftest.py",
-        "tests/state/conftest.py",
-        "tests/state/test_compatibility_*.py",
+        "lionhub/tests/lionhub_tests/state/conftest.py",
+        "lionhub/tests/lionhub_tests/state/test_compatibility_*.py",
         ".github/workflows/ci.yml",
     ],
     "lionrs": ["lionrs/**", ".github/workflows/ci.yml"],
@@ -1533,7 +1541,7 @@ def test_a_repeated_filter_name_is_refused(tmp_path: Path) -> None:
         "            - 'uv.lock'\n",
         "            - 'docs/adr/**'\n",
         "            - 'lionrs/**'\n",
-        "            - 'tests/state/conftest.py'\n",
+        "            - 'lionhub/tests/lionhub_tests/state/conftest.py'\n",
     ],
     ids=["lion1", "studio", "imports", "adr", "lionrs", "compat"],
 )
@@ -1832,7 +1840,7 @@ COMPAT_ASSERT_RUN = _compat_run(COMPAT_ASSERT_SCRIPT)
 COMPAT_PYTEST_RUN = (
     "uv run --no-sync pytest -n 0 --maxfail=0 "
     '-m "not performance and not flaky_quarantine" '
-    "--disable-warnings tests/state/test_compatibility_*.py"
+    "--disable-warnings lionhub/tests/lionhub_tests/state/test_compatibility_*.py"
 )
 # The steps after the replacement: (name, the constant's name for messages, its `run` text).
 COMPAT_PINNED_STEPS = [
@@ -2426,7 +2434,7 @@ COMPAT_ARMS = [
         _set_in_step(
             COMPAT_PYTEST_STEP,
             "run",
-            value="uv --project . run pytest -n 0 tests/state/test_compatibility_*.py",
+            value="uv --project . run pytest -n 0 lionhub/tests/lionhub_tests/state/test_compatibility_*.py",
         ),
         [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
     ),
@@ -2435,7 +2443,7 @@ COMPAT_ARMS = [
         _set_in_step(
             COMPAT_PYTEST_STEP,
             "run",
-            value="uvx --with-editable . pytest -n 0 tests/state/test_compatibility_*.py",
+            value="uvx --with-editable . pytest -n 0 lionhub/tests/lionhub_tests/state/test_compatibility_*.py",
         ),
         [COMPAT_PYTEST_STEP, "COMPAT_PYTEST_RUN"],
     ),
@@ -2663,7 +2671,7 @@ def test_the_compat_pin_compares_the_text_the_yaml_parser_returns(tmp_path: Path
     )
     pytest_block = re.compile(
         r"      run: >-\n        uv run --no-sync pytest\b(?:.*\n)*?"
-        r"        tests/state/test_compatibility_\*\.py\n"
+        r"        lionhub/tests/lionhub_tests/state/test_compatibility_\*\.py\n"
     )
     text, checks = check_block.subn(lambda _: f"      run: {json.dumps(COMPAT_ASSERT_RUN)}\n", text)
     text, pytests = pytest_block.subn(
@@ -2790,13 +2798,14 @@ def test_the_compat_deps_pin_refuses_a_floor_the_matrix_does_not_reach(
 
 # The `lionagi/` entries of the `compat` filter are recomputed from the files the
 # job runs, so a new import in one of them cannot leave the job skipped for a change
-# to the file it imports. The files read are every .py file under lionagi/state and
-# the `tests/` files the filter names. An import statement counts wherever it sits
-# (inside a function, under TYPE_CHECKING, in a try block). `import lionagi.X` and
-# `from lionagi.X import ...` name X. `import lionagi` and `from lionagi import N`
-# name lionagi/__init__.py, and also N when lionagi/N is a package or lionagi/N.py a
-# module. A relative import counts when it resolves outside lionagi/state. A package
-# is listed as `lionagi/X/**` and a module as `lionagi/X.py`.
+# to the file it imports. The files read are every .py file under
+# lionhub/src/lionhub/state and the test files the filter names. An import statement
+# counts wherever it sits (inside a function, under TYPE_CHECKING, in a try block).
+# `import lionagi.X` and `from lionagi.X import ...` name X. `import lionagi` and
+# `from lionagi import N` name lionagi/__init__.py, and also N when lionagi/N is a
+# package or lionagi/N.py a module. A relative import in those files stays inside
+# lionhub, so it names no lionagi entry. A package is listed as `lionagi/X/**` and a
+# module as `lionagi/X.py`.
 #
 # Importing any lionagi module runs lionagi/__init__.py first, so what that file
 # imports when it loads counts as imported by every source above. For that one file
@@ -2960,9 +2969,16 @@ def _compat_lionhub_imports(
 
 
 def _compat_lionhub_dependencies(
-    root: Path, test_sources: list[Path], listed: list[str]
+    root: Path,
+    test_sources: list[Path],
+    listed: list[str],
+    tree_sources: list[tuple[str, Path, str]] = (),
 ) -> dict[str, str]:
-    """Find dependencies without importing code or visiting unrelated files in a filter glob."""
+    """Find dependencies without importing code or visiting unrelated files in a filter glob.
+
+    *tree_sources* are LionHub files read in full, as test files are, each with the label
+    it is reported by and the dotted package its relative imports resolve against.
+    """
     hub_src = root / "lionhub" / "src"
     modules: dict[str, Path] = {}
     for path in sorted((hub_src / "lionhub").rglob("*.py")):
@@ -2992,6 +3008,10 @@ def _compat_lionhub_dependencies(
         tree = ast.parse(path.read_text(), filename=str(path))
         for name, line in _compat_lionhub_imports(tree, modules, None, at_load=False):
             add(name, f"{path.relative_to(root).as_posix()}:{line}")
+    for label, path, package in tree_sources:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for name, line in _compat_lionhub_imports(tree, modules, package, at_load=False):
+            add(name, f"{label}:{line}")
     for name, path in modules.items():
         if path.relative_to(root).as_posix() in listed:
             add(name, "the listed import")
@@ -3003,6 +3023,9 @@ def _compat_lionhub_dependencies(
     return origins
 
 
+STATE_TREE = "lionhub/src/lionhub/state/"
+
+
 def _compat_filter_problems(
     workflows: Path = WORKFLOWS,
     root: Path = REPO_ROOT,
@@ -3011,35 +3034,35 @@ def _compat_filter_problems(
 ) -> list[str]:
     """Check LionAGI filter entries and coverage of LionHub import dependencies.
 
-    *state* is the directory read as lionagi/state, *init* the file read as
-    lionagi/__init__.py, and the `tests/` files come from the filter's own entries,
-    globbed under *root*.
+    *state* is the directory read as lionhub/src/lionhub/state, *init* the file read as
+    lionagi/__init__.py, and the test files come from the filter's own entries under
+    `tests/` and `lionhub/tests/`, globbed under *root*.
     """
-    state = state or root / "lionagi" / "state"
+    state = state or root / "lionhub" / "src" / "lionhub" / "state"
     init = init or root / "lionagi" / "__init__.py"
     listed = _changes_filters(workflows)["compat"]
     names = {path.name: path for path in (root / "lionagi").iterdir()}
     sources: list[tuple[str, Path, list[str] | None]] = []
+    tree_sources: list[tuple[str, Path, str]] = []
     for path in sorted(state.rglob("*.py")):
         relative = path.relative_to(state)
-        sources.append(
-            (
-                f"lionagi/state/{relative.as_posix()}",
-                path,
-                ["lionagi", "state", *relative.parent.parts],
-            )
-        )
+        label = f"{STATE_TREE}{relative.as_posix()}"
+        sources.append((label, path, None))
+        parts = ["lionhub", "state", *relative.with_suffix("").parts]
+        tree_sources.append((label, path, ".".join(parts[:-1])))
     problems = []
+    if f"{STATE_TREE}**" not in listed:
+        problems.append(f"the compat filter lacks '{STATE_TREE}**', the state tree itself")
     test_sources: list[Path] = []
     for pattern in listed:
-        if not pattern.startswith("tests/"):
+        if not pattern.startswith(("tests/", "lionhub/tests/")):
             continue
         matched = sorted(root.glob(pattern))
         if not matched:
             problems.append(f"the compat filter names {pattern!r}, which matches no file")
         sources.extend((p.relative_to(root).as_posix(), p, None) for p in matched)
         test_sources.extend(matched)
-    needed = {"lionagi/state/**": "the lionagi/state tree itself"}
+    needed: dict[str, str] = {}
     for label, path, package in sources:
         found, unresolved = _compat_names_in(path, package, names)
         for entry, line in found:
@@ -3070,7 +3093,7 @@ def _compat_filter_problems(
         for entry in listed
         if entry.startswith("lionhub/") and entry.endswith("/**")
     ]
-    hub_dependencies = _compat_lionhub_dependencies(root, test_sources, listed)
+    hub_dependencies = _compat_lionhub_dependencies(root, test_sources, listed, tree_sources)
     for entry, source in sorted(hub_dependencies.items()):
         if entry not in listed and not any(entry.startswith(tree) for tree in hub_trees):
             problems.append(f"the compat filter lacks {entry!r}, which {source} needs")
@@ -3103,12 +3126,12 @@ def test_the_compat_filter_lists_what_its_sources_import() -> None:
         (
             "lionhub/src/lionhub/orchestration/runs.py",
             "lionhub/src/lionhub/orchestration/runs.py",
-            "tests/state/test_compatibility_",
+            "lionhub/tests/lionhub_tests/state/test_compatibility_",
         ),
         (
             "lionhub/src/lionhub/serve/cli/**",
             "lionhub/src/lionhub/serve/cli/agent.py",
-            "tests/state/test_compatibility_",
+            "lionhub/tests/lionhub_tests/state/test_compatibility_",
         ),
         (
             "lionhub/src/lionhub/orchestration/job.py",
@@ -3210,7 +3233,9 @@ def test_compat_lionhub_dependencies_follow_load_time_imports_without_cycles(
 def _copy_the_state_tree(tmp_path: Path) -> Path:
     state = tmp_path / "state"
     shutil.copytree(
-        REPO_ROOT / "lionagi" / "state", state, ignore=shutil.ignore_patterns("__pycache__")
+        REPO_ROOT / "lionhub" / "src" / "lionhub" / "state",
+        state,
+        ignore=shutil.ignore_patterns("__pycache__"),
     )
     return state
 
@@ -3226,7 +3251,7 @@ def test_the_compat_filter_pin_refuses_an_import_the_filter_lacks(tmp_path: Path
         handle.write(f"\nimport lionagi.{package}\n")
     problems = _compat_filter_problems(state=state)
     assert any(
-        f"lacks 'lionagi/{package}/**'" in problem and "lionagi/state/compat.py:" in problem
+        f"lacks 'lionagi/{package}/**'" in problem and f"{STATE_TREE}compat.py:" in problem
         for problem in problems
     ), problems
 

@@ -76,18 +76,17 @@ assert warning.filename == "<string>"
     )
 
 
-def test_legacy_catalog_module_import_defers_lionhub_until_a_name_is_used():
+def test_legacy_catalog_module_import_defers_the_catalog_until_a_name_is_used():
     _fresh(
         """
 import sys
 import warnings
 
-def loaded_hub_modules():
-    return [name for name in sys.modules if name == "lionhub" or name.startswith("lionhub.")]
-
-assert not loaded_hub_modules()
-import lionagi._auto as old
-assert not loaded_hub_modules(), loaded_hub_modules()
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import lionagi._auto as old
+assert old is sys.modules["lionhub.serve.cli.registration"]
+assert "lionhub.serve.cli.catalog" not in sys.modules
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     forwarded = old.seed_for

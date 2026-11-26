@@ -19,15 +19,15 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.daemon.services.schedules import get_schedule_run, list_schedule_runs_route
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

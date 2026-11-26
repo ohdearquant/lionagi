@@ -286,8 +286,8 @@ async def test_fire_refuses_owner_carrying_cwd_inherit(monkeypatch):
     inheriting the daemon's cwd would run it under the daemon directory's
     identity. The run is recorded with RunReasons.FAILED_CWD_INHERIT_REFUSED and
     spawn_and_wait is never called."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     fake_get_project = AsyncMock(return_value={"name": "gone", "path": "/no/such/directory/at/all"})
     monkeypatch.setattr(
@@ -327,8 +327,8 @@ async def test_fire_plain_nonzero_exit_keeps_generic_reason(monkeypatch):
     """A schedule with no action_project (or a healthy one) that exits
     non-zero keeps the pre-existing generic FAILED_EXIT_NONZERO reason --
     this rewrite must not misattribute ordinary failures to a missing cwd."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)

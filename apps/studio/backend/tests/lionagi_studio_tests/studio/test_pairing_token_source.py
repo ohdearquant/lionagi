@@ -16,7 +16,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 _PAIR = "/api/studio/pair"
 _HOSTED = "https://lion-studio.khive.ai"

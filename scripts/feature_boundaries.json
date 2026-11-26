@@ -5,33 +5,9 @@
       "layer": "sdk",
       "owner": "public_api"
     },
-    "lionagi._auto": {
-      "layer": "root",
-      "owner": "application_discovery"
-    },
-    "lionagi._checkpoint_v3_codec": {
-      "layer": "contracts",
-      "owner": "checkpoint_contracts"
-    },
-    "lionagi._checkpoint_version": {
-      "layer": "contracts",
-      "owner": "checkpoint_contracts"
-    },
     "lionagi._class_registry": {
       "layer": "foundation",
       "owner": "class_registry"
-    },
-    "lionagi._cli_worker_context": {
-      "layer": "adapter",
-      "owner": "worker_context"
-    },
-    "lionagi._command_env": {
-      "layer": "adapter",
-      "owner": "command_environment"
-    },
-    "lionagi._command_env_metadata": {
-      "layer": "contracts",
-      "owner": "command_environment"
     },
     "lionagi._errors": {
       "layer": "contracts",
@@ -41,17 +17,9 @@
       "layer": "contracts",
       "owner": "errors"
     },
-    "lionagi._flow_spec": {
-      "layer": "contracts",
-      "owner": "flow_contracts"
-    },
     "lionagi._lionagi_dir_trust": {
       "layer": "sdk",
       "owner": "configuration"
-    },
-    "lionagi._log_channels": {
-      "layer": "foundation",
-      "owner": "logging_channels"
     },
     "lionagi._moved": {
       "layer": "foundation",
@@ -69,9 +37,9 @@
       "layer": "sdk",
       "owner": "configuration"
     },
-    "lionagi._spec_limits": {
+    "lionagi._state_refusal": {
       "layer": "contracts",
-      "owner": "specification_limits"
+      "owner": "errors"
     },
     "lionagi._types": {
       "layer": "foundation",
@@ -129,10 +97,6 @@
       "layer": "adapter",
       "owner": "hooks"
     },
-    "lionagi.hooks._message_retry": {
-      "layer": "adapter",
-      "owner": "hooks"
-    },
     "lionagi.hooks.builtins": {
       "layer": "adapter",
       "owner": "hooks"
@@ -166,10 +130,6 @@
       "owner": "utilities"
     },
     "lionagi.libs.file.process": {
-      "layer": "foundation",
-      "owner": "utilities"
-    },
-    "lionagi.libs.frontmatter": {
       "layer": "foundation",
       "owner": "utilities"
     },
@@ -258,10 +218,6 @@
       "owner": "primitives"
     },
     "lionagi.ln._list_call": {
-      "layer": "foundation",
-      "owner": "primitives"
-    },
-    "lionagi.ln._paths": {
       "layer": "foundation",
       "owner": "primitives"
     },
@@ -761,6 +717,10 @@
       "layer": "sdk",
       "owner": "model_invocation"
     },
+    "lionagi.service._admission_notice": {
+      "layer": "sdk",
+      "owner": "model_invocation"
+    },
     "lionagi.service._api_telemetry": {
       "layer": "sdk",
       "owner": "model_invocation"
@@ -773,27 +733,11 @@
       "layer": "sdk",
       "owner": "model_invocation"
     },
-    "lionagi.service._subagent_admission": {
-      "layer": "sdk",
-      "owner": "model_invocation"
-    },
     "lionagi.service.accounts": {
       "layer": "adapter",
       "owner": "accounts"
     },
-    "lionagi.service.accounts._credentials": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._ledger": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._pricing": {
-      "layer": "adapter",
-      "owner": "accounts"
-    },
-    "lionagi.service.accounts._router": {
+    "lionagi.service.accounts._request_guard": {
       "layer": "adapter",
       "owner": "accounts"
     },
@@ -806,6 +750,10 @@
       "owner": "accounts"
     },
     "lionagi.service.accounts._types": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._usage_shape": {
       "layer": "adapter",
       "owner": "accounts"
     },
@@ -973,138 +921,6 @@
       "layer": "sdk",
       "owner": "session"
     },
-    "lionagi.state": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state._mirror_common": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state._quarantine_identity": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.artifact_verifier": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.claude_mirror": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.cli_workers": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.codex_mirror": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.compat": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.completion_evidence": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.content_pruned": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.db": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.engine": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.health": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.adapters": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.callbacks": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.consumer_inspection": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.deliveries": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.models": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.notify_settings": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.policy": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.reconciler": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.schedules": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.service": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.lifecycle.settings_delivery": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.provenance": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.reasons": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.schema_meta": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.schema_migrations": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.session_naming": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.staleness": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.terminal_eligibility": {
-      "layer": "adapter",
-      "owner": "state"
-    },
-    "lionagi.state.transitions": {
-      "layer": "adapter",
-      "owner": "state"
-    },
     "lionagi.studio": {
       "layer": "root",
       "owner": "studio"
@@ -1199,6 +1015,10 @@
       "layer": "root",
       "owner": "dependency_constraints"
     },
+    "dnspython": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
     "fastapi": {
       "layer": "root",
       "owner": "studio"
@@ -1222,6 +1042,10 @@
     "ipython": {
       "layer": "root",
       "owner": "development"
+    },
+    "joserfc": {
+      "layer": "root",
+      "owner": "dependency_constraints"
     },
     "json-repair": {
       "layer": "foundation",

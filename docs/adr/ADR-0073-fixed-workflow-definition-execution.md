@@ -161,7 +161,7 @@ second file format. In-place mutation is simple, but it cannot identify the exac
 definition used by a run.
 
 Code anchors: `apps/studio/backend/src/lionagi_studio/services/workflow_defs.py` (`_validate_spec`, request models, routes);
-`lionagi/state/db.py` (workflow-def methods); `lionagi/state/schema.sql`.
+`lionhub/src/lionhub/state/db.py` (workflow-def methods); `lionhub/src/lionhub/state/schema.sql`.
 
 ### D2 — Three executable kinds compile to the shared graph kernel
 

@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-import lionagi._checkpoint_version as checkpoint_version
+import lionhub.orchestration.flow.checkpoint_version as checkpoint_version
 from lionhub.orchestration.flow.checkpoint import (
     CheckpointWriter,
     UnsupportedFlowCheckpointVersionError,

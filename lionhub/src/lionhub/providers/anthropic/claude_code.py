@@ -28,7 +28,6 @@ from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entrie
 from lionagi.libs.path_safety import check_path_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -56,6 +55,8 @@ from lionhub.providers._cli_subprocess import (
 from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
+from lionhub.providers.model_spec import _clamp_claude_effort
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import CLAUDE_CODE_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
@@ -1426,6 +1427,14 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True
     restores_session_id = True
+    # The request field a model name's effort suffix ("sonnet-high") sets; iModel reads it.
+    effort_kwarg = "effort"
+
+    @staticmethod
+    def clamp_effort(effort: str, model: str) -> str:
+        """``effort`` as ``model`` takes it: ultra becomes max, and xhigh becomes high on a
+        model without an xhigh tier. iModel applies it to an effort read off a model name."""
+        return _clamp_claude_effort(effort, model)
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)

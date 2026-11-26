@@ -27,8 +27,8 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     plain import (state.db + the schedules service module both import the
     name directly, so both bindings need patching)."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -60,7 +60,7 @@ async def test_patch_cron_expr_recomputes_next_fire_immediately(temp_db_path, ca
 
     # Seed a stale next_fire_at as if it were computed under the old (wrong)
     # interpretation — an obviously-wrong value so the shift is unambiguous.
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         await db.update_schedule(sid, next_fire_at=100.0)
@@ -97,7 +97,7 @@ async def test_patch_unrelated_field_does_not_log_shift(temp_db_path, caplog):
     )
     sid = created["id"]
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         row = await db.get_schedule(sid)
@@ -120,12 +120,12 @@ async def test_patch_unrelated_field_does_not_log_shift(temp_db_path, caplog):
 async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog, monkeypatch):
     """(c3) disable -> enable recomputes next_fire_at; a stale past value
     never fires immediately on enable unless the fresh computation says so."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -167,8 +167,8 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog, m
 async def test_patch_invalid_cron_expr_rejected_before_commit(temp_db_path):
     """An invalid cron_expr in a PATCH is a clean ValueError; the DB row is
     left untouched rather than committing bad data ahead of a recompute."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -213,9 +213,9 @@ async def test_create_invalid_cron_expr_rejected(temp_db_path):
 async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, caplog, monkeypatch):
     """A recompute that fails once then succeeds still lands a fresh
     next_fire_at — the guarded retry absorbs transient DB contention."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -260,9 +260,9 @@ async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, ca
 async def test_patch_recompute_failure_does_not_raise(temp_db_path, caplog, monkeypatch):
     """A recompute failure after a valid, already-committed PATCH degrades to
     a warning log instead of propagating out of update_schedule()."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -299,13 +299,13 @@ async def test_patch_recompute_failure_does_not_raise(temp_db_path, caplog, monk
 async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, monkeypatch):
     """A recompute failure after a valid, already-committed enable degrades
     to a warning log instead of propagating out of enable_schedule()."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -378,8 +378,8 @@ async def test_patch_flip_to_cron_without_expr_rejected(temp_db_path):
     """A PATCH that flips trigger_type to 'cron' while cron_expr is absent (and
     was never set) on the effective row must also be rejected — the
     touches_trigger gate fires on trigger_type alone."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -404,8 +404,8 @@ async def test_patch_flip_to_cron_without_expr_rejected(temp_db_path):
 async def test_patch_blank_expr_on_cron_schedule_rejected(temp_db_path):
     """A PATCH that blanks cron_expr on an existing cron schedule is rejected —
     the touches_trigger gate fires on cron_expr alone."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import create_schedule, update_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -633,13 +633,13 @@ async def test_enable_dead_cron_schedule_rejected(temp_db_path):
     """Enabling a cron schedule whose cron_expr has been blanked (a legacy
     dead row) is rejected with a 400-worthy ValueError instead of flipping
     enabled=1 on a schedule that can never fire."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
         get_schedule,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -672,12 +672,12 @@ async def test_enable_route_dead_cron_schedule_returns_400(temp_db_path):
     mirroring create/update's ValueError -> 400 mapping."""
     from fastapi import HTTPException
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule_route,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -733,9 +733,9 @@ async def test_startup_recompute_warns_on_dead_cron_row(temp_db_path, caplog):
     """_recompute_armed_cron_schedules must log a warning naming the
     schedule id for an enabled cron row with an empty cron_expr, instead of
     silently skipping it via recompute_next_fire's falsy early-return."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve.daemon.services.schedules import create_schedule
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -864,12 +864,12 @@ async def test_patch_trigger_flip_away_from_interval_allows_clearing_interval(te
 async def test_enable_dead_interval_schedule_rejected(temp_db_path):
     """Enabling an interval schedule whose interval_sec was lost (legacy row)
     is rejected the same way as enabling a dead cron schedule."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {
@@ -898,12 +898,12 @@ async def test_enable_exhausted_max_runs_schedule_rejected(temp_db_path):
     max_runs budget refuses to re-enable rather than silently resetting the
     counter (there is no per-enable-cycle counting — max_runs is a lifetime
     cap on the schedule id)."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.daemon.services.schedules import (
         create_schedule,
         disable_schedule,
         enable_schedule,
     )
+    from lionhub.state.db import StateDB
 
     created = await create_schedule(
         {

@@ -329,7 +329,7 @@ def codex_unset_effort_from_config(
     env: Mapping[str, str] | None = None,
 ) -> str | None:
     """Derive an unset effort for the resolved model from the Codex config."""
-    from lionagi.service.providers import _codex_unset_effort_from_reader
+    from lionhub.providers.model_spec import _codex_unset_effort_from_reader
 
     return _codex_unset_effort_from_reader(
         model, profile_overrides, env, read_global_effort=global_codex_reasoning_effort

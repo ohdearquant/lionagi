@@ -42,7 +42,6 @@ from lionagi.ln._proc import (
     start_time_matches,
 )
 from lionagi.ln.concurrency import current_time, sleep
-from lionagi.service._subagent_admission import refuse_nested_agent
 from lionhub.agent.khive_actor import MINTED_CHILD_ACTOR_ENV
 from lionhub.orchestration.runs import (
     _MCP_AGENT_RUN_ID,
@@ -51,6 +50,7 @@ from lionhub.orchestration.runs import (
     _subscription_fallback_resume_refusal,
     _SubscriptionFallbackResumeError,
 )
+from lionhub.providers._subagent_admission import refuse_nested_agent
 
 from . import config
 from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
@@ -2358,7 +2358,7 @@ def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
     """
     if not isinstance(value, dict):
         return None
-    from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+    from lionhub.state.lifecycle.policy import DEFAULT_REGISTRY
 
     status = value.get("status")
     code = value.get("reason_code")

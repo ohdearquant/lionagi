@@ -22,8 +22,8 @@ _OTHER_GENERATION = "c06b1529-665f-4ee4-9ff1-c85d5fb2d9da"
 async def scripted(monkeypatch):
     import psutil
 
-    from lionagi.state.cli_workers import _WorkerSpawnOwner
     from lionhub.providers import _cli_subprocess as cs
+    from lionhub.state.cli_workers import _WorkerSpawnOwner
 
     state = SimpleNamespace(
         cs=cs,
@@ -600,7 +600,7 @@ async def test_an_uncapped_persisted_spawn_retries_missing_identity(scripted):
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_explicit_none_keeps_uncapped_optional_identity_and_records_nothing(scripted):
-    from lionagi._cli_worker_context import _bind_cli_worker_recorder
+    from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
     state = scripted
     state.observation_times = [None]
@@ -829,7 +829,7 @@ async def test_an_unknown_no_handle_spawn_failure_keeps_holder_ownership(
     scripted, tmp_path, monkeypatch, caplog, failure_kind
 ):
     from lionagi import _paths
-    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _subagent_admission as admission
 
     state = scripted
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
@@ -955,8 +955,8 @@ async def test_missing_executables_never_attempt_spawn_or_accumulate_capped_slot
 ):
     from lionagi import _paths
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.service import _subagent_admission as admission
     from lionhub.providers import _cli_subprocess as cs
+    from lionhub.providers import _subagent_admission as admission
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": str(count), "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1052,8 +1052,8 @@ async def test_an_unconfirmed_dead_child_keeps_actual_holder_locks_until_explici
     tmp_path, monkeypatch, reported
 ):
     from lionagi import _paths
-    from lionagi.service import _subagent_admission as admission
     from lionhub.providers import _cli_subprocess as cs
+    from lionhub.providers import _subagent_admission as admission
 
     monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "isolated-home")
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -1087,7 +1087,7 @@ async def test_real_store_stale_generation_refuses_before_transport_and_leaves_r
     scripted, tmp_path
 ):
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = scripted
     async with StateDB(tmp_path / "worker-registration.db") as db:
@@ -1123,9 +1123,9 @@ async def test_real_python_child_commits_its_identity_before_callback_and_first_
     import psutil
 
     from lionagi import _paths
-    from lionagi.state.cli_workers import _WorkerSpawnOwner
-    from lionagi.state.db import StateDB
     from lionhub.providers import _cli_subprocess as cs
+    from lionhub.state.cli_workers import _WorkerSpawnOwner
+    from lionhub.state.db import StateDB
 
     admission_home = tmp_path / "admission-home"
     child_home = tmp_path / "child-home"

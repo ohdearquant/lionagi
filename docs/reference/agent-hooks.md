@@ -1,8 +1,7 @@
 # Agent Hooks Reference
 
 Reference for `lionagi.hooks.HookPoint` — the closed vocabulary of session
-lifecycle hook points — and the built-in handlers registered via
-`lionagi.hooks.loader.DEFAULT_HOOKS`.
+lifecycle hook points — and the built-in handlers in `lionagi.hooks.builtins`.
 
 These Session-level `HookBus` hooks are separate from the per-`iModel`
 service lifecycle. See [HookRegistry service hooks](advanced.md#hookregistry)
@@ -24,13 +23,22 @@ for model invocation callbacks.
 | `TOOL_POST` | `tool.post` | `operations/act/act.py`, after successful tool invocation |
 | `TOOL_ERROR` | `tool.error` | `operations/act/act.py`, on tool invocation failure |
 
-### Registered in DEFAULT_HOOKS (handlers wired; emit callsite deferred to ADR-0023b)
+### Persistence on the hub run path
 
-| Point | Value | Default handler |
-|-------|-------|----------------|
-| `SESSION_START` | `session.start` | `persist_session_start` |
-| `SESSION_END` | `session.end` | `persist_session_end` |
-| `BRANCH_CREATE` | `branch.create` | `persist_branch_provenance` |
+A `Session` bus starts with no handlers (`lionagi.hooks.loader.DEFAULT_HOOKS` is
+empty), so a session used through the SDK writes nothing to the state store. A
+run started through the hub records itself: before each lifecycle emit,
+`lionhub/src/lionhub/orchestration/runs.py` installs the persistence handlers on
+its session's bus with
+`lionhub.orchestration.run_persistence.install_run_persistence`. Installing is
+idempotent.
+
+| Point | Value | Callsite | Handler the hub installs |
+|-------|-------|----------|--------------------------|
+| `SESSION_START` | `session.start` | `runs.py` agent session setup, for a fresh session | `persist_session_start` |
+| `BRANCH_CREATE` | `branch.create` | `runs.py` agent session setup, for a fresh session | `persist_branch_provenance` |
+| `SESSION_END` | `session.end` | `runs.py teardown_persist` | `persist_session_end` |
+| `BRANCH_END` | `branch.end` | `runs.py teardown_persist` (see above) | `persist_branch_end` |
 
 ### Dormant (vocabulary only; no handler and no emit callsite)
 
@@ -66,7 +74,7 @@ as dropped, and the run's teardown then fails the run with the kept refusal as
 its reason, also for a refusal recorded while the lifecycle emits run, since the
 terminal status is written after them. Every other failed signal write is still counted as dropped, as
 before.
-A lifecycle emit a run makes hands the run's own open handle to the default
+A lifecycle emit a run makes hands the run's own open handle to the persistence
 handlers, so each writes through that handle and meets whatever the store
 requires of the run (the `SESSION_START` and `BRANCH_CREATE` handlers, handed
 the agent setup's handle, write nothing: the rows the setup created already
@@ -91,9 +99,9 @@ point without propagating as an error.
 
 `build_session_bus(agent_hooks=...)` is a low-level construction utility for
 callers that explicitly own a Session bus. It is not consumed automatically by
-`Session` or `AgentSpec`/profile construction. A point present in the mapping
-**replaces** its default handler list; an empty list disables a default. Points
-not mentioned keep their defaults.
+`Session` or `AgentSpec`/profile construction. There are no default handlers,
+so each point in the mapping runs exactly the handlers it lists, an empty list
+leaves its point without handlers, and points not mentioned have none.
 
 ```python
 bus = build_session_bus(
@@ -155,12 +163,12 @@ completed outcome.
 
 ## Built-in handlers
 
-| Handler | Registered for |
+| Handler | Point |
 |---------|---------------|
-| `persist_session_start` | `SESSION_START` |
-| `persist_session_end` | `SESSION_END` |
-| `persist_branch_provenance` | `BRANCH_CREATE` |
-| `persist_branch_end` | `BRANCH_END` |
+| `persist_session_start` | `SESSION_START`; installed by the hub run path |
+| `persist_session_end` | `SESSION_END`; installed by the hub run path |
+| `persist_branch_provenance` | `BRANCH_CREATE`; installed by the hub run path |
+| `persist_branch_end` | `BRANCH_END`; installed by the hub run path |
 | `persist_message` | name-addressable; routed explicitly by `hooks/persist.py`, not in `DEFAULT_HOOKS` |
 | `log_api_metrics` | (name-addressable; not in DEFAULT_HOOKS) |
 | `log_tool_call` | (name-addressable; not in DEFAULT_HOOKS) |
@@ -168,6 +176,13 @@ completed outcome.
 
 All handlers are name-addressable via the loader registry and can be referenced
 as strings in the explicit `agent_hooks` mapping passed to `build_session_bus`.
+
+The five `persist_*` handlers are defined in
+`lionhub.orchestration.run_persistence`, which registers them under these names
+when it is imported. A lookup of one of those names before then raises
+`KeyError` naming that module. Their old attribute names on
+`lionagi.hooks.builtins` keep working until 2.0.0: the first access warns and
+returns the handler from its new module.
 
 ## AgentSpec coding() guards
 

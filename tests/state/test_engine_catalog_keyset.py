@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from lionagi.state.db import StateDB, _get_engine_catalog_row, _list_engine_catalog_rows
+from lionhub.state.db import StateDB, _get_engine_catalog_row, _list_engine_catalog_rows
 
 
 async def _insert(db: StateDB, *, def_id, name: str, kind: str, options) -> None:

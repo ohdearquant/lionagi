@@ -12,15 +12,15 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from lionagi._auto import CliDeclaration, auto_register
-from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._provider_errors import _WorkerSpawnAdmissionError
 from lionagi.ln import compute_hash
 from lionhub.orchestration.console import log_error, progress, warn
 from lionhub.orchestration.engine_definitions import KIND_META, import_engine_class
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
+from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
 if TYPE_CHECKING:
-    from lionagi.state.cli_workers import _WorkerSpawnOwner
+    from lionhub.state.cli_workers import _WorkerSpawnOwner
 
 ENGINE_OUTCOME_BYTE_CAP = 16 * 1024
 _OUTCOME_TEXT_CAP = 512
@@ -210,7 +210,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
 
 
 async def _do_engine_run_bound(args: argparse.Namespace) -> int:
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     kind = args.kind
     spec = args.spec
@@ -261,7 +261,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
     worker_spawn_owner: _WorkerSpawnOwner | None = None
     if not args.no_persist:
         try:
-            from lionagi.state.db import StateDB
+            from lionhub.state.db import StateDB
 
             db = StateDB()
             await db.open()
@@ -320,7 +320,7 @@ async def _do_engine_run_bound(args: argparse.Namespace) -> int:
                     or stored.get("cli_worker_generation") != generation_id
                 ):
                     raise _WorkerSpawnAdmissionError("engine worker session admission was refused")
-                from lionagi.state.cli_workers import _WorkerSpawnOwner
+                from lionhub.state.cli_workers import _WorkerSpawnOwner
 
                 worker_spawn_owner = _WorkerSpawnOwner(
                     db,
@@ -634,7 +634,7 @@ async def _maybe_update_db(
     # Mirror terminal status to the sessions row so Studio's SSE generator
     # knows the stream is done (same done-detection logic as agent/flow runs).
     if signal_session_id is not None and status in ("completed", "failed", "cancelled"):
-        from lionagi.state.lifecycle.notify_settings import (
+        from lionhub.state.lifecycle.notify_settings import (
             TerminalNoticeContext,
             bind_terminal_notice_context,
         )
@@ -648,7 +648,7 @@ async def _maybe_update_db(
         )
         _session_status = "completed" if status == "completed" else status
         try:
-            from lionagi.state.reasons import RunReasons
+            from lionhub.state.reasons import RunReasons
 
             _reason = (
                 RunReasons.COMPLETED_OK

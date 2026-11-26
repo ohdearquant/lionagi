@@ -103,7 +103,7 @@ def test_scan_finds_the_helper_module_and_reads_both_source_trees():
     assert any(path.startswith("lionagi/") for path in scanned)
     assert any(path.startswith("lionhub/src/") for path in scanned)
     # Sites known to shield an awaitable are reached by the walk and use the helper.
-    assert HELPER_NAME in _names_in("lionagi/state/lifecycle/reconciler.py")
+    assert HELPER_NAME in _names_in("lionhub/src/lionhub/state/lifecycle/reconciler.py")
     assert HELPER_NAME in _names_in("lionhub/src/lionhub/providers/_cli_subprocess.py")
 
 

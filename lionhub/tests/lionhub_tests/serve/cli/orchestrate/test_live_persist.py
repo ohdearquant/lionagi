@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from lionagi import Branch, Session
-from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import register_branch_hook as _register_branch_hook
 from lionhub.serve.cli.orchestrate._orchestration import (
     OrchestrationEnv,
@@ -20,6 +19,7 @@ from lionhub.serve.cli.orchestrate._orchestration import (
     start_live_persist,
     stop_live_persist,
 )
+from lionhub.state.db import StateDB
 
 from .._aiosqlite_threads import (
     aiosqlite_threads,
@@ -37,7 +37,7 @@ from .._import_guard import (
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -362,7 +362,7 @@ async def test_admission_does_not_retry_other_dialects_or_non_contention(
         "_record_persistence_degraded",
         lambda exc, **_kwargs: degraded.append(exc),
     )
-    monkeypatch.setattr("lionagi.state.db.unregister_shared_db", unregistered.append)
+    monkeypatch.setattr("lionhub.state.db.unregister_shared_db", unregistered.append)
     monkeypatch.setattr(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
@@ -408,7 +408,7 @@ async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
         lambda *, register: _unregistered_admission_db(db, register=register),
     )
     monkeypatch.setattr(_orchestration, "_record_persistence_degraded", record_once)
-    monkeypatch.setattr("lionagi.state.db.unregister_shared_db", unregistered.append)
+    monkeypatch.setattr("lionhub.state.db.unregister_shared_db", unregistered.append)
     monkeypatch.setattr(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
@@ -437,8 +437,8 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Exercise a real cross-connection BEGIN IMMEDIATE writer conflict."""
-    from lionagi.state import engine as state_engine
     from lionhub.serve.cli.orchestrate import _orchestration
+    from lionhub.state import engine as state_engine
 
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 10)
     db = StateDB(temp_db_path)
@@ -2259,8 +2259,8 @@ async def test_reconciled_linked_engine_completed_with_output_stays_completed(
     progression carries no assistant output — the linked engine session's own
     progression (real answer text) is legitimate completion evidence too."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
     from lionhub.orchestration.runs import teardown_persist
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -2332,8 +2332,8 @@ async def test_missing_artifact_session_failure_propagates_to_invocation_status(
     into the invocation's terminal status. This is the propagation hop a
     status-reader (Studio, `li status`) actually observes.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.serve.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionhub.state.reasons import RunReasons
 
     invocation_id = "inv-missing-artifact"
     artifacts_dir = tmp_path / "artifacts" / "reviewer"
@@ -2416,8 +2416,8 @@ async def test_gate_rejection_reason_survives_child_to_invocation_resolution(
     invocation level -- the layer a status-reader (Studio, `li status`)
     actually queries.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.serve.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionhub.state.reasons import RunReasons
 
     invocation_id = "inv-gate-reject"
     async with StateDB() as db:
@@ -2453,8 +2453,8 @@ async def test_spawn_refusal_is_degraded_in_session_and_invocation_status(
     terminal-notify source for an MCP flow. Both layers must retain the same
     degraded reason instead of flattening it to ``run.completed.ok``.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.serve.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionhub.state.reasons import RunReasons
 
     invocation_id = "inv-spawn-refused"
     async with StateDB() as db:
@@ -2546,8 +2546,8 @@ async def test_child_finalize_error_surfaces_at_invocation_not_flattened_to_ok(
     returns RunReasons.COMPLETED_OK regardless of status_reason_code would
     fail this.
     """
-    from lionagi.state.reasons import RunReasons
     from lionhub.serve.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionhub.state.reasons import RunReasons
 
     invocation_id = "inv-child-finalize-error"
 
@@ -3162,7 +3162,7 @@ async def test_execute_dag_drains_escalation_link_retries_before_teardown(
 
     engine_run = SimpleNamespace(run_dag=run_dag)
     with (
-        patch("lionagi.state.claude_mirror.link_escalation_session", _spy_link),
+        patch("lionhub.state.claude_mirror.link_escalation_session", _spy_link),
         patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
@@ -3250,7 +3250,7 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
 
     engine_run = SimpleNamespace(run_dag=run_dag)
     with (
-        patch("lionagi.state.claude_mirror.link_escalation_session", _hanging_link),
+        patch("lionhub.state.claude_mirror.link_escalation_session", _hanging_link),
         patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         execute_task = asyncio.create_task(
@@ -3359,7 +3359,7 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
 
     engine_run = SimpleNamespace(run_dag=run_dag)
     with (
-        patch("lionagi.state.claude_mirror.link_escalation_session", _swallow_once_link),
+        patch("lionhub.state.claude_mirror.link_escalation_session", _swallow_once_link),
         patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         execute_task = asyncio.create_task(
@@ -3474,7 +3474,7 @@ async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
 
     engine_run = SimpleNamespace(run_dag=run_dag)
     with (
-        patch("lionagi.state.claude_mirror.link_escalation_session", _swallow_once_link),
+        patch("lionhub.state.claude_mirror.link_escalation_session", _swallow_once_link),
         patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         execute_task = asyncio.create_task(
@@ -3568,7 +3568,7 @@ async def test_execute_dag_late_cancellation_does_not_clobber_dag_exception(
 
     engine_run = SimpleNamespace(run_dag=run_dag)
     with (
-        patch("lionagi.state.claude_mirror.link_escalation_session", _hanging_link),
+        patch("lionhub.state.claude_mirror.link_escalation_session", _hanging_link),
         patch.object(PlanningEngine, "new_run", return_value=engine_run),
     ):
         execute_task = asyncio.create_task(

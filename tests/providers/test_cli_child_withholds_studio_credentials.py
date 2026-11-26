@@ -17,8 +17,8 @@ import sys
 
 import pytest
 
-from lionagi._command_env import scrub_command_env
 from lionhub.providers._cli_subprocess import ndjson_from_cli
+from lionhub.tools.command_env import scrub_command_env
 
 TOKEN = "example-bearer-value"  # noqa: S105 — a test value, never a real credential
 _NAMES = ("LIONAGI_STUDIO_AUTH_TOKEN", "LIONAGI_REMOTE_LEGBOX_TOKEN", "lionagi_remote_other")

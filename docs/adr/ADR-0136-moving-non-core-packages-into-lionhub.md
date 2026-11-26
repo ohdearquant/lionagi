@@ -1,7 +1,9 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
-  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23
+  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
+  Amendment 6 (2026-11-26), Amendment 7 (2026-11-26), Amendment 8 (2026-11-26) and Amendment 9
+  (2026-11-26) accepted 2026-11-26
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -12,11 +14,13 @@
   change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3); the discovery contract
   replaced the 46 interim module strings with `lionhub.providers.manifest`, read through
   `lionagi/service/connections/_provider_compat.py`, and the three hub imports C2 deferred to
-  before 2.0 are gone (`service/providers.py`'s in #4745). `service` is the only core package that
-  imports the hub, through `_provider_compat`. Two root modules hold hub paths as data, resolved only
-  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths, and
-  `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
-  until 2.0.0. Other mentions of the hub under `lionagi/` are comments and docstrings. The Studio
+  before 2.0 are gone (`service/providers.py`'s in #4745). The CLI provider tables and
+  `parse_model_spec` moved to `lionhub.providers.model_spec` (Amendment 8), the frontmatter parser to
+  `lionhub.orchestration.frontmatter` and the CLI declaration types to
+  `lionhub.serve.cli.registration` (Amendment 9). `service` is the only core package that
+  imports the hub, through `_provider_compat`. One root module holds hub paths as data, resolved only
+  when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths. Other mentions of
+  the hub under `lionagi/` are comments and docstrings. The Studio
   application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
   `lionagi/studio/`. Amendment 5 G4's frozen inventory of old Studio paths is
   `tests/test_studio_frozen_inventory.py`; G4's fresh-install tests from the built wheel outside the
@@ -34,7 +38,292 @@
   providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 fixes
   D7's `integrations/` slot as that package's destination and states when D6's hold on it ends;
   Amendment 5 moves the Studio application to its own import root before 1.0, bundled in the
-  one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step
+  one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step;
+  Amendment 6 moves the state store and the persistence handlers into `lionhub`, narrowing Amendment 1
+  A1, adding to D6 and D7, and moving the package ADR-0120 D5 names; Amendment 7 moves the Anthropic
+  account engine into `lionhub`, closing Amendment 3 C2's router row; Amendment 8 moves the CLI
+  provider tables and `parse_model_spec` into `lionhub`, closing Amendment 3 C2's `service/providers.py` row;
+  Amendment 9 moves the frontmatter parser out of `lionagi.libs` into `lionhub.orchestration` and the
+  CLI declaration types out of `lionagi._auto` into `lionhub.serve.cli`, which ADR-0139 had kept in the core
+
+## Amendment 9 (2026-11-26): the frontmatter parser and the CLI declaration types move into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+`lionagi.libs.frontmatter` reads the YAML block at the top of agent, skill and plugin definition files.
+No core module imports it: its callers are the hub's spawn code, the `li skill` command, the MCP
+verb preload and the Studio services that read and save those files. `lionagi._auto` holds the CLI
+command declaration types, the `auto_register` decorator and the marker reader the hub's CLI catalog
+compiles commands from. Every module that declares a command, and the catalog itself, is in the hub,
+so no core module imports it either. On 2026-11-26 the maintainer decided that both leave the core
+with the other non-core code, while `lionagi.libs.credential_fields`, `lionagi.libs.path_safety` and
+the `testing` package stay.
+
+### K1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.libs.frontmatter` | `lionhub.orchestration.frontmatter` |
+| `lionagi._auto` | `lionhub.serve.cli.registration` |
+
+Each row is a D3 table row, deprecated in the release that ships the move and removed in 2.0.0. No
+module exists at either old path, and every caller in the repository imports the new one. The
+parser's tests move into `lionhub/tests`; the declaration types' contract tests import the new path.
+The parser is unchanged. The declaration types are unchanged except that the five deprecated catalog
+names `lionagi._auto` forwards name that old path in their warning directly, since the module's own
+name is now the new one.
+
+### K2. What a caller sees
+
+`parse_frontmatter` and `parse_frontmatter_strict` return what they returned before for every
+document. An import from `lionagi.libs.frontmatter` keeps working with D3's warning until 2.0.0 and
+returns the same module object as the new path. Nothing else in `lionagi.libs` changes.
+
+The declaration types, `auto_register` and the marker it attaches are unchanged, so a command
+declared before the move is compiled as before. `import lionagi._auto` keeps working with D3's
+warning until 2.0.0 and returns the new module. Its five deprecated catalog names (`build_cli_parser`,
+`command_exists`, `iter_cli_seeds`, `load_cli_command`, `seed_for`) still forward to
+`lionhub.serve.cli.catalog` with their own warning until 2.0.0, and the catalog stays unloaded until
+one of them is used. Importing the old name now loads the hub, since the module lives there.
+
+With the hub absent, an import of either old path fails as every D3 row whose new path is in the hub
+fails: with the missing-package error for `lionhub`.
+
+## Amendment 8 (2026-11-26): the CLI provider tables and parse_model_spec move into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+Amendment 3 C2 listed `service/providers.py` as a core consumer whose effort-default import an
+adapter-supplied policy would replace before 2.0, and #4745 removed that import. The file still held
+vendor tables that only the hub's CLI adapters and the hub's spawn code read: backend aliases, the
+per-provider effort, fast, bypass, yolo and repository kwargs, the Claude, Codex and Gemini clamp
+tables, and `parse_model_spec`. On 2026-11-26 the maintainer decided that these leave the core with
+the other non-core code. The core keeps the grammar of an effort suffix, which every provider shares,
+and asks the selected endpoint class what an effort means for it.
+
+### J1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.service._model_spec` | `lionhub.providers.model_spec` |
+
+The row is a D3 table row, deprecated in the release that ships the move and removed in 2.0.0. No
+module exists at the old path. Like `lionagi.hooks._persistence_handlers`, it names the moved names
+(14 public, 20 private) that `lionagi.service.providers` forwards through a module `__getattr__`, and
+it is listed in `ATTRIBUTE_FORWARDING_ROWS`. The tests that exercise only the tables and the clamps
+move into `lionhub/tests`.
+
+### J2. What stays in the core
+
+`lionagi.service.providers` keeps `EFFORT_LEVELS`, `normalize_effort` and `split_effort_suffix`; the
+hub module imports them from it. `iModel` splits an effort suffix only when the endpoint class the
+provider catalog declares for the provider names an `effort_kwarg`. It then sets that kwarg to the
+normalized effort, passes it through the class's `clamp_effort(effort, model)` when the class has one,
+and leaves an effort kwarg the caller passed untouched. `EndpointRegistry.declared_endpoint_class`
+returns that class, or `None` when the catalog does not declare the provider or its feature is
+missing. Three classes declare an `effort_kwarg`: `ClaudeCodeCLIEndpoint` (`effort`, with the Claude
+clamp), `CodexCLIEndpoint` (`reasoning_effort`) and `PiCLIEndpoint` (`thinking`). A test fails if a
+core module defines or imports a moved name; its must-match control is a probe source whose import
+lines the test has to find.
+
+### J3. What this changes in Amendment 3
+
+C2's `service/providers.py` row is closed: the file names no hub module and holds no provider table.
+C3's relaxation for it ends with this move. Its constraint that the replacement copies no provider
+implementation or model catalog into the core holds: the Claude clamp table stays in the hub, and the
+Claude adapter's `clamp_effort` delegates to it.
+
+### J4. What a caller sees
+
+For the three declaring providers a model string with or without an effort suffix gives the same
+request kwargs as before, the Claude `xhigh` clamp included, and an explicit effort kwarg still wins.
+For a provider whose endpoint class declares no `effort_kwarg` the model string passes through
+unchanged, and the core does not import the hub to decide that. A provider catalog passed to `iModel`
+that does not declare the provider no longer has the suffix split first; endpoint matching fails for
+that provider as before. Old imports of the moved names from `lionagi.service.providers` keep working
+with D3's warning until 2.0.0. With the hub absent, the kept names import and each moved name fails
+as a missing `lionhub` does.
+
+## Amendment 7 (2026-11-26): the Anthropic account engine moves into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+Amendment 3 C2 listed `service/accounts/_router.py` as a core consumer whose prompt-cache import a
+core-owned port would replace before 2.0, and said that `operations` and `service` never move. The
+port landed: the router takes cache evidence from the adapter through `lionagi.service._prompt_cache`
+and names no hub module. On 2026-11-26 the maintainer decided that the engine itself leaves the core.
+Routed accounts, the monthly budget ledger, dated pricing and key resolution serve the hub's Anthropic
+adapter alone, and a core without the hub has no use for them.
+
+### I1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.service.accounts._credentials` | `lionhub.providers.anthropic.accounts._credentials` |
+| `lionagi.service.accounts._ledger` | `lionhub.providers.anthropic.accounts._ledger` |
+| `lionagi.service.accounts._pricing` | `lionhub.providers.anthropic.accounts._pricing` |
+| `lionagi.service.accounts._router` | `lionhub.providers.anthropic.accounts._router` |
+
+The four rows are D3 table rows, deprecated in the release that ships the move and removed in 2.0.0.
+The ledger's logger keeps the name `lionagi.service.accounts._ledger` (D5). The ledger's store file, its
+schema and its default location do not change. The tests that exercise only the engine move into
+`lionhub/tests` (D6 item 7); the tests that drive a routed request through the core endpoint stay
+with the core tests and are listed as needing the hub. Symbol and quote citations of the four modules in
+ADR-0126 and ADR-0130 name the new paths; their pinned line citations keep the old paths, which is where
+the code was at the pinned commit.
+
+### I2. What stays in the core
+
+`lionagi.service.accounts` keeps the seam the core reads: `_types` (account specifications, scopes,
+quotes, usage and the routing errors), `_scope` (the routing scope a branch carries), `_request_guard`
+(the checks the endpoint runs on a routed request before a key is attached) and `_usage_shape` (the
+cache-write split the run telemetry reads), with `_secret_resolution` under Amendment 3 C1 item 1. The
+run telemetry takes a cost estimator from its caller rather than importing pricing. No core module
+imports the engine, and a test fails if an engine module comes back into the core package.
+
+### I3. What this changes in Amendment 3
+
+C2's `service/accounts/_router.py` row is closed, since the file is no longer in the core, and C3's
+relaxation for it ends with this move. `service` itself stays in the core; only these four modules
+leave it. C1 item 1's placement of secret resolution in `lionagi.service.accounts` is unchanged.
+
+### I4. What a caller sees
+
+An endpoint that is not routed sends as before, without the engine. Routed Anthropic requests go
+through the hub's adapter, which the one distribution installs through 1.x (D1). Old imports of the
+four modules keep working with D3's warning until 2.0.0. With the hub absent, the seam modules import
+and each old engine name fails as a missing `lionhub` does.
+
+## Amendment 6 (2026-11-26): the state store and the persistence handlers move into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+Instructions this amendment serves, from the maintainer on 2026-11-25:
+
+- "not ready, https://github.com/ohdearquant/lionagi/tree/main/lionagi/state needs to leave lionagi core, some other stuff as well,"
+- "先把肯定不是core的东西搬迁完再说" (move what is clearly not core first)
+- "Core stops persisting by default. the expected behavior should be, if using via mcp, should store, if using as sdk, we don't default persist"
+  (served by ADR-0047's amendment of 2026-11-25)
+
+ADR-0047's amendment of 2026-11-25 makes a core `Session` write nothing by default; the hub run path
+installs persistence on its own session's bus (`lionhub.orchestration.run_persistence`). After that
+change four core files outside `lionagi/state` still import it, at 8 statements, and each is a
+persistence path: `lionagi/_log_channels.py`, `lionagi/hooks/_message_retry.py`,
+`lionagi/hooks/builtins.py` and `lionagi/session/observer.py`. D6 schedules no move of `state`, D7's
+layout has no slot for it, and A1 kept the persistence handlers in the core for a reason that
+amendment removed. This amendment adds the move to D6, adds `state/` to D7, and narrows A1.
+
+Measured at commit `23795348` by an AST walk over absolute imports, counting each statement once:
+`lionagi/state` is 33 Python files and 24,711 lines. Statements that name it: `lionhub/src` 284 in 59
+files, the Studio backend 44 in 17, `tests/` 782 in 185, `lionhub/tests` 653 in 163.
+
+### H1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.state` | `lionhub.state` |
+| `lionagi._log_channels` | `lionhub.state.log_channels` |
+| `lionagi._cli_worker_context` | `lionhub.state.cli_worker_context` |
+| `lionagi.hooks._message_retry` | `lionhub.state.message_retry` |
+| the five `persist_*` handlers of `lionagi.hooks.builtins` | `lionhub.orchestration.run_persistence` |
+
+The first four rows are D3 table rows, deprecated in the release that ships the move and removed in
+2.0.0. `_log_channels` and `_cli_worker_context` move because the store is their only core user
+(`state/lifecycle/notify_settings.py` and `state/cli_workers.py`). The schema, the store file, the
+persisted names D5 keeps and the logger names do not change, so readers of the store (the Studio
+application, the editor extension, the CLI) see only the import path change, which the table keeps
+working through 1.x.
+
+`lionagi.hooks.builtins` stays, with the three `log_*` handlers, which import no store. The five
+persistence handler names stay importable from it until 2.0.0: the module resolves them on attribute
+access through a table row for the private old name `lionagi.hooks._persistence_handlers`, mapped to
+`lionhub.orchestration.run_persistence`. The core names only a `lionagi` path and the finder does the
+hub lookup, as A3 does for the root's nine LNDL names, and the first access emits D3's warning at the
+caller's line. This is a stated exception, limited to these five names, and it holds only under four
+conditions, each tested in the move change:
+
+1. The table marks this row as an attribute-forwarding row whose old name never existed as a file,
+   and the table tests name this row explicitly rather than accepting any row of that shape.
+2. A plain `import lionagi.hooks.builtins` loads no hub module.
+3. Each of the five names is the same object under both paths, and the deprecation warning fires
+   once, at the caller's line.
+4. At 2.0 the row and the attribute hook go together, the release notes name the five names, and a
+   release guard that does not read the table, since the row is gone by then, requires the five
+   names to be absent from `lionagi.hooks.builtins` attribute access, as A3's guard does for its nine.
+
+### H2. What stays in the core, and what each core use of the store becomes
+
+`lionagi._state_refusal` stays. Operations, the message manager, the hook bus and the observer catch
+`StateCompatibilityRefused` from it without loading a store; `lionhub.state.compat` re-exports it, the
+same object under both paths.
+
+`lionagi/hooks/_message_retry.py` holds `MessagePersistRetryQueue`, the ordered retry of live-message
+writes. Only `persist_message` creates one, and the hook bus flushes the queues at teardown by reading
+the attribute `_message_retry_queues` by name (`lionagi/hooks/bus.py`), with no import. It moves with
+the handlers, and the bus keeps its by-name flush.
+
+The loader's registry stops naming the five persistence handlers, and
+`lionhub.orchestration.run_persistence` registers them with `register_handler` when it is imported. A
+name an SDK caller passes to `build_session_bus(agent_hooks=...)`, such as `persist_session_start`,
+therefore resolves only after that module has been imported. In a process that has not imported it,
+`resolve_handler` raises its `KeyError` for these five names with text saying that
+`lionhub.orchestration.run_persistence` registers them and must be imported first. The module name
+appears inside the message text, not as a dotted-name constant, and the core imports nothing through
+it. A test shows both sides: in a fresh core-only process the name raises with that text, and after the
+hub module is imported it resolves. The same change updates `docs/reference/agent-hooks.md` and the
+opt-in sentence of ADR-0047's amendment of 2026-11-25.
+
+`lionagi.hooks.persist.route_message_persistence` stays in the core. It wires the caller's callback and
+takes `persist_message` off the bus so that one path persists each message; today it imports the
+handler to do that. After the move it looks the handler up in the registry by name and removes it if it
+is registered. The lookup is by the handler's registered name and removes only that object, so a
+caller's own handler on the same hook point is untouched; a test shows it. A process that has not imported the hub module has no such handler to put on a bus, so
+there is nothing to remove.
+
+`SessionObserver.bind_db_persistence(session_id, db=None)` today opens a fresh store for every signal
+when it is given none, unless no store file exists (`lionagi/session/observer.py`, the fallback in
+`_persist_signal`). Every production caller in this repository passes `db=`: the hub run path, the
+engine CLI, orchestration and the Studio workflow runner. Three tests call it without one. After the
+move a call without a store writes nothing and logs one WARNING per binding on the
+`lionagi.session.observer` logger, naming the argument to pass and where a store comes from. The core
+attaches no handler to its loggers, so Python's last-resort handler prints that warning when the
+application has configured no logging. A `DeprecationWarning` was weighed and lost: Python hides it by
+default outside `__main__`, so a caller who asked for persistence and got none would not be told. A
+store factory registered by the hub was also weighed and lost: the same call would write or not
+depending on whether something had imported the hub. 2.0 makes `db` required.
+
+After the move no module under `lionagi/` imports `lionhub`, `lionhub.state` or a moved path. D2's set
+stays what it is at the change's head, and a test asserts that `lionagi/` holds no import of the moved
+paths.
+
+A1's paragraph on the hook bus narrows accordingly: `bus`, `loader`, `persist` and the package
+initializer stay; `builtins` stays with its three logging handlers; `_message_retry` and the five
+persistence handlers leave. ADR-0120 D5 keeps durable delivery in `state`, which is now
+`lionhub.state`.
+
+### H3. What an SDK user who wants persistence does
+
+An SDK session writes nothing unless asked. A user who wants the run store imports the hub's installer
+and the store and wires both on their own session: `install_run_persistence(session.hooks)` from
+`lionhub.orchestration.run_persistence` for the lifecycle rows, and
+`session.observer.bind_db_persistence(session_id, db=store)` with a `lionhub.state.db.StateDB` they
+open for the signal rows. Through 1.x `pip install lionagi` installs everything this needs, since the
+one distribution ships `lionhub` and the store's dependencies (D1). From 2.0 the same imports need
+`lionhub` installed beside `lionagi`; a core-only 2.0 install has no store.
+
+### H4. Order
+
+The moves that need no new decision under this record as written keep going, one unit per change, and
+do not wait for this amendment. This move starts after it is accepted.
+
+1. One change moves the package and the four satellites with their rows, rewrites every caller in
+   this repository to the new paths by script so the suite raises no deprecation warning from its own
+   imports, and moves the tests that exercise only the moved code into `lionhub/tests` (D6 item 7).
+2. A separate change moves `sqlalchemy[asyncio]` and `aiosqlite` out of the core dependency list and
+   regenerates the lock. Through 1.x the one distribution still installs them (D1).
+3. ADR-0120's citations of moved files move with the package, per D6 item 6.
+
+No code for this amendment merges before it is accepted.
 
 ## Amendment 5 (2026-11-13): the Studio application gets its own import root before 1.0, bundled through 1.x
 
@@ -256,6 +545,8 @@ Before the providers package moves:
 3. Preserve A5 item 1's provider-facing settings seam: secret resolution uses the existing `lionagi._settings` reader with `include_project=False` and the existing refusal/failure behavior. The tool interface and gate-contract work may wait until the tools/agent/casts move. No provider may gain an import of moved agent settings.
 4. Make the four module-scope `_codex_profile` imports in `agent/factory.py` lazy at their actual uses in a separate preparatory change. The other provider references listed for that file in C2 are already lazy. C2's inventory test lands in the package move, not before it; ADR-0140's contract failure checks land with the subsequent contract implementation.
 
+Note (2026-11-26): subagent admission now lives at `lionhub.providers._subagent_admission`, because every caller that takes an admission lease is in lionhub. The notice a run listens for while a worker waits for a slot stays in core at `lionagi.service._admission_notice`, which imports nothing from lionhub. Both earlier rows for admission resolve to the new home. The other destinations item 1 names (provider errors, secret resolution and the shared chat schema) are unchanged.
+
 The package and contract changes are then:
 
 1. Move `lionagi/providers` completely to `lionhub/src/lionhub/providers` with one broad compatibility row. Keep the implementation diff to renames, import rewrites, path docstrings, pinned logger names and the 46 module-string root rewrites, without behavior changes.
@@ -279,7 +570,7 @@ In the move change, add `test_provider_interim_edge_inventory` and rename D2's p
 | `agent/factory.py` | Existing references to `lionhub.providers.openai._codex_profile`, `lionhub.providers.openai.codex`, and `lionhub.providers._cli_subprocess`; all lazy after the preparatory change | Remove these core edges and `agent` from the set in the tools/agent/casts move. References then belong to the hub. The shared schema reference already points down into core. |
 | `operations/run/run.py` | Existing lazy `lionhub.providers.google.gemini_code` request/print-timeout behavior | Before 2.0, replace the import with an endpoint-supplied request-preparation port; remove `operations` from the set in that change. The operation stays in core. |
 | `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
-| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. Done in #4745: the default comes from `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog's `codex` declaration, and the file names no hub module. |
+| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. Done in #4745: the default comes from `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog's `codex` declaration, and the file names no hub module. Closed by Amendment 8: the provider tables and `parse_model_spec` moved to `lionhub.providers.model_spec`, and the file keeps only the effort-suffix grammar. |
 | `lionhub/src/lionhub/orchestration/spawn.py` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |
@@ -433,6 +724,9 @@ take `HookPoint` from it at 9 sites (`lionagi/operations/_api_hooks.py::emit_api
 the core would need its default builder supplied by a bootstrap, and an injected bus that starts empty would
 drop those defaults. These five modules and the package initializer stay in the core under their current
 paths, with no table row.
+
+ADR-0047's amendment of 2026-11-25 removes the default handlers this reason rests on: a core `Session` bus
+now starts empty, and the hub run path installs the persistence handlers itself.
 
 `lionagi.hooks.external` (883 lines) runs configured hook commands and reads plugin settings. It is what D7's
 `lionhub/hooks/` slot describes, and it moves there in wave 3 as `lionhub.hooks.external`, one module with one

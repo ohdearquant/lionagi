@@ -164,7 +164,7 @@ consumer of the claim check in the tree uses `startswith("applying")` for exactl
 and equality would stop matching the claims that identify who holds them. And `abandoned` is a
 terminal outcome that this ADR never contemplated, reachable only through a human resolution.
 
-Unrelated despite the name: `lionagi/state/lifecycle/` carries its own `result` with the values
+Unrelated despite the name: `lionhub/src/lionhub/state/lifecycle/` carries its own `result` with the values
 `applied`, `rejected`, and `conflict`. That is the session-status transition service and it never
 touches `session_controls`; the shared field name is a coincidence and the vocabularies are not
 the same one.
@@ -174,8 +174,8 @@ handle registry. Restricting insertion to running flow/play sessions prevents co
 pending forever against runners with no consumer.
 
 Code anchors: `lionagi/cli/orchestrate/_control.py`; `lionagi/cli/orchestrate/flow.py`
-(`_control_poll_loop`, `_apply_session_control`); `lionagi/state/db.py` (session-control methods);
-`lionagi/state/schema.sql`.
+(`_control_poll_loop`, `_apply_session_control`); `lionhub/src/lionhub/state/db.py` (session-control methods);
+`lionhub/src/lionhub/state/schema.sql`.
 
 ### D2 — Pause and resume are idempotent operation-boundary effects
 
@@ -391,14 +391,14 @@ Exact persistence semantics:
   checkpoint task exceptions at drain time, so checkpoint freshness is not guaranteed when a
   write fails.
 - `lionhub/src/lionhub/orchestration/flow/checkpoint.py::load_checkpoint` uses
-  `lionagi/_checkpoint_version.py::load_legacy_checkpoint_json` to read single-file snapshots.
+  `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::load_legacy_checkpoint_json` to read single-file snapshots.
   An explicit top-level `version` must be the integer 1 or 2. An omitted `version` retains legacy
   parsing. An unsupported value or duplicate top-level `version` key raises
-  `lionagi/_checkpoint_version.py::UnsupportedCheckpointVersionError`, which the flow loader wraps
+  `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::UnsupportedCheckpointVersionError`, which the flow loader wraps
   as `lionhub/src/lionhub/orchestration/flow/checkpoint.py::UnsupportedFlowCheckpointVersionError`
   before graph construction.
 
-`CHECKPOINT_VERSION = 2` (`lionagi/_checkpoint_version.py::CHECKPOINT_VERSION`) is the current shape: 2 adds
+`CHECKPOINT_VERSION = 2` (`lionhub/src/lionhub/orchestration/flow/checkpoint_version.py::CHECKPOINT_VERSION`) is the current shape: 2 adds
 the spawn-reconstruction fields resume reads (`operation`, `assignee`, `instruction`, `parent_id`,
 `spawn_id`, and the later `context`) that `record_spawned` writes
 (`lionhub/src/lionhub/orchestration/flow/checkpoint.py::CheckpointWriter.record_spawned`). No rationale beyond initial format versioning is
@@ -560,12 +560,12 @@ against the artifact set a node declared, it does not make.
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
   ADR-0064 D3 has a flow write
   (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
-  `lionagi/state/schema.sql:193`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
+  `lionhub/src/lionhub/state/schema.sql:193`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
   before execution (`lionagi/cli/orchestrate/flow.py:1102-1103@ee589cb2`, `lionagi/cli/orchestrate/flow.py:1197-1208@ee589cb2`). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
   session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2858@ee589cb2`, `lionagi/cli/orchestrate/flow.py:2860-2872@ee589cb2`).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
-  is skipped (`lionagi/state/schema.sql:192`) — so an absent or unreadable record is not evidence
+  is skipped (`lionhub/src/lionhub/state/schema.sql:192`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
 - **A node that declared no artifact contract.** There is nothing independent to check, so it keeps
   today's status replay like any other completed node. The settle-check delta rows cover only nodes
@@ -586,10 +586,10 @@ against the artifact set a node declared, it does not make.
   the new root, and with a `--save` naming a directory other than the original run's they are absent
   there too. Delta row 9 covers threading the original root. The line numbers are at `ee589cb22c388b2dc3cfa7ceb877670170b68277`.
 - **What the live verifier proves.** Presence and a non-zero size, not content: it reads
-  `(size := os.path.getsize(full)) > 0` (`lionagi/state/artifact_verifier.py::verify_artifact_contract`), and the currency check
+  `(size := os.path.getsize(full)) > 0` (`lionhub/src/lionhub/state/artifact_verifier.py::verify_artifact_contract`), and the currency check
   beside it compares mtime and size and says itself that this "narrows, but doesn't close" the
   window a rewrite preserving both leaves (`stale_artifact_markers`,
-  `lionagi/state/artifact_verifier.py::stale_artifact_markers`). A byte-level check is delta row 7.
+  `lionhub/src/lionhub/state/artifact_verifier.py::stale_artifact_markers`). A byte-level check is delta row 7.
 - **A declared artifact above the hash size limit.** `compute_hash` refuses a payload above
   `MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` by default (`lionagi/ln/_hash.py::MAX_HASH_INPUT_BYTES`, `lionagi/ln/_hash.py::compute_hash`), and
   ADR-0050 records that a caller hashing larger content either opts out with `max_bytes=None` or
@@ -597,7 +597,7 @@ against the artifact set a node declared, it does not make.
   (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:886-889`).
 
 **Builder notes for the rows.** A check that re-reads the declared set would read it through the
-same verifier a live run uses (`verify_artifact_contract`, `lionagi/state/artifact_verifier.py::verify_artifact_contract`),
+same verifier a live run uses (`verify_artifact_contract`, `lionhub/src/lionhub/state/artifact_verifier.py::verify_artifact_contract`),
 against the contract the run persisted rather than one re-derived from the live roles. The rows
 build on decisions this ADR already carries: D4 keys planned nodes by stable `agent_id`
 (`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:80@ee589cb2`) and spawned nodes in a
@@ -1023,7 +1023,7 @@ The planner is never called. Reactive growth is off. `_synthesize` is not run (f
 
 The checkpoint holds the plan as it holds any plan. Its `config` records the run's settings, and a resume passes them back as the run's keyword arguments (D5; the `**config` call in the resume path of `flow.py`). A written graph's checkpoint config carries `with_synthesis: false` and reactive off, as any run's config carries those settings, so a resume makes no synthesis call and grows nothing. It also carries one new field, `graph`, holding `sha256` (the digest of the copy in the job directory), `path` (as given) and `resolved`. That field is what says the run is a written graph. A resume reads the plan from the checkpoint and never from the file. It hashes the copy and refuses on a mismatch with `graph.sha256`, as H2 rule 6 requires of every resume, so an edit to the file after submit reaches no run.
 
-The checkpoint version. A written graph's checkpoint is written as version 4, and every other checkpoint stays at version 2, so nothing a released reader can resume today changes. Version 3 is not used: Amendment 2 specifies it as the journaled format, and it stays refused until that amendment is implemented, which also decides how a journaled written-graph run is versioned. Both writer values live in one module, `lionagi/_checkpoint_version.py`: `CHECKPOINT_VERSION = 2` stays, `GRAPH_CHECKPOINT_VERSION = 4` is added, the supported set becomes {1, 2, 4}, and the import-time assertion there covers both writer values. The other readers of a checkpoint take the set from that module, so they accept 4 with no change of their own: the run detail reader (`lionhub/src/lionhub/serve/mcp/_run_detail.py`, through `load_legacy_checkpoint_json`) and the daemon's resume service (`lionhub/src/lionhub/serve/daemon/services/run_resume.py`, through `lionhub/src/lionhub/orchestration/flow/checkpoint.py::resolve_checkpoint_target`).
+The checkpoint version. A written graph's checkpoint is written as version 4, and every other checkpoint stays at version 2, so nothing a released reader can resume today changes. Version 3 is not used: Amendment 2 specifies it as the journaled format, and it stays refused until that amendment is implemented, which also decides how a journaled written-graph run is versioned. Both writer values live in one module, `lionhub/src/lionhub/orchestration/flow/checkpoint_version.py`: `CHECKPOINT_VERSION = 2` stays, `GRAPH_CHECKPOINT_VERSION = 4` is added, the supported set becomes {1, 2, 4}, and the import-time assertion there covers both writer values. The other readers of a checkpoint take the set from that module, so they accept 4 with no change of their own: the run detail reader (`lionhub/src/lionhub/serve/mcp/_run_detail.py`, through `load_legacy_checkpoint_json`) and the daemon's resume service (`lionhub/src/lionhub/serve/daemon/services/run_resume.py`, through `lionhub/src/lionhub/orchestration/flow/checkpoint.py::resolve_checkpoint_target`).
 
 Version and field agree at read, both ways, in `load_legacy_checkpoint_json`: a version 4 checkpoint whose `config` has no `graph` field refuses, and a version 1 or 2 checkpoint whose `config` carries one refuses. Without this the version would only be a label, and a hand-edited version 2 checkpoint with a `graph` field would resume with no digest check.
 

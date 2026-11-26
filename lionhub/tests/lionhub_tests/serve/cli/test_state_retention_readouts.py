@@ -20,7 +20,6 @@ from pathlib import Path
 import anyio
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.state import (
     _collect_message_breakdown,
     _print_stats,
@@ -28,12 +27,13 @@ from lionhub.serve.cli.state import (
     _prune_candidates,
     run_state,
 )
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -245,7 +245,7 @@ class TestTheMachineResultDescribesTheSameStoreOnBothPaths:
         # Point the reader at a path with no store. The absent branch is reached
         # by the store being gone, not by an argument, so this is the only way in.
         missing = temp_db_path.parent / "no-such-store.db"
-        import lionagi.state.db as dbm
+        import lionhub.state.db as dbm
 
         original = dbm.DEFAULT_DB_PATH
         dbm.DEFAULT_DB_PATH = missing

@@ -1,6 +1,6 @@
 {
   "attachment_protocol": 1,
   "requires": {
-    "lionagi": ">=0.38.0,<1.0"
+    "lionagi": ">=1.0.0,<2.0"
   }
 }

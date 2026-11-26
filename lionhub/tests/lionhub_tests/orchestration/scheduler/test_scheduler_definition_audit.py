@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from lionagi.state.db import NO_CURSOR_CLAIM, StateDB
+from lionhub.state.db import NO_CURSOR_CLAIM, StateDB
 
 
 async def _events(db, schedule_id="audited"):
@@ -198,9 +198,9 @@ async def test_budget_annotation_failure_still_records_honest_definition_cause(
 
 @pytest.mark.parametrize("guarded", [False, True])
 async def test_service_forwards_audit_records_separately_from_guarded_fields(monkeypatch, guarded):
-    from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
-    from lionagi.state.reasons import ScheduleDefinitionReasons
     from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+    from lionhub.state.lifecycle import ReasonRecord, ScheduleAuditContext
+    from lionhub.state.reasons import ScheduleDefinitionReasons
 
     context = ScheduleAuditContext(
         actor="scheduler:max-runs",
@@ -266,9 +266,9 @@ def test_audit_arguments_are_explicit_service_parameters(method):
 
 @pytest.mark.parametrize("matched", [False, True])
 async def test_occurrence_service_forwards_definition_audit_and_both_claims(monkeypatch, matched):
-    from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
-    from lionagi.state.reasons import ScheduleDefinitionReasons
     from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+    from lionhub.state.lifecycle import ReasonRecord, ScheduleAuditContext
+    from lionhub.state.reasons import ScheduleDefinitionReasons
 
     context = ScheduleAuditContext(
         actor="scheduler:max-runs",

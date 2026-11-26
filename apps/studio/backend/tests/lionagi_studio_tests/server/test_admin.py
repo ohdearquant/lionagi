@@ -18,8 +18,8 @@ import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
-from lionagi.state.reasons import SessionReasons  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
+from lionhub.state.reasons import SessionReasons  # noqa: E402
 
 
 def _run(coro):
@@ -62,7 +62,7 @@ async def _seed_running_session(
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -679,9 +679,9 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
     # Pin classifier: no phantom cause, IDLE health → operator's code wins.
-    import lionagi.state.health as health_mod
     import lionhub.serve.daemon.services.admin as admin_svc
-    from lionagi.state.health import SessionHealth
+    import lionhub.state.health as health_mod
+    from lionhub.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
     # Patch the source module — admin.transition_sessions() lazy-imports
@@ -772,9 +772,9 @@ def test_admin_transition_phantom_classifier_override(
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
-    import lionagi.state.health as health_mod
     import lionhub.serve.daemon.services.admin as admin_svc
-    from lionagi.state.health import SessionHealth
+    import lionhub.state.health as health_mod
+    from lionhub.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: phantom_reason)
     # Force a non-HEALTHY/IDLE so the admin transition gate passes.
@@ -837,9 +837,9 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
-    import lionagi.state.health as health_mod
     import lionhub.serve.daemon.services.admin as admin_svc
-    from lionagi.state.health import SessionHealth
+    import lionhub.state.health as health_mod
+    from lionhub.state.health import SessionHealth
 
     monkeypatch.setattr(scheduler_liveness, "_classify_phantom", lambda *a, **kw: None)
     monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
@@ -1127,8 +1127,8 @@ def test_a_lock_scan_walks_off_the_loop_that_serves_every_other_request(
     checked separately by
     ``test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop``.
     """
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.daemon.services.admin as admin_svc
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     artifacts = tmp_path / "artifacts"

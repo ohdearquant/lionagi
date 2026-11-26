@@ -55,7 +55,10 @@ class MoveContract:
     name is a package (its submodules are walked as well), ``module`` when it is one file,
     and ``value-only`` when the module exports constants and no definitions to pickle.
 
-    ``public_names`` and ``private_names`` name callables the new module defines itself.
+    ``public_names`` and ``private_names`` name callables the new module defines itself. A
+    ``module`` contract names at least one of them: a module whose only definitions are private
+    names them in ``private_names``, and the identity, cold-import and pickle checks then run
+    over those, so a contract that names nothing is still refused.
     ``shared_values`` name module-level state that must be one binding under both names:
     the same object, and a patch through either name seen through the other.
     ``state_consumers`` are further checks on that state. ``cold_orders`` are the import
@@ -94,6 +97,8 @@ class MoveContract:
                 raise ValueError(f"{self.old}: a value-only module declares values, not names")
         elif self.expected_values or self.environment:
             raise ValueError(f"{self.old}: only a value-only module carries expected values")
+        if self.kind == "module" and not (self.public_names or self.private_names):
+            raise ValueError(f"{self.old}: a module contract names at least one definition")
         if self.registers_routes and self.kind != "module":
             raise ValueError(f"{self.old}: only a module row registers routes")
 
@@ -297,7 +302,7 @@ CONTRACTS: tuple[MoveContract, ...] = (
     ),
     MoveContract(
         old="lionagi.providers._subagent_admission",
-        new="lionagi.service._subagent_admission",
+        new="lionhub.providers._subagent_admission",
         kind="module",
         public_names=frozenset(
             {
@@ -897,6 +902,156 @@ CONTRACTS: tuple[MoveContract, ...] = (
         ),
         state_consumers=(StateConsumer("checkpoint-version", _CHECKPOINT_VERSION),),
     ),
+    MoveContract(
+        old="lionagi._flow_spec",
+        new="lionhub.orchestration.flow.spec",
+        kind="module",
+        public_names=frozenset(
+            {
+                "flow_spec_yaml_key",
+                "load_flow_spec",
+                "normalize_flow_spec_keys",
+                "validate_flow_args_schema",
+                "validate_flow_spec",
+                "validate_flow_spec_fields",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_validate_github_pr",
+            }
+        ),
+        shared_values=frozenset(
+            {
+                "FLOW_SPEC_FIELDS",
+                "GITHUB_PR_COMMENT_STYLES",
+                "GITHUB_PR_KEYS",
+                "_PRESERVE_DASHED",
+            }
+        ),
+    ),
+    MoveContract(
+        old="lionagi._checkpoint_version",
+        new="lionhub.orchestration.flow.checkpoint_version",
+        kind="module",
+        public_names=frozenset(
+            {
+                "UnsupportedCheckpointVersionError",
+                "load_legacy_checkpoint_json",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_check_writer_versions",
+                "_refuse_graph_version_mismatch",
+            }
+        ),
+        shared_values=frozenset(
+            {
+                "CHECKPOINT_VERSION",
+                "GRAPH_CHECKPOINT_VERSION",
+                "_SUPPORTED_CHECKPOINT_VERSIONS",
+            }
+        ),
+    ),
+    MoveContract(
+        old="lionagi._checkpoint_v3_codec",
+        new="lionhub.orchestration.flow.checkpoint_codec",
+        kind="module",
+        public_names=frozenset(
+            {
+                "CodecError",
+                "FrozenArray",
+                "FrozenObject",
+                "JournalRecord",
+                "PatchOp",
+                "apply_patch",
+                "capture_context",
+                "decode_json",
+                "decode_record",
+                "diff_context",
+                "encode_record",
+                "freeze_json",
+                "thaw_json",
+                "validate_entry",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_VectorNode",
+                "_apply",
+                "_diff",
+                "_freeze",
+                "_validate_record",
+            }
+        ),
+        shared_values=frozenset(
+            {
+                "_MISSING",
+            }
+        ),
+    ),
+    MoveContract(
+        old="lionagi._command_env",
+        new="lionhub.tools.command_env",
+        kind="module",
+        public_names=frozenset(
+            {
+                "credential_env_names",
+                "normalize_command_env_allowlist",
+                "scrub_command_env",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_is_secret_annotation",
+                "_literal_names",
+            }
+        ),
+        shared_values=frozenset(
+            {
+                "_ENV_NAME",
+                "_EXPLICIT_AUTH_NAMES",
+                "_SHELL_STARTUP_NAMES",
+            }
+        ),
+    ),
+    MoveContract(
+        old="lionagi._command_env_metadata",
+        new="lionhub.tools.command_env_metadata",
+        kind="module",
+        public_names=frozenset(
+            {
+                "command_environment",
+                "configured_command_env_names",
+            }
+        ),
+    ),
+    MoveContract(
+        old="lionagi._spec_limits",
+        new="lionhub.orchestration.spec_limits",
+        kind="value-only",
+        expected_values=(("MAX_SPEC_PROMPT_CHARS", 256 * 1024),),
+    ),
+    MoveContract(
+        old="lionagi.ln._paths",
+        new="lionhub.tools._paths",
+        kind="module",
+        private_names=frozenset({"_resolve_workspace_root"}),
+    ),
+    MoveContract(
+        old="lionagi.service._subagent_admission",
+        new="lionhub.providers._subagent_admission",
+        kind="module",
+        public_names=frozenset(
+            {
+                "SubagentLease",
+                "admit_subagent",
+                "child_agent_depth",
+                "refuse_nested_agent",
+            }
+        ),
+    ),
     MoveContract(old="lionagi.studio", new="lionagi_studio", kind="package", cold_orders=()),
     MoveContract(
         old="lionagi.studio.services._schedule_validation",
@@ -1169,6 +1324,167 @@ CONTRACTS: tuple[MoveContract, ...] = (
         kind="module",
         public_names=frozenset({"SessionTailRegistry", "capture_frontiers"}),
     ),
+    MoveContract(old="lionagi.state", new="lionhub.state", kind="package"),
+    MoveContract(
+        old="lionagi._log_channels",
+        new="lionhub.state.log_channels",
+        kind="module",
+        public_names=frozenset({"hint", "log_error", "progress", "warn"}),
+        shared_values=frozenset(
+            {"ERROR_LOGGER_NAME", "HINT_LOGGER_NAME", "PROGRESS_LOGGER_NAME", "WARN_LOGGER_NAME"}
+        ),
+    ),
+    MoveContract(
+        old="lionagi._cli_worker_context",
+        new="lionhub.state.cli_worker_context",
+        kind="module",
+        private_names=frozenset({"_bind_cli_worker_recorder", "_get_cli_worker_recorder"}),
+        shared_values=frozenset({"_CLI_WORKER_RECORDER"}),
+    ),
+    MoveContract(
+        old="lionagi.hooks._message_retry",
+        new="lionhub.state.message_retry",
+        kind="module",
+        public_names=frozenset({"MessagePersistRetryQueue", "PendingMessageEvent"}),
+        private_names=frozenset({"_describe_failure"}),
+    ),
+    MoveContract(
+        old="lionagi.hooks._persistence_handlers",
+        new="lionhub.orchestration.run_persistence",
+        kind="module",
+        public_names=frozenset(
+            {
+                "install_run_persistence",
+                "persist_branch_end",
+                "persist_branch_provenance",
+                "persist_message",
+                "persist_session_end",
+                "persist_session_start",
+            }
+        ),
+        private_names=frozenset({"_db"}),
+        shared_values=frozenset({"RUN_PERSISTENCE_HOOKS"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._credentials",
+        new="lionhub.providers.anthropic.accounts._credentials",
+        kind="module",
+        public_names=frozenset({"CredentialSources", "resolve_account_key"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._ledger",
+        new="lionhub.providers.anthropic.accounts._ledger",
+        kind="module",
+        public_names=frozenset({"AccountStatus", "CredentialLedger", "default_ledger_path"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._pricing",
+        new="lionhub.providers.anthropic.accounts._pricing",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ModelPrice",
+                "PriceRevision",
+                "PriceTier",
+                "estimate_response_cost",
+                "freeze_request",
+                "price_usage",
+                "quote_ceiling",
+                "registered_revisions",
+                "request_ttls",
+                "revision_by_id",
+                "stream_usage_estimate",
+                "usage_outcome",
+            }
+        ),
+        shared_values=frozenset({"CURRENT_REVISION"}),
+    ),
+    MoveContract(
+        old="lionagi.service.accounts._router",
+        new="lionhub.providers.anthropic.accounts._router",
+        kind="module",
+        public_names=frozenset(
+            {
+                "AccountRouter",
+                "RoutedCacheEvidence",
+                "RouterAttempt",
+                "StreamTextRedactor",
+                "StreamingSecretRedactor",
+                "get_router",
+                "mask_joined_key_runs",
+                "mask_key_runs",
+                "provider_request_id",
+                "redact_value",
+            }
+        ),
+        shared_values=frozenset({"_router", "_test_ledger_path", "_test_sources"}),
+    ),
+    MoveContract(
+        old="lionagi.service._model_spec",
+        new="lionhub.providers.model_spec",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ModelSpec",
+                "codex_unset_effort_default",
+                "parse_model_spec",
+                "reclamp_effort_for_model",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_clamp_claude_effort",
+                "_clamp_codex_effort",
+                "_clamp_gemini_effort",
+                "_clamp_name",
+                "_codex_unset_effort_from_reader",
+                "_normalize_model",
+                "_normalize_model_name",
+                "_validate_provider_permission_tables",
+            }
+        ),
+        shared_values=frozenset(
+            {"BACKENDS", "PROVIDER_BYPASS_KWARGS", "PROVIDER_EFFORT_KWARG", "PROVIDER_YOLO_KWARGS"}
+        ),
+    ),
+    MoveContract(
+        old="lionagi.libs.frontmatter",
+        new="lionhub.orchestration.frontmatter",
+        kind="module",
+        public_names=frozenset({"parse_frontmatter", "parse_frontmatter_strict"}),
+        private_names=frozenset(
+            {
+                "_load_frontmatter_yaml",
+                "_parse_frontmatter",
+                "_parse_frontmatter_for_save",
+                "_strip_frontmatter_prefix",
+                "_trim_frontmatter_document",
+            }
+        ),
+        shared_values=frozenset({"_FM_OPENER", "_FM_SPLIT"}),
+    ),
+    MoveContract(
+        old="lionagi._auto",
+        new="lionhub.serve.cli.registration",
+        kind="module",
+        public_names=frozenset(
+            {
+                "CliBuild",
+                "CliDeclaration",
+                "CliParserFactory",
+                "CliSeed",
+                "DuplicateRegistrationError",
+                "HttpDeclaration",
+                "InvalidRegistrationError",
+                "Registration",
+                "RegistrationContractError",
+                "RegistrationError",
+                "auto_register",
+            }
+        ),
+        private_names=frozenset({"_Marker", "_read_registration_marker"}),
+        shared_values=frozenset({"_DEPRECATED_ALIASES", "_MARKER_ATTR"}),
+    ),
 )
 
 
@@ -1211,6 +1527,18 @@ def own_public_callables(module: ModuleType, new: str) -> list[str]:
 def public_name_gaps(contract: MoveContract, module: ModuleType) -> list[str]:
     """Declared public names that ``module`` does not define itself."""
     return sorted(contract.public_names - set(own_public_callables(module, contract.new)))
+
+
+def private_name_gaps(contract: MoveContract, module: ModuleType) -> list[str]:
+    """Declared private names that ``module`` does not define itself as callables."""
+    return sorted(
+        name
+        for name in contract.private_names
+        if not (
+            callable(getattr(module, name, None))
+            and getattr(getattr(module, name), "__module__", None) == contract.new
+        )
+    )
 
 
 def canonical_source(new: str, roots: Sequence[Path]) -> Path:
@@ -1367,7 +1695,7 @@ def run_cold_case(
     """
     if order not in contract.cold_orders:
         raise ValueError(f"{contract.old} does not run the {order} order")
-    if not (contract.public_names or contract.expected_values):
+    if not (contract.public_names or contract.private_names or contract.expected_values):
         raise ValueError(f"{contract.old} declares nothing for a cold run to check")
     if contract.kind != "value-only":
         program = cold_program(contract, order, register_row=register_row)

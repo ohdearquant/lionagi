@@ -113,15 +113,6 @@ def test_ndjson_stream_does_not_check_by_default():
     assert next(stream) == b'{"b":null}\n'
 
 
-def test_db_json_column_rejects_non_finite():
-    """The stored row is what cannot be repaired later, so this path checks."""
-    from lionagi.state.db import _to_json_column
-
-    assert _to_json_column({"v": 1.5}) == '{"v":1.5}'
-    with pytest.raises(ValueError, match="non-finite float at \\$\\.v"):
-        _to_json_column({"v": float("inf")})
-
-
 # orjson.Fragment is an opaque boundary the check cannot see past
 
 

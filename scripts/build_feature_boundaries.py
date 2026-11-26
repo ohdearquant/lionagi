@@ -44,7 +44,6 @@ MODULE_RULES = {
     "lionagi.adapters": ("adapter", "data_adapters"),
     "lionagi.hooks": ("adapter", "hooks"),
     "lionagi.plugins": ("adapter", "plugins"),
-    "lionagi.state": ("adapter", "state"),
     "lionagi.testing": ("adapter", "testing"),
     "lionagi.studio": ("root", "studio"),
 }
@@ -52,23 +51,15 @@ MODULE_RULES = {
 
 ROOT_MODULES = {
     "lionagi": ("sdk", "public_api"),
-    "lionagi._auto": ("root", "application_discovery"),
-    "lionagi._checkpoint_v3_codec": ("contracts", "checkpoint_contracts"),
-    "lionagi._checkpoint_version": ("contracts", "checkpoint_contracts"),
     "lionagi._class_registry": ("foundation", "class_registry"),
-    "lionagi._cli_worker_context": ("adapter", "worker_context"),
-    "lionagi._command_env": ("adapter", "command_environment"),
-    "lionagi._command_env_metadata": ("contracts", "command_environment"),
     "lionagi._errors": ("contracts", "errors"),
     "lionagi._feature_errors": ("contracts", "errors"),
-    "lionagi._flow_spec": ("contracts", "flow_contracts"),
     "lionagi._lionagi_dir_trust": ("sdk", "configuration"),
-    "lionagi._log_channels": ("foundation", "logging_channels"),
     "lionagi._moved": ("foundation", "compatibility"),
     "lionagi._paths": ("foundation", "path_configuration"),
     "lionagi._provider_errors": ("contracts", "errors"),
     "lionagi._settings": ("sdk", "configuration"),
-    "lionagi._spec_limits": ("contracts", "specification_limits"),
+    "lionagi._state_refusal": ("contracts", "errors"),
     "lionagi._types": ("foundation", "types"),
     "lionagi.config": ("sdk", "configuration"),
     "lionagi.utils": ("foundation", "serialization"),
@@ -110,7 +101,7 @@ REQUIREMENT_GROUPS = {
     (
         "root",
         "dependency_constraints",
-    ): "authlib python-multipart pyjwt urllib3 cryptography requests pygments pymdown-extensions opentelemetry-api",
+    ): "authlib python-multipart pyjwt urllib3 cryptography requests pygments pymdown-extensions opentelemetry-api dnspython joserfc",
 }
 
 

@@ -14,8 +14,8 @@ import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import StateDB  # noqa: E402
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import StateDB  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
 

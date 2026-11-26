@@ -375,7 +375,6 @@ def _export(argv: list[str]) -> dict[str, Any]:
     )
     import asyncio
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.schedule.export import (
         build_managed_export_document,
         convert_legacy_rows,
@@ -383,6 +382,7 @@ def _export(argv: list[str]) -> dict[str, Any]:
         is_legacy_row,
         is_managed_row,
     )
+    from lionhub.state.db import StateDB
 
     async def _collect():
         async with StateDB() as db:
@@ -418,7 +418,7 @@ def _refuse_inside_an_agent() -> None:
     runs inside an agent lionagi started. The daemon runs outside this process's tree,
     so no check at spawn can see where the request came from."""
     from lionagi._provider_errors import NestedAgentRefusedError
-    from lionagi.service._subagent_admission import refuse_nested_agent
+    from lionhub.providers._subagent_admission import refuse_nested_agent
 
     try:
         refuse_nested_agent()

@@ -23,7 +23,7 @@ import json
 import time
 from typing import Any
 
-from lionagi._checkpoint_version import (
+from lionhub.orchestration.flow.checkpoint_version import (
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
@@ -46,7 +46,7 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     safely by this version).
     """
     try:
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
     except ImportError as exc:
         if _own_module(exc) is not None:
             raise

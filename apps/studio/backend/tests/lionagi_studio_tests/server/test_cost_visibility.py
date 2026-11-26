@@ -23,7 +23,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -75,7 +75,7 @@ async def _seed_session(
 
 
 def _make_client(monkeypatch, db_path: Path) -> TestClient:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

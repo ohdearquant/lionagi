@@ -39,6 +39,7 @@ from tests._moved_contracts_test_support import (
     assert_contracts_match_moved,
     contract_for,
     own_public_callables,
+    private_name_gaps,
     public_name_gaps,
     readme_gaps,
     readme_rows,
@@ -266,8 +267,14 @@ def test_objects_are_shared_and_pickles_naming_the_old_path_load():
         importlib.import_module(old)
         assert sys.modules[old] is sys.modules[new]
         module = sys.modules[new]
+        contract = contract_for(old, CONTRACTS)
+        # A module whose only definitions are private is checked through the private names its
+        # contract declares; every other module through its public definitions.
+        private_subjects = contract.private_names if not contract.public_names else frozenset()
         for name, obj in vars(module).items():
-            if name.startswith("_") or getattr(obj, "__module__", None) != new:
+            if name.startswith("_") and name not in private_subjects:
+                continue
+            if getattr(obj, "__module__", None) != new:
                 continue
             if getattr(obj, "__qualname__", None) != name:
                 continue
@@ -495,10 +502,12 @@ def test_every_public_object_of_a_moved_module_is_the_same_object_under_the_old_
     module = importlib.import_module(new)
     public = own_public_callables(module, new)
     # Naming some of what the module offers keeps this check from passing on a module that
-    # defines nothing; every public callable the module does define is checked below.
-    assert contract.public_names
+    # defines nothing; every public callable the module does define is checked below. A module
+    # whose only definitions are private names them as private names, checked the same way.
+    assert contract.public_names or contract.private_names
     assert public_name_gaps(contract, module) == []
-    for name in public:
+    assert private_name_gaps(contract, module) == []
+    for name in sorted({*public, *contract.private_names}):
         namespace: dict = {}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
@@ -586,6 +595,11 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
         ("lionhub.providers.ag2.agent", "logger", "lionagi.providers.ag2.agent"),
         ("lionhub.providers.ag2.groupchat", "logger", "lionagi.providers.ag2.groupchat"),
         ("lionhub.providers.ag2.nlip", "logger", "lionagi.providers.ag2.nlip"),
+        (
+            "lionhub.providers.anthropic.accounts._ledger",
+            "_LOGGER",
+            "lionagi.service.accounts._ledger",
+        ),
         ("lionhub.providers.anthropic.messages", "logger", "lionagi.providers.anthropic.messages"),
         ("lionhub.providers.ollama.chat", "logger", "lionagi.providers.ollama.chat"),
         ("lionhub.providers.ollama.generate", "logger", "lionagi.providers.ollama.generate"),
@@ -830,11 +844,47 @@ def test_a_declared_public_name_the_module_does_not_define_is_a_gap():
 
 def test_a_contract_cannot_be_emptied_into_a_run_that_checks_nothing():
     contract = next(row for row in MODULE_CONTRACTS if row.public_names)
-    emptied = replace(contract, public_names=frozenset())
+    # A module contract with no public names, no private names and no values is refused when
+    # it is made, so no run is ever asked to check nothing.
+    with pytest.raises(ValueError, match="names at least one definition"):
+        replace(contract, public_names=frozenset(), private_names=frozenset())
+    with pytest.raises(ValueError, match="names at least one definition"):
+        MoveContract(old="lionagi._synthetic_empty", new="synthetic_hub.empty", kind="module")
+    # The cold run refuses it as well, for a contract built around that check.
+    package = next(row for row in CONTRACTS if row.kind == "package")
     with pytest.raises(ValueError, match="declares nothing"):
-        run_cold_case(emptied, "old-first", root=ROOT)
+        run_cold_case(replace(package, cold_orders=("old-first",)), "old-first", root=ROOT)
     with pytest.raises(ValueError, match="value-only"):
         replace(VALUE_ONLY_CONTRACTS[0], expected_values=())
+
+
+def test_a_module_contract_may_name_only_private_definitions():
+    private_only = [row for row in MODULE_CONTRACTS if not row.public_names]
+    assert [row.old for row in private_only] == ["lionagi.ln._paths", "lionagi._cli_worker_context"]
+    for row in private_only:
+        assert row.private_names
+        module = importlib.import_module(row.new)
+        assert private_name_gaps(row, module) == []
+
+    module = ModuleType("synthetic_hub.private_definitions")
+
+    def _helper():
+        """Defined by the module."""
+
+    _helper.__module__ = module.__name__
+    module._helper = _helper
+    contract = MoveContract(
+        old="lionagi._synthetic_private",
+        new=module.__name__,
+        kind="module",
+        private_names=frozenset({"_helper"}),
+    )
+    assert private_name_gaps(contract, module) == []
+    # A private name the module only imports, or does not have, is a gap.
+    module._helper = json.dumps
+    assert private_name_gaps(contract, module) == ["_helper"]
+    del module._helper
+    assert private_name_gaps(contract, module) == ["_helper"]
 
 
 # `python -m <old name>` runs a package's __main__ without importing it, through the
@@ -1220,6 +1270,46 @@ def test_a_forwarded_name_without_the_application_raises_without_a_warning():
     assert out.strip().splitlines() == ["refused lionagi_studio", "0"], out
 
 
+_BLOCK_THE_HUB = (
+    "import importlib.abc, sys\n"
+    "class _Block(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, fullname, path=None, target=None):\n"
+    "        if fullname == 'lionhub' or fullname.startswith('lionhub.'):\n"
+    "            raise ModuleNotFoundError(f'No module named {fullname!r}', name=fullname)\n"
+    "        return None\n"
+    "sys.meta_path.insert(0, _Block())\n"
+)
+
+
+def test_the_old_registration_path_without_the_hub_fails_as_every_hub_row_does():
+    """With lionhub absent, ``lionagi._auto`` raises what each other old name served from the
+    hub raises: the missing-package error for lionhub, the same type, name and message."""
+    olds = [
+        row.old
+        for row in _moved.MOVED
+        if row.new.split(".")[0] == "lionhub" and not _moved.still_on_disk(row.old)
+    ]
+    assert "lionagi._auto" in olds
+    assert len(olds) > 1
+    out = _run_fresh(
+        _BLOCK_THE_HUB + "import importlib, json\n"
+        f"olds = {olds!r}\n"
+        "seen = {}\n"
+        "for old in olds:\n"
+        "    try:\n"
+        "        importlib.import_module(old)\n"
+        "    except ModuleNotFoundError as exc:\n"
+        "        seen[old] = [type(exc).__name__, exc.name, str(exc)]\n"
+        "    else:\n"
+        "        seen[old] = 'imported'\n"
+        "print(json.dumps(seen))\n"
+    )
+    seen = json.loads(out)
+    expected = ["ModuleNotFoundError", "lionhub", "No module named 'lionhub'"]
+    assert seen["lionagi._auto"] == expected, seen["lionagi._auto"]
+    assert {old: answer for old, answer in seen.items() if answer != expected} == {}
+
+
 def test_each_kept_parent_is_the_parent_of_a_module_moved_to_the_hub():
     for name in KEPT_PARENTS:
         children = [
@@ -1462,51 +1552,10 @@ LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service"})
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
-def _deprecated_catalog_target_nodes(path: Path, tree: ast.Module) -> set[int]:
-    """Exempt only the declared lazy compatibility targets in the core compiler."""
-    if path != ROOT / "lionagi" / "_auto.py":
-        return set()
-    expected = {
-        name: f"lionhub.serve.cli.catalog.{name}"
-        for name in (
-            "build_cli_parser",
-            "command_exists",
-            "iter_cli_seeds",
-            "load_cli_command",
-            "seed_for",
-        )
-    }
-    for node in tree.body:
-        if not (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "_DEPRECATED_ALIASES"
-            and isinstance(node.value, ast.Dict)
-            and len(node.value.keys) == len(expected)
-        ):
-            continue
-        targets = {}
-        for key, value in zip(node.value.keys, node.value.values, strict=True):
-            if (
-                isinstance(key, ast.Constant)
-                and key.value in expected
-                and isinstance(value, ast.Tuple)
-                and len(value.elts) == 2
-                and isinstance(value.elts[0], ast.Constant)
-                and value.elts[0].value == expected[key.value]
-            ):
-                targets[key.value] = id(value.elts[0])
-        if targets.keys() == expected.keys():
-            return set(targets.values())
-    return set()
-
-
 def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
     """Every import of lionhub, or string naming a lionhub module, in ``path``."""
     text = path.read_text(encoding="utf-8") if source is None else source
     tree = ast.parse(text, filename=str(path))
-    compatibility_targets = _deprecated_catalog_target_nodes(path, tree)
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -1514,8 +1563,6 @@ def _lionhub_names(path: Path, source: str | None = None) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             names = [node.module or ""]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if id(node) in compatibility_targets:
-                continue
             names = [node.value]
         else:
             continue
@@ -1544,28 +1591,6 @@ def test_the_lionhub_check_sees_each_form_of_reference():
     )
     hits = _lionhub_names(probe, source)
     assert [int(hit.split(":")[1]) for hit in hits] == [1, 2, 3], hits
-
-
-def test_the_lionhub_check_exempts_only_declared_catalog_alias_targets():
-    path = ROOT / "lionagi" / "_auto.py"
-    names = (
-        "build_cli_parser",
-        "command_exists",
-        "iter_cli_seeds",
-        "load_cli_command",
-        "seed_for",
-    )
-    aliases = {name: (f"lionhub.serve.cli.catalog.{name}", "2.0.0") for name in names}
-    source = f"_DEPRECATED_ALIASES = {aliases!r}\n"
-    assert _lionhub_names(path, source) == []
-    additional = "import lionhub.serve.cli.catalog\nEXTRA = 'lionhub.serve.cli.catalog.seed_for'\n"
-    assert [hit.rsplit(": ", 1)[1] for hit in _lionhub_names(path, source + additional)] == [
-        "lionhub.serve.cli.catalog",
-        "lionhub.serve.cli.catalog.seed_for",
-    ]
-    assert len(_lionhub_names(ROOT / "lionagi" / "_other.py", source)) == len(names)
-    aliases["other"] = ("lionhub.serve.cli.catalog.other", "2.0.0")
-    assert len(_lionhub_names(path, f"_DEPRECATED_ALIASES = {aliases!r}\n")) == len(aliases)
 
 
 _STUDIO_NAME = re.compile(r"lionagi_studio(\.[A-Za-z_][A-Za-z0-9_]*)*")
@@ -1601,7 +1626,7 @@ def test_the_core_names_no_studio_backend_module():
 
 
 def test_the_studio_check_sees_each_form_of_reference():
-    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    probe = ROOT / "lionagi" / "hooks" / "_probe.py"
     source = (
         "import lionagi_studio.operator\n"
         "from lionagi_studio.operator import store\n"
@@ -1923,7 +1948,7 @@ def test_the_core_imports_no_package_that_moves_in_wave_2():
 
 
 def test_the_wave_2_check_sees_each_form_of_import():
-    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    probe = ROOT / "lionagi" / "hooks" / "_probe.py"
     source = (
         "from lionagi.cli._runs import RunDir\n"
         "from ..mcp import server\n"

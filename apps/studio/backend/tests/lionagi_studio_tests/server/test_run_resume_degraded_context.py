@@ -29,7 +29,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -105,11 +105,11 @@ def real_launch_harness(tmp_path: Path, monkeypatch: Any):
     leaves launch_detached_argv/_spawn_detached real; only the OS-level
     subprocess spawn is stubbed, driven by the checkpoint actually on disk so
     the refusal text is genuinely computed from the plan, not hardcoded."""
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.flow.checkpoint as ckmod
     import lionhub.orchestration.scheduler.subprocess as subprocess_mod
     import lionhub.serve.daemon.services.invocations as invocations_svc
     import lionhub.serve.daemon.services.run_resume as resume_svc
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

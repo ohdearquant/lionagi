@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 
 def test_string_digest_families_keep_serialization_and_chain_format():
-    from lionagi.state._mirror_common import canonical_json, content_sha256
     from lionagi_studio.operator.store import OperatorStore
     from lionagi_studio.services.approvals import (
         _compute_chain_hash,
@@ -18,6 +17,7 @@ def test_string_digest_families_keep_serialization_and_chain_format():
         compute_params_hash,
     )
     from lionhub.hooks.external import compute_command_hash
+    from lionhub.state._mirror_common import canonical_json, content_sha256
 
     value = {"z": "café 🦁", "a": [1, True, None]}
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -179,8 +179,8 @@ def test_optional_rendering_keeps_duck_typed_model_classes():
     ],
 )
 def test_state_lazy_exports_keep_identity_and_cache(name, module, monkeypatch):
-    package = importlib.import_module("lionagi.state")
-    expected = getattr(importlib.import_module("lionagi.state." + module), name)
+    package = importlib.import_module("lionhub.state")
+    expected = getattr(importlib.import_module("lionhub.state." + module), name)
     monkeypatch.setattr(package, name, None, raising=False)
     monkeypatch.delattr(package, name)
     assert package.__getattr__(name) is expected
@@ -196,7 +196,7 @@ def test_cli_lazy_export_keeps_callable_over_submodule(monkeypatch):
     assert callable(package.main)
 
 
-@pytest.mark.parametrize("module", ["lionhub.serve.cli", "lionagi.state"])
+@pytest.mark.parametrize("module", ["lionhub.serve.cli", "lionhub.state"])
 @pytest.mark.parametrize("name", ["missing", "missing'attribute\n"])
 def test_lazy_unknown_attributes_keep_original_exception_text(module, name):
     package = importlib.import_module(module)

@@ -72,7 +72,7 @@ alternate relational representation of those rows, and a stored path is not proo
 bytes were captured.
 
 **The contract.** The runtime schema is the SQLAlchemy `MetaData` in
-`lionagi/state/schema_meta.py`. Its operational tables are grouped as follows:
+`lionhub/src/lionhub/state/schema_meta.py`. Its operational tables are grouped as follows:
 
 ```text
 conversation:  message_types, messages, progressions, sessions, branches
@@ -105,7 +105,7 @@ class StateDB:
     ) -> str: ...
 ```
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -172,7 +172,7 @@ async def list_definition_versions(
 ) -> list[dict[str, Any]]: ...
 ```
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -228,7 +228,7 @@ async def append_to_progression(
 ) -> None: ...
 ```
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -293,7 +293,7 @@ async def insert_artifact(
 ) -> str: ...
 ```
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -321,7 +321,7 @@ retention rules.
 
 ### D5 — File verification records observations, not bytes
 
-`lionagi/state/artifact_verifier.py` verifies an expected-file contract and persists the resulting
+`lionhub/src/lionhub/state/artifact_verifier.py` verifies an expected-file contract and persists the resulting
 observation on the session. It does not ingest produced files into the artifacts table.
 
 **The contract.**
@@ -360,8 +360,8 @@ async def StateDB.update_artifact_verification(
 ) -> None: ...
 ```
 
-Code anchors: `lionagi/state/artifact_verifier.py`; `lionagi/state/db.py`;
-`lionagi/state/schema_meta.py`.
+Code anchors: `lionhub/src/lionhub/state/artifact_verifier.py`; `lionhub/src/lionhub/state/db.py`;
+`lionhub/src/lionhub/state/schema_meta.py`.
 
 **Exact semantics.**
 
@@ -411,7 +411,7 @@ the current code implements only observation.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Define and implement the artifact persistence contract as either mutable structured outcomes only or a separate immutable file-capture path; acceptance requires documented identity, mutability, hash, path, and retention semantics with tests that enforce the selected contract. | M | (filled at issue-open time) |
-| 2 | Move profile-path resolution out of `lionagi.cli` and make `lionagi/state/provenance.py` depend on a neutral configuration API or an injected resolved path; acceptance requires no import from the state package into the CLI package. | S | (filled at issue-open time) |
+| 2 | Move profile-path resolution out of `lionagi.cli` and make `lionhub/src/lionhub/state/provenance.py` depend on a neutral configuration API or an injected resolved path; acceptance requires no import from the state package into the CLI package. | S | (filled at issue-open time) |
 
 ## Alternatives considered
 

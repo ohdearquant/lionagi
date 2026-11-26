@@ -19,8 +19,8 @@ import uuid
 
 import pytest
 
-import lionagi.state.db as db_mod
-from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
+import lionhub.state.db as db_mod
+from lionhub.state.db import StateDB, state_db_file, state_db_known_absent
 
 
 def _set_url(monkeypatch, url: str | None) -> None:
@@ -291,13 +291,13 @@ def test_a_store_with_no_file_reports_no_size_rather_than_zero(absent_default, m
 
 
 def test_read_only_is_supported_for_an_on_disk_sqlite_store(moved_sqlite_url, tmp_path):
-    from lionagi.state.db import read_only_open_supported
+    from lionhub.state.db import read_only_open_supported
 
     assert read_only_open_supported() is True
 
 
 def test_read_only_is_not_supported_for_a_server_store(absent_default, monkeypatch):
-    from lionagi.state.db import read_only_open_supported
+    from lionhub.state.db import read_only_open_supported
 
     _set_url(monkeypatch, _SERVER_URL)
 
@@ -307,7 +307,7 @@ def test_read_only_is_not_supported_for_a_server_store(absent_default, monkeypat
 def test_read_only_is_not_supported_for_an_in_memory_store(absent_default, monkeypatch):
     # There is no file to reopen in mode=ro, so the read-only open has nothing
     # to attach to even though the dialect is sqlite.
-    from lionagi.state.db import read_only_open_supported
+    from lionhub.state.db import read_only_open_supported
 
     _set_url(monkeypatch, "sqlite+aiosqlite:///:memory:")
 

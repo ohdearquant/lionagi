@@ -234,8 +234,20 @@ def _env_flag(env_var: str, *, default: bool) -> bool:
     )
 
 
+# Set to a true value, the daemon serves its API with the scheduler engine not started:
+# schedules can be listed, disabled and enabled, and none of them fires. A store whose
+# daemon has been down for a while comes back this way, so its rows are settled before
+# the first tick. Unset, or set to a false value, the engine starts as it always has.
+SCHEDULER_HOLD_ENV = "LIONAGI_SCHEDULER_HOLD"
+
+
+def scheduler_held() -> bool:
+    """Whether this daemon start holds the scheduler engine, read when asked."""
+    return _env_flag(SCHEDULER_HOLD_ENV, default=False)
+
+
 # Durable replay of terminal notifications into the global settings notifier. Off by
 # default: the push path does not yet record what it delivered, so with this on a pass
 # replays every pushed notification and each configured notifier runs a second time.
-# The consumer API in lionagi.state.lifecycle is unaffected.
+# The consumer API in lionhub.state.lifecycle is unaffected.
 TERMINAL_RECONCILE_ENABLED: bool = _env_flag("LIONAGI_STUDIO_TERMINAL_RECONCILE", default=False)

@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy import bindparam, inspect, text
 
-from lionagi.state.db import (
+from lionhub.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     SCHEDULE_RUN_TERMINAL_STATUSES,
     SESSION_TERMINAL_STATUSES,

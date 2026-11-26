@@ -8,7 +8,6 @@ import os
 import re
 import shlex
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.orchestration.engine_definitions import _is_registered_engine_kind
 from lionhub.orchestration.schedule.parsing import (
     _ALIAS_ACTION_KINDS,
@@ -16,6 +15,7 @@ from lionhub.orchestration.schedule.parsing import (
     _VALID_ACTION_KINDS,
     _validate_identifier,
 )
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 _PLAY_SUBCOMMANDS: frozenset[str] = frozenset({"list", "check", "status"})
 

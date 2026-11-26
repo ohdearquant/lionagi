@@ -15,9 +15,9 @@ import lionhub.orchestration.scheduler.settings as scheduler_settings
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
-import lionagi.state.engine as state_engine_mod
-from lionagi.state.db import StateDB  # noqa: E402
+import lionhub.state.db as state_db_mod
+import lionhub.state.engine as state_engine_mod
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):

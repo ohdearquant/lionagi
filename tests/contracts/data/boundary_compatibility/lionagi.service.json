@@ -1,12 +1,5 @@
 {
   "environment_lookups": {
-    "lionagi/service/_subagent_admission.py": [
-      "os.environ.get:AGENT_DEPTH_ENV",
-      "os.environ:AGENT_DEPTH_ENV"
-    ],
-    "lionagi/service/accounts/_credentials.py": [
-      "os.environ:key_env"
-    ],
     "lionagi/service/connections/endpoint_config.py": [
       "os.getenv:name",
       "os.getenv:self.api_key",
@@ -25,29 +18,20 @@
       "def __getattr__(name: str):\n    return lazy_import(name, _LAZY_MAP, __name__, globals())",
       "__all__ = (\n    \"APICalling\",\n    \"AssociatedEventInfo\",\n    \"Broadcaster\",\n    \"Endpoint\",\n    \"EndpointConfig\",\n    \"HookDict\",\n    \"HookEvent\",\n    \"HookEventTypes\",\n    \"HookRegistry\",\n    \"HookedEvent\",\n    \"RateLimitedAPIExecutor\",\n    \"TokenCalculator\",\n    \"cache_intent\",\n    \"global_hook_logger\",\n    \"iModel\",\n    \"iModelManager\",\n)"
     ],
+    "lionagi/service/_admission_notice.py": [
+      "__all__ = ()"
+    ],
     "lionagi/service/_output_limit.py": [
       "__all__ = (\"read_output_limit_stop\",)"
     ],
     "lionagi/service/_prompt_cache.py": [
       "__all__ = (\n    \"CEILING\",\n    \"LEDGER_KEY\",\n    \"PROTECTION_VERSION\",\n    \"TTL_SECONDS\",\n    \"PromptCacheCall\",\n    \"activate_call\",\n    \"cache_anchors\",\n    \"cache_intent\",\n    \"clone_ledger\",\n    \"conversation_call\",\n    \"current_call\",\n    \"current_intent\",\n    \"decide_protection\",\n    \"established\",\n    \"expires_at\",\n    \"ledger_for\",\n    \"note_attempt\",\n    \"placement_routes\",\n    \"prompt_cache_call\",\n    \"protection\",\n    \"settle\",\n)"
     ],
-    "lionagi/service/_subagent_admission.py": [
-      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
-    ],
     "lionagi/service/accounts/__init__.py": [
       "__all__ = ()"
     ],
-    "lionagi/service/accounts/_credentials.py": [
-      "__all__ = (\"CredentialSources\", \"resolve_account_key\")"
-    ],
-    "lionagi/service/accounts/_ledger.py": [
-      "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
-    ],
-    "lionagi/service/accounts/_pricing.py": [
-      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"stream_usage_estimate\",\n    \"usage_outcome\",\n)"
-    ],
-    "lionagi/service/accounts/_router.py": [
-      "__all__ = (\"AccountRouter\",)"
+    "lionagi/service/accounts/_request_guard.py": [
+      "__all__ = (\"header_pairs\", \"routed_client_kwargs\", \"validate_routed_request\")"
     ],
     "lionagi/service/accounts/_scope.py": [
       "__all__ = (\"current_scope\", \"routing_scope\")"
@@ -57,6 +41,9 @@
     ],
     "lionagi/service/accounts/_types.py": [
       "__all__ = (\n    \"INT64_MAX\",\n    \"NANODOLLARS_PER_USD\",\n    \"AccountRoutingError\",\n    \"AccountSpec\",\n    \"CompleteUsage\",\n    \"Evidence\",\n    \"Rate\",\n    \"PricingInputs\",\n    \"UsageCounts\",\n    \"UsageRates\",\n    \"RejectionZero\",\n    \"StreamUsageEstimate\",\n    \"ProvenNotSent\",\n    \"Quote\",\n    \"Reservation\",\n    \"RouterErrorCode\",\n    \"Scope\",\n    \"ScopeKind\",\n    \"SettleResult\",\n    \"UnknownOutcome\",\n)"
+    ],
+    "lionagi/service/accounts/_usage_shape.py": [
+      "__all__ = (\"CACHE_WRITE_LIFETIMES\", \"cache_write_split\")"
     ],
     "lionagi/service/broadcaster.py": [
       "__all__ = (\"Broadcaster\",)"
@@ -125,7 +112,8 @@
       "__all__ = (\n    \"get_handler\",\n    \"validate_hooks\",\n    \"validate_stream_handlers\",\n)"
     ],
     "lionagi/service/providers.py": [
-      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"normalize_effort\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n    \"split_effort_suffix\",\n)"
+      "__all__ = (\n    \"BACKENDS\",  # noqa: F822 -- served by __getattr__\n    \"CLI_PROVIDERS\",  # noqa: F822 -- served by __getattr__\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_BYPASS_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_EFFORT_KWARG\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_FAST_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_REPO_KWARG\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_TO_ALIAS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_YOLO_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDERS_NO_EFFORT\",  # noqa: F822 -- served by __getattr__\n    \"codex_unset_effort_default\",  # noqa: F822 -- served by __getattr__\n    \"normalize_effort\",\n    \"parse_model_spec\",  # noqa: F822 -- served by __getattr__\n    \"reclamp_effort_for_model\",  # noqa: F822 -- served by __getattr__\n    \"split_effort_suffix\",\n)",
+      "def __getattr__(name: str) -> Any:\n    if name in _MODEL_SPEC_NAMES:\n        import importlib\n\n        return getattr(importlib.import_module(_MODEL_SPEC_OLD_MODULE), name)\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
     ],
     "lionagi/service/rate_limited_processor.py": [
       "__all__ = (\n    \"RateLimitedAPIProcessor\",\n    \"RateLimitedAPIExecutor\",\n)"
@@ -176,52 +164,8 @@
       "protection",
       "settle"
     ],
-    "lionagi/service/_subagent_admission.py": [
-      "SubagentLease",
-      "account_admission",
-      "admit_subagent",
-      "child_agent_depth",
-      "engine_cap_env",
-      "refuse_nested_agent",
-      "set_child_agent_depth",
-      "subagent_admission_status",
-      "without_account_names"
-    ],
-    "lionagi/service/accounts/_credentials.py": [
-      "CredentialSources",
-      "resolve_account_key"
-    ],
-    "lionagi/service/accounts/_ledger.py": [
-      "AccountStatus",
-      "CredentialLedger",
-      "default_ledger_path"
-    ],
-    "lionagi/service/accounts/_pricing.py": [
-      "ModelPrice",
-      "PriceRevision",
-      "PriceTier",
-      "cache_write_split",
-      "freeze_request",
-      "price_usage",
-      "quote_ceiling",
-      "registered_revisions",
-      "request_ttls",
-      "revision_by_id",
-      "stream_usage_estimate",
-      "usage_outcome"
-    ],
-    "lionagi/service/accounts/_router.py": [
-      "AccountRouter",
-      "RoutedCacheEvidence",
-      "RouterAttempt",
-      "StreamTextRedactor",
-      "StreamingSecretRedactor",
-      "get_router",
+    "lionagi/service/accounts/_request_guard.py": [
       "header_pairs",
-      "mask_joined_key_runs",
-      "mask_key_runs",
-      "provider_request_id",
-      "redact_value",
       "routed_client_kwargs",
       "validate_routed_request"
     ],
@@ -254,6 +198,9 @@
       "UnknownOutcome",
       "UsageCounts",
       "UsageRates"
+    ],
+    "lionagi/service/accounts/_usage_shape.py": [
+      "cache_write_split"
     ],
     "lionagi/service/broadcaster.py": [
       "Broadcaster"
@@ -360,11 +307,7 @@
       "iModelManager"
     ],
     "lionagi/service/providers.py": [
-      "ModelSpec",
-      "codex_unset_effort_default",
       "normalize_effort",
-      "parse_model_spec",
-      "reclamp_effort_for_model",
       "split_effort_suffix"
     ],
     "lionagi/service/rate_limited_processor.py": [

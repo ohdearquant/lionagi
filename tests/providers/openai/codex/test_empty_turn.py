@@ -20,7 +20,6 @@ import pytest
 from lionagi._provider_errors import ProviderEmptyTurnError
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import resolve_run_reason
 from lionhub.providers._empty_turn import STDERR_TAIL_CHARS, is_empty_turn
 from lionhub.providers.openai.codex import (
@@ -29,6 +28,7 @@ from lionhub.providers.openai.codex import (
     CodexCodeRequest,
     stream_codex_cli,
 )
+from lionhub.state.reasons import RunReasons
 
 TURN_COMPLETED = {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 0}}
 BENIGN_SENTINEL = {"type": "error", "error": {}}

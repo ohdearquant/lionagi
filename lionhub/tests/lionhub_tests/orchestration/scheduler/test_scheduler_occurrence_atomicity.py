@@ -20,15 +20,16 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from lionagi.state import db as db_mod
-from lionagi.state.db import SCHEMA_VERSION, StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.schedule.parsing import _merge_chain_action
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+from lionhub.state import db as db_mod
+from lionhub.state.db import SCHEMA_VERSION, StateDB
+from lionhub.state.reasons import RunReasons
 from tests._scheduler_claims import claim_and_advance
-from tests.state.conftest import pg_url  # noqa: F401
 from tests.state.test_chain_decision_readers import _isolated_postgres_store
+
+from ...state.conftest import pg_url  # noqa: F401
 
 
 def _schedule_row(schedule_id: str, **overrides) -> dict:
@@ -190,7 +191,7 @@ async def test_missed_fire_recovery_skips_occurrence_already_in_schedule_runs(
     tmp_path, monkeypatch
 ):
     """(c) Startup/missed-fire recovery must consult schedule_runs before queuing a recovery fire: a past-due schedule that already has a schedule_run row at-or-after that time (committed, then the process died before the terminal write) must NOT be re-fired -- only have its cursor advanced past it."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -242,7 +243,7 @@ async def test_missed_fire_recovery_skips_occurrence_already_in_schedule_runs(
 @pytest.mark.asyncio
 async def test_missed_fire_recovery_still_fires_past_capacity_deferred_skip(tmp_path, monkeypatch):
     """(c2) A capacity-deferred fire writes an audit-only 'skipped' schedule_run row and deliberately leaves next_fire_at untouched so the occurrence retries next tick; recovery must not mistake that audit row for a genuine fire -- schedule_run_exists_since() excludes status='skipped' rows so this occurrence still gets a real recovery fire."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -301,7 +302,7 @@ async def test_missed_fire_recovery_still_fires_past_chain_child_only_row(tmp_pa
     shares the parent's schedule_id but is not itself a top-level occurrence of the
     schedule. schedule_run_exists_since() must exclude chain-child rows so a
     genuinely-due top-level occurrence is not masked and silently dropped."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -365,7 +366,7 @@ async def test_missed_fire_recovery_still_fires_past_chain_child_only_row(tmp_pa
 @pytest.mark.asyncio
 async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_path, monkeypatch):
     """(e) A crash between the occurrence-insert/cursor-advance commit and spawn_and_wait() confirming launch leaves a durable status='running' row with dispatched_at NULL, past the cursor -- invisible to ordinary missed-fire recovery. _recover_undispatched_fires() must tombstone the orphan and re-fire a fresh occurrence carrying the same trigger_context, the at-least-once side of the delivery contract."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -461,7 +462,7 @@ async def test_recovery_refires_occurrence_committed_but_never_dispatched(tmp_pa
 @pytest.mark.asyncio
 async def test_recovery_never_touches_a_row_with_confirmed_dispatch(tmp_path, monkeypatch):
     """Once dispatched_at is set, the row is outside _recover_undispatched_fires()'s scan entirely -- the at-most-once boundary: a crash from here on is left to the ordinary stale-run reaper, never auto-retried, to avoid a duplicate real-world side effect."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -498,7 +499,7 @@ async def test_recovery_never_touches_a_row_with_confirmed_dispatch(tmp_path, mo
 @pytest.mark.asyncio
 async def test_recovery_tombstones_undispatched_chain_child_without_retry(tmp_path, monkeypatch):
     """An undispatched chain child (chain_depth > 0) is tombstoned like any other orphan, but NOT auto-retried -- the documented gap in _fire_inner()'s delivery contract: only the follow-on step is lost, the parent occurrence's own recorded outcome is unaffected."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -766,7 +767,7 @@ async def test_recovery_leaves_orphan_untouched_when_refire_crashes_before_atomi
     tmp_path, monkeypatch
 ):
     """A crash during recovery re-fire, at any point before _write_occurrence()'s atomic transaction runs, must leave the orphan completely untouched (nothing to roll back yet); a fresh recovery pass over the same state must find and retry it, proving the occurrence is never lost even when the re-fire attempt itself fails early."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -850,7 +851,7 @@ async def test_recovery_leaves_orphan_untouched_when_refire_crashes_before_atomi
 @pytest.mark.asyncio
 async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypatch):
     """A second _recover_undispatched_fires() pass over state left by a first, fully-completed pass must find nothing left to do: the replacement occurrence is already dispatched and the original orphan already terminal -- two passes over the same recovery must produce exactly one re-fire."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -945,7 +946,7 @@ async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirme
 @pytest.mark.asyncio
 async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path, monkeypatch):
     """A concurrently-confirmed launch (dispatched_at stamped) lands after recovery's scan but before its atomic re-fire write; the strengthened CAS makes that write a no-op, leaving the live run completely untouched, and abandonment cancels only the doomed pre-spawn recovery invocation, never the live run's own."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1085,7 +1086,7 @@ async def _seed_dispatched_run_with_session(
 async def test_reconcile_skips_unusable_chain_and_continues_to_next_orphan(
     tmp_path, monkeypatch, caplog, value, status, field
 ):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1140,7 +1141,7 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
     scheduler crashed between the two) must be reconciled from its child
     session's OWN terminal status, written independently by that session's
     own teardown -- not from any liveness guess about the dead scheduler."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1172,7 +1173,7 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
 async def test_reconciled_top_level_run_uses_current_schedule_branch(
     tmp_path, monkeypatch, status, branch
 ):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1237,7 +1238,7 @@ async def test_reconciled_top_level_run_uses_current_schedule_branch(
 async def test_reconciled_chain_child_stops_without_effective_branches(
     tmp_path, monkeypatch, caplog, status, depth, has_parent, successor
 ):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1339,7 +1340,7 @@ async def test_reconcile_leaves_row_running_when_session_still_nonterminal(tmp_p
     reached a terminal status, the row must be left exactly as-is -- unknown
     liveness is never treated as death. Falls through to the existing
     wall-clock stale reaper unchanged."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1365,7 +1366,7 @@ async def test_reconcile_leaves_row_running_when_no_sessions_recorded(tmp_path, 
     action, or an agent session row not yet inserted) carries no positive
     completion evidence -- left running for the wall-clock stale reaper,
     never guessed at."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -1405,7 +1406,7 @@ async def test_reconcile_finalizes_completed_empty_orphan_as_failed_not_success(
     maps resolve_invocation_terminal()'s result through the same
     _SCHEDULE_RUN_STATUS_FROM_INVOCATION table the live _fire() path uses,
     and that table used to map completed_empty onto "completed"."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

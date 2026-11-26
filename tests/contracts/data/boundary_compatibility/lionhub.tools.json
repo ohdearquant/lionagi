@@ -30,6 +30,12 @@
     "lionhub/src/lionhub/tools/code/search.py": [
       "__all__ = (\n    \"SearchAction\",\n    \"SearchRequest\",\n    \"SearchResponse\",\n    \"SearchTool\",\n)"
     ],
+    "lionhub/src/lionhub/tools/command_env.py": [
+      "__all__ = (\n    \"credential_env_names\",\n    \"normalize_command_env_allowlist\",\n    \"scrub_command_env\",\n)"
+    ],
+    "lionhub/src/lionhub/tools/command_env_metadata.py": [
+      "__all__ = (\"configured_command_env_names\", \"command_environment\")"
+    ],
     "lionhub/src/lionhub/tools/communication/__init__.py": [
       "from .messenger import LionMessenger",
       "__all__ = (\"LionMessenger\",)"
@@ -103,6 +109,15 @@
       "SandboxAction",
       "SandboxRequest",
       "SubagentRequest"
+    ],
+    "lionhub/src/lionhub/tools/command_env.py": [
+      "credential_env_names",
+      "normalize_command_env_allowlist",
+      "scrub_command_env"
+    ],
+    "lionhub/src/lionhub/tools/command_env_metadata.py": [
+      "command_environment",
+      "configured_command_env_names"
     ],
     "lionhub/src/lionhub/tools/communication/messenger.py": [
       "LionMessenger",

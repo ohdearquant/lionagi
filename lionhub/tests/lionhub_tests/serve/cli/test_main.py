@@ -10,9 +10,9 @@ import pytest
 import yaml
 
 from lionagi._feature_errors import MissingFeatureError
-from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
 from lionhub.serve.cli.main import _handle_play_shortcut, main
+from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
 
 def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
@@ -27,7 +27,7 @@ def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(["skill", "--cwd", "/some/project", "definitely-not-a-real-skill-xyz"])
@@ -42,7 +42,7 @@ def test_main_resolves_notify_settings_project_dir_from_cwd_equals_form(monkeypa
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(["skill", "--cwd=/other/project", "definitely-not-a-real-skill-xyz"])
@@ -60,7 +60,7 @@ def test_main_resolves_notify_settings_project_dir_last_of_repeated_cwd_flags(mo
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(
@@ -86,7 +86,7 @@ def test_main_resolves_notify_settings_project_dir_last_of_mixed_cwd_forms(monke
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(
@@ -121,7 +121,7 @@ def test_main_notify_settings_project_dir_none_without_cwd_flag(monkeypatch):
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(["skill", "definitely-not-a-real-skill-xyz"])
@@ -139,7 +139,7 @@ def test_main_notify_settings_ignores_cwd_after_end_of_options_sentinel(monkeypa
         return False
 
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        "lionhub.state.lifecycle.notify_settings.register_settings_terminal_callback",
         _spy,
     )
     main(["skill", "definitely-not-a-real-skill-xyz", "--", "--cwd", "/should/not/be/used"])

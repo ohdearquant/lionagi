@@ -23,10 +23,10 @@ import pytest
 import yaml
 
 from lionagi import Branch, Session
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.orchestrate._orchestration import OrchestrationEnv
 from lionhub.serve.cli.orchestrate.flow import _run_flow
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 # Fixtures
 
@@ -34,7 +34,7 @@ from lionhub.serve.cli.orchestrate.flow import _run_flow
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -211,7 +211,7 @@ async def test_run_flow_fires_real_hook_with_settings_configured_command(
         },
     )
 
-    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+    from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     installed = register_settings_terminal_callback(project_dir=str(repo_dir))
     assert installed is True
@@ -234,7 +234,7 @@ async def test_run_flow_fires_real_hook_with_settings_configured_command(
                 notify_sender="release coordinator",
             )
     finally:
-        from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+        from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
         DEFAULT_TERMINAL_CALLBACKS.unregister("notify.settings.on_terminal")
 
@@ -288,7 +288,7 @@ async def test_run_flow_notify_flag_overrides_settings_handler_for_this_run_only
         },
     )
 
-    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+    from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     installed = register_settings_terminal_callback(project_dir=str(repo_dir))
     assert installed is True
@@ -311,7 +311,7 @@ async def test_run_flow_notify_flag_overrides_settings_handler_for_this_run_only
                 notify=_capture_command(override_out),
             )
     finally:
-        from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+        from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
         DEFAULT_TERMINAL_CALLBACKS.unregister("notify.settings.on_terminal")
 
@@ -364,7 +364,7 @@ async def test_run_flow_swallows_failing_hook_and_keeps_real_terminal_status(
 async def test_run_flow_swallows_hook_timeout(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    import lionagi.state.lifecycle.notify_settings as notify_settings_mod
+    import lionhub.state.lifecycle.notify_settings as notify_settings_mod
 
     monkeypatch.setattr(notify_settings_mod, "HANDLER_BUDGET_SECONDS", 0.2)
 
@@ -522,7 +522,7 @@ async def test_fallback_terminal_envelope_has_last_known_previous_status(
     temp_db_path: Path, tmp_path: Path
 ):
     """A failed finalize still emits a transition-shaped envelope, not an initial row."""
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
     env = _make_env(tmp_path)
     invocation_id = str(uuid4())
@@ -574,8 +574,8 @@ async def test_fallback_envelope_keeps_resolved_status_when_only_the_write_fails
     would tell a `--notify` consumer the run succeeded on exactly the path
     where its outcome was already known to be empty.
     """
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.reasons import RunReasons
 
     env = _make_env(tmp_path)
     invocation_id = str(uuid4())
@@ -648,8 +648,8 @@ async def test_fallback_envelope_reports_an_interrupted_flow_as_sigint_not_user_
     run records. Emitting a distinct user-abort reason here would make the
     cause a consumer sees depend on whether finalization happened to fail,
     for a run that was interrupted identically either way."""
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.reasons import RunReasons
 
     env = _make_env(tmp_path)
     invocation_id = str(uuid4())

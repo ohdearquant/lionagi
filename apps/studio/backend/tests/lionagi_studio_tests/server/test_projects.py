@@ -17,7 +17,7 @@ def _make_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, raise_server_exceptions: bool = True
 ) -> TestClient:
     """Wire a TestClient with a real temp state.db and patched paths."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -25,7 +25,7 @@ def _make_client(
     # Ensure schema is applied to the temp DB.
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async def _init():
         async with StateDB(fake_db) as db:
@@ -193,7 +193,7 @@ def test_delete_non_studio_project_returns_403(tmp_path, monkeypatch):
     """Auto-detected projects (source != 'studio') cannot be deleted via Studio."""
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
 

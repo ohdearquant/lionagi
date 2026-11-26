@@ -58,14 +58,14 @@ gate allows. The gate has no declared identity, level, reason code, or policy pr
 subscriptions, routes, and optional persistence to `session_signals`. Persistence is a
 subscriber and is explicitly best-effort. Payloads may be reduced or truncated, and a
 persistence failure cannot change a run outcome (`lionagi/session/signal.py`;
-`lionagi/session/observer.py`; `lionagi/state/schema.sql`; `lionagi/state/db.py`).
+`lionagi/session/observer.py`; `lionhub/src/lionhub/state/schema.sql`; `lionhub/src/lionhub/state/db.py`).
 
 **P6 — Adjacent facilities have narrower contracts.** The adapter package converts data
 representations. `DataLogger` holds mutable operational logs. `MemoryStore` stores caller
 content. `completion_evidence` probes local Git state to decide whether a run appears to have
 produced work. None supplies an immutable evidence chain, historical policy lookup, or process
 certificate (`lionagi/adapters/_base.py`; `lionagi/protocols/generic/log.py`;
-`lionagi/protocols/memory.py`; `lionagi/state/completion_evidence.py`).
+`lionagi/protocols/memory.py`; `lionhub/src/lionhub/state/completion_evidence.py`).
 
 | Concern | Decision |
 |---|---|
@@ -533,7 +533,7 @@ def SessionObserver.unbind_db_persistence(self) -> None: ...
 ```
 
 The optional table is
-(`lionagi/state/schema.sql`; mirrored by `lionagi/state/schema_meta.py`):
+(`lionhub/src/lionhub/state/schema.sql`; mirrored by `lionhub/src/lionhub/state/schema_meta.py`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_signals (
@@ -666,7 +666,7 @@ It has no compare-and-append, ordered chain read, historical policy version, or 
 operation.
 
 Completion evidence is a local Git-state result
-(`lionagi/state/completion_evidence.py`):
+(`lionhub/src/lionhub/state/completion_evidence.py`):
 
 ```python
 _GIT_TIMEOUT = 5

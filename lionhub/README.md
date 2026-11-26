@@ -14,8 +14,9 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/serve/cli/` | The `li` command-line interface: the entry point, the built-in command catalog, lazy command discovery, and every command module. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
-| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
+| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers, including the Anthropic account engine (`providers/anthropic/accounts/`): routed accounts, the monthly budget ledger, pricing and key resolution. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/state/` | The state store (`StateDB`, over SQLite or PostgreSQL), its schema and migrations, lifecycle transitions, the Claude Code and Codex mirrors, log channels, the CLI worker context and the message retry queue. |
 | `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
 | `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
@@ -43,7 +44,7 @@ Old paths are deprecated in 0.37.0 and are scheduled for removal in 2.0.0. The a
 | `lionagi.operations.lndl_middle` | `lionhub.lndl.middle` |
 | `lionagi.providers._provider_errors` | `lionagi._provider_errors` |
 | `lionagi.providers._secret_resolution` | `lionagi.service.accounts._secret_resolution` |
-| `lionagi.providers._subagent_admission` | `lionagi.service._subagent_admission` |
+| `lionagi.providers._subagent_admission` | `lionhub.providers._subagent_admission` |
 | `lionagi.providers.openai._chat_schemas` | `lionagi.service.connections._chat_schemas` |
 
 The CLI package and the shared CLI leaf modules below are deprecated at their old
@@ -66,6 +67,93 @@ precedence over the package row.
 | `lionagi.cli._runs` | `lionhub.orchestration.runs` |
 | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` |
 | `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` |
+
+The flow specification and checkpoint modules below are deprecated at their old paths in
+1.0.0 and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._flow_spec` | `lionhub.orchestration.flow.spec` |
+| `lionagi._checkpoint_version` | `lionhub.orchestration.flow.checkpoint_version` |
+| `lionagi._checkpoint_v3_codec` | `lionhub.orchestration.flow.checkpoint_codec` |
+
+The coding-command environment modules below are deprecated at their old paths in 1.0.0
+and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._command_env` | `lionhub.tools.command_env` |
+| `lionagi._command_env_metadata` | `lionhub.tools.command_env_metadata` |
+
+The state store, its log channels, the CLI worker context, the message retry queue and the
+run persistence handlers below are deprecated at their old paths in 1.0.0 and are scheduled
+for removal in 2.0.0. The core no longer opens a state store itself: a caller that wants
+signals, sessions or messages stored passes one in.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.state` | `lionhub.state` |
+| `lionagi._log_channels` | `lionhub.state.log_channels` |
+| `lionagi._cli_worker_context` | `lionhub.state.cli_worker_context` |
+| `lionagi.hooks._message_retry` | `lionhub.state.message_retry` |
+| `lionagi.hooks._persistence_handlers` | `lionhub.orchestration.run_persistence` |
+
+The Anthropic account engine below is deprecated at its old paths in 1.0.0 and is scheduled
+for removal in 2.0.0. The core keeps the seam the engine is reached through:
+`lionagi.service.accounts` still holds the shared types, the routing scope, the request guard
+and the usage-shape helpers.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service.accounts._credentials` | `lionhub.providers.anthropic.accounts._credentials` |
+| `lionagi.service.accounts._ledger` | `lionhub.providers.anthropic.accounts._ledger` |
+| `lionagi.service.accounts._pricing` | `lionhub.providers.anthropic.accounts._pricing` |
+| `lionagi.service.accounts._router` | `lionhub.providers.anthropic.accounts._router` |
+
+The CLI provider tables and `parse_model_spec` below are deprecated at their old path in 1.0.0
+and are scheduled for removal in 2.0.0. They were imported from `lionagi.service.providers`, which
+keeps the effort-suffix grammar (`EFFORT_LEVELS`, `normalize_effort`, `split_effort_suffix`) and
+forwards each moved name with a warning that names the old path below.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service._model_spec` | `lionhub.providers.model_spec` |
+
+The YAML frontmatter parser that agent, skill and plugin definition files are read with is
+deprecated at its old path in 1.0.0 and is scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.libs.frontmatter` | `lionhub.orchestration.frontmatter` |
+
+The CLI declaration types and the registration decorator below are deprecated at their old path
+in 1.0.0 and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._auto` | `lionhub.serve.cli.registration` |
+
+The prompt size bound below is deprecated at its old path in 1.0.0 and is scheduled for
+removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._spec_limits` | `lionhub.orchestration.spec_limits` |
+
+The private workspace-root helper the tool constructors share is deprecated at its old path in
+1.0.0 and is scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.ln._paths` | `lionhub.tools._paths` |
+
+The machine-wide admission for CLI agent subprocesses is deprecated at its old path in 1.0.0
+and is scheduled for removal in 2.0.0. The notice a run listens for while a worker waits for a
+slot stays in core, in `lionagi.service._admission_notice`.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service._subagent_admission` | `lionhub.providers._subagent_admission` |
 
 The schedule services below are deprecated at their old paths in 0.38.0
 and are scheduled for removal in 2.0.0.
@@ -108,7 +196,7 @@ and are scheduled for removal in 2.0.0.
 | `lionagi.studio.services.schedules` | `lionhub.serve.daemon.services.schedules` |
 | `lionagi.studio.services._session_tail` | `lionhub.serve.daemon.services._session_tail` |
 
-The Studio application itself moved out of `lionagi` in 0.39.0, to its own import root, and its
+The Studio application itself moved out of `lionagi` in 1.0.0, to its own import root, and its
 old path is scheduled for removal in 2.0.0. Every old name under `lionagi.studio` that the rows
 above do not take to `lionhub` resolves under the new root, apart from `lionagi.studio`,
 `lionagi.studio.services` and `lionagi.studio.operator`: those parent packages stay in `lionagi`,

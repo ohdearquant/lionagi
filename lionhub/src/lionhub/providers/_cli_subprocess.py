@@ -25,7 +25,6 @@ from threading import Thread
 from typing import Any
 from urllib.parse import unquote
 
-from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
 from lionagi._errors import (
     CLIInputRefusedError,
     ConfigurationError,
@@ -57,7 +56,11 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency.cancel import CancelScope, move_on_after
 from lionagi.ln.concurrency.errors import shield_quietly
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import (
+from lionagi.service.accounts._secret_resolution import (
+    _routed_account_key_names,
+    fill_declared_secrets_and_names,
+)
+from lionhub.providers._subagent_admission import (
     ACCOUNT_CAP_ENV,
     ACCOUNT_ENV,
     AGENT_DEPTH_ENV,
@@ -67,10 +70,7 @@ from lionagi.service._subagent_admission import (
     child_agent_depth,
     refuse_nested_agent,
 )
-from lionagi.service.accounts._secret_resolution import (
-    _routed_account_key_names,
-    fill_declared_secrets_and_names,
-)
+from lionhub.state.cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
 
 log = logging.getLogger("lionagi.providers._cli_subprocess")
 
@@ -1483,7 +1483,7 @@ async def ndjson_from_cli(
     before any output is read, and its failure is not swallowed — it
     propagates through the teardown below, which ends the child's group.
     Before the spawn the agent takes a machine-wide slot for ``engine`` and
-    ``workload`` (see ``lionagi.service._subagent_admission``), held until the child's group
+    ``workload`` (see ``lionhub.providers._subagent_admission``), held until the child's group
     has ended; a caller's ``env`` built for a named subscription account with a
     ``max_concurrent`` also names that account's pool, and those two names are removed
     before the child starts. ``secret_fill_skip`` names variables the configured secret lookup

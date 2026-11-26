@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
-from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
+from lionhub.state.db import StateDB
+from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+from lionhub.state.lifecycle.deliveries import is_acknowledged, register_consumer
+from lionhub.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 
 
 async def _commit_offline_transition(db: StateDB) -> str:
@@ -48,13 +48,13 @@ async def _commit_offline_transition(db: StateDB) -> str:
 @pytest.mark.asyncio
 async def test_daemon_startup_replays_offline_transition_once(tmp_path, monkeypatch):
     pytest.importorskip("fastapi")
-    import lionagi.state.db as state_db_module
-    from lionagi.state.lifecycle import notify_settings
+    import lionhub.state.db as state_db_module
     from lionagi_studio.services import operator
     from lionhub.orchestration.scheduler import lifecycle
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.serve import diagnostics
     from lionhub.serve.daemon.services import launches
+    from lionhub.state.lifecycle import notify_settings
 
     app_module = importlib.import_module("lionagi_studio.app")
     daemon_module = importlib.import_module("lionhub.serve.daemon.app")
@@ -199,8 +199,8 @@ import asyncio
 import os
 import sys
 
-from lionagi.state.db import StateDB
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
+from lionhub.state.db import StateDB
+from lionhub.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery, TerminalReconciler
 
 store_path, effect_path, mode = sys.argv[1:]
 

@@ -11,7 +11,7 @@ from tests._core_imports import ROOT, core_files, package_imports
 def test_core_has_no_casts_imports():
     files = core_files(root=ROOT)
     assert ROOT / "lionagi" / "__init__.py" in files
-    assert ROOT / "lionagi" / "_auto.py" in files
+    assert ROOT / "lionagi" / "_errors.py" in files
     violations = [hit for path in files for hit in package_imports(path, "casts", root=ROOT)]
     assert not violations, "Core imports casts:\n" + "\n".join(violations)
 

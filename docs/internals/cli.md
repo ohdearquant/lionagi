@@ -1456,7 +1456,7 @@ the set is empty by default and no profile name is hardcoded in source.
 
 `stamp_agent_depth(agent_name)` (called from `_run_agent`) and `stamp_worker_depth()` (called
 from `_run_fanout` and `_run_flow`, which also covers `li play`) first call
-`refuse_nested_agent()` (`providers/_subagent_admission.py`), then stamp through
+`refuse_nested_agent()` (`lionhub/providers/_subagent_admission.py`), then stamp through
 `set_child_agent_depth`: `os.environ["LIONAGI_AGENT_DEPTH"]` for anything this process starts, and
 the depth `ndjson_from_cli` hands every CLI child, which it sets over whatever the environment
 holds. An interactive shell can carry `0`, so a CLI agent a program in that shell starts through

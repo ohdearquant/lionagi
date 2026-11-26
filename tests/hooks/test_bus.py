@@ -143,7 +143,7 @@ async def test_handler_exception_is_logged_and_swallowed(caplog):
 async def test_a_write_the_store_refuses_passes_through_hook_isolation():
     """A refused compatibility-mode write stops the run instead of leaving it unpersisted
     (ADR-0128 D6), so it is the one handler failure an emit raises."""
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi._state_refusal import StateCompatibilityRefused
 
     bus = HookBus()
     fired_after: list[str] = []
@@ -171,7 +171,7 @@ class _RecordingObserver:
 
 
 async def test_a_refused_handler_write_is_recorded_before_it_is_raised():
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi._state_refusal import StateCompatibilityRefused
 
     observer = _RecordingObserver()
     bus = HookBus(observer)
@@ -193,8 +193,8 @@ async def test_a_refused_handler_write_is_recorded_before_it_is_raised():
 async def test_a_refusal_inside_a_group_stops_the_emit_and_is_recorded():
     """A handler that runs its writes in a task group raises a refusal inside an exception
     group; it stops the emit like a bare refusal, and the signal records the refusal."""
+    from lionagi._state_refusal import StateCompatibilityRefused
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
-    from lionagi.state.compat import StateCompatibilityRefused
 
     observer = _RecordingObserver()
     bus = HookBus(observer)
@@ -223,7 +223,7 @@ async def test_a_refusal_inside_a_group_stops_the_emit_and_is_recorded():
 async def test_a_refused_session_end_flush_flushes_every_queue_and_runs_no_handler():
     """Every queue gets its attempt before the first refusal is raised; the SESSION_END
     handlers, which write, do not run after it (ADR-0128 D6)."""
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi._state_refusal import StateCompatibilityRefused
 
     class _Queue:
         def __init__(self, refuse: bool) -> None:
@@ -602,7 +602,7 @@ async def test_handler_cancellation_is_not_misclassified_as_an_ordinary_failure(
 
 
 async def test_a_refused_session_end_flush_logs_every_refusal_after_the_one_it_raises(caplog):
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi._state_refusal import StateCompatibilityRefused
 
     class _Queue:
         def __init__(self, target: str) -> None:

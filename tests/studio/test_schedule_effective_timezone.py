@@ -37,7 +37,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     looking like it pinned something.
     """
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -73,8 +73,8 @@ async def _create_cron_schedule(name: str, **extra) -> str:
 
 async def _stamp_and_read(schedule_id: str) -> dict:
     """Run the scheduler's startup stamping pass and read the row back."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     await SchedulerEngine()._stamp_effective_timezones()
     async with StateDB() as db:

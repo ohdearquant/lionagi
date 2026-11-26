@@ -26,9 +26,9 @@ from typing import Any
 
 from lionagi import _lionagi_dir_trust as lionagi_dir_trust
 from lionagi._provider_errors import NestedAgentRefusedError
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 from . import accounts, config, jobs, projection, roster
 from .verbs import (
@@ -66,18 +66,18 @@ _STARTED_MONOTONIC = time.time()
 # answers anything, so a later change to the installed source cannot leave the process holding
 # some of its modules from before the change and failing to import the others.
 _PRELOAD_MODULES = (
-    "lionagi._command_env",
-    "lionagi._command_env_metadata",
-    "lionagi._flow_spec",
+    "lionhub.tools.command_env",
+    "lionhub.tools.command_env_metadata",
+    "lionhub.orchestration.flow.spec",
     "lionagi._paths",
     "lionagi._provider_errors",
     "lionagi._types",
     "lionagi.adapters.pandas_",
     "lionagi.hooks",
-    "lionagi.hooks._message_retry",
+    "lionhub.state.message_retry",
     "lionagi.hooks.bus",
     "lionagi.libs.file.process",
-    "lionagi.libs.frontmatter",
+    "lionhub.orchestration.frontmatter",
     "lionagi.libs.schema.load_pydantic_model_from_schema",
     "lionagi.libs.schema.minimal_yaml",
     "lionagi.ln._proc",
@@ -87,22 +87,23 @@ _PRELOAD_MODULES = (
     "lionagi.operations.run.stream_buffer",
     "lionagi.plugins",
     "lionagi.protocols.action.gate",
-    "lionagi.service.accounts._router",
+    "lionhub.providers.anthropic.accounts._router",
     "lionagi.service.accounts._scope",
     "lionagi.service.connections._chat_schemas",
     "lionagi.service.connections.registry",
     "lionagi.service.providers",
+    "lionhub.providers.model_spec",
     "lionagi.service.token_calculator",
     "lionagi.session.prompts",
-    "lionagi.state.cli_workers",
-    "lionagi.state.compat",
-    "lionagi.state.completion_evidence",
-    "lionagi.state.db",
-    "lionagi.state.engine",
-    "lionagi.state.health",
-    "lionagi.state.lifecycle.notify_settings",
-    "lionagi.state.lifecycle.policy",
-    "lionagi.state.reasons",
+    "lionhub.state.cli_workers",
+    "lionhub.state.compat",
+    "lionhub.state.completion_evidence",
+    "lionhub.state.db",
+    "lionhub.state.engine",
+    "lionhub.state.health",
+    "lionhub.state.lifecycle.notify_settings",
+    "lionhub.state.lifecycle.policy",
+    "lionhub.state.reasons",
     "lionagi.version",
     "lionhub.agent",
     "lionhub.agent._email_in_headers",
@@ -124,6 +125,7 @@ _PRELOAD_MODULES = (
     "lionhub.orchestration.job",
     "lionhub.orchestration.mcp_config",
     "lionhub.orchestration.project_store",
+    "lionhub.orchestration.run_persistence",
     "lionhub.orchestration.runs",
     "lionhub.orchestration.schedule.declaration",
     "lionhub.orchestration.schedule.execution_root",
@@ -1070,7 +1072,7 @@ def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
     if path is None:
         return
 
-    from lionagi._flow_spec import load_flow_spec, validate_flow_spec
+    from lionhub.orchestration.flow.spec import load_flow_spec, validate_flow_spec
 
     name = schema.get("x-playbook")
     try:
@@ -1168,7 +1170,6 @@ def _resolve_hooks_from(
         raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
     from lionagi._errors import ConfigurationError
     from lionagi.service.connections.registry import EndpointRegistry
-    from lionagi.service.providers import CLI_PROVIDERS
     from lionhub.agent.subscription_accounts import account_provider
     from lionhub.hooks.hooks_from import (
         HOOKS_FROM_CARRY,
@@ -1179,6 +1180,7 @@ def _resolve_hooks_from(
         read_hooks_file,
         writable_roots,
     )
+    from lionhub.providers.model_spec import CLI_PROVIDERS
 
     query = args.get("query") or []
     bucket = [*query, *([prompt] if prompt is not None else [])]
@@ -1250,7 +1252,7 @@ def _refuse_untrusted_playbook_agent(
     path = schema.get("x-playbook-path")
     if path is None or args.get("agent"):
         return
-    from lionagi._flow_spec import load_flow_spec
+    from lionhub.orchestration.flow.spec import load_flow_spec
     from lionhub.orchestration.spawn import (
         AgentProfileNotFoundError,
         AmbiguousProfileNameError,
@@ -1455,8 +1457,8 @@ def _machine_environment_error(
     cli_path: str, completed: subprocess.CompletedProcess[bytes]
 ) -> OpError:
     """Classify a startup refusal from its exit status and keep usable diagnostics."""
-    from lionagi.state.engine import mask_credentials
     from lionhub.serve.cli._machine_envelope import _CONTRACT_VERSION
+    from lionhub.state.engine import mask_credentials
 
     stderr = mask_credentials(completed.stderr.decode("utf-8", "replace"))[-_MACHINE_STDERR_TAIL:]
     detail = {"exit_code": completed.returncode, "stderr": stderr}

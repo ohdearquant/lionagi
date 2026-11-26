@@ -20,12 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
-from lionagi.state.lifecycle.notify_settings import (
+from lionhub.serve.mcp import _notify_hook, config, jobs
+from lionhub.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
+from lionhub.state.lifecycle.notify_settings import (
     NotifyConfigResolution,
     ResolvedNotifyHandler,
 )
-from lionhub.serve.mcp import _notify_hook, config, jobs
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def test_delivery_timeout_passes_spawn_bound_witnesses(monkeypatch):
 
 def _no_settings_notifier(monkeypatch):
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_kw: NotifyConfigResolution(),
     )
 
@@ -442,7 +442,7 @@ def test_configured_notifier_without_a_command_is_recorded_as_a_failure(job, mon
     calls: list = []
     monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_kw: NotifyConfigResolution(
             handler=ResolvedNotifyHandler(python_ref="os.path:join")
         ),
@@ -463,7 +463,7 @@ def test_unreadable_notify_settings_are_recorded_as_a_failure(job, monkeypatch):
     def _boom(**_kw):
         raise RuntimeError("settings file is corrupt")
 
-    monkeypatch.setattr("lionagi.state.lifecycle.notify_settings.resolve_notify_config", _boom)
+    monkeypatch.setattr("lionhub.state.lifecycle.notify_settings.resolve_notify_config", _boom)
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
     assert rc == 0  # a broken settings file still cannot break the terminal path
@@ -475,7 +475,7 @@ def test_unreadable_notify_settings_are_recorded_as_a_failure(job, monkeypatch):
 def _settings_notifier(monkeypatch, on_terminal):
     """Drive the real resolver with *on_terminal* as lionagi's own setting."""
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.load_settings",
+        "lionhub.state.lifecycle.notify_settings.load_settings",
         lambda project_dir=None: {"notify": {"on_terminal": on_terminal}},
     )
 
@@ -887,8 +887,8 @@ from pathlib import Path
 from anyio import current_time, move_on_after
 from lionhub.serve.cli.orchestrate._notify import register_flow_notify_scope
 from lionhub.serve.mcp import config
-from lionagi.state.lifecycle import callbacks
-from lionagi.state.lifecycle.callbacks import (
+from lionhub.state.lifecycle import callbacks
+from lionhub.state.lifecycle.callbacks import (
     EntityRef,
     RunTerminalEnvelope,
     TerminalCallbackRegistry,
@@ -1334,7 +1334,7 @@ def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path, exp
     run_dir.mkdir()
     artifact_root = tmp_path / "custom-output"
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_: NotifyConfigResolution(
             handler=ResolvedNotifyHandler(argv=("notify", "{run_id}", "{sender}", "{target}"))
         ),

@@ -40,7 +40,7 @@ async def _join(task):
 
 @pytest_asyncio.fixture(loop_scope="function")
 async def store(monkeypatch, tmp_path):
-    from lionagi.state import db as module
+    from lionhub.state import db as module
 
     monkeypatch.setattr(module, "DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.chdir(tmp_path)
@@ -52,9 +52,9 @@ async def store(monkeypatch, tmp_path):
 @pytest.mark.asyncio(loop_scope="function")
 async def test_fresh_generation_is_admitted_before_setup_hook_work(store, monkeypatch):
     from lionagi import Branch
-    from lionagi._cli_worker_context import _get_cli_worker_recorder
     from lionagi.hooks.bus import HookBus, HookPoint
     from lionhub.orchestration import runs as _runs
+    from lionhub.state.cli_worker_context import _get_cli_worker_recorder
 
     entered, release = asyncio.Event(), asyncio.Event()
     original_record = store.StateDB.register_cli_worker_spawn
@@ -191,8 +191,8 @@ async def test_fresh_session_key_collision_cannot_borrow_an_existing_owner(store
 async def test_bound_close_failure_cannot_be_a_continuation_witness(store, monkeypatch):
     from lionagi import Branch
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
     from lionhub.orchestration import runs as _runs
+    from lionhub.state.cli_workers import _prepare_worker_spawn_continuation
 
     branch = Branch()
     ctx = await _runs.setup_agent_persist(branch, share_db=False)
@@ -244,11 +244,11 @@ async def test_unfinished_drain_error_blocks_terminal_work_and_bound_close(store
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_new_agent_setup_masks_an_outer_recorder(monkeypatch, tmp_path):
-    from lionagi._cli_worker_context import (
+    from lionhub.serve.cli import agent
+    from lionhub.state.cli_worker_context import (
         _bind_cli_worker_recorder,
         _get_cli_worker_recorder,
     )
-    from lionhub.serve.cli import agent
 
     class ReachedSetup(Exception):
         pass
@@ -286,10 +286,10 @@ async def agent_run(store, monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
 
     from lionagi import Branch
-    from lionagi._cli_worker_context import _get_cli_worker_recorder
     from lionagi.protocols.messages.manager import MessageManager
     from lionagi.service.manager import iModelManager
     from lionhub.serve.cli import agent
+    from lionhub.state.cli_worker_context import _get_cli_worker_recorder
 
     state = SimpleNamespace(
         module=agent,
@@ -358,8 +358,8 @@ async def test_real_continuation_waits_for_drain_and_bound_close_then_keeps_gene
     store,
     monkeypatch,
 ):
-    from lionagi.state.cli_workers import _WorkerSpawnOwner
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.cli_workers import _WorkerSpawnOwner
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
     state = agent_run
     drain_started, release_drain = asyncio.Event(), asyncio.Event()
@@ -452,7 +452,7 @@ async def test_cancel_during_real_admitted_drain_preserves_the_durable_result(
 ):
     from sqlalchemy.exc import OperationalError
 
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     state = agent_run
     drain_started, cancelled_in_wait, release = asyncio.Event(), asyncio.Event(), asyncio.Event()

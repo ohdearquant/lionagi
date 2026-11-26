@@ -14,7 +14,7 @@ import aiosqlite
 # attribute that deployments set via env and tests retune at runtime, and a
 # from-import would freeze a copy here at import time — two layers onto one
 # store file would then wait different lengths, a difference nobody chose.
-from lionagi.state import engine as _state_engine
+from lionhub.state import engine as _state_engine
 
 _log = logging.getLogger("lionagi.studio.services._db")
 
@@ -32,7 +32,7 @@ def store_path() -> str:
     the configured store is server-backed (no file to name) -- equally wrong
     for that deployment, but tracked as a separate, route-level concern
     rather than a path-resolution one."""
-    from lionagi.state import db as db_mod
+    from lionhub.state import db as db_mod
 
     path = db_mod.state_db_file()
     return str(path if path is not None else db_mod.DEFAULT_DB_PATH)
@@ -69,12 +69,12 @@ def require_file_store() -> None:
     exists or is merely absent both pass through unchanged (absent still
     means "no store yet"); only a resolution with no path at all (server
     URL, or ``:memory:``) raises."""
-    from lionagi.state import db as db_mod
+    from lionhub.state import db as db_mod
 
     if db_mod.state_db_file() is not None:
         return
 
-    from lionagi.state.engine import dialect_of, normalize_state_db_url
+    from lionhub.state.engine import dialect_of, normalize_state_db_url
 
     raw = db_mod.settings.LIONAGI_STATE_DB_URL
     if raw is None:

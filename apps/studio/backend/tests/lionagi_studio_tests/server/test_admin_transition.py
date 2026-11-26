@@ -22,7 +22,7 @@ from tests._stale_session_seed import _seed_stale_session  # noqa: E402
 
 
 def _make_admin_client(tmp_path, monkeypatch, db_path):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -43,7 +43,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     calls classify_session_health() synchronously; an async fake would not fire before
     the UPDATE and would silently skip the guard.
     """
-    from lionagi.state.health import SessionHealth
+    from lionhub.state.health import SessionHealth
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -51,11 +51,11 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
 
     _run(_seed_stale_session(db_path, sid, last_message_at=old_ts, updated_at=old_ts))
 
-    # Patch BOTH admin.DEFAULT_DB_PATH and lionagi.state.db.DEFAULT_DB_PATH;
+    # Patch BOTH admin.DEFAULT_DB_PATH and lionhub.state.db.DEFAULT_DB_PATH;
     # transition_sessions() opens StateDB() which resolves the latter at call time.
-    import lionagi.state.db as state_db_mod
-    import lionagi.state.health as health_mod
     import lionhub.serve.daemon.services.admin as adm
+    import lionhub.state.db as state_db_mod
+    import lionhub.state.health as health_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -113,8 +113,8 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
     """transition_sessions() writes status via a hand-rolled UPDATE (not
     update_status()/_transition()), so it must compute duration_ms itself --
     this call site is not covered by the centralized derivation."""
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.daemon.services.admin as adm
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -134,7 +134,7 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
     )
     assert sid in result["transitioned"]
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async def _get(db_path, sid):
         async with StateDB(db_path) as db:
@@ -148,9 +148,9 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
 def test_transition_sessions_clears_the_live_phase(tmp_path, monkeypatch):
     """The admin CAS ends a session like every other terminal writer: the live
     phase goes in the same statement as the terminal status."""
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.daemon.services.admin as adm
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -194,7 +194,7 @@ def test_transition_sessions_clears_the_live_phase(tmp_path, monkeypatch):
 async def _seed_terminal_session(
     db_path, session_id: str, *, status: str, reason_code: str
 ) -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
@@ -224,7 +224,7 @@ def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path,
     the SQL guard in isolation — it drives the real transition_sessions() call the
     Studio admin routes use.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -232,8 +232,8 @@ def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path,
 
     _run(_seed_terminal_session(db_path, sid, status="completed", reason_code=terminal_reason_code))
 
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.daemon.services.admin as adm
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

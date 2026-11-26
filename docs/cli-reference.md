@@ -912,7 +912,7 @@ Serve an [MCP](https://modelcontextprotocol.io) server over stdio. The server is
 a control plane over this CLI: it submits `li` runs as **detached background
 jobs** and answers questions about them, so a submit returns a `run_id`
 immediately instead of blocking and the run keeps going in its own process
-group, surviving an MCP-server restart. Requires Python 3.10 or later and the
+group, surviving an MCP-server restart. Requires Python 3.11 or later and the
 `mcp` extra (`pip install "lionagi[mcp]"`). Source: `lionhub/src/lionhub/serve/mcp/`.
 
 ```bash
@@ -1401,8 +1401,8 @@ li agent -c "continue most recent"
 | `LIONAGI_HOME` | Override `~/.lionagi/` base dir | `lionagi/utils.py` |
 | `LIONAGI_WORKER_LIVENESS_TIMEOUT` | Seconds `run()` waits for a CLI worker's first stream chunk before retrying once, then raising `WorkerLivenessError`; default `120`, `0` disables. Applied by default only to endpoints that stream output early (`claude_code`, `codex`) — buffered endpoints (`gemini-cli`, `pi`) are unaffected unless `liveness_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
 | `LIONAGI_WORKER_IDLE_TIMEOUT` | Maximum silence between chunks from an early-streaming CLI worker; resets per chunk, defaults to `600`, and `0` disables. A miss after partial output raises `WorkerLivenessError` (`worker.stream_idle`) without retry. Buffered endpoints are unaffected unless `idle_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
-| `LIONAGI_MAX_SUBAGENTS`, `LIONAGI_MAX_SUBAGENTS_HEAVY`, `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | Machine-wide caps on CLI workers; unset or `0` means no cap. See [Agent caps and workload](#agent-caps-and-workload) | `lionagi/providers/_subagent_admission.py` |
-| `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | How long a CLI worker waits for a slot before it is refused; default `600`, `0` refuses at once | `lionagi/providers/_subagent_admission.py` |
+| `LIONAGI_MAX_SUBAGENTS`, `LIONAGI_MAX_SUBAGENTS_HEAVY`, `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | Machine-wide caps on CLI workers; unset or `0` means no cap. See [Agent caps and workload](#agent-caps-and-workload) | `lionhub/src/lionhub/providers/_subagent_admission.py` |
+| `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | How long a CLI worker waits for a slot before it is refused; default `600`, `0` refuses at once | `lionhub/src/lionhub/providers/_subagent_admission.py` |
 | `OPENAI_API_KEY` | OpenAI REST API key (for `iModel`, not for `codex` CLI alias) | `lionagi/config.py` |
 | `ANTHROPIC_API_KEY` | Anthropic REST API key (for `iModel`; `claude` alias uses `claude login` instead) | `lionagi/config.py` |
 | `GEMINI_API_KEY` | Gemini API key (`gemini` provider, not `gemini-code` CLI auth) | `lionagi/config.py` |

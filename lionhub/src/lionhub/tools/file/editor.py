@@ -10,10 +10,10 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
-from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
+from lionhub.tools._paths import _resolve_workspace_root
 
 from ..base import LionTool
 from ._bounded_io import _open_regular_file, _read_regular_bytes

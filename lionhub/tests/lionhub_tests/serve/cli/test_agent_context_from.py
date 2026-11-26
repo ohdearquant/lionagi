@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import RunDir
 from lionhub.serve.cli._context_from import (
     _CHARS_PER_TOKEN,
@@ -36,6 +35,7 @@ from lionhub.serve.cli._context_from import (
     build_context_block,
     resolve_context_refs,
 )
+from lionhub.state.db import StateDB
 
 # Fixtures
 
@@ -44,9 +44,9 @@ from lionhub.serve.cli._context_from import (
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp DB; mirrors lionhub/tests/lionhub_tests/serve/cli/test_status.py's fixture."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(
-        "lionagi.state.db.settings",
+        "lionhub.state.db.settings",
         SimpleNamespace(LIONAGI_STATE_DB_URL=None),
     )
     return db_path

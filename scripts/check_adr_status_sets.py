@@ -8,7 +8,7 @@ not general ADR prose. Two shapes are checked:
 - Wait-surface-style markdown tables with a "Terminal statuses" column and rows
   like ``| `schedule_run` | `completed`, `failed`, ... | ... |``.
 
-A symbol/row is compared against ``lionagi.state.lifecycle.policy.DEFAULT_REGISTRY``
+A symbol/row is compared against ``lionhub.state.lifecycle.policy.DEFAULT_REGISTRY``
 only when its name/kind resolves to a known entity_type; unrecognized symbols are
 skipped rather than treated as errors. Usage: ``uv run scripts/check_adr_status_sets.py``.
 """
@@ -21,7 +21,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+from lionhub.state.lifecycle.policy import DEFAULT_REGISTRY
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ADR_DIR = REPO_ROOT / "docs" / "adr"
@@ -140,7 +140,7 @@ def check_file(path: Path) -> list[str]:
         errors.append(
             f"{finding.file}:{finding.line}: {finding.label} ({finding.kind} statuses for "
             f"entity_type={finding.entity_type!r}) does not match "
-            f"lionagi.state.lifecycle.policy.DEFAULT_REGISTRY\n"
+            f"lionhub.state.lifecycle.policy.DEFAULT_REGISTRY\n"
             f"  missing from doc: {missing}\n"
             f"  extra in doc:     {extra}"
         )

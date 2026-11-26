@@ -26,10 +26,8 @@ from lionagi._provider_errors import (
 from lionagi.libs.path_safety import check_paths_safe, contain_paths_in_root
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.providers import _clamp_gemini_effort
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
@@ -43,6 +41,8 @@ from lionhub.providers._cli_subprocess import (
     resolve_cli_workspace,
     validate_message_prompt,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
+from lionhub.providers.model_spec import _clamp_gemini_effort
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
 from ._config import GEMINI_CODE_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401

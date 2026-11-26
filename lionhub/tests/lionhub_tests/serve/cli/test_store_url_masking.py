@@ -38,7 +38,7 @@ import time
 
 import pytest
 
-import lionagi.state.db as db_mod
+import lionhub.state.db as db_mod
 
 PASSWORD = "hunter2-correct-horse"
 MASKED = "dbuser:***@"
@@ -91,7 +91,7 @@ def _assert_masked(text: str, where: str) -> None:
     ],
 )
 def test_a_password_holding_url_delimiters_is_masked_whole(url, masked):
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     assert mask_db_url(url) == masked
     assert mask_credentials(f"could not open {url}: refused") == f"could not open {masked}: refused"
@@ -99,7 +99,7 @@ def test_a_password_holding_url_delimiters_is_masked_whole(url, masked):
 
 def test_a_url_given_alone_is_masked_to_its_last_at_whitespace_included():
     # in prose a space ends the password, so only the store URL itself can take it whole
-    from lionagi.state.engine import mask_db_url
+    from lionhub.state.engine import mask_db_url
 
     assert mask_db_url("postgresql://u:pa ss@h/db") == "postgresql://u:***@h/db"
     assert mask_db_url("postgresql://alice@corp:pa ss/x@h/db") == "postgresql://alice@corp:***@h/db"
@@ -112,7 +112,7 @@ def test_a_url_given_alone_is_masked_to_its_last_at_whitespace_included():
 
 
 def test_a_password_given_as_a_query_parameter_is_masked():
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     url = "postgresql+asyncpg://u@h/db?sslmode=require&password=pa/ss@x&target=primary"
     masked = "postgresql+asyncpg://u@h/db?sslmode=require&password=***&target=primary"
@@ -161,7 +161,7 @@ def test_a_password_given_as_a_query_parameter_is_masked():
 def test_an_at_in_a_query_password_takes_the_host_with_the_users_password(dialect):
     # SQLAlchemy ends the user's password at the host's `@`; a parser that splits the user
     # from the host at the last `@` reads it on to the value's `@`, so the host goes too
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     url = f"{dialect}://u:pw@h/db?password=ab@cdefgh"
     masked = f"{dialect}://u:***"
@@ -175,7 +175,7 @@ def test_an_at_in_a_query_password_takes_the_host_with_the_users_password(dialec
 def test_a_password_holding_a_query_password_key_is_masked_with_what_follows(marker):
     # SQLAlchemy reads the key as part of the user's password, which ends at the first `@`;
     # read as a query parameter its value runs on past that `@`, so both spans go
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     url = f"postgresql://u:SECRET{marker}b@h/db?password=c"
     masked = "postgresql://u:***"
@@ -213,7 +213,7 @@ def test_a_password_holding_a_query_password_key_is_masked_with_what_follows(mar
     ],
 )
 def test_a_query_password_overlapping_a_credential_is_masked_with_it(text, masked):
-    from lionagi.state.engine import mask_credentials
+    from lionhub.state.engine import mask_credentials
 
     assert mask_credentials(text) == masked
 
@@ -221,7 +221,7 @@ def test_a_query_password_overlapping_a_credential_is_masked_with_it(text, maske
 def test_a_password_key_between_the_users_password_and_the_host_is_masked_with_both():
     # SQLAlchemy reads the password as `p` and the host as `ss&password=q@h`; urlparse, which
     # ends the authority at the `/`, reads the password as `p@ss&password=q`
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     url = "postgresql://u:p@ss&password=q@h/db"
     assert mask_db_url(url) == "postgresql://u:***"
@@ -290,7 +290,7 @@ def test_masking_time_grows_with_the_length_of_the_text(unit):
     # 200,000 characters of these take a fraction of a second. The bound is wall-clock
     # time, so the test runs in the serial, uninstrumented performance lane: under
     # coverage tracing the same reading takes several times as long
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     text = "postgresql://u@h/db" + unit * (200_000 // len(unit))
     for mask in (mask_credentials, mask_db_url):
@@ -301,7 +301,7 @@ def test_masking_time_grows_with_the_length_of_the_text(unit):
 
 def test_values_opened_inside_each_other_are_masked_as_one_value():
     # the same text as the timed test below, short enough to run in every suite
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     text = "password=${" * 1_000 + "}" * 1_000
     for mask in (mask_credentials, mask_db_url):
@@ -313,7 +313,7 @@ def test_values_opened_inside_each_other_and_closed_are_not_read_again():
     # each value starts inside the one before it and, past its own `}`, comes to text
     # the outer value's reading has passed: it ends where that reading did instead of
     # reading on, so 500,000 characters take about a second, not half a minute
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     pairs = 500_000 // len("password=${}")
     text = "password=${" * pairs + "}" * pairs
@@ -325,7 +325,7 @@ def test_values_opened_inside_each_other_and_closed_are_not_read_again():
 
 def test_a_query_password_ending_where_the_users_password_begins_is_masked_with_it():
     # SQLAlchemy reads the user as `x?password=u` and the password as `&pw`
-    from lionagi.state.engine import mask_db_url
+    from lionhub.state.engine import mask_db_url
 
     assert mask_db_url("postgresql://x?password=u:&pw@h/db") == "postgresql://x?password=***@h/db"
 
@@ -336,7 +336,7 @@ def test_a_query_password_ending_where_the_users_password_begins_is_masked_with_
 )
 def test_a_query_password_is_masked_to_the_next_ampersand(url):
     # SQLAlchemy reads the value to the next `&`, a `#` or a space included
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     masked = "postgresql+asyncpg://u@h/db?password=***"
     assert mask_db_url(url) == masked
@@ -356,13 +356,13 @@ def test_a_url_with_no_scheme_is_masked_too():
     line, a path spelled with the ``./`` that makes it acceptable.
     ``mask_db_url`` ends with the same passes.
     """
-    from lionagi.state.engine import mask_db_url
+    from lionhub.state.engine import mask_db_url
 
     _assert_masked(mask_db_url(SCHEMELESS_URL), "mask_db_url of a scheme-less URL")
 
 
 def test_credentials_are_masked_inside_prose():
-    from lionagi.state.engine import mask_credentials
+    from lionhub.state.engine import mask_credentials
 
     message = f"state.db not found at /var/lib/{SCHEMELESS_URL} — nothing was created"
     _assert_masked(mask_credentials(message), "mask_credentials of a message")
@@ -500,7 +500,7 @@ def test_credentials_are_masked_inside_prose():
     ],
 )
 def test_a_password_written_as_a_keyword_is_masked(text, masked):
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     assert mask_credentials(text) == masked
     assert mask_db_url(text) == masked
@@ -511,7 +511,7 @@ def test_a_password_written_as_a_keyword_is_masked(text, masked):
 def test_a_shell_word_ends_at_an_unquoted_operator(operator):
     # what follows the operator is another word, here a quoted command or file name; only
     # libpq's reading, which runs to whitespace, takes in its first part
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     text = f"PGPASSWORD=pw{operator}'a b' c"
     assert mask_credentials(text) == "PGPASSWORD=*** b' c"
@@ -521,7 +521,7 @@ def test_a_shell_word_ends_at_an_unquoted_operator(operator):
 def test_an_unquoted_parenthesis_runs_to_the_end_of_the_text():
     # in a word an unquoted `(` is a syntax error or opens a part whose end only a shell's
     # command grammar finds, so what follows it is masked too
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     text = "PGPASSWORD=pw('a b' c"
     assert mask_credentials(text) == "PGPASSWORD=***"
@@ -531,7 +531,7 @@ def test_an_unquoted_parenthesis_runs_to_the_end_of_the_text():
 def test_a_key_after_an_ampersand_is_read_as_a_shell_reads_it_too():
     # after a `&` the key is a query parameter or follows a shell's `&`, so it is read as a
     # shell reads it as well, to the next `&` too, where a query parameter's value ends
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     assert mask_credentials("PGPASSWORD=x&PGPASSWORD='c d' psql") == "PGPASSWORD=*** psql"
     # a URL given alone has a query value masked to the next `&`, whatever it holds
@@ -567,7 +567,7 @@ def test_a_key_after_an_ampersand_is_read_as_a_shell_reads_it_too():
     ],
 )
 def test_a_password_keyword_with_no_value_or_a_longer_key_is_left_alone(untouched):
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     assert mask_credentials(untouched) == untouched
     assert mask_db_url(untouched) == untouched
@@ -575,7 +575,7 @@ def test_a_password_keyword_with_no_value_or_a_longer_key_is_left_alone(untouche
 
 def test_a_query_password_keeps_its_own_end():
     # after `?` or `&` the key is a query parameter, whose value ends at the next `&`
-    from lionagi.state.engine import mask_credentials
+    from lionhub.state.engine import mask_credentials
 
     assert (
         mask_credentials("open postgresql://u@h/db?password=pw&sslmode=require failed")
@@ -584,7 +584,7 @@ def test_a_query_password_keeps_its_own_end():
 
 
 def test_a_query_key_ending_in_password_is_masked_as_the_keyword_is():
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     url = "postgresql://u@h/db?db_password=pw123&sslmode=require"
     assert mask_db_url(url) == "postgresql://u@h/db?db_password=***&sslmode=require"
@@ -602,7 +602,7 @@ def test_a_query_key_ending_in_password_is_masked_as_the_keyword_is():
 
 def test_masking_is_idempotent():
     """The sinks compose these, so masking an already-masked store URL must leave it as it is."""
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     once = mask_db_url(SERVER_URL)
     assert mask_credentials(once) == once
@@ -621,7 +621,7 @@ def test_masking_is_idempotent():
 def test_strings_with_no_credential_are_returned_unchanged(untouched):
     """Over-masking would corrupt paths and messages, so the must-not-match arm
     matters as much as the must-match one."""
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     assert mask_credentials(untouched) == untouched
     assert mask_db_url(untouched) == untouched
@@ -648,7 +648,7 @@ def _raise_quoting_the_store(monkeypatch) -> None:
     finds no file, and a driver that quotes its connection string is the case
     we do not control at all.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async def failing_open(self) -> None:
         raise RuntimeError(f"could not open {SERVER_URL}")
@@ -718,7 +718,7 @@ async def test_a_read_only_open_with_no_file_masks_the_path_it_names(monkeypatch
     """The producer of the message that started this: a store URL with no
     scheme is read as a path, so the refusal names a path with a password in
     it."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     monkeypatch.chdir(tmp_path)
     _set_url(monkeypatch, CREDENTIALED_PATH)
@@ -756,7 +756,7 @@ def test_the_size_report_masks_a_credential_that_became_a_file_path(monkeypatch,
 def test_a_newer_schema_refusal_names_a_masked_store(monkeypatch):
     """Raised on an ordinary open of a store a later release wrote, which is a
     routine upgrade-order mistake rather than a rare one."""
-    from lionagi.state.db import SchemaTooNewError, StateDB
+    from lionhub.state.db import SchemaTooNewError, StateDB
 
     _set_url(monkeypatch, SERVER_URL)
     db = StateDB()

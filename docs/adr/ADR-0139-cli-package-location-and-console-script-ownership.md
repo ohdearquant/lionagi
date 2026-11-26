@@ -310,7 +310,7 @@ The full 46-file partition is specified in D2.
 The populated catalog currently contains 21 canonical commands and a token map;
 a decorator only attaches metadata, and loading imports the module of an already
 selected seed (`lionagi/_auto.py:143@2a49c9fe`, `lionhub/src/lionhub/serve/cli/catalog.py::_cli_seeds`,
-`lionagi/_auto.py::auto_register`, `lionhub/src/lionhub/serve/cli/catalog.py::load_cli_command`).
+`lionhub/src/lionhub/serve/cli/registration.py::auto_register`, `lionhub/src/lionhub/serve/cli/catalog.py::load_cli_command`).
 This paragraph's line numbers are at `2a49c9fe`.
 Moving only handlers or decorators would leave fresh startup dependent on a core
 catalog or accidental import order. A4 already requires the populated catalog and
@@ -652,6 +652,14 @@ retained-module requirement in ADR-0138
 (`docs/adr/ADR-0136-moving-non-core-packages-into-lionhub.md:294`,
 `docs/adr/ADR-0138-studio-backend-attachment-daemon-ownership-and-extraction.md:188`).
 Unused HTTP machinery is handled in step 5, not converted into CLI discovery.
+
+Note (2026-11-26): by the maintainer's decision of 2026-11-26, `lionagi._auto` has left the core
+(ADR-0136 Amendment 9). The declaration types and the registration decorator now live at
+`lionhub.serve.cli.registration`, the module the catalog already reads. The old path stays
+importable through 1.x as a deprecated alias of that module, removed in 2.0.0, and like every other
+moved hub module it resolves only when lionhub is installed: without it, `import lionagi._auto`
+fails as the other hub rows of `lionagi/_moved.py` do. The paragraph above describes the module as it
+was before this move.
 
 **Failure tests:** `test_fresh_cli_catalog_discovery`,
 `test_catalog_loading_stays_lazy`, `test_cli_projection_uses_one_catalog`,

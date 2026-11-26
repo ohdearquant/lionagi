@@ -31,8 +31,8 @@ class ScriptedEngine:
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
@@ -521,13 +521,13 @@ def test_the_catalog_never_offers_an_effort_the_request_path_would_change():
     the clamp that runs on the way to the provider. This walks the catalog
     rather than spot-checking, so a model added later cannot quietly offer a
     level that gets rewritten."""
-    from lionagi.service.providers import (
+    from lionagi_studio.operator.catalog import OPERATOR_MODEL_CATALOG
+    from lionhub.providers.model_spec import (
         _GEMINI_EFFORT_CLAMP,
         _clamp_claude_effort,
         _clamp_codex_effort,
         _clamp_gemini_effort,
     )
-    from lionagi_studio.operator.catalog import OPERATOR_MODEL_CATALOG
 
     checked = 0
     for spec in OPERATOR_MODEL_CATALOG:

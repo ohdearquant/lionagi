@@ -11,8 +11,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from lionagi import _auto
 from lionhub.serve.cli import catalog as _catalog
+from lionhub.serve.cli import registration as _auto
 
 
 @contextmanager
@@ -101,7 +101,7 @@ def test_duplicate_canonical_seed_name_raises_duplicate_registration_error():
 def test_cli_load_command_imports_only_the_selected_module(monkeypatch):
     mod_a = _make_module(
         "tests.contracts._fake_cli_a",
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=lambda s: None))\n"
         "def add_alpha_subparser():\n    return 1\n",
     )
@@ -120,7 +120,7 @@ def test_cli_load_command_imports_only_the_selected_module(monkeypatch):
 def test_cli_load_command_is_cached(monkeypatch):
     mod_a = _make_module(
         "tests.contracts._fake_cli_cache",
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=lambda s: None))\n"
         "def handler():\n    return 1\n",
     )
@@ -143,7 +143,7 @@ def test_cli_zero_matching_markers_raises_contract_error(monkeypatch):
 def test_cli_multiple_matching_markers_raises_contract_error(monkeypatch):
     mod_a = _make_module(
         "tests.contracts._fake_cli_multi",
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=lambda s: None))\n"
         "def one():\n    return 1\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=lambda s: None))\n"
@@ -158,7 +158,7 @@ def test_cli_multiple_matching_markers_raises_contract_error(monkeypatch):
 def test_cli_marker_module_mismatch_raises_contract_error(monkeypatch):
     _make_module(
         "tests.contracts._fake_cli_origin",
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=lambda s: None))\n"
         "def handler():\n    return 1\n",
     )
@@ -208,7 +208,7 @@ def test_build_cli_parser_with_selection_uses_its_parser_factory(monkeypatch):
     mod_a.factory = factory
     mod_a.handler = lambda args: 0
     marker_source = (
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "from tests.contracts._fake_cli_build import factory\n"
         "@_auto.auto_register(area='a', cli=_auto.CliDeclaration(seed='alpha', parser_factory=factory))\n"
         "def add_alpha_subparser():\n    return 1\n"
@@ -246,7 +246,7 @@ def test_cli_loader_delegates_to_shared_import_and_keeps_registration(monkeypatc
     name = "tests.contracts._shared_import_cli"
     module = _make_module(
         name,
-        "from lionagi import _auto\n"
+        "from lionhub.serve.cli import registration as _auto\n"
         "@_auto.auto_register(area='shared-import', cli=_auto.CliDeclaration(seed='shared-import', parser_factory=lambda s: None))\n"
         "def handler():\n    return 'handled'\n",
     )

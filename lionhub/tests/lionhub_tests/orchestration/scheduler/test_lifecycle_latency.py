@@ -20,11 +20,11 @@ async def test_p95_latency_excludes_reaper_observed_rows(tmp_path, monkeypatch):
     import time as _time
     from types import SimpleNamespace
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler import lifecycle as lifecycle_mod
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     monkeypatch.setattr(lifecycle_mod, "time", SimpleNamespace(time=lambda: 1_000_000.0))
     async with StateDB(path) as db:
         await db.create_invocation(

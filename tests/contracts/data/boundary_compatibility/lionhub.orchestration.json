@@ -108,6 +108,12 @@
     "lionhub/src/lionhub/orchestration/flow/checkpoint.py": [
       "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"CheckpointWriter\",\n    \"FlowResumeError\",\n    \"UnsupportedFlowCheckpointVersionError\",\n    \"load_checkpoint\",\n    \"resolve_checkpoint_target\",\n)"
     ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint_codec.py": [
+      "__all__ = (\n    \"CodecError\",\n    \"FrozenArray\",\n    \"FrozenObject\",\n    \"JournalRecord\",\n    \"PatchOp\",\n    \"apply_patch\",\n    \"capture_context\",\n    \"decode_json\",\n    \"decode_record\",\n    \"diff_context\",\n    \"encode_record\",\n    \"freeze_json\",\n    \"thaw_json\",\n    \"validate_entry\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint_version.py": [
+      "__all__ = (\n    \"CHECKPOINT_VERSION\",\n    \"GRAPH_CHECKPOINT_VERSION\",\n    \"UnsupportedCheckpointVersionError\",\n    \"load_legacy_checkpoint_json\",\n)"
+    ],
     "lionhub/src/lionhub/orchestration/flow/graph.py": [
       "__all__ = (\n    \"GRAPH_COPY_FILENAME\",\n    \"MAX_GRAPH_BYTES\",\n    \"MAX_GRAPH_NODES\",\n    \"FlowGraphError\",\n    \"GraphNode\",\n    \"GraphSource\",\n    \"check_graph\",\n    \"graph_flag_refusal\",\n    \"load_graph\",\n    \"load_graph_record\",\n    \"write_graph_copy\",\n)"
     ],
@@ -122,6 +128,9 @@
     ],
     "lionhub/src/lionhub/orchestration/prompts.py": [
       "__all__ = (\n    \"DECOMPOSE_INSTRUCTION\",\n    \"DECOMPOSE_DAG_INSTRUCTION\",\n    \"DECOMPOSE_DISCIPLINE\",\n    \"SPAWN_GUIDANCE\",\n    \"SYNTHESIS_INSTRUCTION\",\n)"
+    ],
+    "lionhub/src/lionhub/orchestration/run_persistence.py": [
+      "__all__ = (\n    \"RUN_PERSISTENCE_HOOKS\",\n    \"install_run_persistence\",\n    \"persist_branch_end\",\n    \"persist_branch_provenance\",\n    \"persist_message\",\n    \"persist_session_end\",\n    \"persist_session_start\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "__all__ = (\"SCRATCH_DIRNAME\", \"SCRATCH_MODES\", \"RunScratch\", \"remove_scratch\")"
@@ -265,6 +274,26 @@
       "load_checkpoint",
       "resolve_checkpoint_target"
     ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint_codec.py": [
+      "CodecError",
+      "FrozenArray",
+      "FrozenObject",
+      "JournalRecord",
+      "PatchOp",
+      "apply_patch",
+      "capture_context",
+      "decode_json",
+      "decode_record",
+      "diff_context",
+      "encode_record",
+      "freeze_json",
+      "thaw_json",
+      "validate_entry"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/checkpoint_version.py": [
+      "UnsupportedCheckpointVersionError",
+      "load_legacy_checkpoint_json"
+    ],
     "lionhub/src/lionhub/orchestration/flow/graph.py": [
       "FlowGraphError",
       "GraphNode",
@@ -277,6 +306,18 @@
     ],
     "lionhub/src/lionhub/orchestration/flow/parsing.py": [
       "add_orchestrate_subparser"
+    ],
+    "lionhub/src/lionhub/orchestration/flow/spec.py": [
+      "flow_spec_yaml_key",
+      "load_flow_spec",
+      "normalize_flow_spec_keys",
+      "validate_flow_args_schema",
+      "validate_flow_spec",
+      "validate_flow_spec_fields"
+    ],
+    "lionhub/src/lionhub/orchestration/frontmatter.py": [
+      "parse_frontmatter",
+      "parse_frontmatter_strict"
     ],
     "lionhub/src/lionhub/orchestration/inspection.py": [
       "fetch_by_id",
@@ -339,6 +380,14 @@
     ],
     "lionhub/src/lionhub/orchestration/project_store.py": [
       "get_project"
+    ],
+    "lionhub/src/lionhub/orchestration/run_persistence.py": [
+      "install_run_persistence",
+      "persist_branch_end",
+      "persist_branch_provenance",
+      "persist_message",
+      "persist_session_end",
+      "persist_session_start"
     ],
     "lionhub/src/lionhub/orchestration/run_scratch.py": [
       "RunScratch",
@@ -506,7 +555,8 @@
       "resolve_invocation_terminal"
     ],
     "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
-      "invocation_deadline_seconds"
+      "invocation_deadline_seconds",
+      "scheduler_held"
     ],
     "lionhub/src/lionhub/orchestration/scheduler/show_artifacts.py": [
       "read_json_file"

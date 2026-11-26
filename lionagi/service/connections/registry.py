@@ -1061,6 +1061,37 @@ class EndpointRegistry:
         return cls._alias_owners.get(key, key)
 
     @classmethod
+    def declared_endpoint_class(
+        cls,
+        provider: str,
+        endpoint: str | None = None,
+        *,
+        provider_catalog: ProviderCatalog | None = None,
+    ) -> type | None:
+        """The endpoint class a catalog declares for ``provider`` and ``endpoint``, or ``None``.
+
+        ``provider_catalog`` is read when it is supplied and the bundled catalog otherwise;
+        ``provider`` and ``endpoint`` are matched as :meth:`ProviderCatalog.endpoint` matches
+        them. Only the selected declaration's implementation is imported. ``None`` when the
+        catalog cannot load, declares no such endpoint, or the declaration cannot activate: that
+        failure is kept as :meth:`_activate` keeps it, so the selection that follows raises it.
+        """
+        from lionagi._feature_errors import MissingFeatureError
+        from lionagi._provider_errors import ProviderActivationError
+
+        catalog = provider_catalog if provider_catalog is not None else cls._bundled_catalog()[0]
+        if catalog is None:
+            return None
+        fragment = catalog.fragment(provider)
+        declaration = catalog.endpoint(provider, endpoint) if fragment is not None else None
+        if declaration is None:
+            return None
+        try:
+            return cls._activate(catalog, fragment, declaration)
+        except (MissingFeatureError, ProviderActivationError):
+            return None
+
+    @classmethod
     def list_providers(cls) -> list[dict[str, Any]]:
         """One row per registered endpoint, after every declared provider has been imported.
 

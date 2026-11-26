@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIONAGI_ROOT = REPO_ROOT / "lionagi"
@@ -3469,13 +3469,13 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     from types import SimpleNamespace as _SimpleNamespace
     from uuid import UUID
 
-    import lionagi.state.db as db_mod
     import lionhub.orchestration.console as log_mod
     import lionhub.serve.cli.engine as engine_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as db_mod
     from lionhub.agent.casts.emission import TaskAssignment
     from lionhub.orchestration.engines.engine import EngineRun
     from lionhub.orchestration.engines.planning import PlanningEngine
+    from lionhub.state.db import StateDB
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
@@ -3855,10 +3855,10 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     cover: that test calls start_live_persist directly and never touches
     `_run_fanout` at all, so deleting fanout.py's call site would leave it
     green. Deleting that call site here leaves no StateDB row and fails."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.orchestrate.fanout import _run_fanout
+    from lionhub.state.db import StateDB
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     session, env = _persistence_seam_env(tmp_path)
 
     with (
@@ -3894,11 +3894,11 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's
     fire_terminal_notify never picks up a real machine's notify settings."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.orchestrate.flow import _run_flow
+    from lionhub.state.db import StateDB
 
     monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     session, env = _persistence_seam_env(tmp_path)
 
     with (
@@ -4141,9 +4141,9 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
     pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
     pytest.importorskip("fastapi", reason="studio extra not installed")
 
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.engine_defs as engine_defs_svc
     import lionagi_studio.services.workflow_defs as wf_svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -4195,8 +4195,8 @@ async def test_compile_workflow_def_never_calls_session_flow(tmp_path, monkeypat
     pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
     pytest.importorskip("fastapi", reason="studio extra not installed")
 
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.engine_defs as engine_defs_svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)

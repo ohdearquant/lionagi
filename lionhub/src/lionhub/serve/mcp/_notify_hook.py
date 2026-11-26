@@ -39,8 +39,8 @@ from lionagi.ln import (
     terminate_process_group,
 )
 from lionagi.ln._proc import env_without_state_db_url
-from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
-from lionagi.state.lifecycle.notify_settings import build_terminal_notice_payload
+from lionhub.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
+from lionhub.state.lifecycle.notify_settings import build_terminal_notice_payload
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
@@ -265,7 +265,7 @@ def _resolve_command(
     from lionagi._lionagi_dir_trust import UntrustedLionagiDirError, enforced, gate_setting
 
     try:
-        from lionagi.state.lifecycle.notify_settings import resolve_notify_config
+        from lionhub.state.lifecycle.notify_settings import resolve_notify_config
 
         # This server has no gate variable of its own, so it applies the setting here, as its
         # jobs do (ADR-0088 Amendment 2).
@@ -328,7 +328,7 @@ def _terminal_reason_from_env() -> str | None:
         reason_code = payload.get("reason_code") if isinstance(payload, dict) else None
         if not isinstance(reason_code, str):
             return None
-        from lionagi.state.reasons import validate_reason_code
+        from lionhub.state.reasons import validate_reason_code
 
         return validate_reason_code(reason_code)
     except (TypeError, ValueError):

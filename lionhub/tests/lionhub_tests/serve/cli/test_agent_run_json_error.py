@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import (
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     lost_terminal_write,
     resolve_run_reason,
 )
+from lionhub.state.reasons import RunReasons
 from tests.providers._refusal_fixture import REFUSAL
 
 from .test_agent_context_from import _wire_agent_stubs
@@ -120,13 +120,13 @@ async def test_a_resume_that_comes_back_empty_says_why_it_failed(monkeypatch, tm
 async def test_a_run_failed_by_a_missing_artifact_says_why(monkeypatch, tmp_path):
     """Teardown decides this failure and nothing raises; run.json carries the row's own reason."""
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     real_setup, real_teardown = agent_mod.setup_agent_persist, agent_mod.teardown_agent_persist
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="done, without the report")
     monkeypatch.setattr(agent_mod, "setup_agent_persist", real_setup)
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: contract)
     run = _run(monkeypatch, tmp_path)
@@ -150,7 +150,7 @@ def _with_a_real_row(monkeypatch, tmp_path, operate_return=None):
     real_setup, real_teardown = agent_mod.setup_agent_persist, agent_mod.teardown_agent_persist
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return=operate_return)
     monkeypatch.setattr(agent_mod, "setup_agent_persist", real_setup)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     return agent_mod, real_teardown
 
 
@@ -162,7 +162,7 @@ async def test_a_run_on_a_row_still_holding_an_earlier_runs_reason_names_its_own
     earlier run's reason. The row is put in that state just before this run's teardown: the row
     keeps the earlier reason, and run.json names this run's own failure instead."""
     from lionagi import Branch
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
     earlier = "Missing required artifact: report (report.md)."
@@ -211,7 +211,7 @@ async def test_a_run_failed_by_a_missing_artifact_says_why_with_its_row_unreadab
     decided still reaches run.json."""
     import sqlite3
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     agent_mod, real_teardown = _with_a_real_row(
         monkeypatch, tmp_path, operate_return="done, without the report"
@@ -252,8 +252,8 @@ async def _sweep_as_stale(db, session_id):
     """End the row the way the state doctor ends a stale session."""
     import time
 
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import SessionReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import SessionReasons
 
     swept = await StateDB.update_status(
         db,
@@ -278,7 +278,7 @@ async def test_a_failed_status_another_writer_won_the_row_with_names_this_runs_o
     read of it and its write, so teardown's compare-and-set missed: run.json keeps the row's
     status, and its error says this run did not write it and what this run decided, never the
     other writer's reason."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
@@ -432,7 +432,7 @@ def _refuse_terminal_writes(monkeypatch, *, readback_fails: bool = False) -> lis
     cannot read the row afterwards either, so teardown has no status to hand back."""
     import sqlite3
 
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
 
     real_update, real_get = StateDB.update_status, StateDB.get_session
     refused: list[str] = []
@@ -531,7 +531,7 @@ async def test_a_refused_verification_write_records_the_missing_artifact_failure
     """The store refuses the verification write of a completed request whose required report is
     missing. The verification already decided `failed`, so the record carries it and its code,
     not the request."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
     contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
@@ -610,8 +610,8 @@ async def test_an_artifact_removed_while_teardown_verified_it_records_no_lost_wr
     """The required report is removed after the verifier saw it and before it read its size, so
     teardown fails before it decides or writes a terminal status. The store refused nothing:
     the row stays `running` and run.json says so, with no lost write beside it."""
-    from lionagi.state import artifact_verifier
-    from lionagi.state.db import StateDB
+    from lionhub.state import artifact_verifier
+    from lionhub.state.db import StateDB
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
     contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
@@ -672,8 +672,8 @@ async def test_a_run_whose_row_is_gone_at_its_terminal_write_records_the_decided
     """The session row is deleted before teardown writes the run's end, so the store finds no
     row for the write. The run decided `completed` and the store never took it: run.json keeps
     what is durable (`unknown`, the row cannot be read back) and records the decided end."""
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle import LifecycleNotFoundError
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle import LifecycleNotFoundError
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
     run = _run(monkeypatch, tmp_path)
@@ -750,7 +750,7 @@ async def test_a_teardown_that_decided_running_records_no_lost_write(monkeypatch
     """An engine session linked to the run still runs, so teardown decides `running`, not an end."""
     from lionagi import Branch
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import session_db_id
+    from lionhub.state.claude_mirror import session_db_id
 
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222222"
@@ -909,7 +909,7 @@ def _store_error_cases():
     from sqlalchemy.exc import OperationalError
 
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
-    from lionagi.state.lifecycle import LifecycleNotFoundError
+    from lionhub.state.lifecycle import LifecycleNotFoundError
 
     locked = sqlite3.OperationalError("database is locked")
     wrapped = OperationalError("UPDATE sessions", {}, sqlite3.OperationalError("disk I/O error"))
@@ -1162,7 +1162,7 @@ async def test_a_sigterm_run_whose_write_failed_after_teardown_resolved_its_code
 
     from lionagi import Branch
     from lionagi.ln.concurrency import utils as cu
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     monkeypatch.setattr(cu, "_SIGTERM_RECEIVED", threading.Event())
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)

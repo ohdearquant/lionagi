@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli.monitor import _detail_invocation, _invocation_to_row, _run_table
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 pytestmark = pytest.mark.anyio
 
@@ -35,7 +35,7 @@ def anyio_backend() -> str:
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

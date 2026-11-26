@@ -31,8 +31,6 @@ from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
-from lionagi.state import provenance as _provenance
 from lionhub.agent import AgentSpec, create_agent
 from lionhub.agent.factory import register_profile_injection
 from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
@@ -64,6 +62,8 @@ from lionhub.orchestration.spawn import (
     resolve_account_integrations,
     resolve_persisted_effort,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD
+from lionhub.state import provenance as _provenance
 
 from .. import team as _team_module
 
@@ -793,8 +793,8 @@ def _isolate_worker_cli_config(
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     kwargs = imodel.endpoint.config.kwargs
     provider = _canonical_provider(imodel.endpoint.config.provider)
@@ -924,9 +924,9 @@ def _confine_claude_worker(imodel, profile_name: str | None) -> None:
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.child_sandbox import resolve_child_sandbox
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     if _canonical_provider(imodel.endpoint.config.provider) not in _CLAUDE_PROVIDER_NAMES:
         return
@@ -942,8 +942,8 @@ def _uncontainable_cli_provider(imodel) -> str | None:
     """
     if not getattr(imodel, "is_cli", False):
         return None
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     provider = _canonical_provider(imodel.endpoint.config.provider)
     if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
@@ -1242,8 +1242,8 @@ async def setup_orchestration(
         # An empty set left the orchestrator loading no user config, so the effort
         # build_imodel_from_spec derived from that config goes too (create_agent
         # drops it the same way).
-        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
         from lionhub.agent.factory import _canonical_provider
+        from lionhub.providers.model_spec import PROVIDER_EFFORT_KWARG
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
         if effort_kwarg:
@@ -2317,8 +2317,8 @@ async def setup_orchestration_persist(
     admission_checked = False
     generation_id = str(uuid.uuid4())
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.cli_workers import _WorkerSpawnOwner
-    from lionagi.state.compat import is_compatibility_store, refusal_in
+    from lionhub.state.cli_workers import _WorkerSpawnOwner
+    from lionhub.state.compat import is_compatibility_store, refusal_in
 
     try:
         session_id = str(session.id)
@@ -2364,7 +2364,7 @@ async def setup_orchestration_persist(
         # Resolve the configured dialect without opening a second connection so
         # an SQLITE_BUSY raised by _open_shared_db() itself can take the same
         # bounded retry path as the two admission writes below.
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         configured_dialect = StateDB().dialect
         for attempt in range(len(_SQLITE_ADMISSION_RETRY_DELAYS) + 1):
@@ -2507,7 +2507,7 @@ async def setup_orchestration_persist(
                         "fallback db.close after setup failure also failed: %s", close_exc
                     )
                 if ctx is not None and ctx.get("shared_db_registered", False):
-                    from lionagi.state.db import unregister_shared_db
+                    from lionhub.state.db import unregister_shared_db
 
                     unregister_shared_db(db)
         if drain_cancel is not None:
@@ -2620,7 +2620,7 @@ async def stop_live_persist(
         env._run_manifest[TERMINAL_WRITE_LOST_FIELD] = lost_write
     env._run_manifest["status"] = final_status
     decided = ctx.get("terminal_reason") if ctx is not None else None
-    from lionagi.state.compat import is_compatibility_store
+    from lionhub.state.compat import is_compatibility_store
 
     if (
         final_status == "failed"
@@ -2631,7 +2631,7 @@ async def stop_live_persist(
         # In compatibility mode run.json names the reason teardown decided, as `li agent`'s
         # does, so a run the store refused a write of says so (ADR-0128 D6).
         env._run_manifest["error"] = decided[1]
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     if final_status in SESSION_TERMINAL_STATUSES:
         env._run_manifest["ended_at"] = time.time()

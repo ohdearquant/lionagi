@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import (
     apply_schedule_set,
     build_plan,
@@ -26,6 +25,7 @@ from lionhub.orchestration.schedule.export import (
     convert_legacy_rows,
     dump_schedule_set_yaml,
 )
+from lionhub.state.db import StateDB
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -261,7 +261,7 @@ async def test_legacy_malformed_trigger_is_blocked_and_omitted(temp_db_path, age
 @pytest.mark.asyncio
 async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, agent_profile):
     source_db = tmp_path / "source.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", source_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", source_db)
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("orig1", "demo/nightly", cwd=agent_profile, action_project="demo")
@@ -280,7 +280,7 @@ async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, ag
     reparsed = parse_schedule_set(output_path.read_text(), source=str(output_path))
 
     fresh_db = tmp_path / "fresh.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", fresh_db)
     async with StateDB() as db:
         result = await apply_schedule_set(db, reparsed, output_path.parent)
         assert result.created == 1
@@ -535,7 +535,7 @@ async def test_legacy_mixed_project_export_round_trips_exact_qualified_names(
     tmp_path, monkeypatch, agent_profile
 ):
     source_db = tmp_path / "source.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", source_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", source_db)
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("orig-a", "alpha/nightly", cwd=agent_profile, action_project="alpha")
@@ -558,7 +558,7 @@ async def test_legacy_mixed_project_export_round_trips_exact_qualified_names(
     assert docs_by_project["beta"].schedules.keys() == {"nightly"}
 
     fresh_db = tmp_path / "fresh.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", fresh_db)
     async with StateDB() as db:
         for doc in docs:
             output_path = tmp_path / f"schedules.{doc.metadata.project}.yaml"
@@ -602,7 +602,7 @@ async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
         }
 
     source_db = tmp_path / "source.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", source_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", source_db)
     async with StateDB() as db:
         await db.create_schedule(_managed_row("m-a", "alpha/svc", "alpha"))
         await db.create_schedule(_managed_row("m-b", "beta/svc", "beta"))
@@ -616,7 +616,7 @@ async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
     assert docs_by_project["beta"].schedules.keys() == {"svc"}
 
     fresh_db = tmp_path / "fresh.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", fresh_db)
     async with StateDB() as db:
         for doc in docs:
             output_path = tmp_path / f"schedules.{doc.metadata.project}.yaml"
@@ -673,7 +673,7 @@ async def test_a_managed_row_keeps_its_project_through_export_and_reapply(
         f"      cwd: {agent_profile}",
         *([f"      {project_line}"] if project_line else []),
     ]
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "source.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "source.db")
     async with StateDB() as db:
         await apply_schedule_set(db, parse_schedule_set("\n".join(lines) + "\n"), agent_profile)
         rows = await db.list_schedules()
@@ -685,7 +685,7 @@ async def test_a_managed_row_keeps_its_project_through_export_and_reapply(
     (doc,) = docs
     reread = parse_schedule_set(dump_schedule_set_yaml(doc))
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "fresh.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "fresh.db")
     async with StateDB() as db:
         await apply_schedule_set(db, reread, agent_profile)
         (fresh,) = await db.list_schedules()
@@ -970,7 +970,7 @@ async def test_legacy_row_with_conflicting_project_preserves_qualified_name_on_a
     assert "re-applies as" not in (lines[0].message or "")
 
     fresh_db = tmp_path / "fresh.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", fresh_db)
     async with StateDB() as db:
         result = await apply_schedule_set(db, doc, agent_profile)
         exact = await db.get_schedule_by_name("foo/nightly")

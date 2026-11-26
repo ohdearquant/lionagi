@@ -273,7 +273,7 @@ async def record_handler_failure(exc_group: BaseException, signal: Signal) -> No
     means the diagnostic itself couldn't be persisted -- logged and
     swallowed, same as ``bind_db_persistence``'s best-effort write.
     """
-    from lionagi.state.db import StateDB  # noqa: PLC0415
+    from lionhub.state.db import StateDB  # noqa: PLC0415
 
     errors = getattr(exc_group, "exceptions", (exc_group,))
     try:

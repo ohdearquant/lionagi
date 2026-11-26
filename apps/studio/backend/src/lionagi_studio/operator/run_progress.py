@@ -20,8 +20,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi.state.session_naming import resolve_display_name
 from lionhub.serve.daemon.services.redact import MAX_CANDIDATES, public_project, scrub_text
+from lionhub.state.session_naming import resolve_display_name
 
 # A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
 # form identifies at most one row and cannot enumerate anything, which is what
@@ -248,8 +248,8 @@ async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict
     within the turn's own project. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.job import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
+    from lionhub.state.db import StateDB
 
     normalized = ref.strip()
     if not normalized:
@@ -445,7 +445,7 @@ def _node_lane(events: list[tuple[str, str | None]]) -> str:
 
 
 async def _node_lanes_by_name(session_id: str) -> dict[str, str]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     by_name: dict[str, list[tuple[str, str | None]]] = {}
     # Paged to exhaustion: reading only the first page and reconciling on it
@@ -520,7 +520,7 @@ async def _dag_progress(
     ]
     lanes = await _node_lanes_by_name(session_id)
 
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     if run.get("status") in SESSION_TERMINAL_STATUSES:
         named_failed = _evidence_failed_op_ids(run)
@@ -615,8 +615,8 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
             "truncated": resolution.get("truncated", False),
         }
 
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionhub.serve.daemon.services.runs import get_run
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     run = await get_run(resolution["session_id"])
     if run is None:

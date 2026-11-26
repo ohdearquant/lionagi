@@ -12,9 +12,9 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.cli import kill as kill_cli
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 
 _GENERATION_ONE = "11111111-1111-4111-8111-111111111111"
 _GENERATION_TWO = "22222222-2222-4222-8222-222222222222"
@@ -22,7 +22,7 @@ _GENERATION_TWO = "22222222-2222-4222-8222-222222222222"
 
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
 
 
 def _parser():
@@ -235,7 +235,7 @@ async def test_resolution_reports_hostname_probe_failure_without_details(kind, m
         raise OSError("private hostname failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr("lionagi.state._quarantine_identity.socket.gethostname", fail_hostname)
+        scoped.setattr("lionhub.state._quarantine_identity.socket.gethostname", fail_hostname)
         assert await asyncio.to_thread(kill_cli.run_kill, _args(entity_id, "failed")) != 0
 
     after, history_after = await _row_and_history(kind, entity_id)

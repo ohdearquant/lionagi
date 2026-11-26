@@ -54,9 +54,9 @@ def test_a_stale_studio_installation_is_refused_before_any_route(
 ) -> None:
     from lionagi_studio.app import create_app
 
-    monkeypatch.setitem(compatibility._LIBRARY_VERSIONS, "lionagi", lambda: "1.2.0")
+    monkeypatch.setitem(compatibility._LIBRARY_VERSIONS, "lionagi", lambda: "2.0.0")
 
-    with pytest.raises(IncompatibleApplicationError, match="lionagi 1.2.0 is installed"):
+    with pytest.raises(IncompatibleApplicationError, match="lionagi 2.0.0 is installed"):
         create_app()
 
 

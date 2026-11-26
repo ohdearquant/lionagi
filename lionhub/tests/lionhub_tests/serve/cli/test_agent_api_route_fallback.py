@@ -157,7 +157,7 @@ _TWO_TEAMS = [
 def account_ledger(monkeypatch, tmp_path):
     """The account router pointed at a ledger file of its own, so the blocked accounts a run reads
     at its refusal are the ones a test wrote through the ledger. No account is pinned."""
-    from lionagi.service.accounts import _router as router_module
+    from lionhub.providers.anthropic.accounts import _router as router_module
 
     monkeypatch.delenv("LIONAGI_API_ACCOUNT", raising=False)
     router_module._reset_router_test_dependencies()
@@ -170,7 +170,7 @@ async def _block(reasons: dict[str, str]) -> None:
     """Give every configured account a ledger row, then block each named account for its reason,
     through the ledger the router hands the run."""
     from lionagi import config
-    from lionagi.service.accounts._router import get_router
+    from lionhub.providers.anthropic.accounts._router import get_router
 
     specs = tuple(
         AccountSpec(name=item.name, key_env=item.key_env, budget_nusd=item.budget_nusd)
@@ -363,7 +363,7 @@ async def test_account_blocked_with_no_blocked_account_in_the_ledger_does_not_mo
 async def test_account_blocked_with_a_status_that_cannot_be_read_does_not_move_the_run(
     leg, subscription, account_ledger, console_warnings, monkeypatch, tmp_path
 ):
-    from lionagi.service.accounts._ledger import CredentialLedger
+    from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
     async def unreadable(self, provider, month_utc=None):
         raise RuntimeError("ledger offline")
@@ -864,9 +864,9 @@ async def test_the_switched_run_is_handed_no_mcp_server(leg, subscription, monke
 async def test_the_session_rows_name_the_route_that_ran(leg, subscription, monkeypatch, tmp_path):
     import lionhub.orchestration.runs as runs_mod
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     contexts = []
 
     async def setup(branch, **kw):
@@ -1040,7 +1040,7 @@ async def test_unreadable_credential_settings_keep_the_run_on_the_api_route(
 ):
     """When the names to remove from the child environment cannot be read, the run does not move:
     it prints why and fails with the routing error, not the settings error."""
-    import lionagi._command_env_metadata as metadata
+    import lionhub.tools.command_env_metadata as metadata
     from lionagi._errors import ConfigurationError
 
     real = metadata.configured_command_env_names

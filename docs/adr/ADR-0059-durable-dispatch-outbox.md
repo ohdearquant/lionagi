@@ -142,7 +142,7 @@ and `metadata` with the concrete `lion_class`. A representative stored payload i
 The timestamp is generated at enqueue in real payloads; `0.0` above is a shape placeholder, not a
 default.
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/session/signal.py`;
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionagi/session/signal.py`;
 `lionagi/dispatch/outbox.py`.
 
 **Exact semantics.**
@@ -206,8 +206,8 @@ evidence_refs:   []
 metadata:        {}
 ```
 
-Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/reasons.py`;
-`lionagi/state/schema_meta.py`.
+Code anchors: `lionagi/dispatch/outbox.py`; `lionhub/src/lionhub/state/reasons.py`;
+`lionhub/src/lionhub/state/schema_meta.py`.
 
 **Exact semantics.**
 
@@ -277,7 +277,7 @@ patch:       attempt = old + 1
 reason:      dispatch.delivering.attempt
 ```
 
-Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
+Code anchors: `lionagi/dispatch/outbox.py`; `lionhub/src/lionhub/state/transitions.py`.
 
 **Exact semantics.**
 
@@ -353,7 +353,7 @@ The ordinary outcome matrix is:
 | expiry reached before claim | `expired` | `dispatch.expired.deadline` |
 | no template configured | same as command failure | retry or dead letter by attempt bound |
 
-Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/reasons.py`.
+Code anchors: `lionagi/dispatch/outbox.py`; `lionhub/src/lionhub/state/reasons.py`.
 
 **Exact semantics.**
 
@@ -411,7 +411,7 @@ Acknowledgement-tier outcomes are:
 | consumer presents matching token | `acked` | `dispatch.acked.consumer` |
 | expiry reached while pending/delivering | `expired` | `dispatch.expired.deadline` |
 
-Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
+Code anchors: `lionagi/dispatch/outbox.py`; `lionhub/src/lionhub/state/transitions.py`.
 
 **Exact semantics.**
 
@@ -428,7 +428,7 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
 - After token validation, acknowledgement uses the status read from the row as its CAS source. A
   concurrent status change returns `False`.
 - The dispatch adapter enforces the registered closed edge graph
-  (`lionagi/state/lifecycle/policy.py::build_default_registry`): `acked` is reachable only from `pending` and
+  (`lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`): `acked` is reachable only from `pending` and
   `delivering`, `dead_letter` and `expired` re-enter `pending` only through an operator-gated
   edge, and `delivered`/`acked` have no outgoing edges. An ack attempt against any other current
   status raises before the CAS runs.
@@ -630,7 +630,7 @@ expanding scheduler schema.
 
 ## Notes
 
-An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionhub/src/lionhub/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
 
 `DispatchSignal.attempt` and the row's `attempt` currently diverge after the first claim. Consumers
 must use outbox inspection for current attempt count. A future payload rewrite or per-attempt

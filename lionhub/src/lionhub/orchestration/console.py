@@ -9,7 +9,7 @@ import sys
 
 # The channels and their emitters live in the core so code outside the CLI can write to them;
 # this module decides how they print.
-from lionagi._log_channels import (
+from lionhub.state.log_channels import (
     ERROR_LOGGER_NAME,
     HINT_LOGGER_NAME,
     PROGRESS_LOGGER_NAME,
@@ -146,7 +146,7 @@ def _refused_inside_an_agent() -> bool:
     """Print the refusal and return True when this process runs inside an agent lionagi
     started (see refuse_nested_agent)."""
     from lionagi._provider_errors import NestedAgentRefusedError
-    from lionagi.service._subagent_admission import refuse_nested_agent
+    from lionhub.providers._subagent_admission import refuse_nested_agent
 
     try:
         refuse_nested_agent()

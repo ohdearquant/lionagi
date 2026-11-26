@@ -17,8 +17,8 @@ from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli
 @pytest.fixture
 def isolated_setup(monkeypatch):
     from lionagi.session import session as session_module
-    from lionagi.state import cli_workers, compat, provenance
     from lionhub.orchestration import runs as _runs
+    from lionhub.state import cli_workers, compat, provenance
 
     class Session:
         def __init__(self, *, name, default_branch):
@@ -60,8 +60,8 @@ def fake_branch():
 async def test_cancellation_recovers_committed_session(
     isolated_setup, monkeypatch, tmp_path, point
 ):
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -148,10 +148,10 @@ async def test_cancellation_recovers_committed_session(
 )
 @pytest.mark.asyncio
 async def test_fresh_recovery_guards(isolated_setup, monkeypatch, tmp_path, caplog, mode):
-    from lionagi.state import compat
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle import LifecycleNotFoundError
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state import compat
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle import LifecycleNotFoundError
+    from lionhub.state.reasons import RunReasons
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -265,7 +265,7 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
     isolated_setup, monkeypatch, tmp_path, mode
 ):
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -343,7 +343,7 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
 async def test_cancel_during_fallback_close_after_ordinary_setup_failure(
     isolated_setup, monkeypatch, tmp_path
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -392,7 +392,7 @@ async def test_cancel_during_fallback_close_after_ordinary_setup_failure(
 async def test_cancel_before_create_never_starts_candidate_recovery(
     isolated_setup, monkeypatch, tmp_path, caplog
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -437,7 +437,7 @@ async def test_cancel_before_create_never_starts_candidate_recovery(
 async def test_recovery_disposes_engine_when_open_fails(
     isolated_setup, monkeypatch, tmp_path, failure
 ):
-    from lionagi.state import db as db_module
+    from lionhub.state import db as db_module
 
     db = db_module.StateDB(tmp_path / "state.db")
     original_open = db.open
@@ -481,7 +481,7 @@ async def test_recovery_disposes_engine_when_open_fails(
 async def test_recovery_close_is_bounded_and_preserves_open_error(
     isolated_setup, monkeypatch, tmp_path, caplog, open_fails
 ):
-    from lionagi.state import db as db_module
+    from lionhub.state import db as db_module
 
     db = db_module.StateDB(tmp_path / "state.db")
     original_open, original_close = db.open, db.close
@@ -517,8 +517,8 @@ async def test_admission_refusal_remains_primary_when_owner_drain_is_cancelled(
     isolated_setup, monkeypatch, tmp_path
 ):
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state import cli_workers
-    from lionagi.state.db import StateDB
+    from lionhub.state import cli_workers
+    from lionhub.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -559,7 +559,7 @@ async def test_admission_refusal_remains_primary_when_owner_drain_is_cancelled(
 @pytest.mark.asyncio
 async def test_timed_out_open_still_closes_once(isolated_setup, monkeypatch):
     from lionagi.ln.concurrency import move_on_after
-    from lionagi.state import db as db_module
+    from lionhub.state import db as db_module
 
     class BlockedStore:
         def __init__(self):

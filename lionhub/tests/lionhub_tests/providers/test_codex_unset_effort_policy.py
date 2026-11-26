@@ -5,7 +5,10 @@
 import inspect
 
 from lionagi.service.connections._provider_compat import default_provider_catalog
-from lionagi.service.providers import _CODEX_UNSET_EFFORT_METHOD, codex_unset_effort_default
+from lionhub.providers.model_spec import (
+    _CODEX_UNSET_EFFORT_METHOD,
+    codex_unset_effort_default,
+)
 from lionhub.providers.openai.codex import CodexCLIEndpoint
 
 

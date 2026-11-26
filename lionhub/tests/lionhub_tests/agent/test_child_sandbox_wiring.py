@@ -18,9 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionhub.agent.factory import create_agent
 from lionhub.agent.spec import AgentSpec
+from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 
 child_sandbox = importlib.import_module("lionhub.agent.child_sandbox")
@@ -39,9 +39,9 @@ def _exemption_for_one_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
-    # The store path is fixed when lionagi.state.db is first imported, under whichever HOME
+    # The store path is fixed when lionhub.state.db is first imported, under whichever HOME
     # that was; the reconnect socket directory the deny list names sits beside it.
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     settings = {"child_sandbox": {"profiles": {"builder": {"allow_read": [EXEMPT]}}}}

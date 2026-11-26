@@ -18,7 +18,6 @@ from lionagi import Branch, Session
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
-from lionagi.state.db import StateDB
 from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.flow.checkpoint import (
     CheckpointWriter,
@@ -41,6 +40,7 @@ from lionhub.serve.cli.orchestrate.flow import (
     _reconstruct_spawned_nodes,
     _run_flow_inner,
 )
+from lionhub.state.db import StateDB
 from tests._checkpoint_test_support import _minimal_real_env as _minimal_real_env
 from tests._checkpoint_test_support import temp_db_path as temp_db_path
 

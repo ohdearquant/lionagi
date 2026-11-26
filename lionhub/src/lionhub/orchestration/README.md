@@ -31,6 +31,7 @@ keeps it that way. Import the module you need by its full path.
 | `dispatch/` | the durable dispatch outbox and its revival heartbeat |
 | `work/` | `WorkForm` and its declarative validation rules |
 | `arguments`, `console` | argparse type callables and the named console output channels |
+| `spec_limits` | `MAX_SPEC_PROMPT_CHARS`, the size bound every agent and orchestration prompt surface checks |
 | `scheduler/` | scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle and dependency helpers |
 | `schedule/` | the schedule services, below |
 
@@ -93,6 +94,10 @@ returns the module at its new path. Each old path is removed in 2.0.0. The rows 
 | `lionagi.cli._runs` | `lionhub.orchestration.runs` | 0.38.0 |
 | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` | 0.38.0 |
 | `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` | 0.38.0 |
+| `lionagi._flow_spec` | `lionhub.orchestration.flow.spec` | 1.0.0 |
+| `lionagi._checkpoint_version` | `lionhub.orchestration.flow.checkpoint_version` | 1.0.0 |
+| `lionagi._checkpoint_v3_codec` | `lionhub.orchestration.flow.checkpoint_codec` | 1.0.0 |
+| `lionagi._spec_limits` | `lionhub.orchestration.spec_limits` | 1.0.0 |
 | `lionagi.studio.services._schedule_validation` | `lionhub.orchestration.schedule.validation` | 0.38.0 |
 | `lionagi.studio.services.schedule_action_validation` | `lionhub.orchestration.schedule.action_validation` | 0.38.0 |
 | `lionagi.studio.services.schedule_timing` | `lionhub.orchestration.schedule.timing` | 0.38.0 |

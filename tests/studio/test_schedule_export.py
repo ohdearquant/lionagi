@@ -27,7 +27,6 @@ from lionhub_tests.orchestration.schedule._test_support_schedule_export import (
 agent_profile = _support.agent_profile
 temp_db_path = _support.temp_db_path
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import (
     apply_schedule_set,
     build_plan,
@@ -40,6 +39,7 @@ from lionhub.orchestration.schedule.export import (
     dump_schedule_set_yaml,
     format_report,
 )
+from lionhub.state.db import StateDB
 
 # fixtures
 

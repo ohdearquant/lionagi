@@ -364,7 +364,7 @@ def test_the_cli_cannot_connect_to_the_daemon_reconnect_socket(monkeypatch, tmp_
     try:
         lionagi_home = base / "home" / ".lionagi"
         monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", lionagi_home)
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
         sock = reconnect.default_socket_path()
         assert sock == lionagi_home / "studio" / "studio-reconnect.sock"
         sock.parent.mkdir(parents=True, mode=0o700)

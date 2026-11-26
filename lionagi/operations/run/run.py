@@ -32,8 +32,8 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.service._subagent_admission import _on_subagent_admission
-from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
+from lionagi.service._admission_notice import _on_subagent_admission
+from lionagi.service.accounts._usage_shape import CACHE_WRITE_LIFETIMES, cache_write_split
 from lionagi.service.connections import AgenticEndpoint
 from lionagi.service.connections.agentic_endpoint import _UNHELD_SESSION_TEXT
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -268,7 +268,7 @@ async def _stream_with_liveness(
                 is_liveness_boundary, wait_for = first_output_bound(current_time())
 
                 def _time_from_admission(admitted: bool) -> None:
-                    # Called by the CLI spawn (lionagi.service._subagent_admission, through
+                    # Called by the CLI spawn (lionhub.providers._subagent_admission, through
                     # the context set below) when a worker starts waiting for a machine-wide
                     # slot and when it is admitted. Only the caller's own deadline runs during
                     # the wait; the window for the first output opens at admission, and so does
@@ -504,7 +504,7 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     nested ``usage.cache_creation`` cache-write lifetime map, which a provider
     may split across chunks; everything else is overwritten with the latest
     value. Each chunk's own split is read with
-    ``service.accounts._pricing.cache_write_split`` against that chunk's own
+    ``service.accounts._usage_shape.cache_write_split`` against that chunk's own
     cache-write total, so a sequence of chunks gives the same answer a single
     report with the summed counts would give. See the cache-write lifetime
     rule in docs/internals/core.md (``session/``).
@@ -922,7 +922,7 @@ async def run(
                 # A write the store refused in compatibility mode is no provider failure, and keeps
                 # its type (ADR-0128 D6).
                 from lionagi._provider_errors import ProviderError
-                from lionagi.state.compat import StateCompatibilityRefused
+                from lionagi._state_refusal import StateCompatibilityRefused
 
                 if isinstance(_exc, StateCompatibilityRefused):
                     _run_exc = _exc

@@ -296,7 +296,7 @@ def test_budget_exhaustion_is_an_engine_notification_not_a_session_signal() -> N
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
-    assert "github_cursor" in _table("lionagi/state/schema.sql", "schedules")
+    assert "github_cursor" in _table("lionhub/src/lionhub/state/schema.sql", "schedules")
 
 
 OUTBOX = "lionhub/src/lionhub/orchestration/dispatch/outbox.py"
@@ -324,7 +324,7 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    db = "lionagi/state/db.py"
+    db = "lionhub/src/lionhub/state/db.py"
     update = _def_source(db, "StateDB._build_update_schedule_stmt")
     assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in update
     insert = _def_source(db, "StateDB.insert_session_signal")
@@ -354,14 +354,14 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "a `session_signals` row the persistence sink has confirmed" in flat
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
-    assert "lionagi/state/schema.sql:845-849" in flat
-    assert "lionagi/state/db.py::StateDB.insert_session_signal" in flat
-    assert "lionagi/state/db.py::StateDB.get_session_signals_after" in flat
+    assert "lionhub/src/lionhub/state/schema.sql:845-849" in flat
+    assert "lionhub/src/lionhub/state/db.py::StateDB.insert_session_signal" in flat
+    assert "lionhub/src/lionhub/state/db.py::StateDB.get_session_signals_after" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert (
         "whose forward read defaults to 500 rows "
-        "(`lionagi/state/db.py::StateDB.get_session_signals_after`)" in flat
+        "(`lionhub/src/lionhub/state/db.py::StateDB.get_session_signals_after`)" in flat
     )
     assert "`emitter_role`, versioned payload type" in flat
     assert "filter-required data without destructive truncation; every page is read" in flat
@@ -389,7 +389,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "No flow- or" in flat
     assert "invocation-terminal session Signal exists today" in flat
     assert "the bus carries `RunEnd` per operation" in flat
-    assert "lionagi/state/lifecycle/callbacks.py::RunTerminalEnvelope" in flat
+    assert "lionhub/src/lionhub/state/lifecycle/callbacks.py::RunTerminalEnvelope" in flat
     assert (
         "lionhub/src/lionhub/orchestration/engines/flow_signals.py::flow_progress_signals" in flat
     )
@@ -505,9 +505,9 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
         "lionhub/src/lionhub/serve/cli/orchestrate/_orchestration.py::TeamLifecycleCoordinator.check_round"
         in flat
     )
-    assert "lionagi/state/schema.sql:493" in flat
-    assert "lionagi/state/db.py::StateDB._build_update_schedule_stmt" in flat
-    assert "lionagi/state/db.py::StateDB.create_schedule_run_and_advance" in flat
+    assert "lionhub/src/lionhub/state/schema.sql:493" in flat
+    assert "lionhub/src/lionhub/state/db.py::StateDB._build_update_schedule_stmt" in flat
+    assert "lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run_and_advance" in flat
     assert (
         "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
     )

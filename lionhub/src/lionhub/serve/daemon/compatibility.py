@@ -7,7 +7,7 @@ An application attached to the daemon carries a compatibility manifest, ``compat
 in the package that defines its attachment. The manifest names the attachment protocol the
 application implements and, for each library, the versions it supports::
 
-    {"attachment_protocol": 1, "requires": {"lionagi": ">=0.38.0,<1.0"}}
+    {"attachment_protocol": 1, "requires": {"lionagi": ">=1.0.0,<2.0"}}
 
 The daemon factory reads it before the attachment adds any route and before any process resource
 starts, and refuses a missing, malformed or incompatible manifest (ADR-0138 F7). Within one wheel

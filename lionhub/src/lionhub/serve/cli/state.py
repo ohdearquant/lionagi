@@ -10,12 +10,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import coerce_created_at, short_id
-from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
-from lionagi.state.session_naming import resolve_display_name
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 from lionhub.orchestration.runs import RUNS_ROOT, _manifest_run_id_matches
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
+from lionhub.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
+from lionhub.state.session_naming import resolve_display_name
 
 __all__ = [
     # import helpers
@@ -235,7 +235,7 @@ def _import_message_fingerprint(raw: dict[str, Any]) -> str:
 
 def _import_message_differences(existing: dict[str, Any], raw: dict[str, Any]) -> tuple[str, ...]:
     """Compare the fields the normal message upsert would replace."""
-    from lionagi.state.db import _MESSAGE_UPSERT_FIELDS, _pack_embedding
+    from lionhub.state.db import _MESSAGE_UPSERT_FIELDS, _pack_embedding
 
     incoming = _msg_from_collection_entry(raw)
     metadata = incoming["node_metadata"]
@@ -364,7 +364,7 @@ async def _import_one_run(
 ) -> tuple[int, int, int]:
     from sqlalchemy import text
 
-    from lionagi.state import StateDB
+    from lionhub.state import StateDB
 
     db._refuse_in_compatibility("import_runs", "run import is not supported in compatibility mode")
     created_at = _mtime_as_float(run_dir)
@@ -673,7 +673,7 @@ async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[
 async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
     import time
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         rows = await _collect_sessions(db, limit=limit, status=status)
@@ -737,8 +737,8 @@ def _db_sizes() -> dict[str, Any]:
     is reading. ``is_file`` says which case this is, so a null size means "not
     answerable" and can never be read as "empty".
     """
-    from lionagi.state.db import StateDB, state_db_file
-    from lionagi.state.engine import mask_credentials, mask_db_url
+    from lionhub.state.db import StateDB, state_db_file
+    from lionhub.state.engine import mask_credentials, mask_db_url
 
     db_path = state_db_file()
     if db_path is None:
@@ -882,7 +882,7 @@ async def _collect_stats(db: Any) -> dict[str, Any]:
 
 
 async def _print_stats() -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     sizes = _db_sizes()
 
@@ -941,7 +941,7 @@ async def _print_stats() -> None:
 
 
 async def _checkpoint(mode: str) -> str:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         row = await db.checkpoint(mode)
@@ -951,14 +951,14 @@ async def _checkpoint(mode: str) -> str:
 
 
 async def _vacuum() -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         await db.vacuum()
 
 
 async def _migrate() -> str:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB()
     try:
@@ -1001,7 +1001,7 @@ async def _prune_candidates(*, keep_days: int, keep_n: int) -> dict[str, Any]:
 
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     cutoff = _time.time() - (keep_days * 86400)
     now = _time.time()
@@ -1058,7 +1058,7 @@ async def _prune(
     """
     import time as _time
 
-    from lionagi.state.db import StateDB, _locked_cli_worker_prune_candidates
+    from lionhub.state.db import StateDB, _locked_cli_worker_prune_candidates
 
     cutoff = _time.time() - (keep_days * 86400)
 
@@ -1352,7 +1352,7 @@ async def _null_content_candidates(
 
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     cutoff = _time.time() - (older_than_days * 86400)
     params = _null_content_params(cutoff=cutoff, roles=roles)
@@ -1409,7 +1409,7 @@ async def _null_content(
 
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     now = _time.time()
     cutoff = now - (older_than_days * 86400)
@@ -1505,8 +1505,8 @@ async def _doctor(
     """Sweep sessions stuck at status='running' older than stale_hours."""
     import time as _time
 
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import SessionReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import SessionReasons
 
     cutoff = _time.time() - (stale_hours * 3600)
 
@@ -1618,7 +1618,7 @@ async def _doctor(
 
 async def _import_runs() -> dict[str, int]:
     """Scan RUNS_ROOT and import every run with a run.json manifest."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     counts = {"sessions": 0, "branches": 0, "messages": 0, "skipped": 0, "errors": 0}
 
@@ -1681,8 +1681,8 @@ async def _import_teams() -> dict[str, int]:
     """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables."""
     from sqlalchemy import JSON, bindparam, text
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.team import read_team_json
+    from lionhub.state.db import StateDB
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
@@ -2052,8 +2052,8 @@ def run_state(args: argparse.Namespace) -> int:
 
     if args.state_command == "migrate":
         from lionagi._feature_errors import MissingFeatureError
-        from lionagi.state.engine import mask_credentials
         from lionhub.orchestration.console import log_error
+        from lionhub.state.engine import mask_credentials
 
         try:
             version = run_async(_migrate())
@@ -2066,8 +2066,8 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     if args.state_command == "terminal-consumer":
-        from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
         from lionhub.orchestration.console import log_error
+        from lionhub.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
 
         try:
             result = run_async(_terminal_consumer_list_data())
@@ -2291,8 +2291,8 @@ async def _machine_stats_data() -> dict[str, Any]:
 async def _terminal_consumer_list_data() -> dict[str, Any]:
     from dataclasses import asdict
 
-    from lionagi.state.db import StateDB, read_only_open_supported
-    from lionagi.state.lifecycle.consumer_inspection import (
+    from lionhub.state.db import StateDB, read_only_open_supported
+    from lionhub.state.lifecycle.consumer_inspection import (
         ConsumerInspectionBackendError,
         list_consumers,
     )
@@ -2312,7 +2312,7 @@ async def _terminal_consumer_list_data() -> dict[str, Any]:
 
 def _machine_terminal_consumer(argv: list[str]) -> dict[str, Any]:
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
+    from lionhub.state.lifecycle.consumer_inspection import ConsumerInspectionBackendError
 
     from .machine import MachineError
 

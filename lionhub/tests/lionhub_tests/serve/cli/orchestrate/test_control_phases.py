@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
 from lionhub.serve.cli.monitor import _machine_entity, _session_to_row
 from lionhub.serve.cli.orchestrate import flow
 from lionhub.serve.cli.orchestrate._control import _enqueue_control_inner
 from lionhub.serve.cli.status import EXIT_UNKNOWN, _build_view, _render_human
+from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
 
 from .._worker_fixtures import create_worker_session
 from .test_control_poller import (
@@ -28,8 +28,8 @@ from .test_flow_phases import _make_env
 @pytest.fixture
 def db_path(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
-    monkeypatch.setattr("lionagi.state.db.settings", SimpleNamespace(LIONAGI_STATE_DB_URL=None))
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.settings", SimpleNamespace(LIONAGI_STATE_DB_URL=None))
     return path
 
 
@@ -151,11 +151,11 @@ async def test_flow_finalization_clears_persisted_phase(db_path, tmp_path, monke
     else:
         monkeypatch.setattr(flow, "_run_flow_inner", inner)
     monkeypatch.setattr(
-        "lionagi.state.completion_evidence.check_completion_evidence",
+        "lionhub.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     task = asyncio.create_task(

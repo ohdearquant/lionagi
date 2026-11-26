@@ -214,7 +214,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
-        python-version: "3.10"
+        python-version: "3.11"
 
     - name: Install uv
       run: |
@@ -275,8 +275,8 @@ jobs:
     # Unbounded, that leg runs to the six-hour job limit, and because runs on a
     # pushed branch share one concurrency group and are never cancelled, every
     # push in the meantime queues behind it and all but the newest are cancelled
-    # without running. A leg takes 11 to 29 minutes; the 3.10 leg under coverage,
-    # which runs only on pushes, has taken 22 to 44 minutes on main (per-run
+    # without running. A leg takes 11 to 29 minutes; the coverage leg, which
+    # runs only on pushes, has taken 22 to 44 minutes on main (on 3.10; per-run
     # times in issue #4121). The plain test step stops at 45 and the coverage
     # step at 60, both before the job's 75; the steps around them take under a
     # minute, so a stopped leg still runs the failure telemetry and the peak-RSS
@@ -288,10 +288,10 @@ jobs:
         # Which Python versions run depends on where the change is headed:
         #   - a pull request into dev/lionagi whose changes are all
         #     documentation (docs/, changelog.d/, top-level *.md) runs one leg,
-        #     3.10. Not zero: the
+        #     3.11. Not zero: the
         #     suite reads documentation (ADR citation pins, numbering, status
         #     sets, API-doc drift), so a docs-only change can still fail it.
-        #   - any other pull request into dev/lionagi runs the two ends, 3.10
+        #   - any other pull request into dev/lionagi runs the two ends, 3.11
         #     and 3.14.
         #   - every other event runs the full supported set: the dev/lionagi to
         #     main pull request, pushes to main, and manual runs unless they ask
@@ -306,9 +306,9 @@ jobs:
         # night the full set on each fix PR held the whole queue for hours. If
         # `changes` fails or is skipped its outputs are empty, which selects the
         # two ends on a dev/lionagi pull request and the full set otherwise.
-        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '["3.10"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.11","3.14"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '["3.11"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '["3.11","3.14"]' || '["3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
-    # repo's .python-version (3.10) otherwise pins all legs to 3.10.
+    # repo's .python-version (3.11) otherwise pins all legs to 3.11.
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       PYTEST_JUNIT_XML: ${{ github.workspace }}/.pytest-results/junit.xml
@@ -327,21 +327,21 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    # Coverage runs on 3.10, only on pushes and manual runs — never on a pull
+    # Coverage runs on 3.11, only on pushes and manual runs — never on a pull
     # request.
     #
     # Running the suite under coverage instrumentation is materially slower than
-    # running it plain. The 3.10 leg runs on every pull request and ci-gate
+    # running it plain. The 3.11 leg runs on every pull request and ci-gate
     # hard-gates on `test`, so before this split that extra time sat
     # directly on the path every pull request had to clear before it could merge.
     #
     # Coverage is a report rather than a gate, so pushes to a long-lived branch
     # are a sufficient place to produce it. Pull requests run the same tests on
     # the same interpreters, uninstrumented — no test is skipped on a pull
-    # request, the 3.10 leg is switched from the instrumented command to the
+    # request, the 3.11 leg is switched from the instrumented command to the
     # plain one.
     - name: Run tests with coverage
-      if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
+      if: matrix.python-version == '3.11' && github.event_name != 'pull_request'
       timeout-minutes: 60
       run: scripts/ci.sh test-python-cov
       env:
@@ -349,7 +349,7 @@ jobs:
         PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
 
     - name: Run tests
-      if: matrix.python-version != '3.10' || github.event_name == 'pull_request'
+      if: matrix.python-version != '3.11' || github.event_name == 'pull_request'
       timeout-minutes: 45
       run: scripts/ci.sh test-python
       env:
@@ -402,7 +402,7 @@ jobs:
         retention-days: 7
 
     - name: Upload coverage reports to Codecov
-      if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
+      if: matrix.python-version == '3.11' && github.event_name != 'pull_request'
       uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
@@ -534,7 +534,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
-        python-version: "3.10"
+        python-version: "3.11"
     - name: Install uv
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -638,7 +638,7 @@ jobs:
             - '.github/workflows/ci.yml'
           adr:
             - 'docs/adr/**'
-            - 'lionagi/state/lifecycle/**'
+            - 'lionhub/src/lionhub/state/lifecycle/**'
           imports:
             - 'lionagi/**'
             - 'lionhub/**'
@@ -650,11 +650,11 @@ jobs:
             - 'uv.lock'
             # The lionagi code the compatibility tests import directly. These
             # entries are the packages and modules named by the imports (including
-            # imports inside functions) in every .py file under lionagi/state and in
-            # the three tests/ entries below: `X/**` for a package, `X.py` for a
+            # imports inside functions) in every .py file under lionhub/src/lionhub/state
+            # and in the test entries below: `X/**` for a package, `X.py` for a
             # module, and lionagi/__init__.py for `import lionagi` or
-            # `from lionagi import ...`. A relative import counts when it leads out of
-            # lionagi/state. Importing any lionagi module runs lionagi/__init__.py
+            # `from lionagi import ...`. A relative import in those files stays inside
+            # lionhub and names no lionagi entry. Importing any lionagi module runs lionagi/__init__.py
             # first, so the packages and modules that file imports when it loads count
             # as imported by every source: its imports under `if TYPE_CHECKING:` and
             # inside functions do not. What those packages import in turn is not
@@ -662,13 +662,12 @@ jobs:
             # tests/scripts/test_advisory_pr_checks.py recomputes the list from the
             # sources and fails when this one differs.
             - 'lionagi/__init__.py'
-            - 'lionagi/_cli_worker_context.py'
             - 'lionagi/_lionagi_dir_trust.py'
-            - 'lionagi/_log_channels.py'
             - 'lionagi/_moved.py'
             - 'lionagi/_paths.py'
             - 'lionagi/_provider_errors.py'
             - 'lionagi/_settings.py'
+            - 'lionagi/_state_refusal.py'
             - 'lionagi/config.py'
             - 'lionagi/hooks/**'
             - 'lionagi/libs/**'
@@ -678,7 +677,6 @@ jobs:
             - 'lionagi/protocols/**'
             - 'lionagi/service/**'
             - 'lionagi/session/**'
-            - 'lionagi/state/**'
             - 'lionagi/testing/**'
             - 'lionagi/version.py'
             # The filter test follows module-load imports from the LionHub modules
@@ -700,8 +698,11 @@ jobs:
             - 'lionhub/src/lionhub/orchestration/console.py'
             - 'lionhub/src/lionhub/orchestration/flow/__init__.py'
             - 'lionhub/src/lionhub/orchestration/flow/checkpoint.py'
+            - 'lionhub/src/lionhub/orchestration/flow/checkpoint_version.py'
             - 'lionhub/src/lionhub/orchestration/flow/graph.py'
             - 'lionhub/src/lionhub/orchestration/flow/parsing.py'
+            - 'lionhub/src/lionhub/orchestration/flow/spec.py'
+            - 'lionhub/src/lionhub/orchestration/frontmatter.py'
             - 'lionhub/src/lionhub/orchestration/inspection.py'
             - 'lionhub/src/lionhub/orchestration/job.py'
             - 'lionhub/src/lionhub/orchestration/json_file.py'
@@ -709,10 +710,14 @@ jobs:
             - 'lionhub/src/lionhub/orchestration/patterns.py'
             - 'lionhub/src/lionhub/orchestration/project.py'
             - 'lionhub/src/lionhub/orchestration/prompts.py'
+            - 'lionhub/src/lionhub/orchestration/run_persistence.py'
             - 'lionhub/src/lionhub/orchestration/runs.py'
             - 'lionhub/src/lionhub/orchestration/spawn.py'
+            - 'lionhub/src/lionhub/orchestration/spec_limits.py'
             - 'lionhub/src/lionhub/orchestration/team.py'
             - 'lionhub/src/lionhub/providers/__init__.py'
+            - 'lionhub/src/lionhub/providers/_subagent_admission.py'
+            - 'lionhub/src/lionhub/providers/model_spec.py'
             - 'lionhub/src/lionhub/providers/openai/__init__.py'
             - 'lionhub/src/lionhub/providers/openai/_codex_profile.py'
             - 'lionhub/src/lionhub/serve/__init__.py'
@@ -720,6 +725,7 @@ jobs:
             - 'lionhub/src/lionhub/serve/mcp/__init__.py'
             - 'lionhub/src/lionhub/serve/mcp/_errors.py'
             - 'lionhub/src/lionhub/serve/mcp/config.py'
+            - 'lionhub/src/lionhub/state/**'
             - 'lionhub/src/lionhub/tools/__init__.py'
             - 'lionhub/src/lionhub/tools/base.py'
             - 'lionhub/src/lionhub/tools/communication/__init__.py'
@@ -727,10 +733,10 @@ jobs:
             # A compatibility test that imports the Studio application needs its
             # import root, which lives outside lionagi/ and lionhub/.
             - 'apps/studio/backend/src/lionagi_studio/**'
-            - 'tests/conftest.py'
+            - 'lionhub/tests/conftest.py'
             - 'tests/_shared_conftest.py'
-            - 'tests/state/conftest.py'
-            - 'tests/state/test_compatibility_*.py'
+            - 'lionhub/tests/lionhub_tests/state/conftest.py'
+            - 'lionhub/tests/lionhub_tests/state/test_compatibility_*.py'
             - '.github/workflows/ci.yml'
           lionrs:
             - 'lionrs/**'
@@ -899,10 +905,9 @@ jobs:
   # versions: without it, a replacement that did not take would pass the tests
   # on the locked pair.
   #
-  # SQLAlchemy 2.1 requires Python 3.11 or later and does not resolve on 3.10,
-  # so the aiosqlite 0.22.0 + SQLAlchemy 2.1.6 row runs on 3.11, the lowest
-  # Python that installs it. Add a row when aiosqlite or SQLAlchemy releases a
-  # version inside the supported range that no row covers.
+  # The floor rows run on 3.11, the lowest supported Python. Add a row when
+  # aiosqlite or SQLAlchemy releases a version inside the supported range that
+  # no row covers.
   compat-deps:
     name: Compatibility mode (aiosqlite ${{ matrix.aiosqlite }}, SQLAlchemy ${{ matrix.sqlalchemy }}, Python ${{ matrix.python-version }})
     needs: changes
@@ -914,14 +919,14 @@ jobs:
       matrix:
         include:
           # The floor of both ranges, on the lowest supported Python.
-          - python-version: "3.10"
+          - python-version: "3.11"
             aiosqlite: "0.22.0"
             sqlalchemy: "2.0.38"
           # The other aiosqlite release in the range, against the SQLAlchemy floor.
-          - python-version: "3.10"
+          - python-version: "3.11"
             aiosqlite: "0.22.1"
             sqlalchemy: "2.0.38"
-          # The aiosqlite floor against the newest SQLAlchemy (see above for 3.11).
+          # The aiosqlite floor against the newest SQLAlchemy.
           - python-version: "3.11"
             aiosqlite: "0.22.0"
             sqlalchemy: "2.1.6"
@@ -931,7 +936,7 @@ jobs:
             sqlalchemy: "2.1.6"
     env:
       # Force every `uv` call onto the matrix interpreter; the repo's
-      # .python-version (3.10) otherwise pins all rows to 3.10.
+      # .python-version (3.11) otherwise pins all rows to 3.11.
       UV_PYTHON: ${{ matrix.python-version }}
       EXPECTED_AIOSQLITE: ${{ matrix.aiosqlite }}
       EXPECTED_SQLALCHEMY: ${{ matrix.sqlalchemy }}
@@ -991,7 +996,7 @@ jobs:
         uv run --no-sync pytest -n 0 --maxfail=0
         -m "not performance and not flaky_quarantine"
         --disable-warnings
-        tests/state/test_compatibility_*.py
+        lionhub/tests/lionhub_tests/state/test_compatibility_*.py
 
   lionrs:
     needs: changes
@@ -1105,7 +1110,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      UV_PYTHON: "3.10"
+      UV_PYTHON: "3.11"
     steps:
     - uses: actions/checkout@v7
       with:

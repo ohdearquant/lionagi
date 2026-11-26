@@ -13,21 +13,21 @@ import subprocess
 import pytest
 from sqlalchemy import event, text
 
-from lionagi.state.db import StateDB
-from lionagi.state.lifecycle.consumer_inspection import (
+from lionhub.serve.cli import state as state_cli
+from lionhub.state.db import StateDB
+from lionhub.state.lifecycle.consumer_inspection import (
     ConsumerInspectionBackendError,
     ConsumerPreviewAlreadyActiveError,
     ConsumerPreviewAlreadyRetiredError,
     list_consumers,
     preview_consumer_change,
 )
-from lionagi.state.lifecycle.deliveries import (
+from lionhub.state.lifecycle.deliveries import (
     ConsumerNotRegisteredError,
     ack_delivery,
     register_consumer,
     retire_consumer,
 )
-from lionhub.serve.cli import state as state_cli
 
 
 def _forbid(*_args, **_kwargs):
@@ -142,8 +142,8 @@ def test_human_and_machine_list_share_data(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_non_readonly_backend_is_refused_without_opening_store(monkeypatch):
-    from lionagi.state import db as db_module
     from lionhub.serve.cli import machine
+    from lionhub.state import db as db_module
 
     class FakePostgres:
         dialect = "postgresql"

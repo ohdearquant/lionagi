@@ -4,7 +4,7 @@
 matching.
 
 v1 ships ONE worker (the Studio daemon engine itself). A claim is one
-guarded CAS via ``lionagi.state.transitions.transition()`` (``queued ->
+guarded CAS via ``lionhub.state.transitions.transition()`` (``queued ->
 running``) that also sets ``leased_by``/``lease_expires_at``/
 ``lease_attempts`` in the same UPDATE. Execution resolves through
 ``lionhub.orchestration.scheduler.subprocess``; this module never spawns a process
@@ -31,9 +31,6 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
 from lionagi.ln import short_id
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
-from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 from lionhub.orchestration.dispatch.outbox import enqueue_dispatch
 from lionhub.orchestration.scheduler import capabilities
 from lionhub.orchestration.scheduler import subprocess as _subprocess
@@ -47,6 +44,9 @@ from lionhub.orchestration.scheduler.admit import (
     normalize_action_args,
     notify_request,
 )
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
+from lionhub.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 _log = logging.getLogger("lionagi.studio.scheduler.worker")
 
@@ -493,7 +493,7 @@ async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> N
     claim time).
 
     Uses ``StateDB.update_status()`` rather than
-    ``lionagi.state.transitions.transition()`` (every other transition in
+    ``lionhub.state.transitions.transition()`` (every other transition in
     this module): the legacy surface hardcodes ``write_reason_columns=False``,
     but this rejection needs the row's own reason columns written.
     """

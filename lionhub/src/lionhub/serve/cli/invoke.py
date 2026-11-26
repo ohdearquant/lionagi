@@ -10,9 +10,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import short_id
 from lionhub.orchestration.console import hint, log_error
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
 
 # ── async helpers ─────────────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ async def _start_invocation(
     prompt: str | None,
     metadata: dict | None,
 ) -> str:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     inv_id = short_id(12)
     # No pid markers here — invocation is a PID-less umbrella; see
@@ -64,8 +64,8 @@ class InvocationEnd:
 async def _end_invocation(
     invocation_id: str, *, status: str, metadata: dict | None
 ) -> InvocationEnd | None:
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     reason_by_status = {
         "completed": RunReasons.COMPLETED_OK,
@@ -113,7 +113,7 @@ async def _end_invocation(
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         return await db.list_invocations(skill=skill, status=status, limit=limit)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.state.reasons import VALID_REASON_CODES, RunReasons
+from lionhub.state.reasons import VALID_REASON_CODES, RunReasons
 
 
 class TestTeardownReasonResolution:

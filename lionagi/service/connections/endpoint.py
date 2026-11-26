@@ -516,7 +516,7 @@ class Endpoint:
     ):
         routed = self._account_routing_enabled()
         if routed:
-            from lionagi.service.accounts._router import header_pairs
+            from lionagi.service.accounts._request_guard import header_pairs
 
             # Read as every routed path reads headers, so a form the merge cannot read is
             # refused as a credential conflict rather than failing inside the merge.
@@ -610,7 +610,7 @@ class Endpoint:
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 
         if routed:
-            from lionagi.service.accounts._router import validate_routed_request
+            from lionagi.service.accounts._request_guard import validate_routed_request
 
             validate_routed_request(
                 self,
@@ -730,7 +730,7 @@ class Endpoint:
             payload = request if isinstance(request, dict) else request.model_dump()
             headers = extra_headers or {}
             if routed:
-                from lionagi.service.accounts._router import header_pairs
+                from lionagi.service.accounts._request_guard import header_pairs
 
                 # A list of pairs becomes the mapping the steps below expect; any other form is
                 # refused as a credential conflict before anything is reserved.
@@ -941,7 +941,7 @@ class Endpoint:
     ) -> Any:
         routed = self._account_routing_enabled()
         if routed:
-            from lionagi.service.accounts._router import validate_routed_request
+            from lionagi.service.accounts._request_guard import validate_routed_request
             from lionagi.service.accounts._types import AccountRoutingError
 
             try:

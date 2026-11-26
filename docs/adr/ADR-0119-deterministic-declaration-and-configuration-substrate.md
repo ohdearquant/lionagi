@@ -577,7 +577,7 @@ Decorators may tag declarations; the composition root must still collect an expl
 set.
 
 The shape already exists in the package and is the reference implementation for this decision.
-`lionagi/state/lifecycle/policy.py` builds `DEFAULT_REGISTRY` through an explicit
+`lionhub/src/lionhub/state/lifecycle/policy.py` builds `DEFAULT_REGISTRY` through an explicit
 `build_default_registry()` that names each policy it composes rather than collecting whatever
 imported itself. Migration of the remaining registries is an alignment with that module, not an
 invention, and a reviewer comparing a proposed registry against it has a concrete standard to

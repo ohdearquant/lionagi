@@ -424,7 +424,7 @@ def _wire_agent(monkeypatch, tmp_path: Path):
     from lionagi.service.manager import iModelManager
     from lionhub.orchestration.runs import allocate_run
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
     monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
     monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
@@ -505,8 +505,8 @@ async def test_a_run_that_keeps_its_session_records_no_process_on_its_manifest(
 async def _import_mid_run(path: Path) -> None:
     """What `li state import` does to a run it finds still running: a row named by the run id,
     with no pid on it."""
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.state import _import_one_run
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         await _import_one_run(db, RUN_ID, path.parent, json.loads(path.read_text()))
@@ -516,7 +516,7 @@ async def _import_mid_run(path: Path) -> None:
 
 
 async def _row_status() -> str:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         return (await db.get_session(RUN_ID))["status"]
@@ -541,7 +541,7 @@ async def test_stale_sweep_preserves_a_live_imported_degraded_run(runs_root, leg
     path = _write_run(runs_root, _degraded(leg.pid))
     await _import_mid_run(path)
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         await db.execute(

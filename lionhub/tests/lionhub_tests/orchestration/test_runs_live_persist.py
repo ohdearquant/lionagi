@@ -16,9 +16,9 @@ from unittest import mock
 import pytest
 
 from lionagi import Branch
-from lionagi.state.db import StateDB
 from lionhub.orchestration.runs import setup_agent_persist as _setup_live_persist
 from lionhub.orchestration.runs import teardown_agent_persist as _teardown_live_persist
+from lionhub.state.db import StateDB
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 from ..serve.cli._aiosqlite_threads import (
@@ -34,7 +34,7 @@ from ..serve.cli._aiosqlite_threads import (
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """File-backed per-test DB so aiosqlite WAL + non-daemon thread path is exercised."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -145,7 +145,7 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
 ):
     """db.open() raising → setup returns None and no aiosqlite worker thread leaks."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
 
     async def boom(self):
         raise OSError("simulated disk failure")
@@ -203,7 +203,7 @@ async def test_setup_create_session_failure_closes_db(
 async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path):
     """SESSION_START/BRANCH_CREATE hooks reuse the owned connection, and teardown
     leaves no shared StateDB whose non-daemon aiosqlite worker would block exit."""
-    from lionagi.state.db import _SHARED, get_shared_db
+    from lionhub.state.db import _SHARED, get_shared_db
 
     before = aiosqlite_threads()
     branch = Branch(name="b1")
@@ -227,7 +227,7 @@ async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path)
 
 async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
     """Re-registering a path must close the prior instance, not orphan its worker thread."""
-    from lionagi.state.db import (
+    from lionhub.state.db import (
         _SHARED,
         close_shared_db,
         register_shared_db,
@@ -263,7 +263,7 @@ async def test_close_shared_db_sweeps_inflight_open(
 ):
     """close_shared_db() must serialize with an in-flight get_shared_db() open so the
     just-opened connection is swept, not orphaned past teardown."""
-    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+    from lionhub.state.db import _SHARED, close_shared_db, get_shared_db
 
     before = aiosqlite_threads()
     opened = asyncio.Event()
@@ -298,7 +298,7 @@ async def test_close_shared_db_sweeps_inflight_open(
 async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
     """A get_shared_db() that waited on a lock a concurrent close swept must refuse to
     resurrect the singleton (raise), not open a fresh worker that survives teardown."""
-    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+    from lionhub.state.db import _SHARED, close_shared_db, get_shared_db
 
     before = aiosqlite_threads()
     await get_shared_db(temp_db_path)  # give the sweep something to slow-close
@@ -352,8 +352,8 @@ async def test_close_shared_db_reports_a_handle_open_on_another_loop(
     """A sweep meets a handle whose open is in progress on another event loop, which refuses the
     close. Every other handle is still closed and the refusal is raised once the sweep is done:
     swallowed, the sweep reads as complete while that handle keeps its engine."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, register_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -415,8 +415,8 @@ async def test_close_shared_db_from_another_loop_during_a_shared_open_is_refused
     """get_shared_db() holds the registry lock across its open. A close from another loop would
     wait on a wake only the other loop's release can send and time out with the handle kept, so it
     is refused at once, naming the other loop, and the shared open finishes on its own loop."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, get_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, get_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -461,8 +461,8 @@ async def test_a_sweep_keeps_the_handle_a_cross_loop_close_refused(
     """A handle whose close another event loop refuses stays registered with its engine open.
     Emptied for it, the registry would hand out a second handle on the same store, and not even a
     later sweep would reach the one still open."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, get_shared_db, register_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, get_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -531,8 +531,8 @@ async def test_registering_over_a_handle_a_cross_loop_close_refuses_keeps_the_en
     """Re-registering a store displaces the handle filed for it by closing that handle. A close
     this loop cannot make is refused before the entry is replaced: replaced silently, the old
     handle keeps its engine with nothing in the registry left to reach or close it."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, register_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -584,8 +584,8 @@ async def test_close_shared_db_reports_a_close_error_that_is_no_refusal(
 ):
     """The sweep raises one error naming every handle it could not close, whatever the error was:
     a close that failed for another reason once returned as if the sweep had closed it."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, register_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -612,8 +612,8 @@ async def test_a_cancelled_sweep_leaves_the_rest_registered(
 ):
     """A close that is cancelled must not take the other handles' registry entries with it: they
     are still open, and a get_shared_db() that found the registry empty would open a second."""
-    import lionagi.state.db as db_mod
-    from lionagi.state.db import close_shared_db, register_shared_db
+    import lionhub.state.db as db_mod
+    from lionhub.state.db import close_shared_db, register_shared_db
 
     monkeypatch.setattr(db_mod, "_SHARED", {})
     monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
@@ -1302,8 +1302,8 @@ async def test_teardown_concurrent_race_non_terminal_entry_returns_winner_status
     terminal-on-entry case above, this is the benign race the catch's
     read-back path exists for: return the winner's persisted status at
     debug level, not a warning."""
-    from lionagi.state.db import StateDB as _StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB as _StateDB
+    from lionhub.state.reasons import RunReasons
 
     branch = Branch(name="b1")
     ctx = await _setup_live_persist(branch)
@@ -1765,7 +1765,7 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_running(
 ):
     """A stream/provider error must not read as 'failed' while the real engine session is still running."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     async with StateDB() as db:
@@ -1813,7 +1813,7 @@ async def test_teardown_leaves_branch_untouched_when_suppressed_to_running(
     session row above — must be left exactly as create_branch() left it, not
     stamped with an ended_at from a status that isn't actually final."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session
+    from lionhub.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
     async with StateDB() as db:
@@ -1861,7 +1861,7 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
 ):
     """A stream/provider error must not read as 'failed' once the real engine session has completed."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
     async with StateDB() as db:
@@ -1926,7 +1926,7 @@ async def test_teardown_keeps_failed_for_real_wrapper_bug_even_when_linked_runni
     """A genuine profile-layer exception (not a ProviderError) must stay 'failed' even
     when a linked engine session is running/completed — suppression is narrowly scoped
     to the CLI provider's own reported stream errors, not arbitrary wrapper bugs."""
-    from lionagi.state.claude_mirror import mirror_session
+    from lionhub.state.claude_mirror import mirror_session
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
     async with StateDB() as db:
@@ -1976,7 +1976,7 @@ async def test_teardown_keeps_failed_for_genuine_provider_error_even_when_linked
     must never be suppressed into 'running'/'completed' just because a linked engine
     session happens to still be alive."""
     import lionagi._provider_errors as provider_errors
-    from lionagi.state.claude_mirror import mirror_session
+    from lionhub.state.claude_mirror import mirror_session
 
     error_cls = getattr(provider_errors, error_name)
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222221"
@@ -2022,7 +2022,7 @@ async def test_teardown_reconciles_after_delayed_mirror_row_creation(
     time (mirror-lag race) — _linked_engine_session must bounded-retry and pick it up
     instead of immediately falling through to 'failed'."""
     from lionagi._provider_errors import ProviderError
-    from lionagi.state.claude_mirror import mirror_session, session_db_id
+    from lionhub.state.claude_mirror import mirror_session, session_db_id
 
     engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222222"
     branch = Branch(name="b1")
@@ -2136,7 +2136,7 @@ async def test_non_continuation_resume_installs_a_fresh_worker_generation(temp_d
 
 async def test_continuation_keeps_worker_generation_and_is_consumed_once(temp_db_path):
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
+    from lionhub.state.cli_workers import _prepare_worker_spawn_continuation
 
     branch = Branch(name="generation-continuation")
     first = await _setup_live_persist(branch, share_db=False)

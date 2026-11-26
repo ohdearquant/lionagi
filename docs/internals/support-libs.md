@@ -11,12 +11,15 @@ in-source essay. Source points here with `# See docs/internals/support-libs.md#<
 
 ## _spec_limits: MAX_SPEC_PROMPT_CHARS
 
+The module is `lionhub/src/lionhub/orchestration/spec_limits.py`; `lionagi._spec_limits`
+is its old import path, kept until 2.0.0.
+
 `MAX_SPEC_PROMPT_CHARS` is one number, read by every admission surface that
 validates an agent or orchestration prompt. The readers are named rather than
 counted, because a count goes stale silently when a reader is added while a
 missing name is visible:
 
-- `lionagi/_flow_spec.py`
+- `lionhub/src/lionhub/orchestration/flow/spec.py`
 - `lionhub/src/lionhub/serve/cli/agent.py`
 - `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`
 - `lionhub/src/lionhub/serve/mcp/dispatch.py`

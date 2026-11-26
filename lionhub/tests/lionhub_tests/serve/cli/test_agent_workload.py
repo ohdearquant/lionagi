@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.service._subagent_admission import SubagentAdmissionRefusedError
 from lionhub.orchestration.spawn import (
     _is_light_codex,
     _parse_profile,
@@ -27,6 +26,7 @@ from lionhub.orchestration.spawn import (
     build_imodel_from_spec,
     profile_config,
 )
+from lionhub.providers._subagent_admission import SubagentAdmissionRefusedError
 from lionhub.serve.cli.agent import _admission_refusal
 from tests._spawn_workload_test_support import _LIGHT_ROLE as _LIGHT_ROLE
 from tests._spawn_workload_test_support import _PLAIN_ROLE as _PLAIN_ROLE
@@ -223,8 +223,8 @@ async def test_a_leg_at_the_cap_is_refused_through_the_real_provider_path(
     """No stand-in for the turn: the refusal raised under the codex provider reaches
     ``li agent`` as itself, and the codex binary is never started."""
     from lionagi import Branch, _paths
-    from lionagi.service import _subagent_admission as admission
-    from lionagi.service._subagent_admission import admit_subagent
+    from lionhub.providers import _subagent_admission as admission
+    from lionhub.providers._subagent_admission import admit_subagent
     from lionhub.providers.openai import codex as codex_mod
     from lionhub.serve.cli.agent import _run_agent
 
@@ -274,8 +274,8 @@ def test_any_other_failure_keeps_its_exit():
 
 
 def test_the_run_row_names_a_wrapped_refusal_as_a_retryable_provider_failure():
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     try:
         try:

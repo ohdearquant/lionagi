@@ -166,7 +166,7 @@ def _is_store_refusal(exc: BaseException) -> bool:
     Imported lazily so this module stays import-light, and read from the exception's own class
     rather than a copy: a refusal raised by a store handle is the same class object here.
     """
-    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+    from lionagi._state_refusal import StateCompatibilityRefused  # noqa: PLC0415
 
     return isinstance(exc, StateCompatibilityRefused)
 
@@ -294,8 +294,8 @@ class SessionObserver(Observer):
         """Signals the latest bound persistence sink could not confirm it wrote since it was bound.
 
         A write still in flight counts until it finishes, so the count read at unbind stays an
-        upper bound whatever those writes do afterwards. A sink bound without ``db`` when there
-        is no state store at all counts nothing.
+        upper bound whatever those writes do afterwards. A binding without ``db`` writes
+        nothing and counts nothing.
         """
         return self._persist.unconfirmed if self._persist is not None else 0
 
@@ -509,8 +509,11 @@ class SessionObserver(Observer):
         the sink cannot confirm it wrote is counted in :attr:`persist_dropped`: a
         skipped or failed write, a signal whose fields or payload cannot be read, a
         write cancelled while queued or writing, and a write still in flight when the
-        count is read. A sink bound without ``db`` when there is no state store at all
-        writes and counts nothing.
+        count is read.
+
+        A call without ``db`` binds no sink: it writes and counts nothing, and logs one WARNING
+        on this module's logger naming the argument to pass. The core opens no store of its
+        own; a store comes from ``lionhub.state.db.StateDB``. lionagi 2.0 makes ``db`` required.
         The cancelled and in-flight writes may have committed or may still land, so
         the count can exceed what the store is missing by those. A new binding
         starts its own count and window.
@@ -529,6 +532,13 @@ class SessionObserver(Observer):
             self._db_persist_handler = None
         state = _SignalPersistState(session_id)
         self._persist = state
+        if _bound_db is None:
+            logger.warning(
+                "bind_db_persistence for session %s was given no store, so no signal is written; "
+                "pass db= an open state store (lionhub.state.db.StateDB) to persist signals",
+                session_id,
+            )
+            return
 
         def _persist(event: Any, _ctx: Any = None) -> Any:
             from lionagi.session.signal import Signal  # noqa: PLC0415
@@ -570,33 +580,13 @@ class SessionObserver(Observer):
                                 state.dropped += 1
                                 return
                             trying = admission == "try"
-                        if _bound_db is not None:
-                            # Fast path: reuse the caller's already-open connection.
-                            await _bound_db.insert_session_signal(
-                                session_id=session_id,
-                                kind=kind,
-                                op_id=op_id,
-                                ts=ts,
-                                payload=payload,
-                            )
-                        else:
-                            # Fallback: open a fresh connection (standalone / test use).
-                            from lionagi.state.db import (  # noqa: PLC0415
-                                StateDB,
-                                state_db_known_absent,
-                            )
-
-                            if state_db_known_absent():
-                                # No store to write to: nothing is written or counted.
-                                return
-                            async with StateDB() as _db:
-                                await _db.insert_session_signal(
-                                    session_id=session_id,
-                                    kind=kind,
-                                    op_id=op_id,
-                                    ts=ts,
-                                    payload=payload,
-                                )
+                        await _bound_db.insert_session_signal(
+                            session_id=session_id,
+                            kind=kind,
+                            op_id=op_id,
+                            ts=ts,
+                            payload=payload,
+                        )
                 except Exception as exc:  # noqa: BLE001 — persistence never breaks the session bus
                     # A store refusal is not a failed write to count and move past: the store
                     # declined this signal for good, so it is kept for teardown to fail the run

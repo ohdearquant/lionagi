@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 
 async def _fake_run_agent(

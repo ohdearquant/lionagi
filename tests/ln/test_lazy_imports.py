@@ -149,7 +149,7 @@ def test_lightweight_types_do_not_pull_in_target_or_composition_layers():
         "import sys\n"
         "import lionagi.ln.types\n"
         "prefixes = (\n"
-        "    'pydantic', 'sqlalchemy', 'lionagi.state', 'lionagi.studio', 'lionagi_studio',\n"
+        "    'pydantic', 'sqlalchemy', 'lionhub.state', 'lionagi.studio', 'lionagi_studio',\n"
         "    'lionhub.serve.cli', 'lionhub.providers', 'openai', 'anthropic',\n"
         "    'lionagi.adapters', 'lionagi.models', 'lionagi.operations', 'lionagi.session',\n"
         ")\n"

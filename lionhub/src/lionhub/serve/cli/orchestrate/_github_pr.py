@@ -23,7 +23,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
-from lionagi._flow_spec import GITHUB_PR_COMMENT_STYLES
+from lionhub.orchestration.flow.spec import GITHUB_PR_COMMENT_STYLES
 
 __all__ = (
     "GITHUB_COMMENT_MAX_CHARS",

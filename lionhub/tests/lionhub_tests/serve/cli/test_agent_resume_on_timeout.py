@@ -75,7 +75,7 @@ def _wire_run_directories(monkeypatch, agent_mod, tmp_path):
 
 def _wire_owned_persistence(monkeypatch, agent_mod, *, session_id):
     """Keep unit wiring isolated while using the real owner and continuation API."""
-    from lionagi.state.cli_workers import (
+    from lionhub.state.cli_workers import (
         _consume_worker_spawn_continuation,
         _WorkerSpawnOwner,
     )
@@ -469,7 +469,7 @@ async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -563,8 +563,8 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
         ],
     )
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state.db import StateDB
 
     with caplog.at_level(logging.WARNING):
         result, _provider, _bid, status, session_id = await _run_agent(
@@ -779,8 +779,8 @@ async def test_manual_resume_accumulates_persisted_injection_stats(
         ],
     )
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state.db import StateDB
 
     _result, _provider, branch_id, _status, first_session_id = await _run_agent(
         "claude_code/sonnet",
@@ -824,8 +824,8 @@ async def test_no_auto_resume_opt_in_real_teardown_stamps_timed_out(
         monkeypatch, tmp_path, operate_side_effect=side_effect
     )
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state.db import StateDB
 
     _result, _provider, _bid, status, session_id = await _run_agent(
         "claude_code/sonnet", "hello", timeout=30

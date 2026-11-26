@@ -12,13 +12,13 @@ import threading
 import time
 from collections.abc import Mapping
 
-from lionagi._command_env_metadata import command_environment
 from lionagi.ln import (
     capture_group_witnesses,
     observe_process_group_leader,
     prepare_process_group_env,
     terminate_process_group,
 )
+from lionhub.tools.command_env_metadata import command_environment
 
 # The real class, kept before anything can replace the module attribute: only a child this
 # module spawned with it is waited on without being collected.

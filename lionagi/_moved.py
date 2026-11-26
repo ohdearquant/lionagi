@@ -30,7 +30,15 @@ from collections.abc import Iterable, Mapping
 from types import CodeType, MappingProxyType, ModuleType
 from typing import NamedTuple
 
-__all__ = ("MOVED", "Moved", "install", "resolve", "resolve_legacy", "still_on_disk")
+__all__ = (
+    "ATTRIBUTE_FORWARDING_ROWS",
+    "MOVED",
+    "Moved",
+    "install",
+    "resolve",
+    "resolve_legacy",
+    "still_on_disk",
+)
 
 _LIONAGI_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -66,7 +74,7 @@ MOVED: tuple[Moved, ...] = (
     ),
     Moved(
         "lionagi.providers._subagent_admission",
-        "lionagi.service._subagent_admission",
+        "lionhub.providers._subagent_admission",
         "0.37.0",
         "2.0.0",
     ),
@@ -108,12 +116,35 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved("lionagi._flow_spec", "lionhub.orchestration.flow.spec", "1.0.0", "2.0.0"),
+    Moved(
+        "lionagi._checkpoint_version",
+        "lionhub.orchestration.flow.checkpoint_version",
+        "1.0.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi._checkpoint_v3_codec",
+        "lionhub.orchestration.flow.checkpoint_codec",
+        "1.0.0",
+        "2.0.0",
+    ),
+    Moved("lionagi._command_env", "lionhub.tools.command_env", "1.0.0", "2.0.0"),
+    Moved("lionagi._command_env_metadata", "lionhub.tools.command_env_metadata", "1.0.0", "2.0.0"),
+    Moved("lionagi._spec_limits", "lionhub.orchestration.spec_limits", "1.0.0", "2.0.0"),
+    Moved("lionagi.ln._paths", "lionhub.tools._paths", "1.0.0", "2.0.0"),
+    Moved(
+        "lionagi.service._subagent_admission",
+        "lionhub.providers._subagent_admission",
+        "1.0.0",
+        "2.0.0",
+    ),
     # The Studio application. Daemon-owned modules that once lived under lionagi.studio keep
     # their own, longer rows, which win over this one. lionagi.studio and
     # lionagi.studio.services stay in core as empty packages, and lionagi.studio.operator as
     # one that only forwards three names, so those modules' old names import without the
     # application installed; the finder steps aside for all three.
-    Moved("lionagi.studio", "lionagi_studio", "0.39.0", "2.0.0"),
+    Moved("lionagi.studio", "lionagi_studio", "1.0.0", "2.0.0"),
     Moved(
         "lionagi.studio.services._schedule_validation",
         "lionhub.orchestration.schedule.validation",
@@ -329,6 +360,58 @@ MOVED: tuple[Moved, ...] = (
         "0.38.0",
         "2.0.0",
     ),
+    Moved("lionagi.state", "lionhub.state", "1.0.0", "2.0.0"),
+    Moved("lionagi._log_channels", "lionhub.state.log_channels", "1.0.0", "2.0.0"),
+    Moved("lionagi._cli_worker_context", "lionhub.state.cli_worker_context", "1.0.0", "2.0.0"),
+    Moved("lionagi.hooks._message_retry", "lionhub.state.message_retry", "1.0.0", "2.0.0"),
+    Moved(
+        "lionagi.hooks._persistence_handlers",
+        "lionhub.orchestration.run_persistence",
+        "1.0.0",
+        "2.0.0",
+    ),
+    # The Anthropic account engine. Its seam (types, routing scope, request guard and usage
+    # shape) stays in lionagi.service.accounts.
+    Moved(
+        "lionagi.service.accounts._credentials",
+        "lionhub.providers.anthropic.accounts._credentials",
+        "1.0.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._ledger",
+        "lionhub.providers.anthropic.accounts._ledger",
+        "1.0.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._pricing",
+        "lionhub.providers.anthropic.accounts._pricing",
+        "1.0.0",
+        "2.0.0",
+    ),
+    Moved(
+        "lionagi.service.accounts._router",
+        "lionhub.providers.anthropic.accounts._router",
+        "1.0.0",
+        "2.0.0",
+    ),
+    # The CLI providers' tables and parse_model_spec. The effort vocabulary and the model-name
+    # suffix grammar stay in lionagi.service.providers, which forwards the moved names.
+    Moved("lionagi.service._model_spec", "lionhub.providers.model_spec", "1.0.0", "2.0.0"),
+    # The YAML frontmatter parser for agent, skill and plugin definition files.
+    Moved("lionagi.libs.frontmatter", "lionhub.orchestration.frontmatter", "1.0.0", "2.0.0"),
+    # The CLI command declaration types and the registration marker the catalog reads.
+    Moved("lionagi._auto", "lionhub.serve.cli.registration", "1.0.0", "2.0.0"),
+)
+
+# Rows whose old name never existed as a file. ``lionagi.hooks.builtins`` serves its five former
+# persistence handlers, and ``lionagi.service.providers`` the provider tables and
+# ``parse_model_spec``, on attribute access by importing these old names, so the first access
+# warns at the caller's line and returns the object from its new module. Removed with their rows
+# at 2.0.
+ATTRIBUTE_FORWARDING_ROWS: frozenset[str] = frozenset(
+    {"lionagi.hooks._persistence_handlers", "lionagi.service._model_spec"}
 )
 
 
@@ -423,10 +506,15 @@ def still_on_disk(fullname: str) -> bool:
 
 # A root lazy export (``lionagi.LNDLOutput``) reaches a moved module through the root
 # ``__getattr__`` and the lazy-import helper, so both stand between the caller and this loader.
+# A former persistence handler read from ``lionagi.hooks.builtins``, and a provider table read
+# from ``lionagi.service.providers``, reach their moved module through that module's
+# ``__getattr__``.
 _LAZY_EXPORT_FRAMES = frozenset(
     {
         (os.path.join(os.path.dirname(__file__), "__init__.py"), "__getattr__"),
         (os.path.join(os.path.dirname(__file__), "ln", "_lazy_init.py"), "lazy_import"),
+        (os.path.join(os.path.dirname(__file__), "hooks", "builtins.py"), "__getattr__"),
+        (os.path.join(os.path.dirname(__file__), "service", "providers.py"), "__getattr__"),
     }
 )
 

@@ -122,14 +122,17 @@ def redact_binary_content(
 
 
 class DataLoggerConfig(BaseModel):
-    persist_dir: str | Path = "./data/logs"
+    # No directory by default: the logger keeps entries in memory and writes
+    # nothing until a directory (or an explicit dump path) is given.
+    persist_dir: str | Path | None = None
     subfolder: str | None = None
     file_prefix: str | None = None
     capacity: int | None = None  # None means unbounded; set a value for long-running sessions
     extension: str = ".json"
     use_timestamp: bool = True
     hash_digits: int | None = Field(5, ge=0, le=10)
-    auto_save_on_exit: bool = True
+    # Saving at collection or interpreter exit is opt-in, and needs persist_dir.
+    auto_save_on_exit: bool = False
     clear_after_dump: bool = True
     # Base64 binary (images, audio) is replaced by a placeholder naming the
     # field, media type and byte length. On by default: a vision workload logs
@@ -201,6 +204,11 @@ class _PendingLogs:
 
 
 def _path_for_config(config: DataLoggerConfig) -> Path:
+    if config.persist_dir is None:
+        raise ValueError(
+            "This logger has no directory: pass persist_path= to dump(), "
+            "or set persist_dir in its config."
+        )
     path_str = str(config.persist_dir)
     if config.subfolder:
         path_str = f"{path_str}/{config.subfolder}"
@@ -217,6 +225,8 @@ def _flush_pending(state: _PendingLogs) -> None:
     """Save a snapshot without clearing entries if serialization or writing fails."""
     pile = state.logs
     config = state.config
+    if config.persist_dir is None:
+        return
     count = 0
     path: str | Path = config.persist_dir
     try:
@@ -251,6 +261,11 @@ def _flush_pending(state: _PendingLogs) -> None:
 class DataLogger:
     """Log collection with optional auto-dump at capacity, collection, or exit.
 
+    Nothing is written unless a directory is configured (``persist_dir``) or a
+    path is passed to ``dump``. Without a directory, ``capacity`` bounds memory
+    by dropping the oldest entries. Saving at collection or exit also needs
+    ``auto_save_on_exit=True``.
+
     Log content that refers back to this logger, directly or through another
     object such as a branch, can keep the logger alive until process exit.
     """
@@ -271,7 +286,7 @@ class DataLogger:
             pile = Pile(collections=logs, item_type=Log, strict_type=True)
         self._pending = _PendingLogs(pile, _config)
 
-        if _config.auto_save_on_exit:
+        if _config.auto_save_on_exit and _config.persist_dir is not None:
             # Payloads that refer back to this logger may still retain it until exit.
             weakref.finalize(self, _flush_pending, self._pending)
 
@@ -292,14 +307,22 @@ class DataLogger:
         self._pending.config = value
 
     def log(self, log_: Any) -> None:
-        """Add a log entry; auto-dumps to file if capacity is reached."""
+        """Add a log entry; at capacity, dumps to file or drops the oldest entries."""
         log_ = Log.create(log_) if not isinstance(log_, Log) else log_
         log_ = self._redact(log_)
-        if self._config.capacity and len(self.logs) >= self._config.capacity:
-            try:
-                self.dump(clear=self._config.clear_after_dump)
-            except Exception as e:
-                logger.error(f"Failed to auto-dump logs: {e}")
+        capacity = self._config.capacity
+        if capacity and len(self.logs) >= capacity:
+            if self._config.persist_dir is None:
+                # No directory to dump to: keep the newest entries in memory.
+                with self.logs._lock:
+                    overflow = len(self.logs) - capacity + 1
+                    if overflow > 0:
+                        self.logs.exclude(list(self.logs.progression)[:overflow])
+            else:
+                try:
+                    self.dump(clear=self._config.clear_after_dump)
+                except Exception as e:
+                    logger.error(f"Failed to auto-dump logs: {e}")
         self.logs.include(log_)
 
     def _redact(self, log_: Log) -> Log:
@@ -406,7 +429,7 @@ class DataLogger:
         return _path_for_config(self._config)
 
     def save_at_exit(self) -> None:
-        """Dump logs on program exit."""
+        """Dump logs on program exit; does nothing when no directory is configured."""
         _flush_pending(self._pending)
 
     @classmethod

@@ -46,6 +46,26 @@ host-side context fold of ADR-0130 does. The adapter is still observation-only i
 it cannot replace, abort or exit the invocation, and it never touches `HookRegistry` or
 `HookedEvent`.
 
+## Amendment (2026-11-25)
+
+Instruction this amendment serves: "Core stops persisting by default. the expected behavior should be,
+if using via mcp, should store, if using as sdk, we don't default persist".
+
+A lionagi `Session` no longer persists anything by default. `lionagi.hooks.loader.DEFAULT_HOOKS` is
+empty, so the bus `Session.hooks` builds has no handlers at any point, and a session used through
+the SDK writes nothing to the state store. A run started through the hub (the CLI and the MCP
+server's agent runs) records itself as before:
+`lionhub.orchestration.runs` installs `persist_session_start`, `persist_session_end`,
+`persist_branch_provenance` and `persist_branch_end` on its session's bus with
+`lionhub.orchestration.run_persistence.install_run_persistence` before each lifecycle emit, at the
+agent session setup and at the teardown. Installing is idempotent, so a resumed run's teardown,
+which emits on a session whose setup it did not run, still gets each handler once.
+
+This supersedes the D3 loader contract below where it lists four default handlers, and the reason
+ADR-0136's amendment gives for keeping the bus in the core (that a bus starting empty would drop
+those defaults). Every built-in handler stays addressable by name through `resolve_handler`, so a
+caller that owns a Session bus can still wire persistence with `build_session_bus(agent_hooks=...)`.
+
 ## Context
 
 LionAGI has three public in-process families called hooks. They intercept different operations, have different

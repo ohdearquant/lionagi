@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 import yaml
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.cli.orchestrate import (
     add_orchestrate_subparser,
     inject_playbook_schema_into_parser,

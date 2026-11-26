@@ -1,4 +1,4 @@
-# Copyright (c) 2023 - 2026, HaiyangLi <quantocean.li@gmail.com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 #
 # SPDX-License-Identifier: Apache-2.0
 """Registry contract for the Studio Operator MCP tool surface.
@@ -246,8 +246,8 @@ async def _exercise_get_invocation(
 async def _exercise_list_artifacts(
     monkeypatch: pytest.MonkeyPatch, store: _WriteMethodTrap
 ) -> None:
-    from lionagi.state import db as db_module
     from lionhub.serve.daemon.services import invocations as invocations_service
+    from lionhub.state import db as db_module
 
     store.list_artifacts_for_session = AsyncMock(return_value=[dict(SAMPLE_ARTIFACT_ROW)])
     store.list_artifacts_for_invocation = AsyncMock(return_value=[dict(SAMPLE_ARTIFACT_ROW)])

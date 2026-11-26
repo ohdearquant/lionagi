@@ -1,12 +1,12 @@
 [project]
 name = "lionagi"
-version = "0.38.0"
+version = "1.0.0"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aiocache>=0.12.0",
     "httpx>=0.28.1",
@@ -27,7 +27,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
     # lionagi/state/engine.py reads the private Connection._thread; widen the
-    # bound once a new release is checked (tests/state/test_failed_open_worker.py).
+    # bound once a new release is checked (lionhub/tests/lionhub_tests/state/test_failed_open_worker.py).
     "aiosqlite>=0.22.0,<0.23",
     # 2.0.38 is the first release whose aiosqlite dialect pools file databases;
     # compatibility mode is tested only with pooled connections.
@@ -41,7 +41,6 @@ license = {file = "LICENSE"}
 classifiers=[
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -192,7 +191,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
 
 [tool.ruff.lint.per-file-ignores]
 # Enforce shared helpers only in the migrated import and concurrency modules.
-"!{lionagi/_auto,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionagi/service/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionagi/state/lifecycle/callbacks,lionagi/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
+"!{lionhub/src/lionhub/serve/cli/registration,lionagi/agent/settings,lionagi/_class_registry,lionagi/cli/engine,lionagi/cli/machine,lionagi/cli/main,lionagi/cli/monitor,lionagi/cli/orchestrate/_notify,lionhub/src/lionhub/providers/_subagent_admission,lionagi/service/connections/provider_config,lionagi/service/connections/registry,lionhub/src/lionhub/state/lifecycle/callbacks,lionhub/src/lionhub/state/lifecycle/notify_settings,lionagi/studio/scheduler/engine,lionagi/studio/services/admin,apps/studio/backend/src/lionagi_studio/registry}.py" = ["TID251"]
 "tests/**" = [
     "S",      # security rules relaxed in tests
     "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)
@@ -322,7 +321,7 @@ exclude = [
     "build",
 ]
 typeCheckingMode = "basic"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 # The codebase uses the implicit-Optional idiom (`param: X = None`) throughout;
 # treat those parameters as `X | None` instead of flagging every call site.
 strictParameterNoneValue = false
@@ -367,5 +366,9 @@ constraint-dependencies = [
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "pymdown-extensions>=11.0.0",  # CVE: path traversal in the b64 extension lets an <img src> read
                             # files outside base_path
-    "opentelemetry-api>=1.45.1",  # CVE: unbounded tracestate parsing
+    "opentelemetry-api>=1.45.2",  # CVE: unbounded tracestate parsing; then quadratic-time
+                            # traceparent parsing
+    "dnspython>=2.9.2",     # CVE: excessive memory and CPU use
+    "joserfc>=1.7.6",       # CVE: unbounded JWE General JSON recipients array; then a compact
+                            # JWS size guard that allocates attacker-controlled segments first
 ]

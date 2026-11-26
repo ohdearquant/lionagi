@@ -15,7 +15,7 @@ import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -53,7 +53,7 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -158,7 +158,7 @@ def test_runs_list_filters_multi_status_and_playbook_contains(tmp_path, monkeypa
 def test_runs_list_surfaces_status_reason(tmp_path, monkeypatch):
     """GET /api/runs list rows must carry status_reason_code/summary (ADR-0057),
     the same fields the detail route (_run_row via get_run) already exposes."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -193,9 +193,9 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
 
 
 async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.daemon.services.admin as admin_mod
     import lionhub.serve.daemon.services.runs as runs_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     await _seed_sessions(db_path, [{"id": str(uuid.uuid4()), "status": "running"}])
@@ -297,7 +297,7 @@ def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
     # an agent_name gets the agent-role descriptor, not its raw stored name
     # — so the second row's displayed name is derived from its agent_name,
     # not the "unrelated" string it was seeded with.
-    from lionagi.state.session_naming import agent_role_label
+    from lionhub.state.session_naming import agent_role_label
 
     started_at = 1767277320.0  # 2026-01-01T14:22:00Z
     agent_session_id = str(uuid.uuid4())

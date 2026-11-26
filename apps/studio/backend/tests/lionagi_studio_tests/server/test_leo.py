@@ -26,7 +26,7 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Patch studio service roots and return a TestClient."""
     fake_db = tmp_path / "state.db"
 
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 

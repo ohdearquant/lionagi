@@ -520,10 +520,10 @@ def test_route_delete_ordinary_agent_is_200(tmp_path, monkeypatch):
 
 
 def _make_definitions_client(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.services.agents as agents_mod
     import lionagi_studio.services.definitions as defs_mod
     import lionhub.orchestration.runs as cli_runs_mod
+    import lionhub.state.db as state_db_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -956,8 +956,8 @@ def test_create_agent_file_always_opens_with_frontmatter(tmp_path, monkeypatch, 
 def test_partial_update_accepts_a_closed_frontmatter_block_with_no_settings(
     tmp_path, monkeypatch, block
 ):
-    from lionagi.libs.frontmatter import parse_frontmatter
     from lionagi_studio.services.agents import update_agent
+    from lionhub.orchestration.frontmatter import parse_frontmatter
 
     root = _make_agents_root(tmp_path, monkeypatch)
     (root / "blank.md").write_text(f"---\n{block}---\nKeep this body.\n")

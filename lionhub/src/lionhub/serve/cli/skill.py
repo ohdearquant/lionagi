@@ -153,7 +153,7 @@ def strip_frontmatter(text: str) -> str:
     text = text.lstrip()
     if not text.startswith("---"):
         return text
-    from lionagi.libs.frontmatter import _FM_SPLIT
+    from lionhub.orchestration.frontmatter import _FM_SPLIT
 
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:

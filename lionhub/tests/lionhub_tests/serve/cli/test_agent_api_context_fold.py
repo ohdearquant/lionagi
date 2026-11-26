@@ -139,7 +139,7 @@ def test_the_cap_a_leg_runs_under(policy, model, cap):
 
 def test_auto_is_the_pricing_table_s_first_tier():
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.service.accounts._pricing import CURRENT_REVISION
+    from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 
     tiers = CURRENT_REVISION.models["claude-haiku-5-5"].tiers
     assert len(tiers) > 1
@@ -1653,8 +1653,8 @@ async def test_amendment2_parallel_main_requests_match_their_own_captured_views(
 
 @pytest.mark.asyncio
 async def test_amendment2_copy_persistence_refusal_stops_before_the_main_request(monkeypatch):
-    from lionagi.state.compat import StateCompatibilityRefused
     from lionhub.agent.context_fold import install_context_fold
+    from lionhub.state.compat import StateCompatibilityRefused
 
     branch, _requests, _originals = await _clip_fixture(["actual original result " * 6000])
     refusal = StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
@@ -1739,8 +1739,8 @@ def test_fold_note_text_keeps_yaml_values_before_the_string_fallback():
 @pytest.mark.asyncio
 async def test_fold_pre_call_refusal_retains_the_group_and_its_sibling(monkeypatch):
     from lionagi.ln.concurrency import ExceptionGroup
-    from lionagi.state.compat import StateCompatibilityRefused
     from lionhub.agent.context_fold import ContextFold
+    from lionhub.state.compat import StateCompatibilityRefused
 
     branch, _task = _branch_with_reasoning(cap=1000000, turns=1)
     fold = ContextFold(branch, cap=6000, estimate=lambda _branch: 6000)

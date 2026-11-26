@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lionagi.state.db import NO_CURSOR_CLAIM
+from lionhub.state.db import NO_CURSOR_CLAIM
 
 __all__ = (
     "claim_and_advance",

@@ -945,15 +945,15 @@ def _head(git_source: GitSource) -> str:
 
 def test_non_python_pin_refuses_a_directory_at_the_commit(git_source: GitSource) -> None:
     sha = _head(git_source)
-    records = {"adr.md": f"See `lionagi/state:1@{sha}`.\n"}
+    records = {"adr.md": f"See `lionhub/src/lionhub/state:1@{sha}`.\n"}
     assert check_pins_exist(records, git_source) == [
-        f"adr.md:1: lionagi/state:1@{sha} cites lionagi/state, which is not in that commit"
+        f"adr.md:1: lionhub/src/lionhub/state:1@{sha} cites lionhub/src/lionhub/state, which is not in that commit"
     ]
 
 
 def test_non_python_pin_reports_the_out_of_range_schema_citation(git_source: GitSource) -> None:
     sha = _head(git_source)
-    path = "lionagi/state/schema.sql"
+    path = "lionhub/src/lionhub/state/schema.sql"
     schema = git_source.text_at(sha, path)
     if schema is None:
         pytest.fail(f"{path} is not in HEAD {sha}: this test cites the real schema file")

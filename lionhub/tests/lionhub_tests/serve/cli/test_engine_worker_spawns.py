@@ -19,10 +19,10 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 @pytest_asyncio.fixture(loop_scope="function")
 async def engine_workers(monkeypatch):
     import lionagi.session.session as session_module
-    import lionagi.state.cli_workers as worker_module
-    import lionagi.state.db as db_module
     import lionhub.serve.cli.engine as cli
-    from lionagi._cli_worker_context import (
+    import lionhub.state.cli_workers as worker_module
+    import lionhub.state.db as db_module
+    from lionhub.state.cli_worker_context import (
         _bind_cli_worker_recorder,
         _get_cli_worker_recorder,
     )
@@ -79,7 +79,7 @@ async def engine_workers(monkeypatch):
             if state.mode == "signal_failure":
                 raise OSError("scripted signal admission failure")
             if state.mode == "compatibility":
-                from lionagi.state.compat import StateCompatibilityRefused
+                from lionhub.state.compat import StateCompatibilityRefused
 
                 raise StateCompatibilityRefused("create_session", "fixture", "not owned")
             if state.mode == "missing":
@@ -218,7 +218,7 @@ def _args(*, no_persist=False):
 
 
 async def test_engine_constructor_worker_inherits_the_signal_owner(engine_workers):
-    from lionagi._cli_worker_context import _get_cli_worker_recorder
+    from lionhub.state.cli_worker_context import _get_cli_worker_recorder
 
     h = engine_workers
     assert await h.cli._do_engine_run(_args()) == 0
@@ -314,7 +314,7 @@ async def test_post_create_collision_or_missing_row_refuses_before_constructor(
 
 async def test_compatibility_refusal_does_not_degrade_to_unrecorded_engine(engine_workers):
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     h = engine_workers
     h.mode = "compatibility"
@@ -330,7 +330,7 @@ async def test_compatibility_refusal_does_not_degrade_to_unrecorded_engine(engin
 
 @pytest.mark.parametrize("mode", ["no_persist", "signal_failure", "preexisting"])
 async def test_unpersisted_engine_masks_an_outer_owner(engine_workers, mode):
-    from lionagi._cli_worker_context import (
+    from lionhub.state.cli_worker_context import (
         _bind_cli_worker_recorder,
         _get_cli_worker_recorder,
     )
@@ -361,8 +361,8 @@ async def test_unpersisted_engine_masks_an_outer_owner(engine_workers, mode):
 async def test_cancellation_during_real_owner_drain_terminalizes_then_closes(
     engine_workers, monkeypatch, mode
 ):
-    import lionagi.state.cli_workers as worker_module
-    from lionagi._cli_worker_context import _get_cli_worker_recorder
+    import lionhub.state.cli_workers as worker_module
+    from lionhub.state.cli_worker_context import _get_cli_worker_recorder
 
     h = engine_workers
     h.mode = mode
@@ -441,7 +441,7 @@ async def test_cancellation_during_real_owner_drain_terminalizes_then_closes(
 
 
 async def test_incomplete_owner_drain_never_terminalizes_or_closes(engine_workers, monkeypatch):
-    import lionagi.state.cli_workers as worker_module
+    import lionhub.state.cli_workers as worker_module
 
     h = engine_workers
     h.worker_release.clear()

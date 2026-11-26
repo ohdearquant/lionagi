@@ -78,7 +78,7 @@ async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -
     """Stamp the mirrored CLI transcript as this run's engine child, retrying
     while the mirror may not have minted the row yet. Borrows the turn's open
     db handle; the caller settles this task before that handle closes."""
-    from lionagi.state.claude_mirror import link_engine_child_session
+    from lionhub.state.claude_mirror import link_engine_child_session
 
     for attempt in range(_ENGINE_LINK_RETRIES):
         if attempt:
@@ -100,7 +100,7 @@ async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -
 
 def _in_compatibility_mode(db: Any) -> bool:
     """True when *db* is a StateDB open in compatibility mode (ADR-0128)."""
-    from lionagi.state.compat import CompatibilityProfile
+    from lionhub.state.compat import CompatibilityProfile
 
     return isinstance(getattr(db, "compatibility", None), CompatibilityProfile)
 
@@ -117,8 +117,8 @@ _TURN_OUTCOME_BY_STATUS = {
 async def _link_engine_child_once(session_uid: str, *, parent_run_id: str) -> bool:
     """One last stamp attempt on a short-lived handle of our own, for turns
     that end before the borrowed-handle retries could land."""
-    from lionagi.state.claude_mirror import link_engine_child_session
-    from lionagi.state.db import StateDB
+    from lionhub.state.claude_mirror import link_engine_child_session
+    from lionhub.state.db import StateDB
 
     db = StateDB()
     await db.open()
@@ -724,7 +724,7 @@ class OperatorCoordinator:
             # fail on a later step of the same setup, leaving `live` None even
             # though a durable record exists -- recover that row before
             # concluding nothing was recorded.
-            from lionagi.state.compat import refusal_in
+            from lionhub.state.compat import refusal_in
 
             refusal = refusal_in(exc)
             orphaned_session = None
@@ -754,7 +754,7 @@ class OperatorCoordinator:
                     _log.warning(
                         "Operator turn %s: setup recovery failed", request_id, exc_info=True
                     )
-                    from lionagi.state.db import (
+                    from lionhub.state.db import (
                         ForeignLineageError,
                         SchemaTooNewError,
                         UnrecognizedStoreError,
@@ -921,7 +921,7 @@ class OperatorCoordinator:
                             # when it fails with an ordinary error, and a row still `running`
                             # must not land in run.json as a non-terminal status beside its
                             # end time.
-                            from lionagi.state.db import SESSION_TERMINAL_STATUSES
+                            from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
                             if status in SESSION_TERMINAL_STATUSES:
                                 terminal_status = status

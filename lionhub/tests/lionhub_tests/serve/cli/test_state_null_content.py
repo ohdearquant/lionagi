@@ -27,16 +27,16 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.content_pruned import (
-    CONTENT_PRUNED_KEY,
-    content_was_pruned,
-)
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.state import (
     _null_content,
     _null_content_candidates,
     _null_content_targets,
 )
+from lionhub.state.content_pruned import (
+    CONTENT_PRUNED_KEY,
+    content_was_pruned,
+)
+from lionhub.state.db import StateDB
 
 DAY = 86400.0
 
@@ -45,7 +45,7 @@ DAY = 86400.0
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp file DB: patches DEFAULT_DB_PATH so StateDB() opens it."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

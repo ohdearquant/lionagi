@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.claude_mirror import session_db_id
-from lionagi.state.db import StateDB
+from lionhub.state.claude_mirror import session_db_id
+from lionhub.state.db import StateDB
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -74,7 +74,7 @@ def _conversation() -> list[dict]:
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

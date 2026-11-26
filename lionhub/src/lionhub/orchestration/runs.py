@@ -38,8 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from lionagi import Branch
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.mcp_config import McpResolution
+    from lionhub.state.db import StateDB
 
 __all__ = (
     "LIONAGI_HOME",
@@ -498,7 +498,7 @@ def lost_terminal_write(
     gives when teardown failed before resolving one. The caller leaves out a leg that defers
     its end to an auto-resume.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     if not live or returned in SESSION_TERMINAL_STATUSES:
         return None
@@ -528,7 +528,7 @@ def _store_error_in(error: BaseException | None) -> BaseException | None:
     from sqlalchemy.exc import SQLAlchemyError
 
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
-    from lionagi.state.lifecycle import LifecycleNotFoundError
+    from lionhub.state.lifecycle import LifecycleNotFoundError
 
     seen: set[int] = set()
     pending: list[BaseException] = [error] if error is not None else []
@@ -852,7 +852,7 @@ def resolve_run_reason(
     status: str,
     exception: BaseException | None,
 ) -> tuple[str, str, list[dict] | None]:
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     if status == "completed":
         return RunReasons.COMPLETED_OK, "Run completed successfully.", None
@@ -925,7 +925,7 @@ async def _linked_engine_session(
         return None
 
     from lionagi.ln.concurrency import sleep
-    from lionagi.state.claude_mirror import session_db_id
+    from lionhub.state.claude_mirror import session_db_id
 
     db_id = session_db_id(engine_session_uid)
     linked = await db.get_session(db_id)
@@ -1044,7 +1044,7 @@ async def _teardown_common(
     the caller writes it, once the lifecycle emits have run, so a refusal those emits record is
     the run's reason rather than landing after a status already written (ADR-0128 D6).
     """
-    from lionagi.state.artifact_verifier import (
+    from lionhub.state.artifact_verifier import (
         missing_artifact_evidence,
         missing_artifact_summary,
         verify_artifact_contract,
@@ -1140,7 +1140,7 @@ async def _teardown_common(
         and verification
         and verification["status"] == "failed"
     ):
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         # A completed request whose required artifact is missing is decided here: nothing below
         # turns a `failed` status back or changes its code, so a write the store refuses from
@@ -1165,9 +1165,9 @@ async def _teardown_common(
     # when the linked engine session is still alive/completed; exact-type (not isinstance)
     # so genuine ProviderQuotaError/AuthError/ContextError subclasses still fail loud.
     if final_status == "failed" and type(exception) is ProviderError and engine_session_uid:
-        from lionagi.state.claude_mirror import session_db_id
-        from lionagi.state.db import SESSION_TERMINAL_STATUSES
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.claude_mirror import session_db_id
+        from lionhub.state.db import SESSION_TERMINAL_STATUSES
+        from lionhub.state.reasons import RunReasons
 
         linked_id = session_db_id(engine_session_uid)
         linked = await _linked_engine_session(db, engine_session_uid)
@@ -1216,7 +1216,7 @@ async def _teardown_common(
         # bounded wait — can't confirm the engine is alive, so `failed` stands.
 
     if verification and verification["status"] == "failed":
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         missing = verification["missing_required"]
         if final_status == "completed":
@@ -1239,7 +1239,7 @@ async def _teardown_common(
     # usually has no artifacts/commits either and would otherwise be demoted
     # to "completed_empty" before this evidence had a chance to apply.
     if failed_operation_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         final_status = "failed"
         final_reason_code = RunReasons.FAILED_EXCEPTION
@@ -1253,7 +1253,7 @@ async def _teardown_common(
     # no artifact contract must not read as a clean completion. Same ordering
     # reason as the node-failure backstop above.
     if escalated_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         final_status = "failed"
         final_reason_code = RunReasons.FAILED_ESCALATED
@@ -1273,7 +1273,7 @@ async def _teardown_common(
     # "completed" rather than flipping to "failed", so it must run first to
     # place its evidence before the gate's no-evidence check.
     if gate_rejected_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         metadata = dict(metadata or {})
         metadata["gate_rejections"] = gate_rejected_evidence
@@ -1294,7 +1294,7 @@ async def _teardown_common(
     # that never needed to grow. The reason code reaches Studio status and the
     # terminal-callback envelope; the evidence names each requesting node.
     if spawn_refusal_evidence:
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         metadata = dict(metadata or {})
         metadata["spawn_refusal_count"] = len(spawn_refusal_evidence)
@@ -1320,11 +1320,11 @@ async def _teardown_common(
         and not spawn_refusal_evidence
         and not (verification and verification.get("produced"))
     ):
-        from lionagi.state.completion_evidence import (
+        from lionhub.state.completion_evidence import (
             check_completion_evidence,
             has_completion_evidence,
         )
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         evidence = check_completion_evidence(cwd)
         if evidence["checked"]:
@@ -1358,7 +1358,7 @@ async def _teardown_common(
     # "completed" to "failed" instead of only annotating the reason code the
     # way COMPLETED_FINALIZE_ERROR below does.
     if artifact_write_error:
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         metadata = dict(metadata or {})
         metadata["artifact_write_error"] = artifact_write_error
@@ -1383,7 +1383,7 @@ async def _teardown_common(
     # not be silently dropped, but it is not a DAG failure either — surface it
     # via reason_code/metadata only, never by overwriting a "completed" status.
     if finalize_error:
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         metadata = dict(metadata or {})
         metadata["finalize_error"] = finalize_error
@@ -1445,7 +1445,7 @@ async def _write_terminal_session_status(
     *observed_status* is the status read just before this write, so the write's compare-and-set
     reflects what is stored at the moment it runs rather than a read taken before the emits.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
     if observed_status in SESSION_TERMINAL_STATUSES:
         # Already terminal (a concurrent writer finalized the row, or an earlier run did)
@@ -1624,6 +1624,7 @@ async def teardown_persist(
             raise signal_refusal
 
         from lionagi.hooks.bus import HookPoint
+        from lionhub.orchestration.run_persistence import install_run_persistence
 
         _unroute_message_hooks(ctx)
 
@@ -1654,14 +1655,14 @@ async def teardown_persist(
             # signal; finalize_branch()'s own guard skips branches a per-op
             # writer already finalized. See docs/internals/cli.md#_runspy-agent-session-setupteardown-adr-0035
             # for why final_status must stay a genuine terminal outcome here.
-            from lionagi.state.db import SESSION_TERMINAL_STATUSES
+            from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
             if final_status in SESSION_TERMINAL_STATUSES:
                 _end_at = time.time()
                 for _b in [_branch] if _branch is not None else _hook_branches:
                     if not _branch_end_is_this_runs(db, str(_b.id)):
                         continue
-                    await session_obj.hooks.emit(
+                    await install_run_persistence(session_obj.hooks).emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
                         status=final_status,
@@ -1669,7 +1670,7 @@ async def teardown_persist(
                         db=db,
                     )
 
-            await session_obj.hooks.emit(
+            await install_run_persistence(session_obj.hooks).emit(
                 HookPoint.SESSION_END,
                 session_id=ctx["session_id"],
                 status=final_status,
@@ -1699,7 +1700,7 @@ async def teardown_persist(
         ctx["worker_spawn_teardown_status"] = final_status
         return final_status
     except Exception as exc:
-        from lionagi.state.compat import refusal_in
+        from lionhub.state.compat import refusal_in
 
         # Teardown writes run inside task groups, so the refusal can arrive wrapped beside
         # another failure; it is still the reason this run fails.
@@ -1780,7 +1781,7 @@ async def teardown_persist(
         if ctx.get("shared_db_registered", True):
             # Ordinary CLI runs retain the historical sweep. Embedded daemon
             # callers opt out so teardown cannot close unrelated shared state.
-            from lionagi.state.db import close_shared_db
+            from lionhub.state.db import close_shared_db
 
             # The sweep raises for a handle it could not close (one another
             # event loop is opening). Teardown reports the run's outcome and
@@ -1833,7 +1834,7 @@ async def teardown_orchestration_persist(*args, **kwargs) -> str:
 
 async def _open_shared_db(*, register: bool = True):
     """Open a StateDB, optionally registering it as the process-wide handle."""
-    from lionagi.state.db import StateDB, register_shared_db, unregister_shared_db
+    from lionhub.state.db import StateDB, register_shared_db, unregister_shared_db
 
     db = StateDB()
     try:
@@ -1893,9 +1894,9 @@ def _make_message_handler(
     message_retry_queues: list | None = None,
 ):
     """Return an async _on_message handler for live DB persistence."""
-    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
     from lionagi.ln import copy
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
+    from lionhub.state.message_retry import MessagePersistRetryQueue, PendingMessageEvent
 
     retry_queue = MessagePersistRetryQueue(
         db,
@@ -2001,7 +2002,7 @@ def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
             br_model: str | None = None
             br_provider: str | None = None
             try:
-                from lionagi.state import provenance as _provenance
+                from lionhub.state import provenance as _provenance
 
                 ep_cfg = branch.chat_model.endpoint.config
                 br_provider = getattr(ep_cfg, "provider", None)
@@ -2052,7 +2053,7 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
     the store refuses in compatibility mode raises that refusal, once every
     queue has been flushed.
     """
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     flushed = True
     refusal = None
@@ -2094,8 +2095,8 @@ async def _reopen_session_for_resume(
     finality is what the reapers, the teardown guard, and ``li wait`` all rest on.
     """
     from lionagi.ln._proc import current_pid_markers
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.state.reasons import SessionReasons
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.reasons import SessionReasons
 
     if not existing_session or existing_session.get("status") not in SESSION_TERMINAL_STATUSES:
         # Not terminal: a resume racing a live leg on the same branch. The row
@@ -2199,8 +2200,8 @@ async def setup_agent_persist(
     _worker_spawn_continuation: object | None = None,
 ) -> dict | None:
     from lionagi.session.session import Session
-    from lionagi.state import provenance as _provenance
-    from lionagi.state.cli_workers import (
+    from lionhub.state import provenance as _provenance
+    from lionhub.state.cli_workers import (
         _consume_worker_spawn_continuation,
         _WorkerSpawnOwner,
     )
@@ -2332,7 +2333,7 @@ async def setup_agent_persist(
             # Another lineage lays out a store in compatibility mode, and its schema carries no
             # worker generation and no spawn records, so the run starts with no worker owner and
             # its workers stay outside the terminal kill arm, as an unpersisted run's do.
-            from lionagi.state.compat import is_compatibility_store
+            from lionhub.state.compat import is_compatibility_store
 
             unrecorded = is_compatibility_store(db)
             inserted_session_id = session_id
@@ -2413,19 +2414,23 @@ async def setup_agent_persist(
             )
 
         if share_db:
-            from lionagi.state.db import register_shared_db
+            from lionhub.state.db import register_shared_db
 
             await register_shared_db(db)
             shared_db_registered = True
         if fresh_session:
             with owner.bind() if owner is not None else contextlib.nullcontext():
                 from lionagi.hooks.bus import HookPoint
+                from lionhub.orchestration.run_persistence import install_run_persistence
 
+                # A lionagi Session persists nothing by default; a hub run records itself, so the
+                # persistence handlers go on this session's bus before its first emit.
+                run_hooks = install_run_persistence(session.hooks)
                 # The run's own handle goes with both emits, as with the teardown's. The session
-                # and branch rows above already carry every field the default handlers write, so
+                # and branch rows above already carry every field the persistence handlers write, so
                 # handed a handle they write nothing: no process-wide store is reached, and no
                 # repeated write needs a grant this setup does not.
-                await session.hooks.emit(
+                await run_hooks.emit(
                     HookPoint.SESSION_START,
                     session_id=session_id,
                     model=model,
@@ -2436,7 +2441,7 @@ async def setup_agent_persist(
                     invocation_id=invocation_id,
                     db=db,
                 )
-                await session.hooks.emit(
+                await run_hooks.emit(
                     HookPoint.BRANCH_CREATE,
                     branch_id=branch_id,
                     model=model,
@@ -2510,9 +2515,9 @@ async def setup_agent_persist(
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except BaseException as exc:
-        from lionagi.state.compat import refusal_in
-        from lionagi.state.lifecycle import LifecycleNotFoundError
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.compat import refusal_in
+        from lionhub.state.lifecycle import LifecycleNotFoundError
+        from lionhub.state.reasons import RunReasons
 
         # A store that refuses a write in compatibility mode stops the run instead of
         # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
@@ -2641,7 +2646,7 @@ async def setup_agent_persist(
                     break
             if shared_db_registered:
                 # Drop the now-closed handle so get_shared_db() can't hand it out.
-                from lionagi.state.db import unregister_shared_db
+                from lionhub.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
         # Raise store refusals as themselves first so the caller can identify them (ADR-0128 D6).
@@ -2672,8 +2677,8 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
     reporting the run as never having existed. Returns None only when no
     session was ever recorded under this run id.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionhub.state.reasons import RunReasons
 
     db = StateDB()
     try:

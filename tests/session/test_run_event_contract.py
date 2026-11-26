@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from lionagi.hooks.bus import HookBus, HookPoint, HookSignal
-from lionagi.service.accounts._pricing import CURRENT_REVISION, price_usage
 from lionagi.session.signal import (
     SIGNAL_SCHEMA_VERSION,
     NodeCompleted,
@@ -799,13 +798,11 @@ def test_cache_write_lifetimes_read_zero_without_a_split():
 def test_a_present_cache_creation_that_is_not_a_valid_split_is_a_fault(report):
     """A report that carries a ``cache_creation`` value has claimed a split;
     one that is not a valid split against its own total is a fault, not a
-    claim to ignore -- the same answer ``price_usage`` gives for the same
-    report."""
+    claim to ignore."""
     usage = _collect_branch_usage(_branch_with_usage_dicts(report))
     assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
     assert usage["usage_valid"] is False
-    assert price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report) is None
 
 
 def test_anthropic_split_that_does_not_sum_to_its_total_is_dropped_and_flagged():
@@ -855,8 +852,7 @@ def test_anthropic_split_with_a_non_count_part_is_dropped_and_flagged():
 def test_anthropic_split_with_an_integral_float_part_is_not_a_count():
     """A count is a non-negative integer. An integral float such as 200.0 is
     not one, so a split carrying it is a claim that cannot be certified:
-    both lifetimes read 0 and the report is not valid -- the same answer
-    ``price_usage`` gives for the same report."""
+    both lifetimes read 0 and the report is not valid."""
     report = {
         "input_tokens": 3,
         "output_tokens": 5,
@@ -869,14 +865,12 @@ def test_anthropic_split_with_an_integral_float_part_is_not_a_count():
     assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
     assert usage["usage_valid"] is False
-    assert price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report) is None
 
 
 def test_anthropic_integral_float_cache_write_total_is_not_a_count():
     """The cache-write total is read with the same count test as a split's
     parts: 200.0 is not a count, with or without a split beside it, so it
-    reads 0 and the report is not valid -- and ``price_usage`` refuses the
-    same report."""
+    reads 0 and the report is not valid."""
     unsplit = {
         "input_tokens": 1,
         "output_tokens": 1,
@@ -890,13 +884,11 @@ def test_anthropic_integral_float_cache_write_total_is_not_a_count():
         assert usage["cache_write_5m_tokens"] == 0
         assert usage["cache_write_1h_tokens"] == 0
         assert usage["usage_valid"] is False
-        assert price_usage(CURRENT_REVISION, frozenset({"5m"}), "claude-opus-5-5", report) is None
 
 
-def test_anthropic_split_of_integers_agrees_with_price_usage():
-    """One rule reads a report's split for every consumer: the identical
-    integer split that ``RunEnd`` reports also prices, with the same
-    lifetimes."""
+def test_anthropic_split_of_integers_reports_both_lifetimes():
+    """An integer split that sums to its total reports both lifetimes, and
+    the report is valid."""
     report = {
         "input_tokens": 3,
         "output_tokens": 5,
@@ -910,9 +902,6 @@ def test_anthropic_split_of_integers_agrees_with_price_usage():
         usage["cache_write_1h_tokens"],
         usage["usage_valid"],
     ) == (1000, 234, True)
-    priced = price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report)
-    assert priced is not None
-    assert (priced.cache_write_5m_tokens, priced.cache_write_1h_tokens) == (1000, 234)
 
 
 @pytest.mark.parametrize(

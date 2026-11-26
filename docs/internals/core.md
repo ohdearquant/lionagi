@@ -171,7 +171,7 @@ breaking field removal/rename; adding a field (with a default) is non-breaking.
   lifetime, under `usage.cache_creation` (`ephemeral_5m_input_tokens` /
   `ephemeral_1h_input_tokens`), beside the `cache_creation_input_tokens` total
   those lifetimes split. One predicate reads that split for every consumer:
-  `service/accounts/_pricing.py::cache_write_split`, used by
+  `service/accounts/_usage_shape.py::cache_write_split`, used by
   `_pricing.price_usage`, by `session/signal.py`'s `_collect_branch_usage`
   (and its `_collect_multi_branch_usage`), and by `operations/run/run.py`'s
   `_accumulate_result_meta`. A split is valid when `cache_creation` is a

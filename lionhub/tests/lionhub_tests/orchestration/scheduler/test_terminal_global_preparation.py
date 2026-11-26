@@ -12,9 +12,9 @@ import subprocess
 
 import pytest
 
-from lionagi.state.lifecycle import settings_delivery
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery
 from lionhub.orchestration.scheduler import terminal_reconciliation
+from lionhub.state.lifecycle import settings_delivery
+from lionhub.state.lifecycle.reconciler import DeliveryOutcome, PreparedDelivery
 
 
 def _forbid(*_args, **_kwargs):
@@ -164,14 +164,14 @@ async def test_context_observer_failure_does_not_block_global_delivery(monkeypat
 async def test_global_replay_validation_controls_real_ledger(
     tmp_path, monkeypatch, settings, expected_outcome
 ):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import (
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import (
         is_acknowledged,
         reconcile_unacknowledged,
         register_consumer,
     )
-    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
 
     monkeypatch.setattr(settings_delivery, "load_global_settings_layer", lambda: settings)
     async with StateDB(tmp_path / "state.db") as db:
@@ -207,10 +207,10 @@ async def test_global_replay_validation_controls_real_ledger(
 
 @pytest.mark.asyncio
 async def test_invalid_global_then_fixed_settings_retry_acks_same_event(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
-    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import is_acknowledged, register_consumer
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
 
     current = [{"notify": "bad"}]
     seen = []
@@ -267,14 +267,14 @@ async def test_invalid_global_then_fixed_settings_retry_acks_same_event(tmp_path
     ids=["explicit-null", "explicit-tilde", "empty-document", "empty-mapping"],
 )
 async def test_real_global_yaml_root_controls_ack(tmp_path, monkeypatch, source, should_ack):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import (
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import (
         is_acknowledged,
         reconcile_unacknowledged,
         register_consumer,
     )
-    from lionagi.state.lifecycle.reconciler import TerminalReconciler
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
 
     home = tmp_path / "home"
     settings_dir = home / ".lionagi"

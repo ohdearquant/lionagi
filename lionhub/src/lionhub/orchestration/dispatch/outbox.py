@@ -25,12 +25,12 @@ from sqlalchemy.types import JSON
 
 from lionagi.ln._proc import communicate_in_process_group
 from lionagi.session.signal import DispatchSignal
-from lionagi.state.reasons import DispatchReasons
-from lionagi.state.terminal_eligibility import (
+from lionhub.state.reasons import DispatchReasons
+from lionhub.state.terminal_eligibility import (
     has_delivery_eligibility_column,
     is_delivery_eligible,
 )
-from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+from lionhub.state.transitions import Actor, StateReason, TransitionRequest, transition
 
 __all__ = (
     "DEFAULT_MAX_ATTEMPTS",

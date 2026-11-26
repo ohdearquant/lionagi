@@ -39,9 +39,9 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py` `"claude-haiku-5-5": ModelPrice(`, `PriceTier.max_prompt_tokens`
-at `lionagi/service/accounts/_pricing.py::PriceTier`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`lionagi/service/accounts/_pricing.py::ModelPrice`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py` `"claude-haiku-5-5": ModelPrice(`, `PriceTier.max_prompt_tokens`
+at `lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py::PriceTier`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py::ModelPrice`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 
@@ -86,7 +86,7 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
 and the account router (`lionagi/providers/anthropic/messages.py:988@2a8b69c9`,
-`lionagi/service/accounts/_router.py::AccountRouter.begin`); a provider the table does not price, such as a command-line
+`lionhub/src/lionhub/providers/anthropic/accounts/_router.py::AccountRouter.begin`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
 decision event (D7) rather than inventing a number. A

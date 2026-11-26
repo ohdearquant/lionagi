@@ -13,7 +13,7 @@ from tests._core_imports import ROOT, core_files, package_imports
 def test_remaining_core_lndl_imports_are_exactly_the_allowed_sites():
     files = core_files(root=ROOT)
     assert ROOT / "lionagi" / "__init__.py" in files
-    assert ROOT / "lionagi" / "_auto.py" in files
+    assert ROOT / "lionagi" / "_errors.py" in files
     actual = [hit for path in files for hit in package_imports(path, "lndl", root=ROOT)]
     # Hits read "path:line: module"; the line is dropped so edits elsewhere in a file
     # do not move the boundary.

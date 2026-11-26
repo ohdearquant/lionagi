@@ -31,10 +31,6 @@
       "chunk",
       "dir_to_files"
     ],
-    "lionagi/libs/frontmatter.py": [
-      "parse_frontmatter",
-      "parse_frontmatter_strict"
-    ],
     "lionagi/libs/nested.py": [
       "deep_merge",
       "deep_update",

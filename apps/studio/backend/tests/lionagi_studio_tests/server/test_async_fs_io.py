@@ -38,13 +38,13 @@ def _make_client(
     for d in (shows_root, runs_root, agents_root, playbooks_root, skills_root):
         d.mkdir(parents=True)
 
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.config as config_mod
     import lionagi_studio.services.agents as agents_mod
     import lionagi_studio.services.playbooks as playbooks_mod
     import lionagi_studio.services.shows as shows_mod
     import lionagi_studio.services.skills as skills_mod
     import lionhub.orchestration.runs as cli_runs_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(scheduler_settings, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
@@ -104,7 +104,7 @@ def _make_client(
 
 def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /api/runs/{id} reads from StateDB (same SQLite source as list_runs())."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     run_id = str(uuid.uuid4())
     db_path = tmp_path / "state.db"
@@ -132,7 +132,7 @@ def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.Monke
     finally:
         loop.close()
 
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 

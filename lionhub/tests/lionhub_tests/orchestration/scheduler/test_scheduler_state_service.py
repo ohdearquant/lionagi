@@ -7,8 +7,8 @@ overrides observes. These tests pin that the two default surfaces agree.
 
 import pytest
 
-from lionagi.state import db as db_mod
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+from lionhub.state import db as db_mod
 
 pytestmark = pytest.mark.asyncio
 

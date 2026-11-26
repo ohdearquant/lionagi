@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import yaml
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.cli.orchestrate import (
     _load_flow_spec,
     _validate_spec_fields,

@@ -128,8 +128,8 @@ async def _fresh_synthesis_branch(env: OrchestrationEnv, name: str = "synthesis"
         # An empty set left this copy loading no user config, so the effort the
         # orchestrator's model derived from that config goes too, as it does for an
         # orchestrator handed an empty set (setup_orchestration).
-        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
         from lionhub.agent.factory import _canonical_provider
+        from lionhub.providers.model_spec import PROVIDER_EFFORT_KWARG
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(
             _canonical_provider(chat_model.endpoint.config.provider)
@@ -202,8 +202,8 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
-    from lionagi._cli_worker_context import _bind_cli_worker_recorder
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
+    from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
     with contextlib.ExitStack() as _worker_spawn_bindings:
         _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
@@ -248,7 +248,7 @@ async def _run_fanout(
         # Persist the orchestrator default model + effort on the session row.
         # Per-worker model is written branch-side when build_worker_branch runs.
         _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
-        from lionagi.state.lifecycle.notify_settings import (
+        from lionhub.state.lifecycle.notify_settings import (
             register_run_notify_outcome_scope,
             unregister_run_notify_outcome_scope,
         )
@@ -291,7 +291,7 @@ async def _run_fanout(
             # Session-scoped: stop_live_persist terminalizes only the session; invocation
             # records are finalized externally and would never fire.
             if notify:
-                from lionagi.state.lifecycle.notify_settings import (
+                from lionhub.state.lifecycle.notify_settings import (
                     record_notify_rejection_to_run,
                 )
 

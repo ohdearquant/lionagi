@@ -15,7 +15,6 @@ from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
-from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
 from .khive_actor import KHIVE_ACTOR_ENV, is_khive_server
@@ -157,7 +156,8 @@ def _apply_resolved_model_effort(
     if not effort or origin == "default":
         return model
 
-    from lionagi.service.providers import (
+    from lionhub.providers.model_spec import (
+        _CLAUDE_PROVIDER_NAMES,
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_EFFORT_VIA_MODEL_NAME,
         _clamp_claude_effort,
@@ -205,11 +205,13 @@ def _apply_resolved_model_effort(
 def _parse_agent_model_spec(value: str, *, origin: str = "explicit"):
     """Translate an unsupported API effort suffix into the agent setting error."""
     from lionagi.service.providers import (
+        normalize_effort,
+        split_effort_suffix,
+    )
+    from lionhub.providers.model_spec import (
         PROVIDERS_NO_EFFORT,
         ModelSpec,
-        normalize_effort,
         parse_model_spec,
-        split_effort_suffix,
     )
 
     try:
@@ -440,7 +442,7 @@ async def create_agent(
     if supplied_model:
         branch_kwargs["chat_model"] = chat_model
     elif spec.model:
-        from lionagi.service.providers import (
+        from lionhub.providers.model_spec import (
             CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
             PROVIDER_REPO_KWARG,
@@ -532,7 +534,7 @@ async def create_agent(
                 extra[repo_kwarg] = spec.cwd
 
         if agent_env:
-            from lionagi.service._subagent_admission import without_account_names
+            from lionhub.providers._subagent_admission import without_account_names
 
             # The spawn reads an account and its cap from the environment it is handed; only a
             # named account's own environment may name one, so neither an inherited value nor
@@ -687,8 +689,11 @@ async def create_agent(
         or formatter_bound
         or _command_env_names_out is not None
     ):
-        from lionagi._command_env import normalize_command_env_allowlist
-        from lionagi._command_env_metadata import command_environment, configured_command_env_names
+        from lionhub.tools.command_env import normalize_command_env_allowlist
+        from lionhub.tools.command_env_metadata import (
+            command_environment,
+            configured_command_env_names,
+        )
 
         active_reference = branch.chat_model.endpoint.config.api_key_env
         command_names = frozenset(
@@ -1287,7 +1292,6 @@ async def _load_mcp(
     return frozenset(loaded)
 
 
-_MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})
 _ANTIGRAVITY_PROVIDER_NAMES = frozenset({"gemini-cli", "gemini_cli", "gemini-code", "gemini_code"})
 
 
@@ -1308,7 +1312,9 @@ def provider_accepts_forwarded_mcp(provider: str | None) -> bool:
     Answers capability, not whether a given spawn actually forwarded one —
     for that, use ``request_carries_forwarded_mcp``.
     """
-    return _canonical_provider(provider) in _MCP_FORWARDING_PROVIDERS
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
+
+    return _canonical_provider(provider) in {*_CLAUDE_PROVIDER_NAMES, "codex"}
 
 
 def _reject_unforwardable_explicit_mcp(
@@ -1414,6 +1420,8 @@ def apply_forwarded_mcp_servers(
 
     if exclusive:
         _drop_forwarded_mcp_servers(kwargs)
+
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     # Folded like the capability check above: a spelling that resolves to the
     # Claude CLI must not fall through to the codex override form.

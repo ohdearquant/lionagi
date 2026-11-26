@@ -23,11 +23,6 @@ from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import (
-    DEFAULT_WORKLOAD,
-    SubagentWorkload,
-    without_account_names,
-)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -45,6 +40,11 @@ from lionhub.providers._cli_subprocess import (
 )
 from lionhub.providers._cli_subprocess import (
     make_cli_flag as _cli,
+)
+from lionhub.providers._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    SubagentWorkload,
+    without_account_names,
 )
 
 # CONTEXT_WINDOWS is defined in ._config and re-exported here.
@@ -648,6 +648,9 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _PI_HANDLER_PARAMS
     _handler_kwarg = "pi_handlers"
     _request_model = PiCodeRequest
+    # The request field a model name's effort suffix ("gemini-2.5-flash-low") sets; iModel
+    # reads it.
+    effort_kwarg = "thinking"
     # streams_first_output_early stays False: stream() discards raw events and only
     # yields once a PiChunk carries content, so first output may lag spawn by full think time.
 

@@ -1,285 +1,55 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0047 built-in handlers wired to StateDB persistence helpers."""
+"""ADR-0047 built-in logging handlers.
+
+The five state-store persistence handlers (``persist_session_start``, ``persist_session_end``,
+``persist_branch_provenance``, ``persist_branch_end`` and ``persist_message``) live in
+``lionhub.orchestration.run_persistence``. Their old names here keep working until lionagi 2.0.0:
+the first access emits a ``DeprecationWarning`` at the caller's line and returns the handler from
+its new module, the same object under both paths.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import time
 import warnings
 from typing import Any
 
-from lionagi import ln
-
 logger = logging.getLogger("lionagi.hooks.builtins")
 
-
-async def _db(db: Any = None):
-    """The store a default handler writes through.
-
-    A run hands its own open handle to these handlers on the event, so each writes through the
-    run's handle and meets whatever the store requires of that run. A caller that carries no
-    handle reaches the process-wide store the way it always has, looked up by url.
-    """
-    if db is not None:
-        return db
-    from lionagi.state.db import get_shared_db
-
-    return await get_shared_db()
-
-
+# The five persistence handler names stay listed while the hub ships in the same distribution as
+# the core, so a wildcard import still gives them, through ``__getattr__`` and its warning.
 __all__ = (
-    "persist_session_start",
-    "persist_session_end",
-    "persist_branch_provenance",
-    "persist_branch_end",
-    "persist_message",
+    "persist_session_start",  # noqa: F822 -- served by __getattr__
+    "persist_session_end",  # noqa: F822 -- served by __getattr__
+    "persist_branch_provenance",  # noqa: F822 -- served by __getattr__
+    "persist_branch_end",  # noqa: F822 -- served by __getattr__
+    "persist_message",  # noqa: F822 -- served by __getattr__
     "log_api_metrics",
     "log_tool_call",
     "log_tool_use",
 )
 
-
-async def persist_session_start(
-    *,
-    session_id: str,
-    model: str | None = None,
-    provider: str | None = None,
-    effort: str | None = None,
-    agent_name: str | None = None,
-    agent_hash: str | None = None,
-    invocation_id: str | None = None,
-    db: Any = None,
-    **_unused: Any,
-) -> None:
-    """Write the session provenance set + open the lifecycle window.
-
-    A run that hands its own handle to this handler on the event has written the session row
-    with every one of these fields when it created it, so the handler writes nothing. Emitted
-    without a handle (a direct bus emit), it writes them as before."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.state.reasons import RunReasons
-
-    if db is not None:
-        return
-    db = await _db(db)
-    row = await db.get_session(session_id)
-    if row is None:
-        return
-    current_status = row.get("status")
-    if current_status in SESSION_TERMINAL_STATUSES:
-        return
-
-    # Neither a pre-existing STARTED_OK row nor a CLI-prestamped started_at
-    # tells this handler a genuine first emission from a duplicate, so writes
-    # here are idempotent: provenance fields safely re-write, and started_at
-    # is "first writer wins" via an atomic COALESCE rather than read-then-write.
-    provenance = {
-        "model": model,
-        "provider": provider,
-        "effort": effort,
-        "agent_name": agent_name,
-        "agent_hash": agent_hash,
-        "invocation_id": invocation_id,
+# Served from their new module on attribute access until 2.0.0, through the moved-module table
+# row for this private old name; the finder emits the warning and resolves the new module.
+_PERSISTENCE_HANDLER_NAMES = frozenset(
+    {
+        "persist_session_start",
+        "persist_session_end",
+        "persist_branch_provenance",
+        "persist_branch_end",
+        "persist_message",
     }
-    fields = {k: v for k, v in provenance.items() if v is not None}
-    fields["started_at"] = time.time()
-
-    if row.get("status_reason_code") == RunReasons.STARTED_OK:
-        await db.update_session(session_id, set_if_null=frozenset({"started_at"}), **fields)
-        return
-    await db.update_session(
-        session_id,
-        # Explicit reason_code avoids tripping the deprecation shim, which
-        # would swallow the transition and silently drop provenance fields.
-        reason_code=RunReasons.STARTED_OK,
-        status="running",
-        set_if_null=frozenset({"started_at"}),
-        **fields,
-    )
+)
+_PERSISTENCE_HANDLERS_OLD_MODULE = "lionagi.hooks._persistence_handlers"
 
 
-async def persist_session_end(
-    *,
-    session_id: str,
-    status: str = "completed",
-    error: str | None = None,
-    input_tokens: int | None = None,
-    output_tokens: int | None = None,
-    total_cost_usd: float | None = None,
-    num_turns: int | None = None,
-    duration_ms: float | None = None,
-    db: Any = None,
-    **_unused: Any,
-) -> None:
-    """Stamp ended_at/status + usage on the session row.
+def __getattr__(name: str) -> Any:
+    if name in _PERSISTENCE_HANDLER_NAMES:
+        import importlib
 
-    A run hands its own handle to this handler on the event and owns the terminal status write
-    itself, made once the emit returns; this handler then writes only the usage fields the event
-    carries, leaving the status, its reason and the end time to that write. Emitted without a
-    handle (a direct bus emit), it stamps the status itself as before."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
-    from lionagi.state.reasons import RunReasons
-
-    teardown_owns_status = db is not None
-    db = await _db(db)
-    row = await db.get_session(session_id)
-    if row is None:
-        return
-
-    already_terminal = row.get("status") in SESSION_TERMINAL_STATUSES
-
-    fields: dict[str, Any] = {}
-    if not already_terminal and not teardown_owns_status:
-        fields["ended_at"] = time.time()
-        if error is not None:
-            # Pre-serialize (raw SQL param, no JSON bindparam) and merge
-            # onto existing node_metadata rather than clobbering it.
-            existing_metadata = row.get("node_metadata")
-            if not isinstance(existing_metadata, dict):
-                existing_metadata = {}
-            fields["node_metadata"] = json.dumps({**existing_metadata, "error": error})
-    if input_tokens is not None:
-        fields["input_tokens"] = input_tokens
-    if output_tokens is not None:
-        fields["output_tokens"] = output_tokens
-    if total_cost_usd is not None:
-        fields["total_cost_usd"] = total_cost_usd
-    if num_turns is not None:
-        fields["num_turns"] = num_turns
-    if duration_ms is not None:
-        fields["duration_ms"] = duration_ms
-
-    if not fields:
-        return
-
-    if already_terminal or teardown_owns_status:
-        await db.update_session(session_id, **fields)
-        return
-
-    _status_reason_map: dict[str, str] = {
-        "completed": RunReasons.COMPLETED_OK,
-        "failed": RunReasons.FAILED_EXCEPTION,
-        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
-        "aborted": RunReasons.ABORTED_USER,
-        "cancelled": RunReasons.CANCELLED_SYSTEM,
-    }
-    await db.update_session(
-        session_id,
-        reason_code=_status_reason_map.get(status, RunReasons.FAILED_EXCEPTION),
-        status=status,
-        **fields,
-    )
-
-
-async def persist_branch_provenance(
-    *,
-    branch_id: str,
-    model: str | None = None,
-    provider: str | None = None,
-    agent_name: str | None = None,
-    db: Any = None,
-    **_unused: Any,
-) -> None:
-    """Persist per-branch model / provider / agent_name provenance.
-
-    A run that hands its own handle to this handler on the event created the branch row with
-    these fields, so the handler writes nothing; emitted without a handle, it writes them."""
-    if db is not None:
-        return
-    db = await _db(db)
-    await db.update_branch(
-        branch_id,
-        model=model,
-        provider=provider,
-        agent_name=agent_name,
-    )
-
-
-async def persist_branch_end(
-    *,
-    branch_id: str,
-    status: str = "completed",
-    ended_at: float | None = None,
-    db: Any = None,
-    **_unused: Any,
-) -> None:
-    """Stamp the branch row's terminal status/ended_at — the BRANCH_END
-    counterpart to BRANCH_CREATE's persist_branch_provenance.
-
-    Delegates the guard to StateDB.finalize_branch(), which no-ops on a
-    non-terminal status, on a branch already at any terminal status (so a
-    more specific outcome recorded elsewhere, e.g. the DAG runner's own
-    NodeCompleted/NodeFailed updates, is never clobbered), and on a branch
-    row that doesn't exist yet. In compatibility mode it also refuses a branch row this run
-    did not create, or that no longer carries the run's owner, so a store opened in compatibility
-    mode never reaches another run's branch through this handler.
-    """
-    db = await _db(db)
-    await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
-
-
-async def persist_message(
-    *,
-    message: dict[str, Any],
-    session_id: str,
-    branch_id: str | None = None,
-    branch_progression_id: str | None = None,
-    session_progression_id: str | None = None,
-    # Legacy alias kept for callers predating the dual-progression split.
-    progression_id: str | None = None,
-    **_unused: Any,
-) -> None:
-    """Persist a message; ``progression_id`` is a legacy alias."""
-    effective_branch_prog = branch_progression_id or progression_id
-
-    db = await _db()
-    from ._message_retry import MessagePersistRetryQueue, PendingMessageEvent
-    from .bus import _current_emitting_bus
-
-    bus = _current_emitting_bus()
-    if bus is None:
-        await db._persist_live_message(
-            message,
-            session_id=session_id,
-            branch_progression_id=effective_branch_prog,
-            session_progression_id=session_progression_id,
-            system_branch_id=branch_id if message.get("role") == "system" else None,
-            system_branch_update_before_activity=True,
-        )
-        return
-
-    queue_key = (
-        id(db),
-        session_id,
-        branch_id,
-        effective_branch_prog,
-        session_progression_id,
-    )
-    queues = getattr(bus, "_message_retry_queues", None)
-    if queues is None:
-        queues = {}
-        bus._message_retry_queues = queues
-    retry_queue = queues.get(queue_key)
-    if retry_queue is None:
-        retry_queue = MessagePersistRetryQueue(
-            db,
-            logger=logger,
-            owner=f"hook session {session_id}",
-        )
-        queues[queue_key] = retry_queue
-
-    await retry_queue.submit(
-        PendingMessageEvent(
-            message=ln.copy(message),
-            session_id=session_id,
-            branch_progression_id=effective_branch_prog,
-            session_progression_id=session_progression_id,
-            system_branch_id=branch_id if message.get("role") == "system" else None,
-            system_branch_update_before_activity=True,
-        )
-    )
+        return getattr(importlib.import_module(_PERSISTENCE_HANDLERS_OLD_MODULE), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 async def log_api_metrics(

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.mcp import dispatch, jobs, verbs
 from tests.mcp._removed_surface import REMOVED_VERB_ALIASES
 
@@ -1860,7 +1860,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
     # Refused in the server, not left to the detached run: a server that exits first
     # would leave that run outside the agent's process tree.
     import lionhub.orchestration.spawn as providers
-    from lionagi.service import _subagent_admission
+    from lionhub.providers import _subagent_admission
     from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
@@ -1885,7 +1885,7 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
 
 def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
     import lionhub.orchestration.spawn as providers
-    from lionagi.service import _subagent_admission
+    from lionhub.providers import _subagent_admission
     from lionhub.serve.mcp import config
 
     monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)

@@ -13,8 +13,8 @@ from pydantic import BaseModel
 
 from lionagi.protocols.action.tool_hooks import ToolPreDecision
 from lionagi.service._api_telemetry import record_guard_refusal
-from lionagi.service.accounts._pricing import CURRENT_REVISION
 from lionagi.service.connections.endpoint import Endpoint
+from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 from lionhub.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionhub.serve.cli._api_usage import APIUsageCollector
 from tests.service.accounts import test_routed_endpoint as routed

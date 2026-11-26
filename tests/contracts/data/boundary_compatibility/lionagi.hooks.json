@@ -8,7 +8,8 @@
       "__all__ = [\n    \"HookBus\",\n    \"HookPoint\",\n    \"HookSignal\",\n    \"StopHook\",\n    \"hook\",\n    \"DORMANT_POINTS\",\n    \"DEFAULT_HOOKS\",\n    \"build_session_bus\",\n    \"load_hooks_for_agent\",\n    \"register_handler\",\n    \"resolve_handler\",\n    \"route_message_persistence\",\n    \"unroute_message_persistence\",\n]"
     ],
     "lionagi/hooks/builtins.py": [
-      "__all__ = (\n    \"persist_session_start\",\n    \"persist_session_end\",\n    \"persist_branch_provenance\",\n    \"persist_branch_end\",\n    \"persist_message\",\n    \"log_api_metrics\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)"
+      "__all__ = (\n    \"persist_session_start\",  # noqa: F822 -- served by __getattr__\n    \"persist_session_end\",  # noqa: F822 -- served by __getattr__\n    \"persist_branch_provenance\",  # noqa: F822 -- served by __getattr__\n    \"persist_branch_end\",  # noqa: F822 -- served by __getattr__\n    \"persist_message\",  # noqa: F822 -- served by __getattr__\n    \"log_api_metrics\",\n    \"log_tool_call\",\n    \"log_tool_use\",\n)",
+      "def __getattr__(name: str) -> Any:\n    if name in _PERSISTENCE_HANDLER_NAMES:\n        import importlib\n\n        return getattr(importlib.import_module(_PERSISTENCE_HANDLERS_OLD_MODULE), name)\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
     ],
     "lionagi/hooks/bus.py": [
       "__all__ = (\n    \"HookPoint\",\n    \"HookBus\",\n    \"HookSignal\",\n    \"HookHandler\",\n    \"StopHook\",\n    \"hook\",\n    \"DORMANT_POINTS\",\n)"
@@ -21,19 +22,10 @@
     ]
   },
   "public_definitions": {
-    "lionagi/hooks/_message_retry.py": [
-      "MessagePersistRetryQueue",
-      "PendingMessageEvent"
-    ],
     "lionagi/hooks/builtins.py": [
       "log_api_metrics",
       "log_tool_call",
-      "log_tool_use",
-      "persist_branch_end",
-      "persist_branch_provenance",
-      "persist_message",
-      "persist_session_end",
-      "persist_session_start"
+      "log_tool_use"
     ],
     "lionagi/hooks/bus.py": [
       "HookBus",

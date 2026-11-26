@@ -284,7 +284,7 @@ async def parse(
         # parse failure, and an unparsed fallback would let the caller go on as if it were.
         raise
     except Exception as e:
-        from lionagi.state.compat import refusal_in
+        from lionagi._state_refusal import refusal_in
 
         refusal = refusal_in(e)
         if refusal is not None:

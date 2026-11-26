@@ -204,7 +204,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # object's own field slot, none of them a class's ``__hash__`` or a class
     # authority:
     (
-        "lionagi._auto",
+        "lionhub.serve.cli.registration",
         "auto_register.<locals>.decorator",
         "setattr-arguments",
         "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='fn', ctx=Load()), Name(id='_MARKER_ATTR', ctx=Load()), Name(id='marker', ctx=Load())], keywords=[])",
@@ -300,7 +300,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='exc', ctx=Load()), Name(id='_MCP_TRANSPORT_PROBE_ATTR', ctx=Load()), Name(id='probe', ctx=Load())], keywords=[])",
     ): "a probe attribute set on an exception",
     (
-        "lionagi.state.compat",
+        "lionhub.state.compat",
         "OwnerRule.__post_init__",
         "setattr-arguments",
         "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Call(func=Name(id='_fold', ctx=Load()), args=[Name(id='value', ctx=Load())], keywords=[])], keywords=[])",
@@ -446,7 +446,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
     ): "``Generic[T]``, the typing generic base",
     (
-        "lionagi.service.accounts._ledger",
+        "lionhub.providers.anthropic.accounts._ledger",
         "_TimedCall",
         "class-base-subscript",
         "Subscript(value=Name(id='Generic', ctx=Load()), slice=Name(id='_T', ctx=Load()), ctx=Load())",
@@ -502,7 +502,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
     (
-        "lionagi.state.engine",
+        "lionhub.state.engine",
         "_stop_aiosqlite_once",
         "class-authority-assignment",
         "Attribute(value=Name(id='driver_connection', ctx=Load()), attr='__class__', ctx=Store())",
@@ -510,7 +510,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
     (
-        "lionagi.state.engine",
+        "lionhub.state.engine",
         "_stop_once_class.<locals>.StopOnceConnection",
         "class-base-unresolved",
         "Name(id='cls', ctx=Load())",
@@ -545,7 +545,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Attribute(value=Subscript(value=Attribute(value=Name(id='self', ctx=Load()), attr='_counters', ctx=Load()), slice=Name(id='run_id', ctx=Load()), ctx=Load()), attr='received', ctx=Store())",
     ): "a counter field on a dict-held object",
     (
-        "lionagi.service.accounts._router",
+        "lionhub.providers.anthropic.accounts._router",
         "StreamTextRedactor._feed",
         "attribute-owner-shape",
         "Attribute(value=Call(func=Attribute(value=Attribute(value=Name(id='join', ctx=Load()), attr='pending', ctx=Load()), attr='pop', ctx=Load()), args=[Constant(value=0)], keywords=[]), attr='open', ctx=Store())",

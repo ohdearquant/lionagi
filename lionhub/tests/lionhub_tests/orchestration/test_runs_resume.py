@@ -23,17 +23,17 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
-from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.runs import _reopen_session_for_resume
+from lionhub.state.db import SESSION_TERMINAL_STATUSES, StateDB
+from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.state.reasons import RunReasons
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

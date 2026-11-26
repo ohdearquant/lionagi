@@ -673,7 +673,7 @@ def test_uv_probe_uses_the_supplied_declared_names_at_policy_construction(monkey
 
 
 def test_uv_probe_without_branch_names_uses_the_owned_declarations(monkeypatch, tmp_path):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
     captured = _capture_fixed_child(monkeypatch)
@@ -716,7 +716,7 @@ def test_confined_writer_keeps_the_prepared_mapping_and_fixed_child_arguments(
 
 
 def test_confined_writer_without_a_mapping_uses_owned_names_and_no_grants(monkeypatch, tmp_path):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     parent = _fixed_child_parent_environment(monkeypatch, tmp_path)
     before = dict(parent)
@@ -910,7 +910,7 @@ async def test_no_confined_command_can_connect_to_the_daemon_reconnect_socket(ro
         # A temporary LionAGI home whose store, and so whose reconnect socket, sit in a short path.
         lionagi_home = base / "home" / ".lionagi"
         monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", lionagi_home)
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", lionagi_home / "state.db")
         sock = reconnect.default_socket_path()
         assert sock == lionagi_home / "studio" / "studio-reconnect.sock"
         sock.parent.mkdir(parents=True, mode=0o700)

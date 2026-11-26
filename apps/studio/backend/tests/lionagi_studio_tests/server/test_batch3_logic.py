@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
@@ -434,7 +434,7 @@ class TestUpdatePlaybookSpecFieldValidation:
 
     def test_editor_write_through_covers_every_canonical_playbook_field(self):
         import lionagi_studio.services.playbooks as svc
-        from lionagi._flow_spec import FLOW_SPEC_FIELDS, normalize_flow_spec_keys
+        from lionhub.orchestration.flow.spec import FLOW_SPEC_FIELDS, normalize_flow_spec_keys
 
         expected_fields = FLOW_SPEC_FIELDS - {
             "description",

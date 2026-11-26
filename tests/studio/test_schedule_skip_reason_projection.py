@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import event
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.scheduler.scheduler_state import (
     _DBSchedulerStateService,
     create_skipped_run,
@@ -20,6 +19,7 @@ from lionhub.orchestration.scheduler.scheduler_state import (
 from lionhub.serve.cli import machine_schedule
 from lionhub.serve.cli import schedule as schedule_cli
 from lionhub.serve.daemon.services import run_view, schedules
+from lionhub.state.db import StateDB
 
 _CAPACITY_REASON = "schedule.deferred.capacity"
 _CAPACITY_SUMMARY = (
@@ -47,7 +47,7 @@ _SKIP_REASONS = (
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     return path
 
 

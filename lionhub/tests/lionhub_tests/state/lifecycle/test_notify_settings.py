@@ -1,0 +1,2183 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""The notify.on_terminal settings contract -- string form, mapping form,
+invalid values, per-run override precedence, the explicit disabled state,
+and the no-shell safety path."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+from dataclasses import replace
+from pathlib import Path
+
+import psutil
+import pytest
+
+from lionagi.ln.concurrency import current_time, move_on_after
+from lionhub.state.lifecycle import callbacks, notify_settings
+from lionhub.state.lifecycle.callbacks import (
+    DEFAULT_TERMINAL_CALLBACKS,
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackRegistry,
+)
+from lionhub.state.lifecycle.notify_settings import (
+    NotifyConfigResolution,
+    ResolvedNotifyHandler,
+    TerminalNoticeContext,
+    build_handler,
+    build_terminal_notice_payload,
+    register_settings_terminal_callback,
+    resolve_notify_config,
+)
+
+
+def _envelope() -> RunTerminalEnvelope:
+    return RunTerminalEnvelope(
+        event_id="ev-1",
+        entity=EntityRef(kind="invocation", id="inv-1"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=0.0,
+    )
+
+
+def test_executable_notice_and_lifecycle_envelope_share_a_schema_version():
+    envelope = _envelope()
+    common_notice = build_terminal_notice_payload(status=envelope.terminal_status)
+    assert common_notice["schema_version"] == envelope.schema_version
+
+    newer = replace(envelope, schema_version=envelope.schema_version + 1)
+    assert TerminalNoticeContext().payload(newer)["schema_version"] == newer.schema_version
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (["malformed"], "on_terminal_not_string_or_mapping"),
+        (" ", "on_terminal_command_is_empty"),
+        ("notify-hook | output", "on_terminal_command_requires_shell_features"),
+        ("notify-hook '", "on_terminal_command_not_parseable"),
+        ({"filter": []}, "filter_not_a_mapping"),
+        ({"filter": {"unexpected": ["value"]}}, "filter_has_unknown_keys"),
+        ({"filter": {"kinds": "invocation"}}, "filter_kinds_not_a_list_of_strings"),
+        ({"filter": {"kinds": ["unknown"]}}, "filter_kinds_unsupported"),
+        ({"filter": {"ids": [""]}}, "filter_ids_not_a_list_of_strings"),
+        ({"enabled": True}, "enabled_without_adapter"),
+        (
+            {"adapter": {"kind": "exec", "argv": ["notify-hook", 1]}},
+            "exec_adapter_argv_not_a_list_of_strings",
+        ),
+        ({"adapter": {"kind": "exec", "argv": []}}, "on_terminal_command_is_empty"),
+        ({"adapter": {"kind": "python", "ref": "unqualified"}}, "python_adapter_ref_invalid"),
+        ({"adapter": {"kind": "unsupported"}}, "adapter_kind_unsupported"),
+    ],
+)
+def test_shape_requires_its_reporter_for_every_rejection(source, reason, caplog):
+    receipt = NotifyConfigResolution(reason=reason)
+    calls = []
+
+    class Reporter:
+        def reject(self, reported_reason, diagnostic, *args):
+            calls.append((reported_reason, diagnostic, args))
+            return receipt
+
+    assert notify_settings._resolve_shape(source, reporter=Reporter()) is receipt
+    [(reported_reason, diagnostic, _args)] = calls
+    assert reported_reason == reason
+    assert diagnostic
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("scope", ["global", "project", "override"])
+def test_durable_resolution_reports_only_scope_and_reason(scope, caplog):
+    class Unformattable:
+        def __repr__(self):
+            raise AssertionError("The durable reporter formatted a config value")
+
+    source = {"adapter": {"kind": "exec", "argv": [Unformattable()]}}
+    layer = {"notify": {"on_terminal": source}}
+    with caplog.at_level(logging.WARNING, logger=notify_settings.__name__):
+        resolution = notify_settings.classify_notify_provenance(
+            layer if scope == "global" else {},
+            layer if scope == "project" else {},
+            override=source if scope == "override" else None,
+        )
+
+    outcome = {
+        "global": resolution.global_config,
+        "project": resolution.project_config,
+        "override": resolution.run_config,
+    }[scope]
+    assert outcome.reason == "exec_adapter_argv_not_a_list_of_strings"
+    assert [record.getMessage() for record in caplog.records] == [
+        f"notify.on_terminal {scope} configuration rejected: {outcome.reason}"
+    ]
+
+
+def test_legacy_resolution_keeps_diagnostic_and_disabled_config_is_silent(caplog):
+    value = "unqualified-test-adapter"
+    source = {"adapter": {"kind": "python", "ref": value}}
+    resolution = resolve_notify_config(override=source)
+    assert resolution.reason == "python_adapter_ref_invalid"
+    assert [record.getMessage() for record in caplog.records] == [
+        "notify.on_terminal (override) python adapter requires a "
+        f"'module:callable' ref, got {value!r}; resolving to disabled."
+    ]
+    caplog.clear()
+
+    disabled = {**source, "enabled": False}
+    layer = {"notify": {"on_terminal": disabled}}
+    provenance = notify_settings.classify_notify_provenance(layer, layer, override=disabled)
+    assert provenance.project_declared and provenance.run_declared
+    assert (
+        provenance.global_config
+        == provenance.project_config
+        == provenance.run_config
+        == resolve_notify_config(override=disabled)
+        == NotifyConfigResolution()
+    )
+    assert caplog.records == []
+
+
+# String form
+
+
+def test_string_form_resolves_to_argv():
+    resolved = resolve_notify_config(override="notify-hook --flag value")
+    assert resolved.handler == ResolvedNotifyHandler(argv=("notify-hook", "--flag", "value"))
+    assert resolved.reason is None  # nothing was rejected
+
+
+def test_string_form_preserves_quoted_shell_metacharacters_as_literal_args():
+    # A quoted "|" is a literal argument character, not shell syntax -- must
+    # not be flagged.
+    resolved = resolve_notify_config(override='notify-hook "a|b"')
+    assert resolved.handler is not None
+    assert resolved.handler.argv == ("notify-hook", "a|b")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "notify-hook | grep x",
+        "notify-hook && echo done",
+        "notify-hook > /tmp/out",
+        "notify-hook; rm -rf /",
+        "echo $HOME",
+        "echo `whoami`",
+    ],
+)
+def test_shell_feature_string_resolves_disabled_with_diagnostic(caplog, command):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override=command)
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_requires_shell_features"
+    assert any("shell features" in r.message for r in caplog.records)
+
+
+def test_unparseable_string_resolves_disabled_with_diagnostic(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override='notify-hook "unbalanced')
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_not_parseable"
+    assert any("failed to parse" in r.message for r in caplog.records)
+
+
+# Empty-argv resolution: every path resolves to disabled (1c)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "",
+        "   ",
+        {"enabled": True, "adapter": {"kind": "exec", "argv": []}},
+    ],
+)
+def test_empty_argv_resolves_disabled_with_diagnostic(caplog, source):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override=source)
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_is_empty"
+    assert any("empty command" in r.message for r in caplog.records)
+
+
+def test_empty_argv_via_settings_path_also_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(settings={"notify": {"on_terminal": "   "}})
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_command_is_empty"
+    assert any("empty command" in r.message for r in caplog.records)
+
+
+# Mapping form
+
+
+def test_mapping_form_exec_adapter():
+    resolved = resolve_notify_config(
+        override={
+            "enabled": True,
+            "adapter": {"kind": "exec", "argv": ["notify-hook", "--x"]},
+            "filter": {"kinds": ["invocation"], "ids": ["inv-1"]},
+        }
+    )
+    assert resolved.handler == ResolvedNotifyHandler(
+        argv=("notify-hook", "--x"),
+        filter_kinds=("invocation",),
+        filter_ids=("inv-1",),
+    )
+
+
+def test_mapping_form_python_adapter():
+    resolved = resolve_notify_config(
+        override={"enabled": True, "adapter": {"kind": "python", "ref": "os.path:join"}}
+    )
+    assert resolved.handler == ResolvedNotifyHandler(python_ref="os.path:join")
+
+
+def test_mapping_form_explicit_enabled_false_is_disabled():
+    resolved = resolve_notify_config(
+        override={"enabled": False, "adapter": {"kind": "exec", "argv": ["should-not-run"]}}
+    )
+    assert resolved.handler is None
+    # Turning notification off is a choice being honored, not a rejection, so it
+    # carries no reason -- it must not be reported to an operator as a failure.
+    assert resolved.reason is None
+
+
+def test_mapping_form_enabled_without_adapter_is_a_rejection(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override={"enabled": True})
+    assert resolved.handler is None
+    assert resolved.reason == "enabled_without_adapter"
+    assert any("no adapter configured" in r.message for r in caplog.records)
+
+
+def test_mapping_form_without_enabled_or_adapter_is_silence_not_rejection(caplog):
+    # No warning today and no reason now: this mapping asked for nothing.
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override={"adapter": None})
+    assert resolved.handler is None
+    assert resolved.reason is None
+    assert not caplog.records
+
+
+def test_mapping_form_unknown_adapter_kind_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override={"adapter": {"kind": "carrier-pigeon"}})
+    assert resolved.handler is None
+    assert resolved.reason == "adapter_kind_unsupported"
+    assert any("must be 'exec' or 'python'" in r.message for r in caplog.records)
+
+
+def test_mapping_form_invalid_exec_argv_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={"enabled": True, "adapter": {"kind": "exec", "argv": "notify-hook"}}
+        )
+    assert resolved.handler is None
+    assert resolved.reason == "exec_adapter_argv_not_a_list_of_strings"
+    assert any("requires an argv" in r.message for r in caplog.records)
+
+
+def test_mapping_form_invalid_python_ref_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={"enabled": True, "adapter": {"kind": "python", "ref": "no-colon"}}
+        )
+    assert resolved.handler is None
+    assert resolved.reason == "python_adapter_ref_invalid"
+    assert any("'module:callable' ref" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("filter_value", "diagnostic", "reason"),
+    [
+        ("session", "filter must be a non-empty mapping", "filter_not_a_mapping"),
+        (
+            {"unexpected": True},
+            "filter keys must be 'kinds' and/or 'ids'",
+            "filter_has_unknown_keys",
+        ),
+        (
+            {"kinds": 0},
+            "filter.kinds must be a list of strings",
+            "filter_kinds_not_a_list_of_strings",
+        ),
+        (
+            {"kinds": ["not-a-terminal-entity"]},
+            "filter.kinds contains unsupported terminal entity kinds",
+            "filter_kinds_unsupported",
+        ),
+        (
+            {"ids": 1},
+            "filter.ids must be a list of strings",
+            "filter_ids_not_a_list_of_strings",
+        ),
+    ],
+)
+def test_mapping_form_invalid_filter_disables_handler(caplog, filter_value, diagnostic, reason):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": filter_value,
+            }
+        )
+    assert resolved.handler is None
+    assert resolved.reason == reason
+    assert any(diagnostic in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        1,  # scalar int -- the crashing shape (bare tuple(1) raises TypeError)
+        "session",  # scalar string -- would silently char-split, never match
+        ["invocation", 1],  # list containing a non-string element
+    ],
+)
+def test_mapping_form_malformed_filter_kinds_disabled_not_raised(caplog, filter_value):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": {"kinds": filter_value},
+            }
+        )  # must not raise
+    assert resolved.handler is None
+    assert resolved.reason == "filter_kinds_not_a_list_of_strings"
+    assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        1,
+        "inv-1",
+        ["inv-1", 1],
+    ],
+)
+def test_mapping_form_malformed_filter_ids_disabled_not_raised(caplog, filter_value):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": {"ids": filter_value},
+            }
+        )  # must not raise
+    assert resolved.handler is None
+    assert resolved.reason == "filter_ids_not_a_list_of_strings"
+    assert any("filter.ids must be a list of strings" in r.message for r in caplog.records)
+
+
+def test_malformed_settings_never_raises(caplog, monkeypatch):
+    def _boom(project_dir=None):
+        raise ValueError("malformed yaml")
+
+    monkeypatch.setattr("lionhub.state.lifecycle.notify_settings.load_settings", _boom)
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config()  # must not raise
+    assert resolved.handler is None
+    # Settings that cannot be read may well have named a notifier; that is not
+    # the same as having configured none, so it is reported as a rejection.
+    assert resolved.reason == "settings_load_failed"
+    assert any("settings resolution failed" in r.message for r in caplog.records)
+
+
+# Invalid top-level value / absent key
+
+
+def test_invalid_value_type_disabled(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(override=12345)
+    assert resolved.handler is None
+    assert resolved.reason == "on_terminal_not_string_or_mapping"
+    assert any("must be a string or mapping" in r.message for r in caplog.records)
+
+
+def test_absent_notify_key_is_disabled():
+    """The one genuinely-unconfigured path: no handler and no reason."""
+    for settings in ({}, {"notify": {}}, {"notify": {"on_terminal": None}}):
+        resolved = resolve_notify_config(settings=settings)
+        assert resolved.handler is None
+        assert resolved.reason is None
+
+
+# Precedence: per-run override beats settings for its own scope only
+
+
+def test_per_run_override_replaces_settings_handler():
+    settings = {"notify": {"on_terminal": "settings-cmd"}}
+    resolved_no_override = resolve_notify_config(settings=settings)
+    assert resolved_no_override.handler is not None
+    assert resolved_no_override.handler.argv == ("settings-cmd",)
+
+    resolved_with_override = resolve_notify_config(settings=settings, override="override-cmd")
+    assert resolved_with_override.handler is not None
+    assert resolved_with_override.handler.argv == ("override-cmd",)
+
+
+# No-shell safety: the exec adapter never launches via a shell
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_never_constructs_a_shell(monkeypatch):
+    called: dict[str, object] = {}
+
+    async def _fake_exec(*argv, **kwargs):
+        called["argv"] = argv
+        called["stdin_payload"] = None
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, data=None):
+                called["stdin_payload"] = data
+                return (b"", b"")
+
+        return _FakeProc()
+
+    def _fail_if_shell_used(*a, **k):
+        raise AssertionError("create_subprocess_shell must never be called")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fail_if_shell_used)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook", "--x")))
+    await handler(_envelope())
+
+    assert called["argv"] == ("notify-hook", "--x")
+    payload = json.loads(called["stdin_payload"])
+    assert payload["schema"] == "lionagi.run-terminal"
+    assert payload["entity"] == {"kind": "invocation", "id": "inv-1"}
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplog):
+    class _FakeProc:
+        pid = 123
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", b"boom")
+
+        async def wait(self):
+            return 1
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    with caplog.at_level(logging.WARNING):
+        await handler(_envelope())  # must not raise
+    assert any("exited 1" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("safe_logging", [False, True], ids=["legacy", "durable"])
+@pytest.mark.parametrize(
+    ("case", "reason", "legacy_diagnostic"),
+    [
+        ("launch", "exec_adapter_launch_failed", "failed to run"),
+        ("post_spawn", "exec_adapter_post_spawn_failed", "failed to run"),
+        ("timeout", "exec_adapter_timeout", "timed out"),
+        ("cancel", None, None),
+        ("nonzero", "exec_adapter_nonzero_exit", "exited 7"),
+        ("success", None, None),
+    ],
+)
+async def test_exec_adapters_share_lifecycle_across_outcomes(
+    monkeypatch, caplog, safe_logging, case, reason, legacy_diagnostic
+):
+    label = "synthetic-notifier"
+    cause = "synthetic failure detail"
+    stderr = "synthetic child detail"
+    artifact = "private-notify-stderr.txt"
+    expected_logging = safe_logging
+    phases = []
+    receipts = []
+    warnings = []
+
+    class Process:
+        returncode = 7 if case == "nonzero" else 0
+
+        async def communicate(self, _payload):
+            phases.append("communicate")
+            if case == "post_spawn":
+                raise OSError(cause)
+            if case == "timeout":
+                raise asyncio.TimeoutError
+            if case == "cancel":
+                raise asyncio.CancelledError
+            return b"", stderr.encode() if case == "nonzero" else b""
+
+    process = Process()
+    witnesses = ((4242, 10.0),)
+
+    async def spawn(argv, _env, _marker):
+        phases.append("spawn")
+        assert argv == (label,)
+        if case == "launch":
+            raise OSError(cause)
+        return process, 10.0
+
+    def witness(proc, *, expected_leader_created):
+        phases.append("witness")
+        assert proc is process and expected_leader_created == 10.0
+        return witnesses
+
+    async def terminate(proc, *, grace, group_witnesses):
+        phases.append("terminate")
+        assert proc is process and grace is None and group_witnesses == witnesses
+
+    async def reap(proc, *, safe_logging):
+        phases.append("reap")
+        assert proc is process
+        assert safe_logging is expected_logging
+
+    def outcome(*, ok, exit_code, stderr_text):
+        receipts.append((ok, exit_code, stderr_text, None))
+        return artifact if stderr_text else None
+
+    def exec_failure(code):
+        receipts.append((False, None, None, code))
+
+    monkeypatch.setattr(notify_settings, "_spawn_in_group", spawn)
+    monkeypatch.setattr(notify_settings, "capture_group_witnesses", witness)
+    monkeypatch.setattr(notify_settings, "aterminate_process_group", terminate)
+    monkeypatch.setattr(notify_settings, "_await_proc_dead", reap)
+    monkeypatch.setattr(notify_settings, "_warn_adapter_failure", warnings.append)
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=(label,)),
+        safe_logging=safe_logging,
+        outcome_fn=outcome,
+        on_timeout=(lambda: exec_failure("exec_adapter_timeout")) if safe_logging else None,
+        on_exec_failure=exec_failure if safe_logging else None,
+    )
+    assert handler is not None
+
+    with caplog.at_level(logging.WARNING, logger=notify_settings.__name__):
+        if case == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await handler(_envelope())
+        else:
+            await handler(_envelope())
+
+    if case == "launch":
+        assert phases == ["spawn"]
+    elif case in {"post_spawn", "timeout", "cancel"}:
+        assert phases == ["spawn", "communicate", "witness", "terminate", "reap"]
+    else:
+        assert phases == ["spawn", "communicate"]
+
+    if case == "cancel":
+        assert receipts == []
+    elif case == "success":
+        assert receipts == [(True, 0, None, None)]
+    elif case == "nonzero":
+        assert receipts == [(False, 7, stderr, None)]
+    else:
+        assert receipts == [(False, None, None, reason if safe_logging else None)]
+
+    messages = [record.getMessage() for record in caplog.records]
+    if reason is None:
+        assert messages == warnings == []
+    elif safe_logging:
+        assert messages == [f"notify.on_terminal global adapter: {reason}"]
+        assert warnings == []
+    else:
+        [message] = messages
+        [warning] = warnings
+        assert legacy_diagnostic in message and label in message
+        assert legacy_diagnostic in warning and label in warning
+        if case == "nonzero":
+            assert artifact in warning and stderr not in warning
+
+
+# Adapter outcome visibility: notify_outcome.json + the CLI warn() channel
+#
+# Outcome recording is never automatic: a bare build_handler(resolved) call
+# (the process-wide default registered by register_settings_terminal_callback)
+# has no bound run and therefore never records anything. Only a handler built
+# via register_run_notify_outcome_scope(run, ...) -- or build_handler(...,
+# outcome_fn=...) directly in these tests -- writes an outcome, and only into
+# that specific run's own notify_outcome.json (never run.json).
+
+
+def _outcome_fn_for(run):
+    from lionhub.state.lifecycle.notify_settings import record_notify_outcome_to_run
+
+    def _fn(*, ok, exit_code, stderr_text):
+        return record_notify_outcome_to_run(
+            run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
+        )
+
+    return _fn
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_nonzero_exit_outcome_and_warns(monkeypatch, tmp_path):
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-fail-run")
+    run.write_manifest({"status": "completed", "ended_at": 123.0})
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 123
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", b"boom\nsecond line")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": False,
+        "exit_code": 1,
+        "stderr_path": str(run.notify_stderr_path),
+    }
+    # The stderr text lives only in the captured file, never in the record --
+    # and the capture is the whole output, not just its first line.
+    assert run.notify_stderr_path.read_text() == "boom\nsecond line"
+    # The outcome lands in its own file -- run.json's own terminal status is
+    # never touched by notify bookkeeping.
+    manifest = json.loads(run.manifest_path.read_text())
+    assert "notify_outcome" not in manifest
+    assert manifest["status"] == "completed"
+    assert manifest["ended_at"] == 123.0
+
+    assert len(warn_calls) == 1
+    assert "exited 1" in warn_calls[0]
+    # Only the adapter's own name (argv[0]'s basename) identifies it in the
+    # user-facing warn line -- never the full argv repr.
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_redacts_argv_and_bounds_stderr_in_warn_and_outcome(
+    monkeypatch, tmp_path
+):
+    """A secret-bearing argv (webhook URLs, tokens as args) must never
+    appear in the warn-channel line or the persisted notify_outcome.json --
+    only the adapter's own name (argv[0]'s basename). Stderr content is
+    adapter-controlled and can't be scrubbed for arbitrary secrets, but it
+    is bounded to STDERR_SNIPPET_LIMIT chars, capping exposure."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import STDERR_SNIPPET_LIMIT
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    secret = "sekret123"
+    secret_argv = ("notify", "--token", secret)
+    long_detail = "adapter failure detail " + ("x" * 400)
+
+    class _FakeProc:
+        pid = 789
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", long_detail.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=secret_argv), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome_text = run.notify_outcome_path.read_text()
+    outcome = json.loads(outcome_text)
+
+    # The secret argv element never leaks into either surface.
+    assert secret not in outcome_text
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "--token" not in warn_calls[0]
+    assert "notify" in warn_calls[0]
+
+    # The adapter's stderr is not in the record at all -- only a path to the
+    # owner-only file that holds it.
+    assert outcome["stderr_path"] == str(run.notify_stderr_path)
+    assert len(warn_calls[0]) < len(long_detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("safe_logging", [True, False])
+async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_path, safe_logging):
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-timeout-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    class _FakeProc:
+        pid = 456
+
+        async def communicate(self, data=None):
+            raise asyncio.TimeoutError()
+
+    proc = _FakeProc()
+
+    async def _fake_exec(*argv, **kwargs):
+        assert kwargs["env"] == {"MARKED": "notify"}
+        return proc
+
+    witnesses = ((456, 17.0),)
+    cleanup_calls: list[tuple[object, object, object]] = []
+
+    async def _fake_terminate(proc, grace=None, group_witnesses=None):
+        cleanup_calls.append((proc, grace, group_witnesses))
+
+    async def _fake_await_dead(proc, grace=2.0, *, safe_logging=False):
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.prepare_process_group_env",
+        lambda env=None: ({"MARKED": "notify"}, "notify-token"),
+    )
+    monkeypatch.setattr(
+        "lionagi.ln._proc.observe_process_group_leader",
+        lambda pid, *, expected_marker: (
+            17.0 if (pid, expected_marker) == (456, "notify-token") else None
+        ),
+    )
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.capture_group_witnesses",
+        lambda *args, **kwargs: witnesses,
+    )
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.aterminate_process_group", _fake_terminate
+    )
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings._await_proc_dead", _fake_await_dead
+    )
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        outcome_fn=_outcome_fn_for(run),
+        safe_logging=safe_logging,
+    )
+    await handler(_envelope())  # must not raise
+    assert cleanup_calls == [(proc, None, witnesses)]
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+    }
+    if not safe_logging:
+        assert len(warn_calls) == 1
+        assert "timed out" in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_spawn_error_outcome_and_warns(monkeypatch, tmp_path):
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-spawn-error-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    async def _fake_exec(*argv, **kwargs):
+        raise FileNotFoundError("no such file: notify-hook")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())  # must not raise
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome["ok"] is False
+    assert outcome["exit_code"] is None
+    # A spawn failure produces no adapter output to capture; the reason is
+    # Python's own message and stays on the warning channel.
+    assert outcome["stderr_path"] is None
+    assert len(warn_calls) == 1
+    assert "failed to run" in warn_calls[0]
+    assert "notify-hook" in warn_calls[0]
+    assert "('notify-hook',)" not in warn_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_safe_exec_handler_keeps_launch_failure_reason(monkeypatch, caplog):
+    async def unavailable(*args, **kwargs):
+        raise FileNotFoundError("example launch text")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unavailable)
+    reasons = []
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        safe_logging=True,
+        on_exec_failure=reasons.append,
+    )
+    await handler(_envelope())
+
+    assert reasons == ["exec_adapter_launch_failed"]
+    assert "exec_adapter_launch_failed" in caplog.text
+    assert "example launch text" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_safe_exec_handler_retrieves_spawn_failure_after_cancellation(monkeypatch, caplog):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    spawn_tasks = []
+    reported = []
+
+    async def unavailable(*args, **kwargs):
+        spawn_tasks.append(asyncio.current_task())
+        entered.set()
+        await release.wait()
+        raise OSError("example late launch text")
+
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unavailable)
+    reasons = []
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)),
+        safe_logging=True,
+        on_exec_failure=reasons.append,
+    )
+    caller = asyncio.create_task(handler(_envelope()))
+    spawn_finished = asyncio.Event()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        (inner,) = spawn_tasks
+        assert inner is not None
+        inner.add_done_callback(lambda _: spawn_finished.set())
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not spawn_finished.is_set()
+
+        release.set()
+        await asyncio.wait_for(spawn_finished.wait(), timeout=5)
+        assert not inner.cancelled()
+        # Allow the shield and cleanup callbacks to run without retrieving the
+        # exception through the test itself.
+        await asyncio.sleep(0)
+        spawn_tasks.clear()
+        del inner
+        assert reported == []
+        assert reasons == []
+        assert "example late launch text" not in caplog.text
+    finally:
+        release.set()
+        if not caller.done():
+            caller.cancel()
+            await asyncio.gather(caller, return_exceptions=True)
+        loop.set_exception_handler(previous_exception_handler)
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_records_success_outcome_without_warn(monkeypatch, tmp_path):
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="notify-ok-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    await handler(_envelope())
+
+    outcome = json.loads(run.notify_outcome_path.read_text())
+    assert outcome == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_path": None,
+    }
+    assert warn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_outcome_recording_is_a_noop_without_a_bound_run(tmp_path, monkeypatch):
+    """build_handler() with no outcome_fn (the process-wide default
+    registration, before any run-scoped override exists) never guesses at a
+    target run -- outcome recording is skipped, not misattributed."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="unbound-run")
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    await handler(_envelope())  # must not raise
+
+    assert not run.notify_outcome_path.exists()
+
+
+# Run-scoped attribution: bound at registration time, never last-writer-wins
+
+
+@pytest.mark.asyncio
+async def test_run_scoped_outcome_survives_a_later_run_allocation(monkeypatch, tmp_path):
+    """A late outcome for run A's entity must land on A even after run B has
+    been allocated in the same process -- the handler is bound to A's RunDir
+    at registration time, not resolved dynamically against whichever run is
+    "current" when the callback fires."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=("notify-hook",))),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    run_a = allocate_run(run_id="run-a")
+    name_a = register_run_notify_outcome_scope(
+        run_a, entity_kind="session", entity_id="session-a", registry=registry
+    )
+    assert name_a is not None
+
+    # Run B is allocated afterward, in the same process -- must not affect A's binding.
+    run_b = allocate_run(run_id="run-b")
+    name_b = register_run_notify_outcome_scope(
+        run_b, entity_kind="session", entity_id="session-b", registry=registry
+    )
+    assert name_b is not None
+
+    try:
+        # The "late" terminal event: session-a's own terminal transition,
+        # fired after run-b already exists.
+        envelope_a = RunTerminalEnvelope(
+            event_id="ev-a",
+            entity=EntityRef(kind="session", id="session-a"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=0.0,
+        )
+        await registry.emit(envelope_a)
+    finally:
+        unregister_run_notify_outcome_scope(name_a, registry=registry)
+        unregister_run_notify_outcome_scope(name_b, registry=registry)
+
+    assert json.loads(run_a.notify_outcome_path.read_text()) == {
+        "ok": True,
+        "exit_code": 0,
+        "stderr_path": None,
+    }
+    assert not run_b.notify_outcome_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_unscoped_entity_records_nothing_never_last_writer_wins(monkeypatch, tmp_path):
+    """A terminal event for an entity with no run-scoped registration must
+    record nothing -- never fall back to whichever run was allocated most
+    recently."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(argv=("notify-hook",))),
+    )
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    # A run is allocated, but its entity ("session-known") is never registered.
+    run = allocate_run(run_id="only-run")
+    register_run_notify_outcome_scope(
+        run, entity_kind="session", entity_id="session-known", registry=registry
+    )
+    # Also install the process-wide default (no outcome_fn) so the unscoped
+    # entity still gets a matching, non-attributing handler.
+    from lionhub.state.lifecycle.notify_settings import build_handler, resolve_notify_config
+
+    default_handler = build_handler(resolve_notify_config().handler)
+    registry.register("notify.settings.on_terminal", default_handler)
+
+    other_envelope = RunTerminalEnvelope(
+        event_id="ev-other",
+        entity=EntityRef(kind="session", id="session-unrelated"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=0.0,
+    )
+    await registry.emit(other_envelope)
+
+    assert not run.notify_outcome_path.exists()
+
+
+# Registry cancellation must reap the child both before and after the handler
+# receives the process handle.
+
+
+def _capture_notify_deadline(monkeypatch: pytest.MonkeyPatch):
+    scope_ready = asyncio.get_running_loop().create_future()
+
+    @contextlib.contextmanager
+    def track_deadline(seconds):
+        with move_on_after(seconds) as scope:
+            scope_ready.set_result(scope)
+            yield scope
+
+    monkeypatch.setattr(callbacks, "move_on_after", track_deadline)
+    return scope_ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("safe_logging", [True, False])
+@pytest.mark.parametrize(
+    "park_spawn",
+    [False, True],
+    ids=["child-starts-promptly", "budget-expires-during-spawn"],
+)
+async def test_cancelled_exec_handler_still_kills_its_child_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+    park_spawn: bool,
+    safe_logging: bool,
+):
+    argv = (sys.executable, "-c", "import time; time.sleep(60)")
+    real_popen = subprocess.Popen
+    real_spawn = asyncio.create_subprocess_exec
+    real_communicate = asyncio.subprocess.Process.communicate
+    started: list[subprocess.Popen] = []
+    handles: list[asyncio.subprocess.Process] = []
+    spawn_ready = asyncio.Event()
+    release_spawn = asyncio.Event()
+    communicating = asyncio.Event()
+
+    class RecordingPopen(real_popen):
+        def __init__(self, args, *popen_args, **popen_kwargs):
+            super().__init__(args, *popen_args, **popen_kwargs)
+            if isinstance(args, (list, tuple)) and tuple(args) == argv:
+                # Count the OS launch even while the handler lacks the handle.
+                started.append(self)
+
+    async def track_spawn(*args, **kwargs):
+        process = await real_spawn(*args, **kwargs)
+        if args == argv:
+            handles.append(process)
+            spawn_ready.set()
+            if park_spawn:
+                await release_spawn.wait()
+        return process
+
+    async def track_communicate(process, *args, **kwargs):
+        if process in handles:
+            communicating.set()
+        return await real_communicate(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", track_spawn)
+    monkeypatch.setattr(asyncio.subprocess.Process, "communicate", track_communicate)
+    scope_ready = _capture_notify_deadline(monkeypatch)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=argv), safe_logging=safe_logging)
+    assert handler is not None
+    registry = TerminalCallbackRegistry(budget_seconds=2 * _NOTIFY_DEADMAN)
+    registry.register("slow-notify", handler)
+    delivery = asyncio.create_task(registry.emit(_envelope()))
+    try:
+        milestone = spawn_ready if park_spawn else communicating
+        await asyncio.wait_for(milestone.wait(), _NOTIFY_DEADMAN)
+        (process,) = handles
+        assert [child.pid for child in started] == [process.pid]
+        assert process.returncode is None
+        assert communicating.is_set() == (not park_spawn)
+        child_identity = psutil.Process(process.pid)
+
+        scope = await scope_ready
+        scope.deadline = current_time()
+        await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+        assert scope.cancelled_caught
+        if park_spawn:
+            assert not communicating.is_set()
+            release_spawn.set()
+        else:
+            assert process.returncode is not None
+
+        assert await asyncio.wait_for(process.wait(), _NOTIFY_DEADMAN) < 0
+        assert not child_identity.is_running(), "the notifier child was not reaped"
+    finally:
+        release_spawn.set()
+        if not delivery.done():
+            delivery.cancel()
+        await asyncio.gather(delivery, return_exceptions=True)
+        for process in handles:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            await asyncio.wait_for(process.wait(), _NOTIFY_DEADMAN)
+        for child in started:
+            if all(child.pid != process.pid for process in handles):
+                # The OS started a child without delivering a transport.
+                with contextlib.suppress(ProcessLookupError):
+                    child.kill()
+                await asyncio.to_thread(child.wait, timeout=_NOTIFY_DEADMAN)
+
+
+_NOTIFY_DEADMAN = 10
+_NOTIFY_GROUP_SCRIPT = """\
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+if len(sys.argv) == 3:
+    temp = marker.with_suffix(".tmp")
+    temp.write_text(json.dumps({"pid": os.getpid(), "pgid": os.getpgrp()}))
+    temp.replace(marker)
+    time.sleep(60)
+else:
+    child = subprocess.Popen(
+        [sys.executable, __file__, str(marker), "descendant"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    child.wait(timeout=65)
+"""
+
+
+async def _wait_for_notify_condition(check, description):
+    async def wait():
+        while not check():
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait(), _NOTIFY_DEADMAN)
+    except asyncio.TimeoutError:
+        pytest.fail(description)
+
+
+def _live_notify_process(process):
+    try:
+        return process is not None and process.status() not in {
+            psutil.STATUS_DEAD,
+            psutil.STATUS_ZOMBIE,
+        }
+    except psutil.NoSuchProcess:
+        return False
+
+
+class _NotifyProcessGroup:
+    def __init__(self, argv, marker, *, park_spawn):
+        self.argv = argv
+        self.marker = marker
+        self.park_spawn = park_spawn
+        self.ready = asyncio.Event()
+        self.release = asyncio.Event()
+        self.spawn_left = asyncio.Event()
+        self.communicating = asyncio.Event()
+        self.proc = None
+        self.leader = None
+        self.descendant = None
+
+    def install(self, monkeypatch):
+        real_spawn = asyncio.create_subprocess_exec
+        real_communicate = asyncio.subprocess.Process.communicate
+
+        async def start(*argv, **kwargs):
+            proc = await real_spawn(*argv, **kwargs)
+            if argv != self.argv:
+                return proc
+            self.proc = proc
+            self.leader = psutil.Process(proc.pid)
+            assert os.getpgid(proc.pid) == proc.pid != os.getpgrp()
+            try:
+                await _wait_for_notify_condition(
+                    self.marker.is_file, "notify descendant did not report readiness"
+                )
+                record = json.loads(self.marker.read_text())
+                assert record["pgid"] == proc.pid
+                self.descendant = psutil.Process(record["pid"])
+                assert os.getpgid(self.descendant.pid) == proc.pid
+                self.ready.set()
+                if self.park_spawn:
+                    await self.release.wait()
+                return proc
+            except asyncio.CancelledError:
+                # At this test seam asyncio already returned the handle. Mirror
+                # its real interrupted-spawn cleanup, which reaps only the child.
+                if proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(proc.wait())
+                raise
+            finally:
+                self.spawn_left.set()
+
+        async def communicate(proc, *args, **kwargs):
+            if proc is self.proc:
+                self.communicating.set()
+            return await real_communicate(proc, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+        monkeypatch.setattr(asyncio.subprocess.Process, "communicate", communicate)
+
+    def group_alive(self):
+        return _live_notify_process(self.leader) or _live_notify_process(self.descendant)
+
+    async def assert_group_stopped(self):
+        await asyncio.wait_for(self.spawn_left.wait(), _NOTIFY_DEADMAN)
+        await _wait_for_notify_condition(
+            lambda: not self.group_alive(), "notify process group still has a live member"
+        )
+        assert self.proc is not None
+        await asyncio.wait_for(self.proc.wait(), _NOTIFY_DEADMAN)
+
+    async def clean_up(self):
+        self.release.set()
+        if self.proc is None:
+            return
+        pgid = self.proc.pid
+        assert pgid != os.getpgrp()
+        # Even a failing test kills survivors only while a recorded process
+        # still has the same create time and group as the fixture started.
+        for process in (self.leader, self.descendant):
+            if not _live_notify_process(process):
+                continue
+            try:
+                if process.is_running() and os.getpgid(process.pid) == pgid:
+                    os.killpg(pgid, signal.SIGKILL)
+                    break
+            except ProcessLookupError:
+                continue
+        await self.assert_group_stopped()
+
+
+@contextlib.asynccontextmanager
+async def _notify_process_group(tmp_path, monkeypatch, *, park_spawn):
+    script = tmp_path / "notify_group.py"
+    script.write_text(_NOTIFY_GROUP_SCRIPT)
+    marker = tmp_path / "notify_descendant.json"
+    group = _NotifyProcessGroup(
+        (sys.executable, str(script), str(marker)), marker, park_spawn=park_spawn
+    )
+    group.install(monkeypatch)
+    try:
+        yield group
+    finally:
+        await group.clean_up()
+
+
+def _notify_group_handler(group, *, safe_logging):
+    handler = build_handler(ResolvedNotifyHandler(argv=group.argv), safe_logging=safe_logging)
+    assert handler is not None
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("safe_logging", [False, True], ids=["legacy", "safe"])
+@pytest.mark.parametrize("park_spawn", [True, False], ids=["during-spawn", "prompt-spawn"])
+async def test_notify_deadline_reaps_the_spawned_group(
+    tmp_path, monkeypatch, safe_logging, park_spawn
+):
+    scope_ready = _capture_notify_deadline(monkeypatch)
+    async with _notify_process_group(tmp_path, monkeypatch, park_spawn=park_spawn) as group:
+        registry = TerminalCallbackRegistry(budget_seconds=2 * _NOTIFY_DEADMAN)
+        registry.register("notify", _notify_group_handler(group, safe_logging=safe_logging))
+        delivery = asyncio.create_task(registry.emit(_envelope()))
+        try:
+            milestone = group.ready if park_spawn else group.communicating
+            await asyncio.wait_for(milestone.wait(), _NOTIFY_DEADMAN)
+            scope = await scope_ready
+            scope.deadline = current_time()
+            await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            assert scope.cancelled_caught
+            if park_spawn:
+                assert not group.communicating.is_set()
+                group.release.set()
+            await group.assert_group_stopped()
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_second_notify_cancellation_preserves_abandoned_spawn_cleanup(tmp_path, monkeypatch):
+    caller_unwinding = asyncio.Event()
+    caller_parked = asyncio.Event()
+    async with _notify_process_group(tmp_path, monkeypatch, park_spawn=True) as group:
+        handler = _notify_group_handler(group, safe_logging=True)
+
+        async def deliver():
+            try:
+                await handler(_envelope())
+            except asyncio.CancelledError:
+                caller_unwinding.set()
+                await caller_parked.wait()
+                raise
+
+        delivery = asyncio.create_task(deliver())
+        try:
+            await asyncio.wait_for(group.ready.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            await asyncio.wait_for(caller_unwinding.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            assert not group.communicating.is_set()
+            group.release.set()
+            await group.assert_group_stopped()
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconciliation_reaps_notify_group_without_ack(tmp_path, monkeypatch):
+    from uuid import uuid4
+
+    from lionhub.orchestration.scheduler import terminal_reconciliation
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle import settings_delivery
+    from lionhub.state.lifecycle.deliveries import is_acknowledged
+    from lionhub.state.lifecycle.reconciler import TerminalReconciler
+
+    async with (
+        _notify_process_group(tmp_path, monkeypatch, park_spawn=True) as group,
+        StateDB(tmp_path / "state.db") as db,
+    ):
+        monkeypatch.setattr(
+            settings_delivery,
+            "load_global_settings_layer",
+            lambda: {
+                "notify": {"on_terminal": {"adapter": {"kind": "exec", "argv": list(group.argv)}}}
+            },
+        )
+        session_id, progression_id = str(uuid4()), str(uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {"id": session_id, "progression_id": progression_id, "status": "running"}
+        )
+        db._lifecycle_service()._terminal_callbacks = TerminalCallbackRegistry()
+        assert await db.update_status(
+            "session", session_id, new_status="failed", reason_code="session.stale.no_heartbeat"
+        )
+        transition = await db.fetch_one(
+            "SELECT id FROM status_transitions "
+            "WHERE entity_type = ? AND entity_id = ? AND status = ?",
+            ("session", session_id, "failed"),
+        )
+        assert transition is not None
+        consumer = terminal_reconciliation.CONSUMER_NAME
+        reconciler = TerminalReconciler(
+            consumer,
+            terminal_reconciliation.prepare_global_settings_delivery,
+            timeout=2 * _NOTIFY_DEADMAN,
+        )
+        delivery = asyncio.create_task(reconciler.run_pass(db))
+        try:
+            await asyncio.wait_for(group.ready.wait(), _NOTIFY_DEADMAN)
+            assert delivery.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(delivery, _NOTIFY_DEADMAN)
+            await _wait_for_notify_condition(
+                lambda: reconciler._pending()[1] == 0, "cancelled delivery did not settle"
+            )
+            assert not group.communicating.is_set()
+            assert not await is_acknowledged(db, transition["id"], consumer)
+            group.release.set()
+            await group.assert_group_stopped()
+            assert not await is_acknowledged(db, transition["id"], consumer)
+        finally:
+            if not delivery.done():
+                delivery.cancel()
+            await asyncio.gather(delivery, return_exceptions=True)
+
+
+# build_handler: a malformed python adapter must never raise
+
+
+def test_build_handler_bad_python_ref_returns_none_not_raises(caplog):
+    resolved = ResolvedNotifyHandler(python_ref="definitely.not.a.real.module:handler")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("failed to import" in r.message for r in caplog.records)
+
+
+def test_build_handler_python_ref_missing_callable_returns_none_not_raises(caplog):
+    resolved = ResolvedNotifyHandler(python_ref="os.path:definitely_not_a_real_attr")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("failed to import" in r.message for r in caplog.records)
+
+
+def test_build_handler_non_callable_python_ref_returns_none_not_raises(caplog):
+    # os.pathsep is a real, importable module attribute -- just not callable.
+    resolved = ResolvedNotifyHandler(python_ref="os:pathsep")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("non-callable" in r.message for r in caplog.records)
+
+
+def test_build_handler_callable_python_ref_still_resolves():
+    resolved = ResolvedNotifyHandler(python_ref="os.path:join")
+    handler = build_handler(resolved)
+    assert handler is os.path.join
+
+
+def test_register_settings_terminal_callback_bad_python_ref_never_raises(monkeypatch):
+    # The exact regression this guards: a typo'd notify.on_terminal python
+    # adapter must resolve to disabled at the bootstrap call site (CLI
+    # startup / Studio lifespan), never raise and abort unrelated commands.
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "python", "ref": "missing.module:handler"},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    installed = register_settings_terminal_callback(
+        registry, name="test.bad-python"
+    )  # must not raise
+    assert installed is False
+    assert "test.bad-python" not in registry
+
+
+def test_register_settings_terminal_callback_non_callable_python_ref_disabled(monkeypatch, caplog):
+    # A well-formed, importable ref that just isn't callable (e.g. a data
+    # attribute) must be rejected at bootstrap, not registered and left to
+    # blow up every terminal-callback delivery downstream.
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "python", "ref": "os:pathsep"},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        installed = register_settings_terminal_callback(registry, name="test.non-callable")
+    assert installed is False
+    assert "test.non-callable" not in registry
+    assert any("non-callable" in r.message for r in caplog.records)
+
+
+def test_register_settings_terminal_callback_malformed_filter_never_raises(monkeypatch, caplog):
+    # The exact regression this guards: `notify.on_terminal.filter.kinds: 1`
+    # (a scalar where the schema expects a list) used to raise TypeError out
+    # of a bare tuple(...) coercion, aborting CLI startup (lionhub/src/lionhub/serve/cli/main.py)
+    # and Studio lifespan startup (apps/studio/backend/src/lionagi_studio/app.py) -- both call this
+    # function once per process with no guard of their own around it.
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                    "filter": {"kinds": 1},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        installed = register_settings_terminal_callback(
+            registry, name="test.bad-filter"
+        )  # must not raise -- this is the bootstrap call site itself
+    assert installed is False
+    assert "test.bad-filter" not in registry
+    assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
+
+
+# Legacy argv/env substitution hooks used by the flow `--notify` adapter
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_argv_fn_and_env_fn_are_applied_per_call(monkeypatch):
+    called: dict[str, object] = {}
+
+    async def _fake_exec(*argv, **kwargs):
+        called["argv"] = argv
+        called["env"] = kwargs.get("env")
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, data=None):
+                return (b"", b"")
+
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    def _argv_fn(argv, envelope):
+        return [tok.replace("{status}", envelope.terminal_status) for tok in argv]
+
+    def _env_fn(envelope):
+        return {"MY_STATUS": envelope.terminal_status}
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("hook", "{status}")),
+        argv_fn=_argv_fn,
+        env_fn=_env_fn,
+    )
+    await handler(_envelope())
+
+    assert called["argv"] == ("hook", "completed")
+    assert called["env"]["MY_STATUS"] == "completed"
+    # Parent environment is still inherited alongside the extra var.
+    assert "PATH" in called["env"] or called["env"] is not None
+
+
+# Bootstrap: register/unregister on the shared registry
+
+
+def test_register_settings_terminal_callback_installs_and_uninstalls(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {"on_terminal": {"enabled": True, "adapter": {"kind": "exec", "argv": ["x"]}}}
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    installed = register_settings_terminal_callback(registry, name="test.settings")
+    assert installed is True
+    assert "test.settings" in registry
+
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {"notify": {"on_terminal": {"enabled": False}}},
+    )
+    installed_again = register_settings_terminal_callback(registry, name="test.settings")
+    assert installed_again is False
+    assert "test.settings" not in registry
+
+
+def test_default_registry_is_the_process_wide_instance():
+    assert isinstance(DEFAULT_TERMINAL_CALLBACKS, TerminalCallbackRegistry)
+
+
+@pytest.mark.asyncio
+async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp_path):
+    """A run-scoped registration is an override, so it dispatches on its own
+    match instead of deferring to the process-wide registration's filter. It
+    must therefore apply the configured filter itself -- otherwise an entity
+    the operator excluded via filter.kinds/filter.ids starts receiving
+    notifications the moment it runs under a run scope."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import (
+        register_run_notify_outcome_scope,
+        unregister_run_notify_outcome_scope,
+    )
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(
+                argv=("notify-hook",), filter_kinds=("play",), filter_ids=("play-allowed",)
+            )
+        ),
+    )
+
+    spawned: list[tuple] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **kwargs):
+        spawned.append(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id="filtered-run")
+
+    # Excluded kind: the operator asked for plays only.
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="play-allowed", registry=registry
+        )
+        is None
+    )
+    # Right kind, excluded id.
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="play", entity_id="play-other", registry=registry
+        )
+        is None
+    )
+
+    await registry.emit(
+        RunTerminalEnvelope(
+            event_id="ev-excluded",
+            entity=EntityRef(kind="session", id="play-allowed"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=0.0,
+        )
+    )
+    assert spawned == []
+    assert not run.notify_outcome_path.exists()
+
+    # The allowed entity still registers and still records its outcome.
+    name = register_run_notify_outcome_scope(
+        run, entity_kind="play", entity_id="play-allowed", registry=registry
+    )
+    assert name is not None
+    try:
+        await registry.emit(
+            RunTerminalEnvelope(
+                event_id="ev-allowed",
+                entity=EntityRef(kind="play", id="play-allowed"),
+                previous_status="running",
+                terminal_status="completed",
+                reason_code="run.completed.ok",
+                occurred_at=0.0,
+            )
+        )
+    finally:
+        unregister_run_notify_outcome_scope(name, registry=registry)
+
+    assert len(spawned) == 1
+    assert json.loads(run.notify_outcome_path.read_text())["ok"] is True
+
+
+# The two silences a run must not confuse
+# Registration returns None both when nothing was configured and when a
+# configured notifier was refused. The run's own record is what tells them
+# apart: a refusal writes an unsuccessful outcome carrying the reason, chosen
+# silence writes no file. Without this, a caller waiting on a terminal notice
+# that can never arrive sees exactly what a caller that never asked for one
+# sees.
+
+
+def test_run_scoped_registration_records_a_settings_rejection(monkeypatch, tmp_path):
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    registry = TerminalCallbackRegistry()
+
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(reason="on_terminal_command_is_empty"),
+    )
+    rejected = allocate_run(run_id="rejected-run")
+    assert (
+        register_run_notify_outcome_scope(
+            rejected, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert json.loads(rejected.notify_outcome_path.read_text()) == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+        "reason": "on_terminal_command_is_empty",
+    }
+
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(),
+    )
+    unconfigured = allocate_run(run_id="unconfigured-run")
+    assert (
+        register_run_notify_outcome_scope(
+            unconfigured, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert not unconfigured.notify_outcome_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("ref", "reason"),
+    [
+        ("lionagi._no_such_module_here:handler", "python_adapter_unresolvable"),
+        ("json:no_such_attribute", "python_adapter_unresolvable"),
+        ("json:__doc__", "python_adapter_not_callable"),
+    ],
+)
+def test_run_scoped_registration_records_a_python_build_failure(monkeypatch, tmp_path, ref, reason):
+    """A python adapter that resolves and then fails to build is configured and
+    unusable. Only build_handler knows why, so a run-bound caller is handed the
+    reason instead of the same None it returns for nothing configured."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(handler=ResolvedNotifyHandler(python_ref=ref)),
+    )
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id=f"build-failure-{reason}")
+
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert json.loads(run.notify_outcome_path.read_text()) == {
+        "ok": False,
+        "exit_code": None,
+        "stderr_path": None,
+        "reason": reason,
+    }
+
+
+def test_filtered_out_entity_is_chosen_silence_not_a_rejection(monkeypatch, tmp_path):
+    """An entity the operator excluded is silence by choice for that entity, so
+    it writes no record. Recording it would make an intentional exclusion look
+    like a broken notifier."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+    from lionhub.state.lifecycle.notify_settings import register_run_notify_outcome_scope
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
+        lambda **kw: NotifyConfigResolution(
+            handler=ResolvedNotifyHandler(argv=("notify-hook",), filter_kinds=("play",))
+        ),
+    )
+    registry = TerminalCallbackRegistry()
+    run = allocate_run(run_id="filtered-out-run")
+
+    assert (
+        register_run_notify_outcome_scope(
+            run, entity_kind="session", entity_id="s-1", registry=registry
+        )
+        is None
+    )
+    assert not run.notify_outcome_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_adapter_argument_values_echoed_on_stderr_are_redacted(monkeypatch, tmp_path, caplog):
+    """The realistic leak path: an adapter fails and echoes its own invocation
+    back on stderr, carrying a token it was passed as an argument. That value
+    must not survive into the warn line, the persisted outcome, or the log."""
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="redaction-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    secret = "wh0-t0ken-abcdef123456"
+    secret_argv = ("/usr/local/bin/notify-hook", "--token", secret)
+    echoed = f"notify-hook: request failed: curl -H 'Auth: {secret}' https://hook.example/x"
+
+    class _FakeProc:
+        returncode = 2
+
+        async def communicate(self, data=None):
+            return (b"", echoed.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=secret_argv), outcome_fn=_outcome_fn_for(run)
+    )
+    with caplog.at_level(logging.WARNING):
+        await handler(_envelope())
+
+    outcome_text = run.notify_outcome_path.read_text()
+    assert secret not in outcome_text
+    assert json.loads(outcome_text)["stderr_path"] == str(run.notify_stderr_path)
+
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "notify-hook" in warn_calls[0]
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret not in logged
+    assert "--token" not in logged
+
+
+@pytest.mark.asyncio
+async def test_env_sourced_credential_in_adapter_stderr_reaches_no_shared_surface(
+    monkeypatch, tmp_path, caplog
+):
+    """An adapter can print a credential it got from anywhere -- an inherited
+    environment variable, a file it read -- and no value-matching redaction
+    can recognize it. So the adapter's stderr goes to an owner-only file and
+    every shared surface (warn channel, log, outcome record) carries only the
+    path to it."""
+    import stat
+
+    import lionhub.orchestration.runs as runs_mod
+    from lionhub.orchestration.runs import allocate_run
+
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="env-secret-run")
+
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    # The secret is NOT an argv element -- the adapter inherited it.
+    env_secret = "env-cred-9f8e7d6c5b4a"
+    monkeypatch.setenv("NOTIFY_WEBHOOK_TOKEN", env_secret)
+    echoed = f"hook failed: POST rejected for token {env_secret}"
+
+    class _FakeProc:
+        returncode = 1
+
+        async def communicate(self, data=None):
+            return (b"", echoed.encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("notify-hook",)), outcome_fn=_outcome_fn_for(run)
+    )
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    outcome_text = run.notify_outcome_path.read_text()
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert env_secret not in outcome_text
+    assert env_secret not in logged
+    assert len(warn_calls) == 1
+    assert env_secret not in warn_calls[0]
+
+    # The operator can still diagnose: the path is named, and the file holds
+    # the full stderr, readable only by them.
+    captured = run.notify_stderr_path
+    assert str(captured) in warn_calls[0]
+    assert captured.read_text() == echoed
+    assert stat.S_IMODE(captured.stat().st_mode) == 0o600
+    assert json.loads(outcome_text)["stderr_path"] == str(captured)
+
+
+@pytest.mark.asyncio
+async def test_unbound_handler_drops_adapter_stderr_rather_than_sharing_it(monkeypatch, caplog):
+    """With no run bound there is nowhere owner-only to put the stderr, so it
+    is dropped -- never rerouted onto the log or the warning channel."""
+    warn_calls: list[str] = []
+    monkeypatch.setattr("lionhub.state.log_channels.warn", warn_calls.append)
+
+    secret = "unbound-secret-abc123"
+
+    class _FakeProc:
+        returncode = 3
+
+        async def communicate(self, data=None):
+            return (b"", f"failed with {secret}".encode())
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    handler = build_handler(ResolvedNotifyHandler(argv=("notify-hook",)))
+    with caplog.at_level(logging.DEBUG):
+        await handler(_envelope())
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert secret not in logged
+    assert len(warn_calls) == 1
+    assert secret not in warn_calls[0]
+    assert "not captured" in warn_calls[0]
+
+
+@pytest.fixture
+def python_adapter_package(tmp_path, monkeypatch):
+    name = "_python_notify_import_case"
+    root = tmp_path / name
+    root.mkdir()
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield name, root
+    for module_name in tuple(sys.modules):
+        if module_name == name or module_name.startswith(name + "."):
+            sys.modules.pop(module_name, None)
+
+
+def test_python_adapter_resolves_the_real_handler_through_the_shared_importer(
+    python_adapter_package, monkeypatch
+):
+    from lionagi.ln import import_module
+    from lionhub.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    target = name + ".adapter"
+    (root / "adapter.py").write_text(
+        "def on_terminal(event):\n    return event\n", encoding="utf-8"
+    )
+    bound_importer = getattr(notify_settings, "import_module", None)
+    calls = []
+
+    def observed_import(module_name, *args, **kwargs):
+        calls.append((module_name, args, kwargs))
+        return import_module(module_name, *args, **kwargs)
+
+    monkeypatch.setattr(notify_settings, "import_module", observed_import, raising=False)
+    reasons = []
+    handler = notify_settings.build_handler(
+        ResolvedNotifyHandler(python_ref=target + ":on_terminal"),
+        on_build_failure=reasons.append,
+    )
+
+    assert handler is sys.modules[target].on_terminal
+    envelope = _envelope()
+    delivered = handler(envelope)
+    assert delivered is envelope
+    assert json.dumps(delivered.to_dict()).encode() == (
+        b'{"schema": "lionagi.run-terminal", "schema_version": 1, "event_id": "ev-1", '
+        b'"durable": true, "entity": {"kind": "invocation", "id": "inv-1"}, '
+        b'"previous_status": "running", "terminal_status": "completed", '
+        b'"reason_code": "run.completed.ok", "occurred_at": 0.0, '
+        b'"correlation": {"invocation_id": null, "session_id": null, '
+        b'"schedule_run_id": null, "run_id": null}, "artifacts": []}'
+    )
+    assert reasons == []
+    assert bound_importer is import_module
+    assert [call[0] for call in calls] == [target]
+    assert all(not args and kwargs.get("import_name") is None for _, args, kwargs in calls)
+
+
+@pytest.mark.parametrize("error_kind", ["ordinary", "subclass", "missing"])
+def test_python_adapter_import_errors_preserve_cause_and_disabled_reason(
+    python_adapter_package, monkeypatch, caplog, error_kind
+):
+    import types
+
+    from lionhub.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+
+    class AdapterImportError(ImportError):
+        pass
+
+    error_type = {
+        "ordinary": ImportError,
+        "subclass": AdapterImportError,
+        "missing": ModuleNotFoundError,
+    }[error_kind]
+    original = error_type(
+        "adapter initialization failed", name="adapter_dependency", path="adapter.py"
+    )
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    target = name + ".broken"
+    (root / "broken.py").write_text("from .state import error\nraise error\n", encoding="utf-8")
+    ref = target + ":on_terminal"
+
+    with pytest.raises(ImportError) as caught:
+        notify_settings._make_python_handler(ref)
+
+    if error_kind == "missing":
+        assert caught.value is original
+        assert caught.value.name == "adapter_dependency"
+        assert caught.value.path == "adapter.py"
+        assert caught.value.msg == "adapter initialization failed"
+    else:
+        assert type(caught.value) is ImportError
+        assert str(caught.value) == f"Failed to import module {target}: {original}"
+        assert caught.value.msg == str(caught.value)
+        assert caught.value.name is None
+        assert caught.value.path is None
+        assert caught.value.__cause__ is original
+
+    reasons = []
+    with caplog.at_level(logging.WARNING, logger=notify_settings.logger.name):
+        handler = notify_settings.build_handler(
+            ResolvedNotifyHandler(python_ref=ref), on_build_failure=reasons.append
+        )
+
+    assert handler is None
+    assert reasons == ["python_adapter_unresolvable"]
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == notify_settings.logger.name and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "failed to import" in warnings[0].getMessage()
+    reported = warnings[0].args[1]
+    if error_kind == "missing":
+        assert reported is original
+    else:
+        assert str(reported) == f"Failed to import module {target}: {original}"
+        assert reported.__cause__ is original
+
+
+@pytest.mark.parametrize("attribute", ["child", ""], ids=["child", "empty"])
+def test_python_adapter_missing_attribute_never_imports_a_package_child(
+    python_adapter_package, caplog, attribute
+):
+    from lionhub.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    (root / "child.py").write_text("EXECUTED = True\n", encoding="utf-8")
+    reasons = []
+    with caplog.at_level(logging.WARNING, logger=notify_settings.logger.name):
+        handler = notify_settings.build_handler(
+            ResolvedNotifyHandler(python_ref=name + ":" + attribute),
+            on_build_failure=reasons.append,
+        )
+
+    assert handler is None
+    assert reasons == ["python_adapter_unresolvable"]
+    assert name + ".child" not in sys.modules
+
+
+def test_python_adapter_keeps_attribute_import_errors_outside_module_import_wrapping(
+    python_adapter_package, monkeypatch
+):
+    import types
+
+    from lionhub.state.lifecycle import notify_settings
+
+    name, root = python_adapter_package
+    original = ImportError(
+        "handler attribute unavailable", name="handler_dependency", path="handler.py"
+    )
+    state = types.ModuleType(name + ".state")
+    state.error = original
+    monkeypatch.setitem(sys.modules, state.__name__, state)
+    (root / "__init__.py").write_text(
+        "from .state import error\ndef __getattr__(name):\n    raise error\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportError) as caught:
+        notify_settings._make_python_handler(name + ":on_terminal")
+
+    assert caught.value is original
+    assert caught.value.name == "handler_dependency"
+    assert caught.value.path == "handler.py"

@@ -1,5 +1,12 @@
 {
   "environment_lookups": {
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "os.environ.get:AGENT_DEPTH_ENV",
+      "os.environ:AGENT_DEPTH_ENV"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "os.environ:key_env"
+    ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "os.environ.get:'PATH'"
     ],
@@ -30,6 +37,9 @@
     "lionhub/src/lionhub/providers/_multipart.py": [
       "__all__ = (\"_replayable_file_factory\",)"
     ],
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
+    ],
     "lionhub/src/lionhub/providers/ag2/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AG2AgentRequest\": (\"agent\", None),\n    \"AG2BetaEndpoint\": (\"agent\", None),\n    \"AG2GroupChatEndpoint\": (\"groupchat\", None),\n    \"AG2GroupChatRequest\": (\"groupchat\", None),\n    \"AG2NlipEndpoint\": (\"nlip\", None),\n    \"AG2NlipRequest\": (\"nlip\", None),\n    \"AgentConfig\": (\"agent\", None),\n    \"AgentSpec\": (\"groupchat\", None),\n    \"GroupChatSpec\": (\"groupchat\", None),\n    \"HandoffCondition\": (\"groupchat\", None),\n    \"ResearchPlan\": (\"groupchat\", None),\n    \"_assert_nlip_url_safe\": (\"nlip\", None),\n    \"build_group_chat\": (\"groupchat\", None),\n    \"call_nlip_remote\": (\"nlip\", None),\n    \"run_beta_agent\": (\"agent\", None),\n    \"stream_group_chat\": (\"groupchat\", None),\n}",
@@ -59,6 +69,21 @@
     ],
     "lionhub/src/lionhub/providers/anthropic/_prompt_cache.py": [
       "__all__ = (\"CERT_VERSION\", \"LOOKBACK\", \"MAX_MARKS\", \"Point\", \"place\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/__init__.py": [
+      "__all__ = ()"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "__all__ = (\"CredentialSources\", \"resolve_account_key\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_ledger.py": [
+      "__all__ = (\"CredentialLedger\", \"AccountStatus\", \"default_ledger_path\")"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py": [
+      "__all__ = (\n    \"CACHE_WRITE_LIFETIMES\",\n    \"CURRENT_REVISION\",\n    \"ModelPrice\",\n    \"PriceRevision\",\n    \"PriceTier\",\n    \"cache_write_split\",\n    \"estimate_response_cost\",\n    \"freeze_request\",\n    \"price_usage\",\n    \"quote_ceiling\",\n    \"request_ttls\",\n    \"revision_by_id\",\n    \"stream_usage_estimate\",\n    \"usage_outcome\",\n)"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_router.py": [
+      "__all__ = (\"AccountRouter\",)"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "__all__ = (\"ClaudeCodeRequest\", \"stream_claude_code_cli\", \"ClaudeCodeCLIEndpoint\")"
@@ -173,6 +198,9 @@
     ],
     "lionhub/src/lionhub/providers/manifest.py": [
       "__all__ = (\"get_provider_manifest\",)"
+    ],
+    "lionhub/src/lionhub/providers/model_spec.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n)"
     ],
     "lionhub/src/lionhub/providers/nvidia_nim/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
@@ -343,6 +371,17 @@
       "empty_turn_error",
       "is_empty_turn"
     ],
+    "lionhub/src/lionhub/providers/_subagent_admission.py": [
+      "SubagentLease",
+      "account_admission",
+      "admit_subagent",
+      "child_agent_depth",
+      "engine_cap_env",
+      "refuse_nested_agent",
+      "set_child_agent_depth",
+      "subagent_admission_status",
+      "without_account_names"
+    ],
     "lionhub/src/lionhub/providers/ag2/_config.py": [
       "AG2Configs"
     ],
@@ -376,6 +415,41 @@
       "place",
       "points",
       "routed_cache_evidence"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_credentials.py": [
+      "CredentialSources",
+      "resolve_account_key"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_ledger.py": [
+      "AccountStatus",
+      "CredentialLedger",
+      "default_ledger_path"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_pricing.py": [
+      "ModelPrice",
+      "PriceRevision",
+      "PriceTier",
+      "estimate_response_cost",
+      "freeze_request",
+      "price_usage",
+      "quote_ceiling",
+      "registered_revisions",
+      "request_ttls",
+      "revision_by_id",
+      "stream_usage_estimate",
+      "usage_outcome"
+    ],
+    "lionhub/src/lionhub/providers/anthropic/accounts/_router.py": [
+      "AccountRouter",
+      "RoutedCacheEvidence",
+      "RouterAttempt",
+      "StreamTextRedactor",
+      "StreamingSecretRedactor",
+      "get_router",
+      "mask_joined_key_runs",
+      "mask_key_runs",
+      "provider_request_id",
+      "redact_value"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_code.py": [
       "ClaudeCodeCLIEndpoint",
@@ -514,6 +588,12 @@
     ],
     "lionhub/src/lionhub/providers/manifest.py": [
       "get_provider_manifest"
+    ],
+    "lionhub/src/lionhub/providers/model_spec.py": [
+      "ModelSpec",
+      "codex_unset_effort_default",
+      "parse_model_spec",
+      "reclamp_effort_for_model"
     ],
     "lionhub/src/lionhub/providers/nvidia_nim/_config.py": [
       "NvidiaNimConfigs"

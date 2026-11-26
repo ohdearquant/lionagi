@@ -58,7 +58,7 @@ def _observed(capture, fresh):
 async def test_legacy_and_static_commands_use_fresh_declared_environments(
     monkeypatch, tmp_path, command_programs, context, consumer
 ):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
     from lionhub.tools.code.ast_search import AstSearchRequest, AstSearchTool
     from lionhub.tools.code.bash import BashRequest, BashTool
     from lionhub.tools.code.check import CodeCheckRequest, CodeCheckTool
@@ -120,7 +120,7 @@ def _bound_tools(tmp_path, *, tools, seatbelt=None, post_hooks=()):
 async def test_bound_static_commands_receive_the_selected_name_snapshot(
     monkeypatch, tmp_path, command_programs, consumer
 ):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     monkeypatch.setattr(_command_env_metadata, "configured_command_env_names", lambda: frozenset())
     _, capture = command_programs
@@ -136,8 +136,8 @@ async def test_bound_static_commands_receive_the_selected_name_snapshot(
 async def test_bound_file_actions_use_empty_grants_only_for_a_confined_child(
     monkeypatch, tmp_path, action, confined
 ):
-    from lionagi import _command_env_metadata
     from lionhub.tools import coding
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     monkeypatch.setattr(_command_env_metadata, "configured_command_env_names", lambda: frozenset())
     monkeypatch.setenv("GH_TOKEN", "synthetic-selected-reference")

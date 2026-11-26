@@ -28,14 +28,14 @@ def _source_of(relpath: str, qualname: str) -> str:
 
 def test_status_update_citation_points_to_source_and_actor_parameters() -> None:
     record = RECORD.read_text(encoding="utf-8")
-    assert "lionagi/state/db.py::StateDB.update_status" in record
-    update_status = _source_of("lionagi/state/db.py", "StateDB.update_status")
+    assert "lionhub/src/lionhub/state/db.py::StateDB.update_status" in record
+    update_status = _source_of("lionhub/src/lionhub/state/db.py", "StateDB.update_status")
     assert update_status.startswith("async def update_status(")
     assert 'source: str = "executor"' in update_status
     assert "actor: str | None = None" in update_status
     assert "metadata: dict[str, Any] | None = None" in update_status
-    assert "lionagi/state/lifecycle/models.py::ActorRecord" in record
-    actor = _source_of("lionagi/state/lifecycle/models.py", "ActorRecord")
+    assert "lionhub/src/lionhub/state/lifecycle/models.py::ActorRecord" in record
+    actor = _source_of("lionhub/src/lionhub/state/lifecycle/models.py", "ActorRecord")
     assert actor.startswith("class ActorRecord:")
     assert "id: str" in actor
 

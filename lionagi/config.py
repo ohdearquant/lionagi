@@ -235,14 +235,16 @@ class AppSettings(BaseSettings, frozen=True):
     # See docs/internals/support-libs.md#config-liveness-timeouts
     LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT: float = 3600.0
 
-    LOG_PERSIST_DIR: str = "./data/logs"
+    # No log directory by default: a Branch keeps its logs in memory. Set one
+    # (and LOG_AUTO_SAVE_ON_EXIT) to write them to disk.
+    LOG_PERSIST_DIR: str | None = None
     LOG_SUBFOLDER: str | None = None
     LOG_CAPACITY: int = 50
     LOG_EXTENSION: str = ".json"
     LOG_USE_TIMESTAMP: bool = True
     LOG_HASH_DIGITS: int = 5
     LOG_FILE_PREFIX: str = "log"
-    LOG_AUTO_SAVE_ON_EXIT: bool = True
+    LOG_AUTO_SAVE_ON_EXIT: bool = False
     LOG_CLEAR_AFTER_DUMP: bool = True
     # Keep base64 image/audio payloads out of the log files; each entry keeps a
     # placeholder naming the field, media type and byte length. Set false to log

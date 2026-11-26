@@ -25,8 +25,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from lionagi._command_env_metadata import command_environment
 from lionagi._errors import ConfigurationError
+from lionhub.tools.command_env_metadata import command_environment
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 

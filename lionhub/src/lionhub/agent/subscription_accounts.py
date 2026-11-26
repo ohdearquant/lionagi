@@ -16,7 +16,7 @@ The accounts live in one directory, ``LIONAGI_LOGINS_DIR`` (default ``<LIONAGI_H
   ``dotenv = { file = "/abs/.env", var = "NAME" }``; a ``[codex.<name>]`` table with
   ``home = "/abs/path"``. Any of these tables may also set ``max_concurrent = N`` (a whole
   number, 1 or more): at most N CLI agents on that account run at once on this machine, on
-  top of the machine-wide caps (``lionagi.service._subagent_admission``). A token-file account
+  top of the machine-wide caps (``lionhub.providers._subagent_admission``). A token-file account
   takes its cap from a ``[claude_code.<name>]`` table holding only ``max_concurrent``.
 
 Nothing in the directory listing or ``accounts.toml`` is a secret: a token is read from its
@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError
-from lionagi.service._subagent_admission import (
+from lionhub.providers._subagent_admission import (
     ACCOUNT_CAP_ENV,
     ACCOUNT_ENV,
     without_account_names,
@@ -173,7 +173,7 @@ def validate_codex_home(raw: object, *, where: str = "codex_home") -> str:
 def account_provider(provider: str) -> str | None:
     """The account provider a model provider name uses, or None when it takes no account."""
     from lionagi.service.connections.registry import EndpointRegistry
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     canonical = EndpointRegistry.canonical_provider(provider)
     if canonical == "codex":

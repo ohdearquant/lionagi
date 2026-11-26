@@ -23,21 +23,21 @@ from lionhub.serve.cli.main import main
 
 def _redirect_state_db(monkeypatch, tmp_path: Path) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
 async def _seed(db_path: Path, **kwargs) -> str:
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.dispatch import enqueue_dispatch
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         return await enqueue_dispatch(db, **kwargs)
 
 
 async def _row(db_path: Path, dispatch_id: str):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.dispatch import get_dispatch
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db:
         return await get_dispatch(db, dispatch_id)
@@ -47,7 +47,7 @@ async def _force_status(db_path: Path, dispatch_id: str, status: str) -> None:
     """Put a row in a status the ordinary flow would take time to reach."""
     from sqlalchemy import text
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path) as db, db._tx() as conn:
         await conn.execute(
@@ -195,8 +195,8 @@ def test_a_lost_race_on_a_row_that_is_then_deleted_is_not_found_not_a_null_confl
     if verb == "retry":
         asyncio.run(_force_status(db_path, dispatch_id, "dead_letter"))
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.dispatch import outbox, purge_dispatch
+    from lionhub.state.db import StateDB
 
     real_transition = outbox.transition
 
@@ -289,7 +289,7 @@ def test_purge_dry_run_previews_without_deleting(monkeypatch, tmp_path, capfd):
     assert asyncio.run(_row(db_path, dispatch_id)) is not None
 
     async def _events():
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         async with StateDB(db_path) as db:
             return await db.list_admin_events(action="dispatch_purge", target_id=dispatch_id)

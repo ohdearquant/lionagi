@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 from ._worker_fixtures import WorkerSetup
 
@@ -27,7 +27,7 @@ from ._worker_fixtures import WorkerSetup
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

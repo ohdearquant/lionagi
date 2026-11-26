@@ -22,8 +22,6 @@ from uuid import UUID
 from pydantic import BaseModel, field_validator
 
 from lionagi import Branch
-from lionagi._auto import CliDeclaration, auto_register
-from lionagi._cli_worker_context import _bind_cli_worker_recorder
 from lionagi._errors import (
     ConfigurationError,
     FailedRoundError,
@@ -32,7 +30,6 @@ from lionagi._errors import (
 )
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import ProviderError, ProviderSafetyError, _WorkerSpawnAdmissionError
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     CancelScope,
     SigtermInterrupt,
@@ -46,16 +43,7 @@ from lionagi.ln.concurrency import (
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.service._api_telemetry import collect_api_turn
-from lionagi.service._subagent_admission import (
-    DEFAULT_WORKLOAD,
-    WORKLOADS,
-    NestedAgentRefusedError,
-    SubagentAdmissionRefusedError,
-)
 from lionagi.service.imodel import _endpoint_routing_enabled
-from lionagi.state import provenance as _provenance
-from lionagi.state.artifact_verifier import resolve_artifact_contract
-from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
 from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
 from lionhub.orchestration.arguments import BoundedInt
 from lionhub.orchestration.console import hint, log_error
@@ -119,6 +107,18 @@ from lionhub.orchestration.spawn import (
     resolve_account_integrations,
     resolve_persisted_effort,
 )
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.providers._subagent_admission import (
+    DEFAULT_WORKLOAD,
+    WORKLOADS,
+    NestedAgentRefusedError,
+    SubagentAdmissionRefusedError,
+)
+from lionhub.serve.cli.registration import CliDeclaration, auto_register
+from lionhub.state import provenance as _provenance
+from lionhub.state.artifact_verifier import resolve_artifact_contract
+from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
+from lionhub.state.cli_workers import _prepare_worker_spawn_continuation
 
 from ._agent_depth import stamp_agent_depth
 from ._api_usage import APIUsageCollector
@@ -760,7 +760,7 @@ def _resolve_api_input_cap(policy: object, chat_model) -> tuple[int | None, str]
     model = getattr(chat_model, "model_name", "") or ""
     config = getattr(getattr(chat_model, "endpoint", None), "config", None)
     if getattr(config, "provider", None) == "anthropic":
-        from lionagi.service.accounts._pricing import CURRENT_REVISION
+        from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 
         price = CURRENT_REVISION.models.get(model)
         if price is not None and len(price.tiers) > 1:
@@ -1702,7 +1702,7 @@ async def _tombstone_pending_steers(
     if not live or not live.get("session_id"):
         return
     try:
-        from lionagi.state.db import SESSION_TERMINAL_STATUSES
+        from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
         session = await live["db"].get_session(live["session_id"])
         if (session or {}).get("status") not in SESSION_TERMINAL_STATUSES:
@@ -1813,7 +1813,7 @@ async def _subscription_switch_objection(refusal, api_account: str | None) -> st
     if refusal.code == RouterErrorCode.BUDGET_EXHAUSTED:
         return None
     try:
-        from lionagi.service.accounts._router import get_router
+        from lionhub.providers.anthropic.accounts._router import get_router
 
         statuses = await get_router().ledger.status("anthropic")
     except Exception as exc:  # noqa: BLE001 — a status that cannot be read ends the decision
@@ -2711,7 +2711,7 @@ async def _run_agent(
                 if api_launch is not None:
                     command_names = None
                     if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
-                        from lionagi._command_env_metadata import configured_command_env_names
+                        from lionhub.tools.command_env_metadata import configured_command_env_names
 
                         active_reference = chat_model.endpoint.config.api_key_env
                         command_names = configured_command_env_names(
@@ -3002,7 +3002,7 @@ async def _run_agent(
                     # one has its own ceiling, so re-clamp instead of replaying a
                     # value that model may reject (a sol-derived 'ultra' is a 400
                     # on a spark resume).
-                    from lionagi.service.providers import reclamp_effort_for_model
+                    from lionhub.providers.model_spec import reclamp_effort_for_model
 
                     kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                     if kwarg and cfg.get(kwarg) is not None:
@@ -3170,7 +3170,7 @@ async def _run_agent(
 
                 command_names = None
                 if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
-                    from lionagi._command_env_metadata import configured_command_env_names
+                    from lionhub.tools.command_env_metadata import configured_command_env_names
 
                     active_reference = branch.chat_model.endpoint.config.api_key_env
                     command_names = configured_command_env_names(
@@ -3407,8 +3407,8 @@ async def _run_agent(
             playbook_artifacts=None,
             agent_defaults=profile.artifact_defaults if profile else None,
         )
-        from lionagi.state.compat import StateCompatibilityRefused
         from lionhub.serve.cli.orchestrate._notify import notice_context_for_run
+        from lionhub.state.compat import StateCompatibilityRefused
 
         notice_context = notice_context_for_run(run, cwd=cwd, sender=notify_sender)
         try:
@@ -3501,12 +3501,12 @@ async def _run_agent(
         _notify_scope_name: str | None = None
         _notify_session_id = live.get("session_id") if live else None
         if notify and _notify_session_id is not None:
-            from lionagi.state.lifecycle.notify_settings import (
-                record_notify_rejection_to_run,
-            )
             from lionhub.serve.cli.orchestrate._notify import (
                 register_flow_notify_scope,
                 unregister_flow_notify_scope,
+            )
+            from lionhub.state.lifecycle.notify_settings import (
+                record_notify_rejection_to_run,
             )
 
             def _notify_override_refused(reason: str) -> None:
@@ -3535,7 +3535,7 @@ async def _run_agent(
         # --notify already owns this entity (a second override would double-fire).
         _notify_outcome_scope_name: str | None = None
         if not notify and _notify_session_id is not None:
-            from lionagi.state.lifecycle.notify_settings import (
+            from lionhub.state.lifecycle.notify_settings import (
                 register_run_notify_outcome_scope,
                 unregister_run_notify_outcome_scope,
             )
@@ -3640,13 +3640,17 @@ async def _run_agent(
         _api_turn = None
         _api_fold = None
         if api_launch is not None:
+            from lionhub.providers.anthropic.accounts._pricing import estimate_response_cost
+
             _api_turn_index = 0
 
             async def _api_turn(instruction: str, turn_timeout: float | None):
                 nonlocal _api_turn_index
                 _api_turn_index += 1
                 try:
-                    with collect_api_turn(_api_usage, _api_turn_index):
+                    with collect_api_turn(
+                        _api_usage, _api_turn_index, estimate_cost=estimate_response_cost
+                    ):
                         return await _run_api_turn(
                             branch,
                             instruction,
@@ -3753,9 +3757,9 @@ async def _run_agent(
                     # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
                     # Code's own login token is kept. The names come from the API model's key
                     # reference, read before the branch's model is replaced.
-                    from lionagi._command_env import scrub_command_env
-                    from lionagi._command_env_metadata import configured_command_env_names
-                    from lionagi.service._subagent_admission import without_account_names
+                    from lionhub.providers._subagent_admission import without_account_names
+                    from lionhub.tools.command_env import scrub_command_env
+                    from lionhub.tools.command_env_metadata import configured_command_env_names
 
                     # A settings file that cannot be read leaves the names to remove unknown, so
                     # the run does not move; it fails with the routing error.
@@ -4109,10 +4113,10 @@ async def _run_agent(
                 # Not on a store in compatibility mode: its control rows are not ones this run
                 # created, the only rows the profile lets it write (ADR-0128 D4), and the sweep's
                 # native open would apply this package's schema to the store.
-                from lionagi.state.compat import is_compatibility_store
+                from lionhub.state.compat import is_compatibility_store
 
                 if not will_auto_resume and live and not is_compatibility_store(live.get("db")):
-                    from lionagi.state.db import StateDB
+                    from lionhub.state.db import StateDB
 
                     try:
                         async with StateDB() as _sweep_db:
@@ -4135,7 +4139,7 @@ async def _run_agent(
                 )
                 if effective_status != _terminal_status:
                     _terminal_status = effective_status
-                from lionagi.state.db import SESSION_TERMINAL_STATUSES
+                from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
                 if _lost_write is not None:
                     run_manifest[TERMINAL_WRITE_LOST_FIELD] = _lost_write
@@ -4204,7 +4208,7 @@ async def _run_agent(
                 if _notify_scope_name is not None:
                     unregister_flow_notify_scope(_notify_scope_name)
                 if _notify_outcome_scope_name is not None:
-                    from lionagi.state.lifecycle.notify_settings import (
+                    from lionhub.state.lifecycle.notify_settings import (
                         unregister_run_notify_outcome_scope,
                     )
 

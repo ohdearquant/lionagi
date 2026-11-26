@@ -16,8 +16,8 @@ import pytest
 import pytest_asyncio
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
-from lionagi.state.db import NO_CURSOR_CLAIM
 from lionhub.serve.daemon.services.schedules import _run_trigger_facts
+from lionhub.state.db import NO_CURSOR_CLAIM
 from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
 
 NY = ZoneInfo("America/New_York")
@@ -129,8 +129,8 @@ async def test_resolve_terminal_nonterminal_child_not_trusted_as_completed():
     silently trusted via the fallback_status="completed" path -- it belongs
     on completed_empty (no positive evidence), the same bucket a
     known-empty child already uses."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.scheduler_state import resolve_invocation_terminal
+    from lionhub.state.reasons import RunReasons
 
     svc = _make_svc()
     svc.list_sessions_for_invocation.return_value = [
@@ -843,8 +843,8 @@ async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     schedule_run row's status, reason_code, emitted signal class, and the
     on_success chain decision must all independently agree with that
     resolved outcome instead of the raw exit code."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _make_svc()
     svc.list_sessions_for_invocation = AsyncMock(
@@ -977,8 +977,8 @@ async def test_fire_exception_during_invocation_resolution_marks_run_failed_once
     entirely; the broad-except handler catches it, writes a single guarded
     'failed' schedule_run terminal status, and still finalizes the
     invocation via its own retried resolution call."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _make_svc()
     schedule_run_terminal_calls: list[dict] = []
@@ -1032,8 +1032,8 @@ async def test_fire_exception_during_invocation_resolution_marks_run_failed_once
 @pytest.mark.parametrize("loser", ["schedule_run", "invocation"])
 async def test_fire_chain_requires_a_winning_schedule_run_terminal_write(loser):
     """Only the schedule-run terminal write determines whether the chain fires."""
-    from lionagi.state.db import TransitionRejectedError
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import TransitionRejectedError
 
     svc = _make_svc()
 
@@ -1142,8 +1142,8 @@ async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effect
     race (e.g. another finalizer already moved the row to a terminal
     status). The write must be a checked no-op, not an unguarded write that
     raises and is swallowed by the handler's own except-and-log block."""
-    from lionagi.state.db import TransitionRejectedError
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import TransitionRejectedError
 
     svc = _make_svc()
 
@@ -1839,8 +1839,8 @@ async def test_maybe_fire_fires_when_no_overlap():
 
 @pytest.mark.asyncio
 async def test_create_skipped_run_calls_svc_create_and_update_status():
-    from lionagi.state.reasons import ScheduleReasons
     from lionhub.orchestration.scheduler.scheduler_state import create_skipped_run
+    from lionhub.state.reasons import ScheduleReasons
 
     svc = _make_svc()
     schedule = _minimal_schedule()
@@ -2457,9 +2457,9 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
     following _tick() does not see the same stale past-due next_fire_at and
     queue a second, duplicate fire for it."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.schedule.timing as timing
     import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(timing, "SCHEDULER_TZ", "America/New_York")
@@ -2548,9 +2548,9 @@ async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monke
     result: exactly one fire total, and it is the normal scheduled one,
     not a missed_recovery fire."""
     pytest.importorskip("croniter", reason="studio extra not installed")
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.schedule.timing as timing
     import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(timing, "SCHEDULER_TZ", "America/New_York")
@@ -2723,7 +2723,7 @@ async def test_check_missed_fires_skip_equality_boundary_is_due(monkeypatch):
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
 
-    from lionagi.state.reasons import ScheduleReasons
+    from lionhub.state.reasons import ScheduleReasons
 
     schedule = _minimal_schedule(
         id="sched-skip-eq",
@@ -2782,8 +2782,8 @@ async def test_check_missed_fires_excludes_github_poll(monkeypatch):
     alone. An interval schedule with the same stale next_fire_at is the
     positive control: it must still record a missed-fire skip."""
     import lionhub.orchestration.scheduler.engine as engine_mod
-    from lionagi.state.reasons import ScheduleReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import ScheduleReasons
 
     fixed_now = time.time()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -2833,8 +2833,8 @@ async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monke
     every schedule's evaluation for the whole pass. The worker
     pass here never completes; _tick() must still return promptly and fire
     the due schedule in the same cycle."""
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     fake_db = tmp_path / "state.db"
@@ -2900,8 +2900,8 @@ async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monke
 async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
     """A second _tick() must not start a second worker-pass task while the
     first is still running -- single-flight, not an unguarded task per tick."""
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.scheduler.engine as engine_mod
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     fake_db = tmp_path / "state.db"
@@ -3672,7 +3672,7 @@ async def _seed_schedule(db, schedule: dict) -> None:
 
 @pytest_asyncio.fixture
 async def state_db():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -3686,8 +3686,8 @@ async def test_fire_exception_keeps_the_error_detail_a_prior_finalizer_wrote(sta
     owns its error_detail. The broad-except handler's write is guarded on the
     row still being 'running', so a lost race must leave the winner's text in
     place instead of replacing it with the handler's own."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _DbSvc(state_db)
     engine = SchedulerEngine(svc=svc)
@@ -3734,8 +3734,8 @@ async def test_fire_cancellation_keeps_the_error_detail_a_prior_finalizer_wrote(
     placeholder rather than a measured cause, so a shutdown arriving after some
     other writer already finalized the row must not replace the cause that
     writer recorded."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _DbSvc(state_db)
     engine = SchedulerEngine(svc=svc)
@@ -3782,8 +3782,8 @@ async def test_fire_completion_keeps_the_outcome_a_prior_finalizer_wrote(state_d
     than placeholders. A nonzero exit still does not entitle this path to
     overwrite the exit_code, end time and cause of a row someone else already
     finalized -- the terminal record belongs to whoever won the transition."""
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.reasons import RunReasons
 
     svc = _DbSvc(state_db)
     engine = SchedulerEngine(svc=svc)

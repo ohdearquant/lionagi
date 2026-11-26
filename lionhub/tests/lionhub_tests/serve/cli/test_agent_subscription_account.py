@@ -582,8 +582,8 @@ async def test_a_claude_resume_moves_to_another_account_and_records_both(
     """A Claude Code transcript is kept on this machine, so a session moves off an account
     that has run out; the branch keeps the account it started on and appends the new one."""
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi._log_channels import WARN_LOGGER_NAME
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state.log_channels import WARN_LOGGER_NAME
 
     (logins / "claude-two").write_text(TOKEN_TWO)
     record = None if started_on is None else _claude(started_on)

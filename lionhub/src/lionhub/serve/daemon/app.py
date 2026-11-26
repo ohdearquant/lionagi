@@ -420,6 +420,7 @@ _LEG_HOST_WRITE_PATHS = re.compile(r"/api/launches/?|/api/invocations/[0-9a-f]{8
 async def lifespan(app_instance):
     from lionhub.orchestration.scheduler.engine import scheduler
     from lionhub.orchestration.scheduler.lifecycle import run_startup_reconciliation
+    from lionhub.orchestration.scheduler.settings import SCHEDULER_HOLD_ENV, scheduler_held
     from lionhub.serve.daemon.daemon_log import daemon_log_handler
     from lionhub.serve.diagnostics import snapshot_git_position
 
@@ -448,7 +449,7 @@ async def lifespan(app_instance):
         _emit_startup_warnings()
         await _refuse_or_prepare_leg_host()
         # The second of the two settings-driven notify bootstrap points (CLI is the first).
-        from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+        from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
         register_settings_terminal_callback()
         # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
@@ -461,6 +462,10 @@ async def lifespan(app_instance):
         # transcripts into the host's store, so neither starts there. Said on the daemon's
         # own stderr logger.
         quiet_host = leg_host.enabled()
+        # A hold serves the API with the engine not started, so schedules can be disabled
+        # or enabled before any of them fires. Read here, so a value that is neither on nor
+        # off fails the start like any other step of it.
+        held = scheduler_held()
         # Entered inside this block, so a log handler that cannot be installed is a failed
         # start like any other and the dump armed above is disarmed.
         log_scope.enter_context(daemon_log_handler())
@@ -500,6 +505,12 @@ async def lifespan(app_instance):
             if quiet_host:
                 logging.getLogger(SCHEDULER_LOGGER).info(
                     "Leg host: the scheduler engine is not started"
+                )
+            elif held:
+                logging.getLogger(SCHEDULER_LOGGER).warning(
+                    "%s is set: the scheduler engine is not started, and no schedule fires "
+                    "until the daemon starts without it",
+                    SCHEDULER_HOLD_ENV,
                 )
             else:
                 await scheduler.start()

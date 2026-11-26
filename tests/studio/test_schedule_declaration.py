@@ -39,8 +39,6 @@ pinned_scheduler_tz = _support.pinned_scheduler_tz
 temp_db_path = _support.temp_db_path
 from pydantic import ValidationError
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import (
     _ADOPT_DECLARATION_FIELDS,
     _ADOPT_UNDECLARED_COLUMNS,
@@ -56,6 +54,8 @@ from lionhub.orchestration.schedule.declaration import (
     parse_schedule_set,
     resolve_schedule_set,
 )
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.state.db import StateDB
 
 # fixtures
 

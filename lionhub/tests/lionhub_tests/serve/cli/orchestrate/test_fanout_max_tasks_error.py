@@ -221,7 +221,7 @@ async def test_fanout_refuses_an_unregistered_invocation_before_setup(
     invocation leaves the run ungrouped while its caller believes otherwise.
     It has to run before setup, so nothing is spawned when it fails.
     """
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(state_db_mod, "settings", type("S", (), {"LIONAGI_STATE_DB_URL": None})())
@@ -235,8 +235,8 @@ async def test_fanout_refuses_an_unregistered_invocation_before_setup(
 
 async def test_fanout_accepts_a_registered_invocation(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """The refusal is the id, not the flag: a registered invocation proceeds to setup."""
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

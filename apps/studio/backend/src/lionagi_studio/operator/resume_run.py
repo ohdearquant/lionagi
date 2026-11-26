@@ -184,7 +184,7 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
 
     run_id = resolution["session_id"]
 
-    from lionagi.state.db import StateDB, read_only_open_supported
+    from lionhub.state.db import StateDB, read_only_open_supported
 
     async with StateDB(readonly=read_only_open_supported()) as db:
         session = await db.get_session(run_id)

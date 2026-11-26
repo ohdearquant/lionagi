@@ -20,6 +20,8 @@ assert PYPROJECT is not None, "CLI catalog tests require a LionAGI source checko
 ROOT = PYPROJECT.parent
 CORE = ROOT / "lionagi"
 CATALOG = ROOT / "lionhub" / "src" / "lionhub" / "serve" / "cli" / "catalog.py"
+# The declaration types live in the hub; ``lionagi._auto`` is their old name.
+_REGISTRATION_MODULES = frozenset({"lionhub.serve.cli.registration", "lionagi._auto"})
 
 
 def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
@@ -27,16 +29,10 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
     tree = ast.parse(source, filename=str(path))
     seed_names = {"CliSeed"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "lionagi._auto":
+        if isinstance(node, ast.ImportFrom) and node.module in _REGISTRATION_MODULES:
             seed_names.update(
                 alias.asname or alias.name for alias in node.names if alias.name == "CliSeed"
             )
-    logger_names = {
-        "lionagi.cli.progress",
-        "lionagi.cli.hint",
-        "lionagi.cli.warn",
-        "lionagi.cli.error",
-    }
     logger_arguments = {
         id(node.args[0])
         for node in ast.walk(tree)
@@ -55,13 +51,7 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
                 hits.append((node.lineno, "CliSeed"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
-            if id(node) in logger_arguments or (
-                path == CORE / "_log_channels.py" and value in logger_names
-            ):
-                continue
-            # The core keeps lazy forwards to the catalog's public functions for 0.x
-            # callers; they name the catalog, not a command module.
-            if path == CORE / "_auto.py" and value.startswith("lionhub.serve.cli.catalog."):
+            if id(node) in logger_arguments:
                 continue
             prefixes = (
                 "lionagi.cli",
@@ -79,7 +69,7 @@ def _private_auto_imports(source: str) -> list[str]:
     return [
         alias.name
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.ImportFrom) and node.module == "lionagi._auto"
+        if isinstance(node, ast.ImportFrom) and node.module in _REGISTRATION_MODULES
         for alias in node.names
         if alias.name.startswith("_")
     ]
@@ -87,6 +77,9 @@ def _private_auto_imports(source: str) -> list[str]:
 
 def test_catalog_uses_only_the_private_marker_reader():
     assert _private_auto_imports(CATALOG.read_text()) == ["_read_registration_marker"]
+    assert _private_auto_imports(
+        "from lionhub.serve.cli.registration import _MARKER_ATTR as marker"
+    ) == ["_MARKER_ATTR"]
     assert _private_auto_imports("from lionagi._auto import _MARKER_ATTR as marker") == [
         "_MARKER_ATTR"
     ]
@@ -102,7 +95,8 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     )
     hits = _core_catalog_references(probe, source)
     assert sorted(line for line, _ in hits) == [2, 2, 3, 4, 4]
-    assert _core_catalog_references(CORE / "_log_channels.py", "name = 'lionagi.cli.warn'") == []
+    # The output channels live in the hub now, so a channel name literal in core is a hit.
+    assert _core_catalog_references(probe, "name = 'lionagi.cli.warn'") == [(1, "lionagi.cli.warn")]
     assert _core_catalog_references(probe, "logging.getLogger('lionagi.cli')") == []
     assert _core_catalog_references(probe, "target = 'lionagi.cli'") == [(1, "lionagi.cli")]
     assert _core_catalog_references(probe, "target = 'lionhub.serve.cli'") == [
@@ -473,18 +467,26 @@ class RefuseHub(importlib.abc.MetaPathFinder):
         if fullname == 'lionhub' or fullname.startswith('lionhub.'):
             raise AssertionError('core attempted to import lionhub')
 sys.meta_path.insert(0, RefuseHub())
-import lionagi._auto as auto
+import lionagi
 assert not any(m == 'lionhub' or m.startswith('lionhub.') for m in sys.modules)
+""")
+    # The declaration types hold no catalog either: the five old catalog names only
+    # forward, and importing the types does not load the catalog.
+    _fresh("""
+import sys
+from lionhub.serve.cli import registration
+assert 'lionhub.serve.cli.catalog' not in sys.modules
 for name in ('_CLI_SEEDS', '_cli_seeds', '_cli_seed_by_token', '_cli_realized',
              'iter_cli_seeds', 'seed_for', 'command_exists', 'load_cli_command', 'build_cli_parser'):
-    assert name not in vars(auto), name
+    assert name not in vars(registration), name
 """)
     files = [
         path
         for path in CORE.rglob("*.py")
         if path.relative_to(CORE).parts[0] not in {"cli", "studio"} and path != CORE / "_moved.py"
     ]
-    assert CORE / "_auto.py" in files
+    assert CORE / "__init__.py" in files
+    assert not (CORE / "_auto.py").exists()
     hits = {
         str(path.relative_to(ROOT)): found
         for path in files

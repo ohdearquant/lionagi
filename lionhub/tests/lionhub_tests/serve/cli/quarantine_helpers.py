@@ -7,8 +7,8 @@ import uuid
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli import kill as kill_cli
+from lionhub.state.db import StateDB
 
 GENERATION = "11111111-1111-4111-8111-111111111111"
 NEXT_GENERATION = "22222222-2222-4222-8222-222222222222"
@@ -16,7 +16,7 @@ NEXT_GENERATION = "22222222-2222-4222-8222-222222222222"
 
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(kill_cli, "_pid_alive", lambda _pid: True)
 
 

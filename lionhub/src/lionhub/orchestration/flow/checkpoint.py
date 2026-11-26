@@ -11,16 +11,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lionagi._checkpoint_version import (
+from lionagi._errors import LionError
+from lionagi._paths import RUNS_ROOT
+from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln.concurrency import CapacityLimiter, run_sync
+from lionhub.orchestration.flow.checkpoint_version import (
     CHECKPOINT_VERSION,
     GRAPH_CHECKPOINT_VERSION,
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )
-from lionagi._errors import LionError
-from lionagi._paths import RUNS_ROOT
-from lionagi.ln._json_dump import raise_if_non_finite
-from lionagi.ln.concurrency import CapacityLimiter, run_sync
 from lionhub.orchestration.job import AmbiguousIdError
 from lionhub.orchestration.runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 
@@ -257,8 +257,8 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
     if loaded is not None:
         return loaded
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.inspection import resolve_any_target, resolve_primary_session
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         resolved = await resolve_any_target(db, target)

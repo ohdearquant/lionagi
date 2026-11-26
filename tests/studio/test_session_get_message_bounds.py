@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
@@ -31,7 +31,7 @@ def store(monkeypatch, tmp_path: Path) -> Path:
 
 
 async def _seed(db_path: Path, *, messages: int) -> tuple[str, str]:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     session_id = "11111111-1111-1111-1111-111111111111"
     branch_id = f"{session_id}-br1"
