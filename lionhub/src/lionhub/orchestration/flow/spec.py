@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.service.providers import EFFORT_LEVELS
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 FLOW_SPEC_FIELDS = frozenset(
     {

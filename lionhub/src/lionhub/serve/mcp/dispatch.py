@@ -26,9 +26,9 @@ from typing import Any
 
 from lionagi import _lionagi_dir_trust as lionagi_dir_trust
 from lionagi._provider_errors import NestedAgentRefusedError
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
 from lionhub.orchestration.job import EXIT_CODE_ENVIRONMENT_ERROR
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 from . import accounts, config, jobs, projection, roster
 from .verbs import (

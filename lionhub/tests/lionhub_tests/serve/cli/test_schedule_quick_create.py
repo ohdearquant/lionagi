@@ -14,8 +14,8 @@ import pytest
 
 pytest.importorskip("croniter", reason="studio extra not installed")
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.state.db import StateDB
+from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 
 
 @pytest.fixture
