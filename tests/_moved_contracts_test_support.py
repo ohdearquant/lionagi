@@ -302,7 +302,7 @@ CONTRACTS: tuple[MoveContract, ...] = (
     ),
     MoveContract(
         old="lionagi.providers._subagent_admission",
-        new="lionagi.service._subagent_admission",
+        new="lionhub.providers._subagent_admission",
         kind="module",
         public_names=frozenset(
             {
@@ -1038,6 +1038,19 @@ CONTRACTS: tuple[MoveContract, ...] = (
         new="lionhub.tools._paths",
         kind="module",
         private_names=frozenset({"_resolve_workspace_root"}),
+    ),
+    MoveContract(
+        old="lionagi.service._subagent_admission",
+        new="lionhub.providers._subagent_admission",
+        kind="module",
+        public_names=frozenset(
+            {
+                "SubagentLease",
+                "admit_subagent",
+                "child_agent_depth",
+                "refuse_nested_agent",
+            }
+        ),
     ),
     MoveContract(old="lionagi.studio", new="lionagi_studio", kind="package", cold_orders=()),
     MoveContract(

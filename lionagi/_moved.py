@@ -74,7 +74,7 @@ MOVED: tuple[Moved, ...] = (
     ),
     Moved(
         "lionagi.providers._subagent_admission",
-        "lionagi.service._subagent_admission",
+        "lionhub.providers._subagent_admission",
         "0.37.0",
         "2.0.0",
     ),
@@ -133,6 +133,12 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi._command_env_metadata", "lionhub.tools.command_env_metadata", "0.39.0", "2.0.0"),
     Moved("lionagi._spec_limits", "lionhub.orchestration.spec_limits", "0.39.0", "2.0.0"),
     Moved("lionagi.ln._paths", "lionhub.tools._paths", "0.39.0", "2.0.0"),
+    Moved(
+        "lionagi.service._subagent_admission",
+        "lionhub.providers._subagent_admission",
+        "0.39.0",
+        "2.0.0",
+    ),
     # The Studio application. Daemon-owned modules that once lived under lionagi.studio keep
     # their own, longer rows, which win over this one. lionagi.studio and
     # lionagi.studio.services stay in core as empty packages, and lionagi.studio.operator as

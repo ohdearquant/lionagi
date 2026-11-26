@@ -13,13 +13,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from lionagi.service import _subagent_admission as admission
 from lionhub.orchestration.console import (
     _LazyStderrHandler,
     _refused_inside_an_agent,
     configure_cli_logging,
     log_error,
 )
+from lionhub.providers import _subagent_admission as admission
 from tests import _cli_logging_test_support as logging_support
 
 _CLI_LOGGERS = (*logging_support.PROVIDER_AND_LIBRARY_LOGGERS, *logging_support.CLI_CHANNEL_LOGGERS)

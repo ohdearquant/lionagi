@@ -69,8 +69,7 @@ import random
 import re
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
-from contextvars import ContextVar
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -78,6 +77,13 @@ from typing import Any, Literal
 from lionagi._provider_errors import NestedAgentRefusedError, SubagentAdmissionRefusedError
 from lionagi.ln._proc import process_create_time, start_time_matches
 from lionagi.ln.concurrency import sleep as _sleep
+
+# The notice a run listens for lives in core, so a run imports it without the hub installed.
+# ``_on_subagent_admission`` is named here as well, so the module's old path still offers it.
+from lionagi.service._admission_notice import (  # noqa: F401
+    _on_subagent_admission,
+    _tell_admission,
+)
 
 # A slot is an flock; without one (Windows) an uncapped agent runs as before and a
 # configured cap refuses, since nothing could hold the slot it would count.
@@ -264,35 +270,6 @@ _ENGINE_POOL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 # name. The dot keeps every account pool apart from every engine pool.
 _ACCOUNT_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\.[a-z0-9][a-z0-9_-]{0,199}")
 _ACCOUNT_POOL_PREFIX = "account."
-
-
-# Told when an agent started in this context begins waiting for slots and when it is
-# admitted; see _on_subagent_admission.
-_ON_ADMISSION: ContextVar[Callable[[bool], None] | None] = ContextVar(
-    "lionagi_subagent_on_admission", default=None
-)
-
-
-@contextlib.contextmanager
-def _on_subagent_admission(callback: Callable[[bool], None]) -> Iterator[None]:
-    """Call ``callback(False)`` when a CLI agent started in this context starts waiting for
-    its slots, and ``callback(True)`` once it is admitted.
-
-    A caller timing the agent's first output stops its clock for the wait and starts it
-    at admission, so the time spent waiting for a slot is not read as a worker that
-    never spoke.
-    """
-    token = _ON_ADMISSION.set(callback)
-    try:
-        yield
-    finally:
-        _ON_ADMISSION.reset(token)
-
-
-def _tell_admission(admitted: bool) -> None:
-    callback = _ON_ADMISSION.get()
-    if callback is not None:
-        callback(admitted)
 
 
 def _admitted(lease: SubagentLease) -> SubagentLease:

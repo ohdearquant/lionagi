@@ -408,7 +408,7 @@ async def test_admin_workers_shield_the_default_wait(monkeypatch, tmp_path, site
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [None, "os", "value"])
 async def test_monitor_status_keeps_the_worker_result_and_oserror_boundary(monkeypatch, failure):
-    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _subagent_admission as admission
     from lionhub.serve.cli import monitor
 
     error = PermissionError("status denied") if failure == "os" else ValueError("bad status")
@@ -438,7 +438,7 @@ async def test_monitor_status_keeps_the_worker_result_and_oserror_boundary(monke
 
 @pytest.mark.asyncio
 async def test_monitor_status_shields_the_default_worker_wait(monkeypatch):
-    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _subagent_admission as admission
     from lionhub.serve.cli import monitor
 
     probe = _WorkerProbe({"pools": []}, blocked=True)
@@ -681,7 +681,7 @@ async def test_scheduler_tick_delay_keeps_deadline_and_stop_cancellation(monkeyp
 async def test_admission_lock_retry_preserves_spacing_and_closes_failed_fd(
     monkeypatch, tmp_path, failure
 ):
-    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _subagent_admission as admission
 
     pool = tmp_path / "all"
     pool.mkdir()
@@ -750,7 +750,7 @@ async def test_admission_lock_retry_preserves_spacing_and_closes_failed_fd(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["quick", "poll", "deadline"])
 async def test_admission_wait_releases_slots_and_locks_before_retry(monkeypatch, tmp_path, mode):
-    from lionagi.service import _subagent_admission as admission
+    from lionhub.providers import _subagent_admission as admission
 
     trace = []
     now = [0.0]
@@ -871,7 +871,7 @@ async def test_thread_callers_delegate_to_the_shared_worker_helper(monkeypatch, 
         owner = scheduler_liveness if site in {"snapshot", "phantom"} else owner
         monkeypatch.setattr(owner, "_run_sync", delegated, raising=False)
     elif site == "monitor":
-        from lionagi.service import _subagent_admission as admission
+        from lionhub.providers import _subagent_admission as admission
         from lionhub.serve.cli import monitor
 
         probe = _WorkerProbe({"pools": []})
@@ -922,7 +922,7 @@ async def test_delay_callers_delegate_to_the_shared_sleep_helper(monkeypatch, tm
         await native(seconds)
 
     if site in {"lock", "quick", "poll"}:
-        from lionagi.service import _subagent_admission as admission
+        from lionhub.providers import _subagent_admission as admission
 
         monkeypatch.setattr(admission, "_sleep", delegated, raising=False)
         # Reuse the full caller exercise, including its delay and cleanup
