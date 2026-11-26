@@ -28,8 +28,8 @@ from lionagi.hooks import (
     route_message_persistence,
     unroute_message_persistence,
 )
-from lionagi.hooks.builtins import persist_message
 from lionagi.hooks.bus import _current_emitting_bus
+from lionhub.orchestration.run_persistence import persist_message
 from lionhub.state.message_retry import MessagePersistRetryQueue, PendingMessageEvent
 
 SESSION_ID = "s1"

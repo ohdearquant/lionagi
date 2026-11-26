@@ -41,14 +41,19 @@ def _run(program: str) -> subprocess.CompletedProcess[str]:
 def test_the_old_builtins_name_warns_once_and_serves_the_handler(name):
     completed = _run(
         f"""
+        import inspect
         import warnings
 
+        here = inspect.currentframe()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            line = here.f_lineno + 1
             from lionagi.hooks.builtins import {name} as old
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(deprecations) == 1, [str(w.message) for w in deprecations]
         assert "lionhub.orchestration.run_persistence" in str(deprecations[0].message)
+        origin = (deprecations[0].filename, deprecations[0].lineno)
+        assert origin == (here.f_code.co_filename, line), origin
 
         from lionhub.orchestration import run_persistence
 
@@ -58,6 +63,56 @@ def test_the_old_builtins_name_warns_once_and_serves_the_handler(name):
             from lionagi.hooks.builtins import {name} as second
         assert second is old
         assert not [w for w in again if issubclass(w.category, DeprecationWarning)]
+        """
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_a_wildcard_import_of_builtins_gives_the_five_names_and_warns_at_its_line():
+    completed = _run(
+        f"""
+        import inspect
+        import warnings
+
+        here = inspect.currentframe()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            line = here.f_lineno + 1
+            from lionagi.hooks.builtins import *
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1, [str(w.message) for w in deprecations]
+        origin = (deprecations[0].filename, deprecations[0].lineno)
+        assert origin == (here.f_code.co_filename, line), origin
+
+        from lionhub.orchestration import run_persistence
+
+        for name in {HANDLERS!r}:
+            assert globals()[name] is getattr(run_persistence, name), name
+        for name in ("log_api_metrics", "log_tool_call", "log_tool_use"):
+            assert name in globals(), name
+        """
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_a_plain_import_of_builtins_loads_no_hub_module():
+    completed = _run(
+        """
+        import sys
+        import warnings
+
+        import lionagi.hooks.builtins
+
+        def hub_modules():
+            return sorted(m for m in sys.modules if m == "lionhub" or m.startswith("lionhub."))
+
+        assert hub_modules() == [], hub_modules()
+
+        # The same check sees the hub once a forwarded name is read.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            lionagi.hooks.builtins.persist_message
+        assert "lionhub.orchestration.run_persistence" in hub_modules(), hub_modules()
         """
     )
     assert completed.returncode == 0, completed.stderr

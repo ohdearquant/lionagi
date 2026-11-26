@@ -24,7 +24,7 @@ from typing import Any
 
 from lionagi import ln
 from lionagi.hooks.bus import HookBus, HookHandler, HookPoint, _current_emitting_bus
-from lionagi.hooks.loader import register_handler
+from lionagi.hooks.loader import _set_store_message_handler, register_handler
 
 __all__ = (
     "RUN_PERSISTENCE_HOOKS",
@@ -305,6 +305,9 @@ for _name, _handler in (
 ):
     register_handler(_name, _handler)
 del _name, _handler
+
+# A live message route removes exactly this object from a session bus (lionagi.hooks.persist).
+_set_store_message_handler(persist_message)
 
 
 RUN_PERSISTENCE_HOOKS: Mapping[HookPoint, tuple[HookHandler, ...]] = MappingProxyType(

@@ -17,7 +17,14 @@ from typing import Any
 
 logger = logging.getLogger("lionagi.hooks.builtins")
 
+# The five persistence handler names stay listed while the hub ships in the same distribution as
+# the core, so a wildcard import still gives them, through ``__getattr__`` and its warning.
 __all__ = (
+    "persist_session_start",  # noqa: F822 -- served by __getattr__
+    "persist_session_end",  # noqa: F822 -- served by __getattr__
+    "persist_branch_provenance",  # noqa: F822 -- served by __getattr__
+    "persist_branch_end",  # noqa: F822 -- served by __getattr__
+    "persist_message",  # noqa: F822 -- served by __getattr__
     "log_api_metrics",
     "log_tool_call",
     "log_tool_use",

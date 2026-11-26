@@ -65,9 +65,21 @@ def resolve_handler(name: str) -> HookHandler:
         raise KeyError(f"Unknown hook handler {name!r}. Registered: {sorted(_REGISTRY)}") from exc
 
 
-def _registered_handler(name: str) -> HookHandler | None:
-    """The handler registered under ``name``, or None when nothing is."""
-    return _REGISTRY.get(name)
+# The store's own MESSAGE_ADD handler, handed over by the hub module that defines it when that
+# module is imported. It is kept apart from the name registry, where the last writer wins, so a
+# caller who registers a handler of their own under the same name does not replace it here.
+_STORE_MESSAGE_HANDLER: HookHandler | None = None
+
+
+def _set_store_message_handler(handler: HookHandler) -> None:
+    """Record the store's own MESSAGE_ADD handler; the hub module that defines it calls this."""
+    global _STORE_MESSAGE_HANDLER
+    _STORE_MESSAGE_HANDLER = handler
+
+
+def _store_message_handler() -> HookHandler | None:
+    """The store's own MESSAGE_ADD handler, or None when its module was never imported."""
+    return _STORE_MESSAGE_HANDLER
 
 
 def load_hooks_for_agent(
