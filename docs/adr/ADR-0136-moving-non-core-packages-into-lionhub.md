@@ -1,7 +1,8 @@
 # ADR-0136: Moving the packages built on the core into lionhub, and removing their old import paths in 2.0
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
-  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23
+  (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
+  Amendment 6 (2026-11-26) proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -34,7 +35,140 @@
   providers-last order, with ADR-0140 as the providers discovery contract; Amendment 4 fixes
   D7's `integrations/` slot as that package's destination and states when D6's hold on it ends;
   Amendment 5 moves the Studio application to its own import root before 1.0, bundled in the
-  one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step
+  one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step;
+  Amendment 6 moves the state store and the persistence handlers into `lionhub`, narrowing Amendment 1
+  A1, adding to D6 and D7, and moving the package ADR-0120 D5 names
+
+## Amendment 6 (2026-11-26): the state store and the persistence handlers move into lionhub
+
+**Status**: Proposed.
+
+Instructions this amendment serves, from the maintainer on 2026-11-25:
+
+- "not ready, https://github.com/ohdearquant/lionagi/tree/main/lionagi/state needs to leave lionagi core, some other stuff as well,"
+- "先把肯定不是core的东西搬迁完再说" (move what is clearly not core first)
+- "Core stops persisting by default. the expected behavior should be, if using via mcp, should store, if using as sdk, we don't default persist"
+  (served by ADR-0047's amendment of 2026-11-25)
+
+ADR-0047's amendment of 2026-11-25 makes a core `Session` write nothing by default; the hub run path
+installs persistence on its own session's bus (`lionhub.orchestration.run_persistence`). After that
+change four core files outside `lionagi/state` still import it, at 8 statements, and each is a
+persistence path: `lionagi/_log_channels.py`, `lionagi/hooks/_message_retry.py`,
+`lionagi/hooks/builtins.py` and `lionagi/session/observer.py`. D6 schedules no move of `state`, D7's
+layout has no slot for it, and A1 kept the persistence handlers in the core for a reason that
+amendment removed. This amendment adds the move to D6, adds `state/` to D7, and narrows A1.
+
+Measured at commit `23795348` by an AST walk over absolute imports, counting each statement once:
+`lionagi/state` is 33 Python files and 24,711 lines. Statements that name it: `lionhub/src` 284 in 59
+files, the Studio backend 44 in 17, `tests/` 782 in 185, `lionhub/tests` 653 in 163.
+
+### H1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.state` | `lionhub.state` |
+| `lionagi._log_channels` | `lionhub.state.log_channels` |
+| `lionagi._cli_worker_context` | `lionhub.state.cli_worker_context` |
+| `lionagi.hooks._message_retry` | `lionhub.state.message_retry` |
+| the five `persist_*` handlers of `lionagi.hooks.builtins` | `lionhub.orchestration.run_persistence` |
+
+The first four rows are D3 table rows, deprecated in the release that ships the move and removed in
+2.0.0. `_log_channels` and `_cli_worker_context` move because the store is their only core user
+(`state/lifecycle/notify_settings.py` and `state/cli_workers.py`). The schema, the store file, the
+persisted names D5 keeps and the logger names do not change, so readers of the store (the Studio
+application, the editor extension, the CLI) see only the import path change, which the table keeps
+working through 1.x.
+
+`lionagi.hooks.builtins` stays, with the three `log_*` handlers, which import no store. The five
+persistence handler names stay importable from it until 2.0.0: the module resolves them on attribute
+access through a table row for the private old name `lionagi.hooks._persistence_handlers`, mapped to
+`lionhub.orchestration.run_persistence`. The core names only a `lionagi` path and the finder does the
+hub lookup, as A3 does for the root's nine LNDL names, and the first access emits D3's warning at the
+caller's line. This is a stated exception, limited to these five names, and it holds only under four
+conditions, each tested in the move change:
+
+1. The table marks this row as an attribute-forwarding row whose old name never existed as a file,
+   and the table tests name this row explicitly rather than accepting any row of that shape.
+2. A plain `import lionagi.hooks.builtins` loads no hub module.
+3. Each of the five names is the same object under both paths, and the deprecation warning fires
+   once, at the caller's line.
+4. At 2.0 the row and the attribute hook go together, the release notes name the five names, and a
+   release guard that does not read the table, since the row is gone by then, requires the five
+   names to be absent from `lionagi.hooks.builtins` attribute access, as A3's guard does for its nine.
+
+### H2. What stays in the core, and what each core use of the store becomes
+
+`lionagi._state_refusal` stays. Operations, the message manager, the hook bus and the observer catch
+`StateCompatibilityRefused` from it without loading a store; `lionhub.state.compat` re-exports it, the
+same object under both paths.
+
+`lionagi/hooks/_message_retry.py` holds `MessagePersistRetryQueue`, the ordered retry of live-message
+writes. Only `persist_message` creates one, and the hook bus flushes the queues at teardown by reading
+the attribute `_message_retry_queues` by name (`lionagi/hooks/bus.py`), with no import. It moves with
+the handlers, and the bus keeps its by-name flush.
+
+The loader's registry stops naming the five persistence handlers, and
+`lionhub.orchestration.run_persistence` registers them with `register_handler` when it is imported. A
+name an SDK caller passes to `build_session_bus(agent_hooks=...)`, such as `persist_session_start`,
+therefore resolves only after that module has been imported. In a process that has not imported it,
+`resolve_handler` raises its `KeyError` for these five names with text saying that
+`lionhub.orchestration.run_persistence` registers them and must be imported first. The module name
+appears inside the message text, not as a dotted-name constant, and the core imports nothing through
+it. A test shows both sides: in a fresh core-only process the name raises with that text, and after the
+hub module is imported it resolves. The same change updates `docs/reference/agent-hooks.md` and the
+opt-in sentence of ADR-0047's amendment of 2026-11-25.
+
+`lionagi.hooks.persist.route_message_persistence` stays in the core. It wires the caller's callback and
+takes `persist_message` off the bus so that one path persists each message; today it imports the
+handler to do that. After the move it looks the handler up in the registry by name and removes it if it
+is registered. The lookup is by the handler's registered name and removes only that object, so a
+caller's own handler on the same hook point is untouched; a test shows it. A process that has not imported the hub module has no such handler to put on a bus, so
+there is nothing to remove.
+
+`SessionObserver.bind_db_persistence(session_id, db=None)` today opens a fresh store for every signal
+when it is given none, unless no store file exists (`lionagi/session/observer.py`, the fallback in
+`_persist_signal`). Every production caller in this repository passes `db=`: the hub run path, the
+engine CLI, orchestration and the Studio workflow runner. Three tests call it without one. After the
+move a call without a store writes nothing and logs one WARNING per binding on the
+`lionagi.session.observer` logger, naming the argument to pass and where a store comes from. The core
+attaches no handler to its loggers, so Python's last-resort handler prints that warning when the
+application has configured no logging. A `DeprecationWarning` was weighed and lost: Python hides it by
+default outside `__main__`, so a caller who asked for persistence and got none would not be told. A
+store factory registered by the hub was also weighed and lost: the same call would write or not
+depending on whether something had imported the hub. 2.0 makes `db` required.
+
+After the move no module under `lionagi/` imports `lionhub`, `lionhub.state` or a moved path. D2's set
+stays what it is at the change's head, and a test asserts that `lionagi/` holds no import of the moved
+paths.
+
+A1's paragraph on the hook bus narrows accordingly: `bus`, `loader`, `persist` and the package
+initializer stay; `builtins` stays with its three logging handlers; `_message_retry` and the five
+persistence handlers leave. ADR-0120 D5 keeps durable delivery in `state`, which is now
+`lionhub.state`.
+
+### H3. What an SDK user who wants persistence does
+
+An SDK session writes nothing unless asked. A user who wants the run store imports the hub's installer
+and the store and wires both on their own session: `install_run_persistence(session.hooks)` from
+`lionhub.orchestration.run_persistence` for the lifecycle rows, and
+`session.observer.bind_db_persistence(session_id, db=store)` with a `lionhub.state.db.StateDB` they
+open for the signal rows. Through 1.x `pip install lionagi` installs everything this needs, since the
+one distribution ships `lionhub` and the store's dependencies (D1). From 2.0 the same imports need
+`lionhub` installed beside `lionagi`; a core-only 2.0 install has no store.
+
+### H4. Order
+
+The moves that need no new decision under this record as written keep going, one unit per change, and
+do not wait for this amendment. This move starts after it is accepted.
+
+1. One change moves the package and the four satellites with their rows, rewrites every caller in
+   this repository to the new paths by script so the suite raises no deprecation warning from its own
+   imports, and moves the tests that exercise only the moved code into `lionhub/tests` (D6 item 7).
+2. A separate change moves `sqlalchemy[asyncio]` and `aiosqlite` out of the core dependency list and
+   regenerates the lock. Through 1.x the one distribution still installs them (D1).
+3. ADR-0120's citations of moved files move with the package, per D6 item 6.
+
+No code for this amendment merges before it is accepted.
 
 ## Amendment 5 (2026-11-13): the Studio application gets its own import root before 1.0, bundled through 1.x
 
