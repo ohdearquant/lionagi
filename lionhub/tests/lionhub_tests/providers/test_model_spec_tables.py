@@ -1,6 +1,6 @@
 import pytest
 
-from lionagi.service.providers import (
+from lionhub.providers.model_spec import (
     CLI_PROVIDERS,
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_YOLO_KWARGS,

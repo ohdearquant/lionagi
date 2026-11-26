@@ -92,6 +92,7 @@ _PRELOAD_MODULES = (
     "lionagi.service.connections._chat_schemas",
     "lionagi.service.connections.registry",
     "lionagi.service.providers",
+    "lionhub.providers.model_spec",
     "lionagi.service.token_calculator",
     "lionagi.session.prompts",
     "lionhub.state.cli_workers",
@@ -1169,7 +1170,6 @@ def _resolve_hooks_from(
         raise OpError("invalid_input", "hooks_from needs hooks_from_format: claude or codex")
     from lionagi._errors import ConfigurationError
     from lionagi.service.connections.registry import EndpointRegistry
-    from lionagi.service.providers import CLI_PROVIDERS
     from lionhub.agent.subscription_accounts import account_provider
     from lionhub.hooks.hooks_from import (
         HOOKS_FROM_CARRY,
@@ -1180,6 +1180,7 @@ def _resolve_hooks_from(
         read_hooks_file,
         writable_roots,
     )
+    from lionhub.providers.model_spec import CLI_PROVIDERS
 
     query = args.get("query") or []
     bucket = [*query, *([prompt] if prompt is not None else [])]

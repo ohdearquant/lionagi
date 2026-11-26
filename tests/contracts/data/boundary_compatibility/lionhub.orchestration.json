@@ -551,7 +551,8 @@
       "resolve_invocation_terminal"
     ],
     "lionhub/src/lionhub/orchestration/scheduler/settings.py": [
-      "invocation_deadline_seconds"
+      "invocation_deadline_seconds",
+      "scheduler_held"
     ],
     "lionhub/src/lionhub/orchestration/scheduler/show_artifacts.py": [
       "read_json_file"

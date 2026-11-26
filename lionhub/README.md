@@ -110,6 +110,15 @@ and the usage-shape helpers.
 | `lionagi.service.accounts._pricing` | `lionhub.providers.anthropic.accounts._pricing` |
 | `lionagi.service.accounts._router` | `lionhub.providers.anthropic.accounts._router` |
 
+The CLI provider tables and `parse_model_spec` below are deprecated at their old path in 0.39.0
+and are scheduled for removal in 2.0.0. They were imported from `lionagi.service.providers`, which
+keeps the effort-suffix grammar (`EFFORT_LEVELS`, `normalize_effort`, `split_effort_suffix`) and
+forwards each moved name with a warning that names the old path below.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service._model_spec` | `lionhub.providers.model_spec` |
+
 The prompt size bound below is deprecated at its old path in 0.39.0 and is scheduled for
 removal in 2.0.0.
 

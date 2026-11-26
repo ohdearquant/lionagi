@@ -199,6 +199,9 @@
     "lionhub/src/lionhub/providers/manifest.py": [
       "__all__ = (\"get_provider_manifest\",)"
     ],
+    "lionhub/src/lionhub/providers/model_spec.py": [
+      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n)"
+    ],
     "lionhub/src/lionhub/providers/nvidia_nim/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"NvidiaNimChatEndpoint\": (\"chat\", None),\n    \"NvidiaNimEmbedEndpoint\": (\"embed\", None),\n    \"NvidiaNimEmbeddingRequest\": (\"embed\", None),\n}",
@@ -585,6 +588,12 @@
     ],
     "lionhub/src/lionhub/providers/manifest.py": [
       "get_provider_manifest"
+    ],
+    "lionhub/src/lionhub/providers/model_spec.py": [
+      "ModelSpec",
+      "codex_unset_effort_default",
+      "parse_model_spec",
+      "reclamp_effort_for_model"
     ],
     "lionhub/src/lionhub/providers/nvidia_nim/_config.py": [
       "NvidiaNimConfigs"

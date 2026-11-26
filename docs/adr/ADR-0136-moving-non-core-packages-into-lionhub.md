@@ -2,7 +2,7 @@
 
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
-  Amendment 6 (2026-11-26) and Amendment 7 (2026-11-26) accepted 2026-11-26
+  Amendment 6 (2026-11-26), Amendment 7 (2026-11-26) and Amendment 8 (2026-11-26) accepted 2026-11-26
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -13,7 +13,8 @@
   change moved `lionagi.providers` to `lionhub.providers` (#4077, Amendment 3); the discovery contract
   replaced the 46 interim module strings with `lionhub.providers.manifest`, read through
   `lionagi/service/connections/_provider_compat.py`, and the three hub imports C2 deferred to
-  before 2.0 are gone (`service/providers.py`'s in #4745). `service` is the only core package that
+  before 2.0 are gone (`service/providers.py`'s in #4745). The CLI provider tables and
+  `parse_model_spec` moved to `lionhub.providers.model_spec` (Amendment 8). `service` is the only core package that
   imports the hub, through `_provider_compat`. Two root modules hold hub paths as data, resolved only
   when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths, and
   `lionagi/_auto.py`, whose five deprecated CLI catalog names point at `lionhub.serve.cli.catalog`
@@ -38,7 +39,63 @@
   one distribution through 1.x, replacing Amendment 2's location timing and Amendment 3 C2's Studio step;
   Amendment 6 moves the state store and the persistence handlers into `lionhub`, narrowing Amendment 1
   A1, adding to D6 and D7, and moving the package ADR-0120 D5 names; Amendment 7 moves the Anthropic
-  account engine into `lionhub`, closing Amendment 3 C2's router row
+  account engine into `lionhub`, closing Amendment 3 C2's router row; Amendment 8 moves the CLI
+  provider tables and `parse_model_spec` into `lionhub`, closing Amendment 3 C2's `service/providers.py` row
+
+## Amendment 8 (2026-11-26): the CLI provider tables and parse_model_spec move into lionhub
+
+**Status**: Accepted (2026-11-26).
+
+Amendment 3 C2 listed `service/providers.py` as a core consumer whose effort-default import an
+adapter-supplied policy would replace before 2.0, and #4745 removed that import. The file still held
+vendor tables that only the hub's CLI adapters and the hub's spawn code read: backend aliases, the
+per-provider effort, fast, bypass, yolo and repository kwargs, the Claude, Codex and Gemini clamp
+tables, and `parse_model_spec`. On 2026-11-26 the maintainer decided that these leave the core with
+the other non-core code. The core keeps the grammar of an effort suffix, which every provider shares,
+and asks the selected endpoint class what an effort means for it.
+
+### J1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.service._model_spec` | `lionhub.providers.model_spec` |
+
+The row is a D3 table row, deprecated in the release that ships the move and removed in 2.0.0. No
+module exists at the old path. Like `lionagi.hooks._persistence_handlers`, it names the moved names
+(14 public, 20 private) that `lionagi.service.providers` forwards through a module `__getattr__`, and
+it is listed in `ATTRIBUTE_FORWARDING_ROWS`. The tests that exercise only the tables and the clamps
+move into `lionhub/tests`.
+
+### J2. What stays in the core
+
+`lionagi.service.providers` keeps `EFFORT_LEVELS`, `normalize_effort` and `split_effort_suffix`; the
+hub module imports them from it. `iModel` splits an effort suffix only when the endpoint class the
+provider catalog declares for the provider names an `effort_kwarg`. It then sets that kwarg to the
+normalized effort, passes it through the class's `clamp_effort(effort, model)` when the class has one,
+and leaves an effort kwarg the caller passed untouched. `EndpointRegistry.declared_endpoint_class`
+returns that class, or `None` when the catalog does not declare the provider or its feature is
+missing. Three classes declare an `effort_kwarg`: `ClaudeCodeCLIEndpoint` (`effort`, with the Claude
+clamp), `CodexCLIEndpoint` (`reasoning_effort`) and `PiCLIEndpoint` (`thinking`). A test fails if a
+core module defines or imports a moved name; its must-match control is a probe source whose import
+lines the test has to find.
+
+### J3. What this changes in Amendment 3
+
+C2's `service/providers.py` row is closed: the file names no hub module and holds no provider table.
+C3's relaxation for it ends with this move. Its constraint that the replacement copies no provider
+implementation or model catalog into the core holds: the Claude clamp table stays in the hub, and the
+Claude adapter's `clamp_effort` delegates to it.
+
+### J4. What a caller sees
+
+For the three declaring providers a model string with or without an effort suffix gives the same
+request kwargs as before, the Claude `xhigh` clamp included, and an explicit effort kwarg still wins.
+For a provider whose endpoint class declares no `effort_kwarg` the model string passes through
+unchanged, and the core does not import the hub to decide that. A provider catalog passed to `iModel`
+that does not declare the provider no longer has the suffix split first; endpoint matching fails for
+that provider as before. Old imports of the moved names from `lionagi.service.providers` keep working
+with D3's warning until 2.0.0. With the hub absent, the kept names import and each moved name fails
+as a missing `lionhub` does.
 
 ## Amendment 7 (2026-11-26): the Anthropic account engine moves into lionhub
 
@@ -466,7 +523,7 @@ In the move change, add `test_provider_interim_edge_inventory` and rename D2's p
 | `agent/factory.py` | Existing references to `lionhub.providers.openai._codex_profile`, `lionhub.providers.openai.codex`, and `lionhub.providers._cli_subprocess`; all lazy after the preparatory change | Remove these core edges and `agent` from the set in the tools/agent/casts move. References then belong to the hub. The shared schema reference already points down into core. |
 | `operations/run/run.py` | Existing lazy `lionhub.providers.google.gemini_code` request/print-timeout behavior | Before 2.0, replace the import with an endpoint-supplied request-preparation port; remove `operations` from the set in that change. The operation stays in core. |
 | `service/accounts/_router.py` | Existing lazy `lionhub.providers.anthropic._prompt_cache` helpers | Before 2.0, replace both imports with adapter-supplied cache evidence and server-tool projection through a core-owned port. |
-| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. Done in #4745: the default comes from `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog's `codex` declaration, and the file names no hub module. |
+| `service/providers.py` | Existing lazy `lionhub.providers.openai._codex_profile` effort-default lookup | Before 2.0, replace this import with provider configuration/effort policy supplied by the selected adapter. Done in #4745: the default comes from `CodexCLIEndpoint.unset_reasoning_effort`, reached through the provider catalog's `codex` declaration, and the file names no hub module. Closed by Amendment 8: the provider tables and `parse_model_spec` moved to `lionhub.providers.model_spec`, and the file keeps only the effort-suffix grammar. |
 | `lionhub/src/lionhub/orchestration/spawn.py` | Module-top `lionhub.providers.openai._codex_profile`; also existing lazy `lionhub.providers.google.gemini_code` references at lines 200 and 320 | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/agent.py` | Existing lazy `lionhub.providers.google.gemini_code` reference at line 2152, and the lazy `lionhub.lndl.middle` reference at line 1026 that the LNDL move adds for the API leg's LNDL loop (Amendment 1 A3; `test_lndl_interim_edge_inventory`) | Remove these core edges in the CLI move; only then are they hub-to-hub. |
 | `cli/orchestrate/_orchestration.py` | Existing lazy `lionhub.providers.openai._codex_profile` reference at line 852 | Remove this core edge in the CLI move; only then is it hub-to-hub. |

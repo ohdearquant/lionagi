@@ -648,6 +648,9 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _PI_HANDLER_PARAMS
     _handler_kwarg = "pi_handlers"
     _request_model = PiCodeRequest
+    # The request field a model name's effort suffix ("gemini-2.5-flash-low") sets; iModel
+    # reads it.
+    effort_kwarg = "thinking"
     # streams_first_output_early stays False: stream() discards raw events and only
     # yields once a PiChunk carries content, so first output may lag spawn by full think time.
 

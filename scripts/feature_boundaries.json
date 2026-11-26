@@ -1023,6 +1023,10 @@
       "layer": "root",
       "owner": "dependency_constraints"
     },
+    "dnspython": {
+      "layer": "root",
+      "owner": "dependency_constraints"
+    },
     "fastapi": {
       "layer": "root",
       "owner": "studio"
@@ -1046,6 +1050,10 @@
     "ipython": {
       "layer": "root",
       "owner": "development"
+    },
+    "joserfc": {
+      "layer": "root",
+      "owner": "dependency_constraints"
     },
     "json-repair": {
       "layer": "foundation",

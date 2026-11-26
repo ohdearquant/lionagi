@@ -219,6 +219,7 @@ _EXPECTED_PROVIDER_MODULES = frozenset(
         "lionhub.providers.lattice.chat",
         "lionhub.providers.lattice.embed",
         "lionhub.providers.manifest",
+        "lionhub.providers.model_spec",
         "lionhub.providers.nvidia_nim",
         "lionhub.providers.nvidia_nim._config",
         "lionhub.providers.nvidia_nim.chat",

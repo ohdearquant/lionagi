@@ -396,12 +396,19 @@ MOVED: tuple[Moved, ...] = (
         "0.39.0",
         "2.0.0",
     ),
+    # The CLI providers' tables and parse_model_spec. The effort vocabulary and the model-name
+    # suffix grammar stay in lionagi.service.providers, which forwards the moved names.
+    Moved("lionagi.service._model_spec", "lionhub.providers.model_spec", "0.39.0", "2.0.0"),
 )
 
 # Rows whose old name never existed as a file. ``lionagi.hooks.builtins`` serves its five former
-# persistence handlers on attribute access by importing this old name, so the first access warns
-# at the caller's line and returns the handler from its new module. Removed with its row at 2.0.
-ATTRIBUTE_FORWARDING_ROWS: frozenset[str] = frozenset({"lionagi.hooks._persistence_handlers"})
+# persistence handlers, and ``lionagi.service.providers`` the provider tables and
+# ``parse_model_spec``, on attribute access by importing these old names, so the first access
+# warns at the caller's line and returns the object from its new module. Removed with their rows
+# at 2.0.
+ATTRIBUTE_FORWARDING_ROWS: frozenset[str] = frozenset(
+    {"lionagi.hooks._persistence_handlers", "lionagi.service._model_spec"}
+)
 
 
 def _index_by_first_component(rows: Iterable[Moved]) -> Mapping[str, tuple[Moved, ...]]:
@@ -495,13 +502,15 @@ def still_on_disk(fullname: str) -> bool:
 
 # A root lazy export (``lionagi.LNDLOutput``) reaches a moved module through the root
 # ``__getattr__`` and the lazy-import helper, so both stand between the caller and this loader.
-# A former persistence handler read from ``lionagi.hooks.builtins`` reaches its moved module
-# through that module's ``__getattr__``.
+# A former persistence handler read from ``lionagi.hooks.builtins``, and a provider table read
+# from ``lionagi.service.providers``, reach their moved module through that module's
+# ``__getattr__``.
 _LAZY_EXPORT_FRAMES = frozenset(
     {
         (os.path.join(os.path.dirname(__file__), "__init__.py"), "__getattr__"),
         (os.path.join(os.path.dirname(__file__), "ln", "_lazy_init.py"), "lazy_import"),
         (os.path.join(os.path.dirname(__file__), "hooks", "builtins.py"), "__getattr__"),
+        (os.path.join(os.path.dirname(__file__), "service", "providers.py"), "__getattr__"),
     }
 )
 

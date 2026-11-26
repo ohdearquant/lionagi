@@ -77,6 +77,7 @@ would corrupt the stream.
 
 ### parse_model_spec
 
-Strips effort suffix, expands backend aliases, validates effort support per provider.
+In `lionhub.providers.model_spec`; the old import from `lionagi.service.providers` warns
+until 2.0.0. Strips effort suffix, expands backend aliases, validates effort support per provider.
 Invariant: a provider cannot appear in both `PROVIDERS_NO_EFFORT` and `PROVIDER_EFFORT_KWARG`
 (checked at import time with `RuntimeError`).

@@ -100,7 +100,7 @@ def model_effort_choices(model: str) -> tuple[OperatorEffort, ...]:
     spec = _BY_ID.get(model)
     if spec is None:
         return ()
-    from lionagi.service.providers import (
+    from lionhub.providers.model_spec import (
         _CODEX_NO_MINIMAL_MODELS,
         _GEMINI_EFFORT_CLAMP,
         _clamp_claude_effort,

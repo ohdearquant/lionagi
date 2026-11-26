@@ -3002,7 +3002,7 @@ async def _run_agent(
                     # one has its own ceiling, so re-clamp instead of replaying a
                     # value that model may reject (a sol-derived 'ultra' is a 400
                     # on a spark resume).
-                    from lionagi.service.providers import reclamp_effort_for_model
+                    from lionhub.providers.model_spec import reclamp_effort_for_model
 
                     kwarg = PROVIDER_EFFORT_KWARG.get(canonical)
                     if kwarg and cfg.get(kwarg) is not None:

@@ -112,7 +112,8 @@
       "__all__ = (\n    \"get_handler\",\n    \"validate_hooks\",\n    \"validate_stream_handlers\",\n)"
     ],
     "lionagi/service/providers.py": [
-      "__all__ = (\n    \"BACKENDS\",\n    \"CLI_PROVIDERS\",\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",\n    \"PROVIDER_BYPASS_KWARGS\",\n    \"PROVIDER_EFFORT_KWARG\",\n    \"PROVIDER_FAST_KWARGS\",\n    \"PROVIDER_REPO_KWARG\",\n    \"PROVIDER_TO_ALIAS\",\n    \"PROVIDER_YOLO_KWARGS\",\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",\n    \"PROVIDERS_NO_EFFORT\",\n    \"codex_unset_effort_default\",\n    \"normalize_effort\",\n    \"parse_model_spec\",\n    \"reclamp_effort_for_model\",\n    \"split_effort_suffix\",\n)"
+      "__all__ = (\n    \"BACKENDS\",  # noqa: F822 -- served by __getattr__\n    \"CLI_PROVIDERS\",  # noqa: F822 -- served by __getattr__\n    \"EFFORT_LEVELS\",\n    \"ModelSpec\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_BYPASS_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_EFFORT_KWARG\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_FAST_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_REPO_KWARG\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_TO_ALIAS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDER_YOLO_KWARGS\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDERS_EFFORT_VIA_MODEL_NAME\",  # noqa: F822 -- served by __getattr__\n    \"PROVIDERS_NO_EFFORT\",  # noqa: F822 -- served by __getattr__\n    \"codex_unset_effort_default\",  # noqa: F822 -- served by __getattr__\n    \"normalize_effort\",\n    \"parse_model_spec\",  # noqa: F822 -- served by __getattr__\n    \"reclamp_effort_for_model\",  # noqa: F822 -- served by __getattr__\n    \"split_effort_suffix\",\n)",
+      "def __getattr__(name: str) -> Any:\n    if name in _MODEL_SPEC_NAMES:\n        import importlib\n\n        return getattr(importlib.import_module(_MODEL_SPEC_OLD_MODULE), name)\n    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")"
     ],
     "lionagi/service/rate_limited_processor.py": [
       "__all__ = (\n    \"RateLimitedAPIProcessor\",\n    \"RateLimitedAPIExecutor\",\n)"
@@ -306,11 +307,7 @@
       "iModelManager"
     ],
     "lionagi/service/providers.py": [
-      "ModelSpec",
-      "codex_unset_effort_default",
       "normalize_effort",
-      "parse_model_spec",
-      "reclamp_effort_for_model",
       "split_effort_suffix"
     ],
     "lionagi/service/rate_limited_processor.py": [
