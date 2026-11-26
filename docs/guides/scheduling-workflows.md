@@ -305,6 +305,32 @@ schedule is already disabled, supplying a reason is refused with an explicit
 "reason was not recorded" error and adds no history entry. Repeating disable
 without a reason remains an idempotent success and also adds no history entry.
 
+### Starting the daemon with every schedule held
+
+Every `li schedule` command talks to the running daemon, so a schedule cannot be
+disabled while the daemon is down, and a daemon that starts runs its startup
+recovery at once: a `run_once` schedule fires one catch-up run, a launch that was
+recorded but never confirmed is fired again, and a GitHub poll fires for the
+events it has not seen. To settle the schedules first, start the daemon with
+`LIONAGI_SCHEDULER_HOLD=1`. It then serves its API with the scheduler engine not
+started, and nothing fires:
+
+```bash
+LIONAGI_SCHEDULER_HOLD=1 python -m lionagi_studio   # or: li studio
+li schedule list
+li schedule disable <id> --reason "held while the daemon was down"
+li schedule enable <id>
+```
+
+Then restart the daemon without the variable. Only enabled schedules are read at
+start: a disabled one stays quiet, and a cron schedule enabled during the hold
+has its next fire computed from the time it was enabled. Any other enabled
+schedule keeps its stored next fire, and when that time has passed its
+missed-fire policy decides at start: `skip` records a skip, `run_once` fires
+once. A value other than
+`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off` or empty stops the start
+with an error that names the variable.
+
 ## When something misbehaves
 
 - `li schedule get <id>` shows the resolved trigger and next fire time — check
