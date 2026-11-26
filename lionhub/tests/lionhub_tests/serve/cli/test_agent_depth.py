@@ -15,7 +15,7 @@ import os
 import pytest
 
 from lionagi._provider_errors import NestedAgentRefusedError
-from lionagi.service import _subagent_admission as admission
+from lionhub.providers import _subagent_admission as admission
 from lionhub.serve.cli._agent_depth import (
     DEPTH_ENV,
     SEAT_PROFILES_ENV,

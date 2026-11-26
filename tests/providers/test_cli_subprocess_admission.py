@@ -21,12 +21,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.service import _subagent_admission as admission
-from lionagi.service._subagent_admission import (
+from lionhub.providers import _subagent_admission as admission
+from lionhub.providers._cli_subprocess import ndjson_from_cli
+from lionhub.providers._subagent_admission import (
     SubagentAdmissionRefusedError,
     subagent_admission_status,
 )
-from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 # Emits one object, then blocks until killed.
 _SLEEPER = (

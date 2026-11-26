@@ -31,7 +31,6 @@ from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln.concurrency import CancelScope, cancelled_exc_classes, sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD
 from lionhub.agent import AgentSpec, create_agent
 from lionhub.agent.factory import register_profile_injection
 from lionhub.agent.khive_actor import attribute_khive_servers, run_khive_actor
@@ -63,6 +62,7 @@ from lionhub.orchestration.spawn import (
     resolve_account_integrations,
     resolve_persisted_effort,
 )
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD
 from lionhub.state import provenance as _provenance
 
 from .. import team as _team_module

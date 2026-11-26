@@ -14,8 +14,9 @@ import sys
 
 import pytest
 
-from lionagi.service import _subagent_admission as admission
-from lionagi.service._subagent_admission import (
+from lionhub.providers import _subagent_admission as admission
+from lionhub.providers._cli_subprocess import ndjson_from_cli
+from lionhub.providers._subagent_admission import (
     ACCOUNT_CAP_ENV,
     ACCOUNT_ENV,
     SubagentAdmissionRefusedError,
@@ -24,7 +25,6 @@ from lionagi.service._subagent_admission import (
     subagent_admission_status,
     without_account_names,
 )
-from lionhub.providers._cli_subprocess import ndjson_from_cli
 
 WAIT_NONE = {"LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
 ALPHA = "claude_code.alpha"

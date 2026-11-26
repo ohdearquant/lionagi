@@ -47,7 +47,6 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln import copy
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.service._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -76,6 +75,7 @@ from lionhub.providers._cli_subprocess import (
     validate_message_prompt,
 )
 from lionhub.providers._empty_turn import empty_turn_chunk, empty_turn_error, is_empty_turn
+from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 
 from ._codex_permissions import (
     PERMISSION_PROFILE,

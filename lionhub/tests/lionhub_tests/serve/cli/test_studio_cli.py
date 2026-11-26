@@ -605,7 +605,7 @@ class Finder(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, Finder())
 # The test may itself run under an agent; the launch it checks is not refused for that.
-import lionagi.service._subagent_admission as admission
+import lionhub.providers._subagent_admission as admission
 
 admission._INHERITED_AGENT_DEPTH = 0
 admission._ancestor_agent_depth = lambda: (0, None)

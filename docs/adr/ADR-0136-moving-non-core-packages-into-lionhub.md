@@ -390,6 +390,8 @@ Before the providers package moves:
 3. Preserve A5 item 1's provider-facing settings seam: secret resolution uses the existing `lionagi._settings` reader with `include_project=False` and the existing refusal/failure behavior. The tool interface and gate-contract work may wait until the tools/agent/casts move. No provider may gain an import of moved agent settings.
 4. Make the four module-scope `_codex_profile` imports in `agent/factory.py` lazy at their actual uses in a separate preparatory change. The other provider references listed for that file in C2 are already lazy. C2's inventory test lands in the package move, not before it; ADR-0140's contract failure checks land with the subsequent contract implementation.
 
+Note (2026-11-26): subagent admission now lives at `lionhub.providers._subagent_admission`, because every caller that takes an admission lease is in lionhub. The notice a run listens for while a worker waits for a slot stays in core at `lionagi.service._admission_notice`, which imports nothing from lionhub. Both earlier rows for admission resolve to the new home. The other destinations item 1 names (provider errors, secret resolution and the shared chat schema) are unchanged.
+
 The package and contract changes are then:
 
 1. Move `lionagi/providers` completely to `lionhub/src/lionhub/providers` with one broad compatibility row. Keep the implementation diff to renames, import rewrites, path docstrings, pinned logger names and the 46 module-string root rewrites, without behavior changes.

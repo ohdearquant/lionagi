@@ -181,6 +181,7 @@ _EXPECTED_PROVIDER_MODULES = frozenset(
         "lionhub.providers._cli_subprocess",
         "lionhub.providers._empty_turn",
         "lionhub.providers._multipart",
+        "lionhub.providers._subagent_admission",
         "lionhub.providers.ag2",
         "lionhub.providers.ag2._config",
         "lionhub.providers.ag2.agent",

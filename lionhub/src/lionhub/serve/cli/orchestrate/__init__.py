@@ -13,7 +13,6 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
-from lionagi.service._subagent_admission import refuse_nested_agent
 from lionhub.orchestration.console import hint, log_error
 from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from lionhub.orchestration.flow.parsing import _add_mcp_config_args as _add_mcp_config_args
@@ -28,6 +27,7 @@ from lionhub.orchestration.flow.spec import (
 )
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.providers._subagent_admission import refuse_nested_agent
 
 from .fanout import FanoutPlanError, _run_fanout
 from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation
