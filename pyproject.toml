@@ -367,5 +367,9 @@ constraint-dependencies = [
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "pymdown-extensions>=11.0.0",  # CVE: path traversal in the b64 extension lets an <img src> read
                             # files outside base_path
-    "opentelemetry-api>=1.45.1",  # CVE: unbounded tracestate parsing
+    "opentelemetry-api>=1.45.2",  # CVE: unbounded tracestate parsing; then quadratic-time
+                            # traceparent parsing
+    "dnspython>=2.9.2",     # CVE: excessive memory and CPU use
+    "joserfc>=1.7.6",       # CVE: unbounded JWE General JSON recipients array; then a compact
+                            # JWS size guard that allocates attacker-controlled segments first
 ]

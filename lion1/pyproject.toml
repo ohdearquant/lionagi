@@ -40,6 +40,12 @@ dev = [
     "uvicorn>=0.30",
 ]
 
+[tool.uv]
+# Force minimum versions for transitive deps with known vulnerabilities
+constraint-dependencies = [
+    "opentelemetry-api>=1.45.2",  # CVE: quadratic-time traceparent parsing
+]
+
 [tool.uv.workspace]
 members = ["apps/cli"]
 
