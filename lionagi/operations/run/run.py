@@ -922,7 +922,7 @@ async def run(
                 # A write the store refused in compatibility mode is no provider failure, and keeps
                 # its type (ADR-0128 D6).
                 from lionagi._provider_errors import ProviderError
-                from lionagi.state.compat import StateCompatibilityRefused
+                from lionagi._state_refusal import StateCompatibilityRefused
 
                 if isinstance(_exc, StateCompatibilityRefused):
                     _run_exc = _exc

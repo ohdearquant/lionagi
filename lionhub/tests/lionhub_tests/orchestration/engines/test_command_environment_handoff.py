@@ -107,7 +107,7 @@ async def test_all_engine_command_sinks_use_current_names_and_exact_grants(
     import os
 
     import lionhub.orchestration.engines.coding as coding
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     engine = CodingEngine(
         auto_repair_cmds=["synthetic-repair"],

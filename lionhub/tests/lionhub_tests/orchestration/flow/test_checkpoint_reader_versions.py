@@ -40,7 +40,7 @@ def test_loader_rejects_unsupported_base_with_journal(tmp_path, version):
 
 
 def test_writer_version_uses_shared_reader_contract():
-    import lionagi._checkpoint_version as checkpoint_version
+    import lionhub.orchestration.flow.checkpoint_version as checkpoint_version
     from lionhub.orchestration.flow.checkpoint import CHECKPOINT_VERSION
 
     assert CHECKPOINT_VERSION == checkpoint_version.CHECKPOINT_VERSION == 2

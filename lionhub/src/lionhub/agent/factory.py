@@ -687,8 +687,11 @@ async def create_agent(
         or formatter_bound
         or _command_env_names_out is not None
     ):
-        from lionagi._command_env import normalize_command_env_allowlist
-        from lionagi._command_env_metadata import command_environment, configured_command_env_names
+        from lionhub.tools.command_env import normalize_command_env_allowlist
+        from lionhub.tools.command_env_metadata import (
+            command_environment,
+            configured_command_env_names,
+        )
 
         active_reference = branch.chat_model.endpoint.config.api_key_env
         command_names = frozenset(

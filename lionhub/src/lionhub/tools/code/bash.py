@@ -8,10 +8,10 @@ from collections.abc import Callable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi._command_env import normalize_command_env_allowlist
-from lionagi._command_env_metadata import command_environment
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
+from lionhub.tools.command_env import normalize_command_env_allowlist
+from lionhub.tools.command_env_metadata import command_environment
 
 from .._subprocess import _SHELL_CONTROL
 from .._subprocess import _subprocess_sync as _subprocess_sync_inner

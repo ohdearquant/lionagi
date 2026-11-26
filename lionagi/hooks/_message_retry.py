@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lionagi.state.compat import StateCompatibilityRefused
+from lionagi._state_refusal import StateCompatibilityRefused
 
 
 @dataclass(slots=True)

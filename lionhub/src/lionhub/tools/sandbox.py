@@ -9,9 +9,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from lionagi._command_env_metadata import command_environment
 from lionagi.ln import short_id
 from lionagi.ln.concurrency import run_sync
+from lionhub.tools.command_env_metadata import command_environment
 
 from ._subprocess import _subprocess_sync
 

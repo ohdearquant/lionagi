@@ -1040,7 +1040,7 @@ async def test_unreadable_credential_settings_keep_the_run_on_the_api_route(
 ):
     """When the names to remove from the child environment cannot be read, the run does not move:
     it prints why and fails with the routing error, not the settings error."""
-    import lionagi._command_env_metadata as metadata
+    import lionhub.tools.command_env_metadata as metadata
     from lionagi._errors import ConfigurationError
 
     real = metadata.configured_command_env_names

@@ -67,6 +67,23 @@ precedence over the package row.
 | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` |
 | `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` |
 
+The flow specification and checkpoint modules below are deprecated at their old paths in
+0.39.0 and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._flow_spec` | `lionhub.orchestration.flow.spec` |
+| `lionagi._checkpoint_version` | `lionhub.orchestration.flow.checkpoint_version` |
+| `lionagi._checkpoint_v3_codec` | `lionhub.orchestration.flow.checkpoint_codec` |
+
+The coding-command environment modules below are deprecated at their old paths in 0.39.0
+and are scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi._command_env` | `lionhub.tools.command_env` |
+| `lionagi._command_env_metadata` | `lionhub.tools.command_env_metadata` |
+
 The schedule services below are deprecated at their old paths in 0.38.0
 and are scheduled for removal in 2.0.0.
 

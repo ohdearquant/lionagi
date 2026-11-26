@@ -16,7 +16,7 @@ validates an agent or orchestration prompt. The readers are named rather than
 counted, because a count goes stale silently when a reader is added while a
 missing name is visible:
 
-- `lionagi/_flow_spec.py`
+- `lionhub/src/lionhub/orchestration/flow/spec.py`
 - `lionhub/src/lionhub/serve/cli/agent.py`
 - `lionhub/src/lionhub/serve/cli/orchestrate/__init__.py`
 - `lionhub/src/lionhub/serve/mcp/dispatch.py`

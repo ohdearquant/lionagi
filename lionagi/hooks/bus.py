@@ -173,7 +173,7 @@ class HookBus:
         emit, so later handlers do not run, and the signal is recorded with the
         refusal first.
         """
-        from lionagi.state.compat import refusal_in  # noqa: PLC0415
+        from lionagi._state_refusal import refusal_in  # noqa: PLC0415
 
         point = _normalize_point(point)
         if point in _BLOCKING_POINTS:
@@ -219,7 +219,7 @@ class HookBus:
         record that it happened. A queue the store refuses in compatibility mode
         raises that refusal, once every queue has been flushed.
         """
-        from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+        from lionagi._state_refusal import StateCompatibilityRefused  # noqa: PLC0415
 
         flushed = True
         refusal = None

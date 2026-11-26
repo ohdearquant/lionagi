@@ -166,7 +166,7 @@ def _is_store_refusal(exc: BaseException) -> bool:
     Imported lazily so this module stays import-light, and read from the exception's own class
     rather than a copy: a refusal raised by a store handle is the same class object here.
     """
-    from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+    from lionagi._state_refusal import StateCompatibilityRefused  # noqa: PLC0415
 
     return isinstance(exc, StateCompatibilityRefused)
 

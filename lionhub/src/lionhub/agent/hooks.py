@@ -311,9 +311,9 @@ async def auto_format_python(
     if not file_path.endswith(".py"):
         return None
 
-    from lionagi._command_env_metadata import command_environment
     from lionagi.ln.concurrency import run_sync
     from lionhub.tools.coding import _subprocess_sync
+    from lionhub.tools.command_env_metadata import command_environment
 
     environment = command_environment() if _command_env is None else dict(_command_env)
     await run_sync(

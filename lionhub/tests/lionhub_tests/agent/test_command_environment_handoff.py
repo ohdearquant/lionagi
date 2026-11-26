@@ -19,7 +19,7 @@ def _metadata(monkeypatch):
         calls.append(kwargs)
         return frozenset({"GH_TOKEN", "OWNED_SECRET"})
 
-    monkeypatch.setattr("lionagi._command_env_metadata.configured_command_env_names", names)
+    monkeypatch.setattr("lionhub.tools.command_env_metadata.configured_command_env_names", names)
     return calls
 
 
@@ -130,7 +130,9 @@ async def test_unrelated_factory_does_not_read_command_metadata(monkeypatch):
     def forbidden(**kwargs):
         raise AssertionError("an unrelated agent must not read command metadata")
 
-    monkeypatch.setattr("lionagi._command_env_metadata.configured_command_env_names", forbidden)
+    monkeypatch.setattr(
+        "lionhub.tools.command_env_metadata.configured_command_env_names", forbidden
+    )
     model = _model()
     try:
         await factory.create_agent(
@@ -254,7 +256,7 @@ async def test_discovered_mcp_hook_receives_the_same_supplier(monkeypatch):
 
 @pytest.mark.parametrize("explicit", [False, True], ids=["owned-defaults", "operator-grant"])
 async def test_direct_formatter_prepares_environment_before_thread_handoff(explicit, monkeypatch):
-    from lionagi._command_env_metadata import command_environment
+    from lionhub.tools.command_env_metadata import command_environment
 
     _metadata(monkeypatch)
     monkeypatch.setenv("GH_TOKEN", "synthetic-selected")

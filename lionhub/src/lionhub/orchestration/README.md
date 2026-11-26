@@ -93,6 +93,9 @@ returns the module at its new path. Each old path is removed in 2.0.0. The rows 
 | `lionagi.cli._runs` | `lionhub.orchestration.runs` | 0.38.0 |
 | `lionagi.cli._kill_service` | `lionhub.orchestration.kill` | 0.38.0 |
 | `lionagi.cli.orchestrate._checkpoint` | `lionhub.orchestration.flow.checkpoint` | 0.38.0 |
+| `lionagi._flow_spec` | `lionhub.orchestration.flow.spec` | 0.39.0 |
+| `lionagi._checkpoint_version` | `lionhub.orchestration.flow.checkpoint_version` | 0.39.0 |
+| `lionagi._checkpoint_v3_codec` | `lionhub.orchestration.flow.checkpoint_codec` | 0.39.0 |
 | `lionagi.studio.services._schedule_validation` | `lionhub.orchestration.schedule.validation` | 0.38.0 |
 | `lionagi.studio.services.schedule_action_validation` | `lionhub.orchestration.schedule.action_validation` | 0.38.0 |
 | `lionagi.studio.services.schedule_timing` | `lionhub.orchestration.schedule.timing` | 0.38.0 |

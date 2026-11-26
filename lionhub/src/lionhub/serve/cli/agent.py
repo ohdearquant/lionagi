@@ -2711,7 +2711,7 @@ async def _run_agent(
                 if api_launch is not None:
                     command_names = None
                     if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
-                        from lionagi._command_env_metadata import configured_command_env_names
+                        from lionhub.tools.command_env_metadata import configured_command_env_names
 
                         active_reference = chat_model.endpoint.config.api_key_env
                         command_names = configured_command_env_names(
@@ -3170,7 +3170,7 @@ async def _run_agent(
 
                 command_names = None
                 if api_launch["tools"] in _API_CONFINED_TOOL_SETS:
-                    from lionagi._command_env_metadata import configured_command_env_names
+                    from lionhub.tools.command_env_metadata import configured_command_env_names
 
                     active_reference = branch.chat_model.endpoint.config.api_key_env
                     command_names = configured_command_env_names(
@@ -3753,9 +3753,9 @@ async def _run_agent(
                     # `ANTHROPIC_API_KEY` would be billed in place of the subscription. Only Claude
                     # Code's own login token is kept. The names come from the API model's key
                     # reference, read before the branch's model is replaced.
-                    from lionagi._command_env import scrub_command_env
-                    from lionagi._command_env_metadata import configured_command_env_names
                     from lionagi.service._subagent_admission import without_account_names
+                    from lionhub.tools.command_env import scrub_command_env
+                    from lionhub.tools.command_env_metadata import configured_command_env_names
 
                     # A settings file that cannot be read leaves the names to remove unknown, so
                     # the run does not move; it fails with the routing error.

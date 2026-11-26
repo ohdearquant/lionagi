@@ -135,12 +135,10 @@
       "ForeignKeyShape",
       "OwnerRule",
       "SchemaObject",
-      "StateCompatibilityRefused",
       "TableShape",
       "TableWrites",
       "is_compatibility_store",
-      "read_closure",
-      "refusal_in"
+      "read_closure"
     ],
     "lionagi/state/completion_evidence.py": [
       "CompletionEvidence",

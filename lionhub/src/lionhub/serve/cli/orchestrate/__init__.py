@@ -10,12 +10,6 @@ from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi._flow_spec import (
-    FLOW_SPEC_FIELDS,
-    load_flow_spec,
-    validate_flow_args_schema,
-    validate_flow_spec_fields,
-)
 from lionagi._provider_errors import NestedAgentRefusedError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
@@ -26,6 +20,12 @@ from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from lionhub.orchestration.flow.parsing import _add_mcp_config_args as _add_mcp_config_args
 from lionhub.orchestration.flow.parsing import (
     add_orchestrate_subparser as add_orchestrate_subparser,
+)
+from lionhub.orchestration.flow.spec import (
+    FLOW_SPEC_FIELDS,
+    load_flow_spec,
+    validate_flow_args_schema,
+    validate_flow_spec_fields,
 )
 from lionhub.orchestration.job import EXIT_CODE_BY_STATUS
 

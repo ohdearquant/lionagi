@@ -23,7 +23,7 @@ import json
 import time
 from typing import Any
 
-from lionagi._checkpoint_version import (
+from lionhub.orchestration.flow.checkpoint_version import (
     UnsupportedCheckpointVersionError,
     load_legacy_checkpoint_json,
 )

@@ -142,10 +142,10 @@ async def test_declared_lookup_reference_is_removed_from_real_bash(command_scope
     ids=["selected-bearer", "selected-header", "deselected-bearer", "deselected-header"],
 )
 async def test_selected_mcp_auth_reference_reaches_bound_bash_policy(command_scope, kind, selected):
-    from lionagi._command_env_metadata import configured_command_env_names
     from lionagi.service.imodel import iModel
     from lionhub.agent.factory import create_agent
     from lionhub.agent.spec import AgentSpec
+    from lionhub.tools.command_env_metadata import configured_command_env_names
 
     target = _BEARER if kind == "bearer" else _HEADER
     other = _HEADER if kind == "bearer" else _BEARER

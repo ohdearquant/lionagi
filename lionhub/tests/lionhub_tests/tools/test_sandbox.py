@@ -610,9 +610,9 @@ async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):
 async def test_bound_sandbox_actions_keep_declared_names_out_of_every_git_child(
     git_repo, monkeypatch
 ):
-    from lionagi import _command_env_metadata
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch
+    from lionhub.tools import command_env_metadata as _command_env_metadata
     from lionhub.tools.coding import CodingToolkit
 
     monkeypatch.setattr(_command_env_metadata, "configured_command_env_names", lambda: frozenset())
@@ -688,7 +688,7 @@ async def test_bound_sandbox_actions_keep_declared_names_out_of_every_git_child(
 
 @pytest.mark.parametrize("sink", ["command", "untracked"])
 def test_standalone_git_sinks_use_owned_credential_names(git_repo, monkeypatch, sink):
-    from lionagi import _command_env_metadata
+    from lionhub.tools import command_env_metadata as _command_env_metadata
 
     monkeypatch.setattr(
         _command_env_metadata, "configured_command_env_names", lambda: frozenset({"GH_TOKEN"})
