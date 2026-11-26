@@ -80,7 +80,7 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 
 | File | Purpose |
 |---|---|
-| `lionagi/state/schema.sql` (`CREATE TABLE shows`, `CREATE TABLE plays`) | `shows` and `plays` table DDL |
+| `lionhub/src/lionhub/state/schema.sql` (`CREATE TABLE shows`, `CREATE TABLE plays`) | `shows` and `plays` table DDL |
 | `apps/studio/backend/src/lionagi_studio/services/shows.py` | List, detail, import, SSE watcher, and the `/api/shows` routes |
 | `apps/studio/backend/src/lionagi_studio/registry.py` | Registers that service with the app |
 | `apps/studio/backend/src/lionagi_studio/config.py` | `LIONAGI_SHOWS_ROOT` and the root it falls back to |

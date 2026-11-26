@@ -50,7 +50,7 @@ counts, the numeric P1 inventory figures below have not been reverified at `bb57
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
-6. `ALL_TABLES` in `tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
+6. `ALL_TABLES` in `lionhub/tests/lionhub_tests/state/test_engine_schema.py::ALL_TABLES`: a hand-typed set of 34 table names
    at `bb57cc9619765bd03e7dd2b3369725335d48af21`. The metadata table-name assertion compares
    the whole created table set to it; the column-name parity assertion iterates over it. A
    table omitted from both the set and the metadata population is not discovered by that
@@ -64,7 +64,7 @@ requests) are the failure mode this multiplicity produces: each copy encodes a s
 different belief about the schema.
 
 **P2 — the parity guard compares names, so the drift that exists today passes it.**
-`tests/state/test_engine_schema.py` builds one database from `MetaData` and another from
+`lionhub/tests/lionhub_tests/state/test_engine_schema.py` builds one database from `MetaData` and another from
 `schema.sql`. It checks the metadata table-name set (`test_metadata_creates_all_tables`),
 per-table column-*name* sets (`test_metadata_column_parity_vs_schema_sql:336`), the columns
 of two named indexes (`test_branches_index_matches_runtime_migration_definition:377` and

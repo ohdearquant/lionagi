@@ -327,7 +327,7 @@ def _recorded_selection(row: dict[str, Any]) -> str | None:
 
 Input: `row["status_evidence_refs"]` as a list, or as JSON text. `get_schedule_run` decodes the column (`lionhub/src/lionhub/state/db.py::StateDB.get_schedule_run`, `lionhub/src/lionhub/state/db.py::StateDB._row_to_dict`). The monitor already accepts both forms for session rows (`lionhub/src/lionhub/serve/cli/monitor.py::_detail_session`).
 
-A ref is usable when it is a dict with `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Ignore malformed and unsupported chain-decision elements when selecting a branch. One usable v1 selection wins when the list also contains an unusable element. Duplicate usable elements that agree describe the same selection. Conflicting usable selections make the record unusable, so the monitor applies its fallback. An affected row emits one warning per wait for malformed, unsupported or conflicting elements, including when a usable selection wins. The warning names the run ID and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The implementation chooses the channel.
+A ref is usable when it is a dict with `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Ignore malformed and unsupported chain-decision elements when selecting a branch. One usable v1 selection wins when the list also contains an unusable element. Duplicate usable elements that agree describe the same selection. Conflicting usable selections make the record unusable, so the monitor applies its fallback. An affected row emits one warning per wait for malformed, unsupported or conflicting elements, including when a usable selection wins. The warning names the run ID and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionhub.state.log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The implementation chooses the channel.
 
 Cases in `_advance_chains` (`lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`), applied to a row that has become terminal, in this order:
 
@@ -498,7 +498,7 @@ Regression coverage:
 1. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_completed_empty_follows_only_selected_failure_action`: an exit-0 child with an `on_fail` branch and a `completed_empty` invocation. The row's `status_evidence_refs` contains `{"kind": "chain_decision", "v": 1, "ref": "on_fail"}` and the invocation ref.
 2. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_dispatched_startup_recovery_follows_failure_without_exit_code`: a dispatched orphan with a stored branch. The row carries the same element, and the definition is read before the compare-and-set.
 3. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_selection_is_none_at_depth_cap`: a run at `_MAX_CHAIN_DEPTH` records `none` and launches nothing.
-4. `tests/state/lifecycle/test_service.py::test_schedule_decisions_read_the_same_store_stamp_as_the_writer` and `tests/state/lifecycle/test_service.py::test_schedule_decision_survives_terminal_override_and_legacy_history`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
+4. `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py::test_schedule_decisions_read_the_same_store_stamp_as_the_writer` and `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py::test_schedule_decision_survives_terminal_override_and_legacy_history`: a `db.update_status` write for a schedule run persists ordinary `status_evidence_refs`. The legacy `transition()` route records ordinary refs in history only. This is the reason-column gate test (D1).
 5. `lionhub/tests/lionhub_tests/orchestration/scheduler/test_recorded_chain_monitor.py::test_lost_schedule_run_cas_preserves_winner_and_launches_no_child`: a lost compare-and-set on each path launches no child and writes no selection.
 6. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_none_returns_without_sleep`: a `none` row resolves with no sleep, whatever its exit code. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_with_no_chain_returns_without_sleep`: with `--no-chain`, an `on_success` row resolves with no sleep and the wait returns the row's own result.
 7. `lionhub/tests/lionhub_tests/serve/cli/test_monitor_run.py::test_chain_decision_branch_follows_child`: an `on_fail` selection on an exit-0 parent opens grace and prints a child that appears within it.
@@ -524,7 +524,7 @@ Regression coverage:
 14. In `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_engine.py`
     and `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
     cover skip, setup failure and failed replacement. In
-    `tests/state/lifecycle/test_service.py` use a SQLite and PostgreSQL fixture
+    `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py` use a SQLite and PostgreSQL fixture
     to verify `none` is seeded atomically in current and initial history.
     Create `failed` and `skipped` runs directly through the SDK and verify
     neither path seeds a decision. Cover unseeded `queued` and `running`
@@ -544,8 +544,8 @@ Regression coverage:
     verify invocation evidence isolation on normal completion, dispatched
     recovery, setup failure, cancellation and exception handling. Only the
     eligible schedule-run write adds its decision.
-17. In `tests/state/lifecycle/test_service.py` and
-    `tests/state/test_lifecycle_gate.py`, use SQLite and PostgreSQL fixtures to
+17. In `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py` and
+    `lionhub/tests/lionhub_tests/state/test_lifecycle_gate.py`, use SQLite and PostgreSQL fixtures to
     issue a justified terminal-to-nonterminal schedule-run
     override. It raises `TransitionRejectedError`, records one
     `status_transition_rejected` event and changes neither the run row nor its
@@ -558,7 +558,7 @@ Regression coverage:
     neither the row nor history. A running orphan with incoming reserved evidence
     is refused with the same row and history assertions. A running, undispatched
     orphan with ordinary evidence is replaced successfully.
-19. In `tests/state/lifecycle/test_service.py` and
+19. In `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py` and
     `lionhub/tests/lionhub_tests/orchestration/scheduler/test_scheduler_occurrence_atomicity.py`,
     use a controlled persistence fixture that exposes the stamp immediately below
     the preservation version to the real D1 and D3
@@ -566,11 +566,11 @@ Regression coverage:
     Verify guarded terminal writes and scheduler terminal creation leave both
     current and history refs without a decision. Repeat at the preservation version on SQLite
     and PostgreSQL and verify both records contain it. In
-    `tests/state/test_db.py`, exercise the ordinary native open, verify it
+    `lionhub/tests/lionhub_tests/state/test_db.py`, exercise the ordinary native open, verify it
     stamps the upgraded store, and verify that a writer at the version immediately
     below the preservation version opening the
     store stamped at the preservation version gets `SchemaTooNewError`.
-20. In `tests/state/test_lifecycle_gate.py`, attempt to change a stored decision
+20. In `lionhub/tests/lionhub_tests/state/test_lifecycle_gate.py`, attempt to change a stored decision
     using a stale `expected_updated_at`.
     Assert that `update_status` returns `False` and writes no rejection event.
     Use legacy `transition()` to request the run's same terminal status with
@@ -578,8 +578,8 @@ Regression coverage:
     non-null `lease_attempts` guard. Assert `applied=False`, `conflict=True`
     and no rejection event.
     Both attempts leave the run row and its transition history unchanged.
-21. In `tests/state/lifecycle/test_service.py` and
-    `tests/state/test_lifecycle_gate.py`, send a guarded
+21. In `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py` and
+    `lionhub/tests/lionhub_tests/state/test_lifecycle_gate.py`, send a guarded
     `running`-to-terminal `update_status` on an enabled store
     with a decision and no `record_chain_decision` attribute set. Assert the
     rejected service outcome reports unchanged `running` and
@@ -595,7 +595,7 @@ Regression coverage:
     `transition_id=None` in the service outcome, `TransitionRejectedError`
     at the facade, one committed `status_transition_rejected` event, and an
     unchanged run row and history.
-22. In `tests/state/test_lifecycle_gate.py`, check the exception reason and
+22. In `lionhub/tests/lionhub_tests/state/test_lifecycle_gate.py`, check the exception reason and
     message for an ordinary terminal-to-terminal `update_status` without an
     override, a write refused by the terminal floor even with a valid override,
     and a decision refusal. Repeat the terminal-to-terminal write with a
@@ -604,7 +604,7 @@ Regression coverage:
     must match its existing text. On legacy `transition()`, check that ordinary
     undeclared nonterminal and terminal-to-terminal edges raise
     `LifecycleValidationError` with no audit.
-    In `tests/state/lifecycle/test_service.py`, retain the typed-route control
+    In `lionhub/tests/lionhub_tests/state/lifecycle/test_service.py`, retain the typed-route control
     for an undeclared nonterminal edge returning an audited rejection.
 23. In the monitor suite, a usable ref wins over the fallback: a `cancelled`
     row and a `failed` row without an exit code, each with a recorded `none`
@@ -648,7 +648,7 @@ Existing tests whose fixtures carry no ref and so exercise the fallback. They ta
 
 ## Open questions
 
-1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The channel for the D4 warning remains an implementation choice.
+1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionhub.state.log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The channel for the D4 warning remains an implementation choice.
 
 2. **Operator cancellation.** Whether an explicit operator cancellation should launch `on_fail` is tracked in #4395.
 
