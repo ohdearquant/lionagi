@@ -44,7 +44,7 @@ def _release_legacy_atexit(ref) -> None:
 
 
 def test_abandoned_logger_and_pile_collect_and_pending_record_is_saved(tmp_path):
-    logger = DataLogger(persist_dir=tmp_path)
+    logger = DataLogger(persist_dir=tmp_path, auto_save_on_exit=True)
     _log(logger, "pending")
     logger_ref, pile_ref = weakref.ref(logger), weakref.ref(logger.logs)
     del logger
@@ -60,7 +60,7 @@ def test_abandoned_logger_and_pile_collect_and_pending_record_is_saved(tmp_path)
 def test_bound_exit_method_does_not_keep_logger_alive(tmp_path):
     # This independent lifetime assertion must turn red if bound-method atexit
     # registration is restored, even when there are no pending records.
-    logger = DataLogger(persist_dir=tmp_path)
+    logger = DataLogger(persist_dir=tmp_path, auto_save_on_exit=True)
     ref = weakref.ref(logger)
     del logger
     try:
@@ -208,7 +208,7 @@ def test_entry_added_during_automatic_write_is_not_cleared(tmp_path, monkeypatch
 
 
 def test_reassigned_logs_are_the_pending_records_saved_on_collection(tmp_path):
-    logger = DataLogger(persist_dir=tmp_path)
+    logger = DataLogger(persist_dir=tmp_path, auto_save_on_exit=True)
     _log(logger, "old")
     logger.logs = Pile(collections=[Log(content={"event": "replacement"})], item_type=Log)
     logger_ref, pile_ref = weakref.ref(logger), weakref.ref(logger.logs)
@@ -227,9 +227,9 @@ def test_reassigned_config_controls_the_automatic_save_destination(tmp_path):
     new_path = tmp_path / "new"
     old_path.mkdir()
     new_path.mkdir()
-    logger = DataLogger(persist_dir=old_path)
+    logger = DataLogger(persist_dir=old_path, auto_save_on_exit=True)
     _log(logger, "new-destination")
-    logger._config = DataLoggerConfig(persist_dir=new_path)
+    logger._config = DataLoggerConfig(persist_dir=new_path, auto_save_on_exit=True)
     ref = weakref.ref(logger)
     del logger
     try:
@@ -273,7 +273,7 @@ def test_automatic_serialization_failure_retains_record_without_leaking_payload(
 
 @pytest.mark.parametrize("clear", [True, False])
 def test_explicit_dump_preserves_clear_behavior_for_later_automatic_save(tmp_path, clear):
-    logger = DataLogger(persist_dir=tmp_path)
+    logger = DataLogger(persist_dir=tmp_path, auto_save_on_exit=True)
     _log(logger, "record")
     logger.dump(clear=clear)
     assert len(logger.logs) == (0 if clear else 1)

@@ -81,26 +81,26 @@ class TestAppSettings:
 
     def test_log_defaults(self):
         config = AppSettings()
-        assert config.LOG_PERSIST_DIR == "./data/logs"
+        assert config.LOG_PERSIST_DIR is None
         assert config.LOG_SUBFOLDER is None
         assert config.LOG_CAPACITY == 50
         assert config.LOG_EXTENSION == ".json"
         assert config.LOG_USE_TIMESTAMP is True
         assert config.LOG_HASH_DIGITS == 5
         assert config.LOG_FILE_PREFIX == "log"
-        assert config.LOG_AUTO_SAVE_ON_EXIT is True
+        assert config.LOG_AUTO_SAVE_ON_EXIT is False
         assert config.LOG_CLEAR_AFTER_DUMP is True
 
     def test_log_config_property(self):
         config = AppSettings()
         log_config = config.LOG_CONFIG
-        assert log_config["persist_dir"] == "./data/logs"
+        assert log_config["persist_dir"] is None
         assert log_config["capacity"] == 50
         assert log_config["extension"] == ".json"
         assert log_config["use_timestamp"] is True
         assert log_config["hash_digits"] == 5
         assert log_config["file_prefix"] == "log"
-        assert log_config["auto_save_on_exit"] is True
+        assert log_config["auto_save_on_exit"] is False
         assert log_config["clear_after_dump"] is True
 
     def test_aiocache_config_default(self):
@@ -265,13 +265,13 @@ def test_provider_defaults(provider, model_key, default_model):
 @pytest.mark.parametrize(
     "log_key,expected_value",
     [
-        ("LOG_PERSIST_DIR", "./data/logs"),
+        ("LOG_PERSIST_DIR", None),
         ("LOG_CAPACITY", 50),
         ("LOG_EXTENSION", ".json"),
         ("LOG_USE_TIMESTAMP", True),
         ("LOG_HASH_DIGITS", 5),
         ("LOG_FILE_PREFIX", "log"),
-        ("LOG_AUTO_SAVE_ON_EXIT", True),
+        ("LOG_AUTO_SAVE_ON_EXIT", False),
         ("LOG_CLEAR_AFTER_DUMP", True),
     ],
 )

@@ -918,7 +918,9 @@ class Branch(Element, Relational):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._log_manager.adump(clear=True)
+        # Logs are written on exit only when the logger has a directory.
+        if self._log_manager._config.persist_dir is not None:
+            await self._log_manager.adump(clear=True)
 
     @overload
     async def chat(
