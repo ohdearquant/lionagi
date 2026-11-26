@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
-from ..service.accounts._pricing import _is_count, cache_write_split
+from ..service.accounts._usage_shape import _is_count, cache_write_split
 
 __all__ = (
     "Signal",

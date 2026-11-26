@@ -13,7 +13,12 @@ import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterator, Literal, Protocol
+
+# Prices one response for the turn's collector: (served model, usage, request payload) to
+# (estimated cost in nanodollars, price table version). The caller that starts the turn supplies
+# it; without one, a response's tokens are recorded with no cost.
+CostEstimator = Callable[[str, dict, dict], tuple[int | None, str | None]]
 
 
 @dataclass(frozen=True)
@@ -67,10 +72,11 @@ class APIUsageSink(Protocol):
 class RequestFrame:
     owner: weakref.ReferenceType[APIUsageSink]
     request_index: int
+    estimate_cost: CostEstimator | None = None
 
 
-_turn: ContextVar[tuple[weakref.ReferenceType[APIUsageSink], int] | None] = ContextVar(
-    "api_usage_turn", default=None
+_turn: ContextVar[tuple[weakref.ReferenceType[APIUsageSink], int, CostEstimator | None] | None] = (
+    ContextVar("api_usage_turn", default=None)
 )
 _request: ContextVar[RequestFrame | None] = ContextVar("api_usage_request", default=None)
 _cache_source: ContextVar[list[bool] | None] = ContextVar("api_usage_cache_source", default=None)
@@ -119,8 +125,10 @@ def is_collecting() -> bool:
 
 
 @contextmanager
-def collect_api_turn(collector: APIUsageSink, turn_index: int) -> Iterator[None]:
-    token = _turn.set((weakref.ref(collector), turn_index))
+def collect_api_turn(
+    collector: APIUsageSink, turn_index: int, *, estimate_cost: CostEstimator | None = None
+) -> Iterator[None]:
+    token = _turn.set((weakref.ref(collector), turn_index, estimate_cost))
     try:
         yield
     finally:
@@ -139,7 +147,7 @@ def capture_request(decision: InputDecision, *, api_call_id: str | None) -> Requ
             turn_index=scope[1], decision=decision, api_call_id=api_call_id
         )
         if isinstance(index, int) and not isinstance(index, bool) and index > 0:
-            return RequestFrame(scope[0], index)
+            return RequestFrame(scope[0], index, scope[2])
     except Exception:
         # Observation must not replace an SDK result, refusal or cancellation.
         return None
@@ -200,38 +208,6 @@ def _usage_token_counts(usage: Any) -> tuple[int | float | None, int | float | N
     return number("input_tokens", "prompt_tokens"), number("output_tokens", "completion_tokens")
 
 
-def _estimate_response_cost(
-    served_model: str, usage: dict, payload: dict
-) -> tuple[int | None, str | None]:
-    from .accounts._pricing import CURRENT_REVISION, price_usage, request_ttls
-    from .accounts._types import AccountRoutingError
-
-    if served_model not in CURRENT_REVISION.models:
-        return None, None
-
-    # With no reported serving tier, only a standard_only request can be
-    # priced at the standard rate.
-    if usage.get("service_tier") is None and payload.get("service_tier") != "standard_only":
-        return None, None
-
-    # Read the submitted cache markers for any cache write lifetime.
-    try:
-        ttls = request_ttls({"service_tier": "standard_only", **payload})
-    except AccountRoutingError:
-        # The response can describe all cache activity even if the request
-        # shape cannot be used to infer a write lifetime.
-        if any(
-            usage.get(key) is None
-            for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
-        ):
-            return None, None
-        ttls = frozenset()
-    priced = price_usage(CURRENT_REVISION, ttls, served_model, usage)
-    if priced is None:
-        return None, None
-    return priced.cost_nusd, CURRENT_REVISION.id
-
-
 def _record_response_usage(
     frame: RequestFrame | None,
     usage: Any,
@@ -261,14 +237,15 @@ def _record_response_usage(
             return
         cost = version = None
         if (
-            provider == "anthropic"
+            frame.estimate_cost is not None
+            and provider == "anthropic"
             and endpoint == "messages"
             and served_model is not None
             and input_tokens is not None
             and output_tokens is not None
         ):
             try:
-                cost, version = _estimate_response_cost(served_model, usage, payload)
+                cost, version = frame.estimate_cost(served_model, usage, payload)
             except Exception:
                 # A price estimate is optional even when counts are available.
                 cost, version = None, None

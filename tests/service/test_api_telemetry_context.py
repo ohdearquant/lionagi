@@ -18,7 +18,7 @@ from lionagi.service._api_telemetry import (
     record_selected_attempt,
     record_served_model,
 )
-from lionagi.service.accounts._pricing import CURRENT_REVISION
+from lionagi.service.accounts._pricing import CURRENT_REVISION, estimate_response_cost
 from lionhub.serve.cli._api_usage import APIUsageCollector
 
 
@@ -91,7 +91,7 @@ def test_anthropic_usage_cost_accounts_for_service_tier(request_tier, response_t
         usage["service_tier"] = response_tier
 
     collector = APIUsageCollector(run_id="run-a", branch_id="branch-a")
-    with collect_api_turn(collector, 1):
+    with collect_api_turn(collector, 1, estimate_cost=estimate_response_cost):
         frame = capture_request(_decision(model=model), api_call_id="event-a")
     _record_response_usage(
         frame, usage, provider="anthropic", endpoint="messages", served_model=model, payload=payload
@@ -105,6 +105,33 @@ def test_anthropic_usage_cost_accounts_for_service_tier(request_tier, response_t
     assert snapshot["price_table_version"] == (
         CURRENT_REVISION.id if expected_cost is not None else None
     )
+
+
+def test_a_turn_without_an_estimator_records_tokens_with_no_cost():
+    model = "claude-sonnet-5-5"
+    payload = {
+        "model": model,
+        "max_tokens": 10,
+        "service_tier": "standard_only",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    usage = {"input_tokens": 10, "output_tokens": 3, "service_tier": "standard"}
+    # The same response is priced when the turn carries the estimator.
+    assert estimate_response_cost(model, usage, payload)[0] is not None
+
+    collector = APIUsageCollector(run_id="run-a", branch_id="branch-a")
+    with collect_api_turn(collector, 1):
+        frame = capture_request(_decision(model=model), api_call_id="event-a")
+    _record_response_usage(
+        frame, usage, provider="anthropic", endpoint="messages", served_model=model, payload=payload
+    )
+
+    snapshot = collector.snapshot()
+    (row,) = snapshot["requests"]
+    assert (row["input_tokens"], row["output_tokens"]) == (10, 3)
+    assert row["estimated_cost_nusd"] is None
+    assert snapshot["estimated_cost_nusd"] is None
+    assert snapshot["price_table_version"] is None
 
 
 def test_detached_versioned_record_dedupes_actual_identities_and_seals():

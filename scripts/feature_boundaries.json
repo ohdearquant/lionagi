@@ -757,6 +757,10 @@
       "layer": "adapter",
       "owner": "accounts"
     },
+    "lionagi.service.accounts._request_guard": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
     "lionagi.service.accounts._router": {
       "layer": "adapter",
       "owner": "accounts"
@@ -770,6 +774,10 @@
       "owner": "accounts"
     },
     "lionagi.service.accounts._types": {
+      "layer": "adapter",
+      "owner": "accounts"
+    },
+    "lionagi.service.accounts._usage_shape": {
       "layer": "adapter",
       "owner": "accounts"
     },

@@ -766,12 +766,12 @@ class AnthropicMessagesEndpoint(Endpoint):
 
     async def probe_blocked_account(self, name: str) -> _AccountProbeResult:
         """Send one fixed, ledger-accounted request to an account with a billing block."""
-        from lionagi.service.accounts._router import (
-            get_router,
+        from lionagi.service.accounts._request_guard import (
             header_pairs,
             routed_client_kwargs,
             validate_routed_request,
         )
+        from lionagi.service.accounts._router import get_router
 
         url = self.config.full_url
         method = self.config.method
@@ -854,13 +854,12 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         import httpx
 
-        from lionagi.service.accounts._router import (
-            get_router,
+        from lionagi.service.accounts._request_guard import (
             header_pairs,
-            redact_value,
             routed_client_kwargs,
             validate_routed_request,
         )
+        from lionagi.service.accounts._router import get_router, redact_value
         from lionagi.service.accounts._types import (
             _BILLING_BLOCKS,
             AccountRoutingError,
@@ -1186,14 +1185,16 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._pricing import stream_usage_estimate, usage_outcome
+        from lionagi.service.accounts._request_guard import (
+            header_pairs,
+            routed_client_kwargs,
+            validate_routed_request,
+        )
         from lionagi.service.accounts._router import (
             StreamingSecretRedactor,
             StreamTextRedactor,
             get_router,
-            header_pairs,
             redact_value,
-            routed_client_kwargs,
-            validate_routed_request,
         )
         from lionagi.service.accounts._types import (
             _BILLING_BLOCKS,
