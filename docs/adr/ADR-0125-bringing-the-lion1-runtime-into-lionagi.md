@@ -634,6 +634,9 @@ Why this way: raising the floor is a breaking change for every user on 3.10; Pyt
 end of life this month, and the floor can rise in its own release later. Lowering the ported code is
 mechanical and touches about twenty files.
 
+Note (2026-11-26): the floor moves to Python 3.11 in 1.0.0, because Python 3.10 is past end of
+life and the fixed release of dnspython needs 3.11.
+
 ### D7: types
 
 Every public function, method and model in ported code is fully annotated; handler requests and
