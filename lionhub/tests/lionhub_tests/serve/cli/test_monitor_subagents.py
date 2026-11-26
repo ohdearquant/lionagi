@@ -62,8 +62,8 @@ async def test_the_machine_result_carries_the_pools(home, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_table_shows_the_slots_when_there_is_no_state_db(home, monkeypatch):
-    from lionagi.state import db as state_db
     from lionhub.serve.cli.monitor import _run_table
+    from lionhub.state import db as state_db
 
     monkeypatch.setattr(state_db, "state_db_known_absent", lambda: True)
     monkeypatch.setenv("LIONAGI_MAX_SUBAGENTS", "2")
@@ -90,7 +90,7 @@ async def test_the_table_adds_the_slot_line_under_the_rows(home, monkeypatch):
     async def _rows(db, **kwargs):
         return []
 
-    from lionagi.state import db as state_db
+    from lionhub.state import db as state_db
 
     monkeypatch.setattr(state_db, "state_db_known_absent", lambda: False)
     monkeypatch.setattr(state_db, "StateDB", _FakeDB)

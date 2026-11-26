@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi._log_channels import log_error, warn
 from lionagi._paths import ensure_lionagi_dir
 from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import _url_authority
 from lionhub.serve.daemon._host import admitted_host_names, is_unspecified_host, normalize_host
 from lionhub.serve.daemon.settings import _SHUTDOWN_GRACE_SECONDS
+from lionhub.state.log_channels import log_error, warn
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"

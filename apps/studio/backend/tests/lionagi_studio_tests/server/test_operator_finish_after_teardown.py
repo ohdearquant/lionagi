@@ -8,7 +8,6 @@ import asyncio
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionagi_studio.operator.coordinator import OperatorCoordinator
 from lionagi_studio.operator.store import OperatorStore
 from lionagi_studio_tests.server.test_operator_protocol import (
@@ -18,6 +17,7 @@ from lionagi_studio_tests.server.test_operator_protocol import (
     _wait_done_since,
 )
 from lionhub.orchestration import runs as runs_mod
+from lionhub.state.db import StateDB
 
 _CONTEXT = {"space": "mission", "route": "/", "filters": {}}
 

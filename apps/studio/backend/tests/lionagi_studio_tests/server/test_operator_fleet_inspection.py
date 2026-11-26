@@ -418,8 +418,8 @@ async def test_list_artifacts_reports_unknown_when_read_only_open_is_unavailable
     """A read-only open the store cannot provide is reported as an unavailable
     read, never widened into an ordinary writable one -- which is exactly what
     the availability helper hands back, and what a read-only tool must refuse."""
-    from lionagi.state import db as db_module
     from lionagi_studio.operator.application_mcp import list_artifacts
+    from lionhub.state import db as db_module
 
     def _must_not_open(*_args, **_kwargs):
         raise AssertionError("the store must not be opened when read-only is unavailable")

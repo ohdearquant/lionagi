@@ -375,7 +375,6 @@ def _export(argv: list[str]) -> dict[str, Any]:
     )
     import asyncio
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.schedule.export import (
         build_managed_export_document,
         convert_legacy_rows,
@@ -383,6 +382,7 @@ def _export(argv: list[str]) -> dict[str, Any]:
         is_legacy_row,
         is_managed_row,
     )
+    from lionhub.state.db import StateDB
 
     async def _collect():
         async with StateDB() as db:

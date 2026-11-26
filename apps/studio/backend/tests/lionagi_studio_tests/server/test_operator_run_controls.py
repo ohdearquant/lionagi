@@ -34,7 +34,7 @@ PROJECT = "operator-control-project"
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
 
@@ -140,7 +140,7 @@ async def test_allowed_run_control_queues_the_exact_existing_transport_verb(
     verb: str,
     payload: dict[str, Any] | None,
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -188,7 +188,7 @@ async def test_allowed_run_control_queues_the_exact_existing_transport_verb(
 
 @pytest.mark.asyncio
 async def test_denied_control_never_queues_a_transport_row(tmp_path: Path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -220,7 +220,7 @@ async def test_denied_control_never_queues_a_transport_row(tmp_path: Path, monke
 
 @pytest.mark.asyncio
 async def test_pause_refuses_agent_without_creating_a_proposal(tmp_path: Path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -245,7 +245,7 @@ async def test_pause_refuses_agent_without_creating_a_proposal(tmp_path: Path, m
 async def test_execution_rechecks_project_and_terminal_status_before_queueing(
     tmp_path: Path, monkeypatch
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -321,7 +321,7 @@ async def test_a_turn_with_no_project_scope_proposes_no_control_at_all(tmp_path:
     A control mutates the run it names, so there is no version of "no scope"
     it can safely proceed under -- unlike the read paths, which fall open.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -351,7 +351,7 @@ async def test_the_unscoped_refusal_does_not_disclose_which_run_ids_exist(
     and "not_found" would mean it did not, which tells an unscoped turn exactly
     which run ids exist in projects it cannot see.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -380,7 +380,7 @@ async def test_a_scoped_turn_cannot_propose_against_another_projects_run(
     leaves this test green. The comparison is kept as a second fence, and the
     unscoped case below is where the ownership bind is what does the work.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -464,7 +464,7 @@ async def test_a_turn_cannot_widen_its_own_scope_by_naming_a_project_in_its_cont
     agrees. The conversation's project is written once at creation and has no
     update parameter, which is why the bind reads from there instead.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -503,8 +503,8 @@ async def test_a_project_reassignment_between_check_and_insert_queues_nothing(
     window the insert has to close on its own: after the admission check has
     already approved it, before the insert statement runs.
     """
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator import run_control as run_control_mod
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -558,7 +558,7 @@ async def test_the_same_insert_still_queues_when_ownership_holds_throughout(
     Without it, the refusal there is equally consistent with an insert that
     never queues anything for any input.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -599,12 +599,12 @@ async def test_an_agent_session_reports_whether_a_control_would_reach_anyone(
     A client that offers a steer this predicate refuses gets a control that can
     never queue, so both sides read one rule.
     """
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.run_control import (
         _admission_refusal,
         session_has_control_consumer,
     )
     from lionhub.serve.daemon.services.sessions import get_session
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -659,11 +659,11 @@ async def test_a_flow_run_needs_a_live_delivery_marker_not_a_drain_declaration(
     offers controls from cannot offer one the server would refuse. Without the
     passing arms the predicate could return False for everything.
     """
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.run_control import (
         _admission_refusal,
         session_has_control_consumer,
     )
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -702,7 +702,7 @@ async def test_the_proposal_path_refuses_a_flow_whose_poller_has_stopped(
     that has stopped delivering gets no proposal to confirm rather than one
     that queues a control nobody will apply.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -733,8 +733,8 @@ async def test_a_poller_that_stops_before_the_insert_queues_nothing(tmp_path: Pa
     stale when the write runs. Here the marker flips in exactly that window;
     the insert's own condition is what must refuse.
     """
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator import run_control as run_control_mod
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -792,8 +792,8 @@ async def test_the_wait_for_a_decision_backs_off_instead_of_polling_at_one_rate(
     stay closely watched, since a prompt confirmation should return promptly,
     and the interval widens to a ceiling after that.
     """
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator import run_control as run_control_mod
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

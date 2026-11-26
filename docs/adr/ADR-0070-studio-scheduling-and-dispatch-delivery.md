@@ -321,7 +321,7 @@ concentration in one engine and single-process correctness for reservations.
 
 Code anchors: `lionhub/src/lionhub/serve/daemon/services/schedules.py`; `lionhub/src/lionhub/orchestration/scheduler/engine.py`
 (`_check_missed_fires`, `_maybe_fire`, `_reserve_max_runs_budget`, `_reserve_global_slot`,
-`_check_budget`); `lionagi/state/schema.sql`.
+`_check_budget`); `lionhub/src/lionhub/state/schema.sql`.
 
 ### D3 — A scheduled fire is an immediate isolated child process
 

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -39,8 +39,8 @@ def _spec(**overrides: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def patched_svc(tmp_path: Path, monkeypatch):
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.workflow_defs as svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -214,7 +214,7 @@ async def test_gate_node_load_guard_names_the_node(patched_svc):
 
     from fastapi import HTTPException
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     spec = _spec()
     spec["nodes"][0]["kind"] = "gate"

@@ -17,7 +17,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.state.db import TERMINAL_RUN_STATUSES
+from lionhub.state.db import TERMINAL_RUN_STATUSES
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -452,8 +452,8 @@ async def test_fire_now_succeeds_when_under_budget():
 
 @pytest.mark.asyncio
 async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.subprocess import spawn_and_wait
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     state = StateDB(db_path)
@@ -497,7 +497,7 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
             from lionhub.serve.cli.catalog import build_cli_parser, seed_for
             from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
             from lionagi.session.branch import Branch
-            from lionagi.state.db import StateDB
+            from lionhub.state.db import StateDB
 
 
             def agent_options():
@@ -562,7 +562,7 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_sum_schedule_spend_aggregates_across_sessions():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -622,7 +622,7 @@ async def test_sum_schedule_spend_aggregates_across_sessions():
 
 @pytest.mark.asyncio
 async def test_sum_schedule_spend_zero_for_schedule_with_no_runs():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -651,7 +651,7 @@ async def test_sum_schedule_spend_counts_unreported_terminal_sessions():
     let an unreported session's cost silently disappear into the $0 headline total
     with no trace it had ever run. unreported_sessions is the trace.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
@@ -714,7 +714,7 @@ async def test_sum_schedule_spend_counts_unreported_terminal_sessions():
 
 @pytest.mark.asyncio
 async def test_rate_limit_roundtrips_and_counts_only_fires_inside_window():
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()

@@ -32,10 +32,10 @@ def test_engine_invocation_defaults_from_environment_and_explicit_flag_wins(
 async def test_cli_engine_persists_canonical_lineage_and_bounded_outcome(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    import lionagi.state.db as db_mod
     import lionhub.serve.cli.engine as engine_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as db_mod
     from lionhub.orchestration.engines.engine import EngineResult
+    from lionhub.state.db import StateDB
 
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:

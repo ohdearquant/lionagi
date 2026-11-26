@@ -25,7 +25,6 @@ from threading import Thread
 from typing import Any
 from urllib.parse import unquote
 
-from lionagi._cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
 from lionagi._errors import (
     CLIInputRefusedError,
     ConfigurationError,
@@ -71,6 +70,7 @@ from lionagi.service.accounts._secret_resolution import (
     _routed_account_key_names,
     fill_declared_secrets_and_names,
 )
+from lionhub.state.cli_worker_context import _CliWorkerAdmission, _get_cli_worker_recorder
 
 log = logging.getLogger("lionagi.providers._cli_subprocess")
 

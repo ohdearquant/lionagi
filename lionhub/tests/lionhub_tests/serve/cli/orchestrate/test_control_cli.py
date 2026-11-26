@@ -16,19 +16,19 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.orchestrate._control import (
     run_ctl_msg,
     run_ctl_pause,
     run_ctl_resume,
 )
 from lionhub.serve.cli.status import EXIT_UNKNOWN
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

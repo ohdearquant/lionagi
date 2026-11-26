@@ -24,7 +24,7 @@ RUN_ID = "20261005T030000-abc123"
 
 @pytest.fixture
 def runs_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     root = tmp_path / "runs"
     monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", root)
     return root

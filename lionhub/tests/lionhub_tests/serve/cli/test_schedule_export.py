@@ -16,8 +16,8 @@ from ...orchestration.schedule._test_support_schedule_export import _legacy_row
 agent_profile = _support.agent_profile
 temp_db_path = _support.temp_db_path
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import build_plan, parse_schedule_set
+from lionhub.state.db import StateDB
 
 ADOPTION_COLUMNS = {
     "authored_spec",

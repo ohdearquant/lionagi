@@ -31,8 +31,8 @@ from lionagi_studio.operator.store import OperatorStore
 
 
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.runs as runs_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
@@ -96,9 +96,9 @@ def test_failed_proposal_does_not_claim_untouched_without_evidence():
 
 
 async def test_stale_cancel_target_is_audited_without_touching_the_run(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator import coordinator as coordinator_module
     from lionhub.orchestration import kill as kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -150,8 +150,8 @@ async def test_stale_cancel_target_is_audited_without_touching_the_run(tmp_path,
 
 @pytest.mark.parametrize("degraded", [False, True])
 async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatch, degraded):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -193,8 +193,8 @@ async def test_cancel_signal_wait_does_not_block_event_loop(tmp_path, monkeypatc
 
 
 async def test_degraded_manifest_settlement_does_not_block_event_loop(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -230,8 +230,8 @@ async def test_degraded_manifest_settlement_does_not_block_event_loop(tmp_path, 
 async def test_cancel_wait_defers_task_cancellation_until_proposal_is_persisted(
     tmp_path, monkeypatch
 ):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -295,8 +295,8 @@ async def test_cancel_wait_defers_task_cancellation_until_proposal_is_persisted(
 async def test_direct_cancel_waits_for_signal_and_persistence_before_cancellation(
     tmp_path, monkeypatch, degraded
 ):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -441,9 +441,9 @@ def test_signal_recorder_does_not_count_unsuccessful_signals(monkeypatch, error)
 
 
 async def test_cancel_does_not_hide_failed_proposal_persistence(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.coordinator import OperatorAuditUnavailableError
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -499,8 +499,8 @@ async def test_cancel_does_not_hide_failed_proposal_persistence(tmp_path, monkey
 
 
 async def test_cancel_during_child_signal_finishes_child_then_session(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -579,9 +579,9 @@ async def test_cancel_during_child_signal_finishes_child_then_session(tmp_path, 
 async def test_cancel_reports_session_persistence_failure(
     tmp_path, monkeypatch, coordinated, cancelled, audit_fails, signal_case
 ):
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.coordinator import OperatorAuditUnavailableError
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -732,10 +732,10 @@ async def test_cancel_reports_session_persistence_failure(
 
 
 async def test_resume_during_studio_signal_wait_keeps_new_generation(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration import kill as _kill_service
     from lionhub.orchestration.runs import _reopen_session_for_resume
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -803,8 +803,8 @@ async def test_resume_during_studio_signal_wait_keeps_new_generation(tmp_path, m
 async def test_rejected_session_update_is_not_reported_terminal(
     tmp_path, monkeypatch, cancel_status
 ):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -827,8 +827,8 @@ async def test_rejected_session_update_is_not_reported_terminal(
 
 
 async def test_terminal_reread_from_new_generation_is_not_old_run_success(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -861,8 +861,8 @@ async def test_terminal_reread_from_new_generation_is_not_old_run_success(tmp_pa
 
 
 async def test_child_state_write_is_not_untouched_after_parent_rejection(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -899,8 +899,8 @@ async def test_child_state_write_is_not_untouched_after_parent_rejection(tmp_pat
 
 
 async def test_session_write_is_not_untouched_after_new_generation_reread(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -928,8 +928,8 @@ async def test_session_write_is_not_untouched_after_new_generation_reread(tmp_pa
 
 
 async def test_degraded_manifest_write_is_not_untouched(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -955,8 +955,8 @@ async def test_degraded_manifest_write_is_not_untouched(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("signal_case", ["sigterm", "already_dead", "no_pid"])
 async def test_missing_session_generation_is_a_nonwrite_refusal(tmp_path, monkeypatch, signal_case):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -987,8 +987,8 @@ async def test_missing_session_generation_is_a_nonwrite_refusal(tmp_path, monkey
 async def test_missing_generation_still_settles_a_stopped_degraded_run(
     tmp_path, monkeypatch, batch
 ):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as kill_service
+    from lionhub.state.db import StateDB
 
     _patch_state_db(monkeypatch, tmp_path / "state.db")
     manifest_path = tmp_path / "run.json"
@@ -1019,8 +1019,8 @@ async def test_missing_generation_still_settles_a_stopped_degraded_run(
 
 
 async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1057,10 +1057,10 @@ async def test_missing_generation_refusal_preserves_observed_signal(tmp_path, mo
 async def test_runner_cancelled_same_generation_reports_command_outcome(
     tmp_path, monkeypatch, signalled
 ):
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
     from lionagi_studio.operator.cancel_run import _redacted_cancel_result
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1127,8 +1127,8 @@ async def test_runner_cancelled_same_generation_reports_command_outcome(
 
 @pytest.mark.parametrize("coordinated", [False, True])
 async def test_parent_write_failure_reports_prior_child_signal(tmp_path, monkeypatch, coordinated):
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1211,8 +1211,8 @@ async def test_parent_write_failure_remembers_term_before_child_identity_mismatc
 ):
     from types import SimpleNamespace
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration import kill as _kill_service
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1342,7 +1342,7 @@ async def test_cancel_run_proposal_summary_names_project_name_status_and_elapsed
     """A human approving a destructive cancel needs more than a 12-char id
     and an optional raw reason -- the proposal summary must also name the
     project, the run's own name, its status, and how long it has run."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1396,7 +1396,7 @@ async def test_cancel_run_proposal_summary_names_project_name_status_and_elapsed
 
 
 async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1452,7 +1452,7 @@ async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, mo
 
 
 async def test_cancel_run_deny_path_leaves_run_untouched(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1498,7 +1498,7 @@ async def test_cancel_run_deny_path_leaves_run_untouched(tmp_path, monkeypatch):
 
 
 async def test_cancel_run_already_terminal_creates_no_proposal(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1528,7 +1528,7 @@ async def test_cancel_run_already_terminal_creates_no_proposal(tmp_path, monkeyp
 
 
 async def test_cancel_run_not_found_creates_no_proposal(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1546,7 +1546,7 @@ async def test_cancel_run_not_found_creates_no_proposal(tmp_path, monkeypatch):
 
 
 async def test_cancel_run_ambiguous_reference_returns_candidates_not_a_guess(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1573,7 +1573,7 @@ async def test_cancel_run_ambiguous_reference_returns_candidates_not_a_guess(tmp
 async def test_cancel_run_current_resolves_via_the_turns_own_selection(tmp_path, monkeypatch):
     """ "current" reads the turn's OWN frozen selection (key "s"), not a
     later-reported live view -- see cancel_run.py::_current_run_id."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1628,8 +1628,8 @@ def test_cancel_run_input_requires_a_non_empty_run():
 
 
 async def test_execute_cancel_command_no_pid_still_persists_cancel(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1653,7 +1653,7 @@ async def test_execute_cancel_command_no_pid_still_persists_cancel(tmp_path, mon
 
 
 async def test_execute_cancel_command_already_terminal_is_a_no_op(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1673,7 +1673,7 @@ async def test_execute_cancel_command_already_terminal_is_a_no_op(tmp_path, monk
 
 
 async def test_execute_cancel_command_not_found(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1697,8 +1697,8 @@ async def test_execute_cancel_command_reaps_a_running_child_invocation(tmp_path,
     running -- the same deepest-first traversal `li kill --recursive` uses
     (lionhub.orchestration.kill.list_running_children) must also run
     here, or the child process is orphaned."""
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1757,7 +1757,7 @@ async def test_execute_cancel_command_a_terminal_child_invocation_is_left_alone(
 ):
     """A child that already finished on its own must not get a spurious
     cancellation transition -- only running children are reaped."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1809,7 +1809,7 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     tmp_path, monkeypatch
 ):
     """An identity-mismatched process receives no signal or cancellation write."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1838,7 +1838,7 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
 async def test_execute_cancel_command_reports_an_imported_row_that_was_not_stopped(
     tmp_path, monkeypatch
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1867,7 +1867,7 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
     persist (a race the human approval window can create). `_persist_cancel`
     is a guarded no-op in that case -- the adapter must read the real
     post-persist row rather than assume the signal outcome means success."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1877,7 +1877,7 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
     write = StateDB.cancel_session_if_worker_generation
 
     async def complete_before_cancel(db, entity_id, *args, **kwargs):
-        from lionagi.state.reasons import RunReasons
+        from lionhub.state.reasons import RunReasons
 
         await db.update_status(
             "session",
@@ -1905,7 +1905,7 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
 
 
 async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp_path, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1957,7 +1957,7 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
 async def test_cancel_run_text_search_is_scoped_to_the_turns_project(tmp_path, monkeypatch):
     """A name-substring reference must not resolve to -- or even reveal the
     existence of -- a same-named run in a different project."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -1999,7 +1999,7 @@ async def test_cancel_run_unscoped_turn_is_refused_for_every_reference_form(tmp_
     resolution keeps the answer from becoming an oracle for which run ids
     exist in projects it cannot see. Every reference form gets the one
     refusal, including an exact full UUID, and no proposal is created."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2049,8 +2049,8 @@ async def test_cancel_run_resolver_refuses_an_unscoped_turn_with_a_typed_error(
     beneath it still raises the typed error -- a caller that goes through the
     resolver instead of the tool handler gets a refusal too, never a silent
     unscoped lookup."""
-    from lionagi.state.db import StateDB
     from lionagi_studio.operator.cancel_run import _resolve_reference
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2079,7 +2079,7 @@ async def test_cancel_run_scoped_turn_cannot_reach_a_projectless_row_by_exact_id
     project of its own gets the same not-found answer it gets for another
     project's row: ownership is an equality check, and an unscoped row is not
     a wildcard. No proposal is created and the row keeps running."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2114,7 +2114,7 @@ async def test_execute_cancel_command_without_project_cannot_touch_an_owned_row(
     Against a row that belongs to a project it fails exactly like a
     nonexistent id -- a project-less command must never be treated as
     authorized for every project's runs."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2135,7 +2135,7 @@ async def test_execute_cancel_command_projectless_pairing_requires_row_still_pro
     """The (no command project, no row project) pairing executes -- and its
     guard is the row STILL having no project. A row that gained an owner
     during the human's approval window fails closed as not_found."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2161,7 +2161,7 @@ async def test_cancel_run_id_prefix_window_counts_only_visible_rows(tmp_path, mo
     """A run of the turn's own project must still be found when foreign rows
     fill the id-ordered window the prefix query reads: the window counts only
     rows the turn may see."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2219,7 +2219,7 @@ async def test_cancel_run_exact_id_of_a_foreign_project_terminal_run_is_not_foun
     """An exact/prefix id match must obey the same project ownership the
     text-search arm already enforces -- a foreign project's run must not even
     be visible as 'already terminal', which would confirm its existence."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2250,7 +2250,7 @@ async def test_cancel_run_exact_id_of_a_foreign_project_running_run_creates_no_p
 ):
     """The dangerous half of the bypass: a foreign project's RUNNING run must
     not reach the proposal/execution path at all."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2294,7 +2294,7 @@ async def test_cancel_run_ambiguous_id_prefix_hides_foreign_project_candidates(
     """A short id-prefix collision must drop foreign-project candidates from
     the ambiguity list -- and resolve uniquely when only one owned row
     survives, rather than reporting a foreign row as a candidate."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
@@ -2355,7 +2355,7 @@ async def test_cancel_run_ambiguous_id_prefix_hides_foreign_project_candidates(
 async def _seed_prefixed_runs(path: Path, count: int, project: str) -> list[str]:
     """Seed *count* runs whose ids share one literal prefix, sorted by index,
     and return those ids in order."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     ids = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(count)]
     async with StateDB() as db:

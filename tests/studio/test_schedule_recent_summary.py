@@ -10,14 +10,14 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-from lionagi.state.db import StateDB
 from lionhub.serve.daemon.services import schedules
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     return path
 
 

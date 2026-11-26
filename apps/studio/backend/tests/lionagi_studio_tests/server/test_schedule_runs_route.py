@@ -21,12 +21,12 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import StateDB  # noqa: E402
+import lionhub.state.db as state_db_mod
 from lionhub.serve.daemon.services.schedules import (  # noqa: E402
     _UNCLASSIFIED_ERROR,
     create_schedule,
 )
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 async def _seed_schedule() -> str:
@@ -697,13 +697,13 @@ def _seed_run_linked_to(
 
 
 def _terminal_session_status() -> str:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     return sorted(SESSION_TERMINAL_STATUSES)[0]
 
 
 def _terminal_invocation_status() -> str:
-    from lionagi.state.db import INVOCATION_TERMINAL_STATUSES
+    from lionhub.state.db import INVOCATION_TERMINAL_STATUSES
 
     return sorted(INVOCATION_TERMINAL_STATUSES)[0]
 

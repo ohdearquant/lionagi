@@ -177,6 +177,13 @@ completed outcome.
 All handlers are name-addressable via the loader registry and can be referenced
 as strings in the explicit `agent_hooks` mapping passed to `build_session_bus`.
 
+The five `persist_*` handlers are defined in
+`lionhub.orchestration.run_persistence`, which registers them under these names
+when it is imported. A lookup of one of those names before then raises
+`KeyError` naming that module. Their old attribute names on
+`lionagi.hooks.builtins` keep working until 2.0.0: the first access warns and
+returns the handler from its new module.
+
 ## AgentSpec coding() guards
 
 `AgentSpec.coding(secure=True)` (the default) wires two security guards via

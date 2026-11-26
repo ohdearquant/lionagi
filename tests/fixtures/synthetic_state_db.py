@@ -58,7 +58,7 @@ class StoreSpec:
 
 
 def _schema_sql() -> str:
-    from lionagi.state.db import _SCHEMA_PATH
+    from lionhub.state.db import _SCHEMA_PATH
 
     return Path(_SCHEMA_PATH).read_text()
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.ln import short_id
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionhub.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 

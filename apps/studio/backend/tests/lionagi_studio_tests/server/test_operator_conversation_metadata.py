@@ -337,7 +337,7 @@ async def test_http_description_round_trips_and_preserves_existing_title_policy(
 ):
     import httpx
 
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
     from lionagi_studio.app import create_app
     from lionagi_studio.operator.coordinator import (
         OperatorCoordinator,

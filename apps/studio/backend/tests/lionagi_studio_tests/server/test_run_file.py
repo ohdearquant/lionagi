@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -19,7 +19,7 @@ from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from lionagi.libs.path_safety import resolve_workspace_path  # noqa: E402
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 async def seed_session(db_path: Path, *, session_id: str, artifacts_path: str) -> None:

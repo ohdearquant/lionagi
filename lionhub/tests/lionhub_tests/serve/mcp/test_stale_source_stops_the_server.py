@@ -200,7 +200,7 @@ def test_preload_leaves_a_module_that_fails_for_another_reason_to_its_verbs(exit
     loaded = []
 
     def rejects_its_settings(name):
-        if name == "lionagi.state.db":
+        if name == "lionhub.state.db":
             raise PermissionError("cannot read the settings file")
         loaded.append(name)
 
@@ -208,7 +208,7 @@ def test_preload_leaves_a_module_that_fails_for_another_reason_to_its_verbs(exit
 
     dispatch.preload()
 
-    assert loaded == [name for name in dispatch._PRELOAD_MODULES if name != "lionagi.state.db"]
+    assert loaded == [name for name in dispatch._PRELOAD_MODULES if name != "lionhub.state.db"]
 
 
 class _OneRecordedSession:
@@ -224,7 +224,7 @@ class _OneRecordedSession:
 
 @pytest.fixture
 def one_recorded_session(monkeypatch):
-    monkeypatch.setattr("lionagi.state.db.StateDB", _OneRecordedSession)
+    monkeypatch.setattr("lionhub.state.db.StateDB", _OneRecordedSession)
 
 
 async def test_run_detail_raises_when_its_own_session_service_does_not_import(
@@ -322,7 +322,7 @@ def test_preload_names_a_failed_module_without_its_error_text(exits, monkeypatch
     """A settings error can echo the rejected value, so only the exception type is logged."""
 
     def rejects_its_settings(name):
-        if name == "lionagi.state.db":
+        if name == "lionhub.state.db":
             raise ValueError("input_value='sk-canary-value'")
 
     monkeypatch.setattr(dispatch, "import_module", rejects_its_settings)
@@ -330,7 +330,7 @@ def test_preload_names_a_failed_module_without_its_error_text(exits, monkeypatch
     with caplog.at_level("WARNING"):
         dispatch.preload()
 
-    assert "lionagi.state.db" in caplog.text
+    assert "lionhub.state.db" in caplog.text
     assert "ValueError" in caplog.text
     assert "canary" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)
@@ -340,7 +340,7 @@ def test_preload_ends_the_server_when_its_own_source_no_longer_parses(exits, mon
     own_file = str(Path(dispatch.__file__).with_name("verbs.py"))
 
     def broken(name):
-        if name == "lionagi.state.db":
+        if name == "lionhub.state.db":
             raise SyntaxError("invalid syntax", (own_file, 1, 1, "x", 1, 2))
 
     monkeypatch.setattr(dispatch, "import_module", broken)
@@ -402,7 +402,7 @@ def test_preload_leaves_a_syntax_error_in_another_package_to_its_verbs(
     foreign_file = str(tmp_path / "elsewhere.py")
 
     def broken(name):
-        if name == "lionagi.state.db":
+        if name == "lionhub.state.db":
             raise SyntaxError("invalid syntax", (foreign_file, 1, 1, "x", 1, 2))
 
     monkeypatch.setattr(dispatch, "import_module", broken)

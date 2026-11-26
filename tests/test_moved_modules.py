@@ -855,7 +855,7 @@ def test_a_contract_cannot_be_emptied_into_a_run_that_checks_nothing():
 
 def test_a_module_contract_may_name_only_private_definitions():
     private_only = [row for row in MODULE_CONTRACTS if not row.public_names]
-    assert [row.old for row in private_only] == ["lionagi.ln._paths"]
+    assert [row.old for row in private_only] == ["lionagi.ln._paths", "lionagi._cli_worker_context"]
     for row in private_only:
         assert row.private_names
         module = importlib.import_module(row.new)
@@ -1646,7 +1646,7 @@ def test_the_core_names_no_studio_backend_module():
 
 
 def test_the_studio_check_sees_each_form_of_reference():
-    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    probe = ROOT / "lionagi" / "hooks" / "_probe.py"
     source = (
         "import lionagi_studio.operator\n"
         "from lionagi_studio.operator import store\n"
@@ -1968,7 +1968,7 @@ def test_the_core_imports_no_package_that_moves_in_wave_2():
 
 
 def test_the_wave_2_check_sees_each_form_of_import():
-    probe = ROOT / "lionagi" / "state" / "_probe.py"
+    probe = ROOT / "lionagi" / "hooks" / "_probe.py"
     source = (
         "from lionagi.cli._runs import RunDir\n"
         "from ..mcp import server\n"

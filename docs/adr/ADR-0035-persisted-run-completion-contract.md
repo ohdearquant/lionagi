@@ -41,7 +41,7 @@ not learn every record relationship.
 **P5 — A completion record is useful only if status writes are trustworthy.** A
 terminal record must not silently return to running or oscillate to another
 terminal state. Concurrent writers must not win by racing a Python read-modify-
-write gap. `lionagi/state/db.py` therefore owns both the vocabularies and the
+write gap. `lionhub/src/lionhub/state/db.py` therefore owns both the vocabularies and the
 guarded write path.
 
 `lionagi/cli/wait.py` is the machine-facing read boundary. It resolves mixed run
@@ -92,7 +92,7 @@ sequenceDiagram
 Terminal predicates live beside record schemas, and the wait path imports them.
 It does not infer completion from an exit code or maintain a duplicate vocabulary.
 
-**The contract** (`lionagi/state/db.py`):
+**The contract** (`lionhub/src/lionhub/state/db.py`):
 
 ```python
 SESSION_TERMINAL_STATUSES = frozenset({
@@ -144,7 +144,7 @@ The wait surface supports four of those kinds:
   loop and would not complete through that path. Supported resolvers always return
   one of the four documented kinds.
 - Status reason vocabulary is separately validated by
-  `lionagi/state/reasons.py`. A missing or unrecognized persisted code is reported
+  `lionhub/src/lionhub/state/reasons.py`. A missing or unrecognized persisted code is reported
   as the literal `unknown`, never replaced with an invented valid reason.
 
 **Why this way**: record owners know which states are terminal and what those
@@ -327,7 +327,7 @@ even with a valid override.
 
 Every ordinary status transition passes through `StateDB.update_status()`.
 
-**The contract** (`lionagi/state/db.py`):
+**The contract** (`lionhub/src/lionhub/state/db.py`):
 
 ```python
 async def StateDB.update_status(

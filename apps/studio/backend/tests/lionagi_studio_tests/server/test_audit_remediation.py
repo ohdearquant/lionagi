@@ -12,8 +12,8 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import NO_CURSOR_CLAIM
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import NO_CURSOR_CLAIM
 from tests._scheduler_claims import fire_with_claim
 
 # Helpers
@@ -272,9 +272,9 @@ class TestFireBuildFailureRecorded:
     must be recorded deterministically instead of leaving the invocation stuck running."""
 
     async def test_invalid_kind_records_failed_run_and_invocation(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-        from lionagi.state.db import StateDB
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionhub.orchestration.scheduler.engine import SchedulerEngine
+        from lionhub.state.db import StateDB
 
         engine = SchedulerEngine()
         run_id = "run-bad"
@@ -430,10 +430,10 @@ class TestFireCancellationRecorded:
     recorded as cancelled, not left running."""
 
     async def test_cancel_during_spawn_records_cancelled(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-        from lionagi.state.db import StateDB
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionhub.orchestration.scheduler import subprocess as sp
         from lionhub.orchestration.scheduler.engine import SchedulerEngine
+        from lionhub.state.db import StateDB
 
         started = asyncio.Event()
 
@@ -504,12 +504,12 @@ class TestInvocationReasonAggregation:
         )
 
     async def test_sigint_aborted_child_aggregates_to_cancelled_sigint(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-        from lionagi.state.db import StateDB
-        from lionagi.state.reasons import RunReasons
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
+        from lionhub.state.db import StateDB
+        from lionhub.state.reasons import RunReasons
 
         async with StateDB() as db:
             await self._seed_aborted_child(
@@ -524,12 +524,12 @@ class TestInvocationReasonAggregation:
 
     async def test_admin_aborted_child_keeps_aborted_user(self, monkeypatch, tmp_path):
         """A child aborted by admin/doctor (ABORTED_USER) must NOT become SIGINT."""
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-        from lionagi.state.db import StateDB
-        from lionagi.state.reasons import RunReasons
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
+        from lionhub.state.db import StateDB
+        from lionhub.state.reasons import RunReasons
 
         async with StateDB() as db:
             await self._seed_aborted_child(
@@ -545,12 +545,12 @@ class TestInvocationReasonAggregation:
 
     async def test_fallback_aborted_keeps_aborted_user(self, monkeypatch, tmp_path):
         """No child reason to inspect → neutral ABORTED_USER, not an assumed SIGINT."""
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
-        from lionagi.state.db import StateDB
-        from lionagi.state.reasons import RunReasons
+        monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionhub.orchestration.scheduler.scheduler_state import (
             resolve_invocation_terminal as _resolve_invocation_terminal,
         )
+        from lionhub.state.db import StateDB
+        from lionhub.state.reasons import RunReasons
 
         async with StateDB() as db:
             await db.create_invocation(

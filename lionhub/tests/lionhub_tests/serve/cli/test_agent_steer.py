@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.agent import _drain_pending_steers, _tombstone_pending_steers
 from lionhub.serve.cli.orchestrate._control import (
     _enqueue_control_inner,
@@ -32,6 +31,7 @@ from lionhub.serve.cli.orchestrate._control import (
     run_ctl_resume,
 )
 from lionhub.serve.cli.status import EXIT_UNKNOWN
+from lionhub.state.db import StateDB
 
 from ._worker_fixtures import WorkerSetup
 
@@ -42,7 +42,7 @@ from ._worker_fixtures import WorkerSetup
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -1399,8 +1399,8 @@ async def test_the_runner_does_not_sweep_a_store_in_compatibility_mode(
     import lionhub.serve.cli.agent as agent_mod
     from lionagi import Branch
     from lionagi.service.manager import iModelManager
-    from lionagi.state.compat import Closure, CompatibilityProfile
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state.compat import Closure, CompatibilityProfile
 
     profile = CompatibilityProfile(
         name="agent-records", version=1, closure=Closure(tables=()), writes={}, operations={"run"}
@@ -1669,8 +1669,8 @@ async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_o
     """
     import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.cli_workers import _prepare_worker_spawn_continuation
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-noreopen")
 
@@ -1754,8 +1754,8 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
 
     import lionhub.orchestration.runs as runs_mod
     from lionagi import Branch
-    from lionagi.state.cli_workers import _prepare_worker_spawn_continuation
     from lionhub.orchestration.runs import setup_agent_persist, teardown_agent_persist
+    from lionhub.state.cli_workers import _prepare_worker_spawn_continuation
 
     monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-undeclared")
 
@@ -1934,8 +1934,8 @@ async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    import lionagi.state.db as db_mod
     import lionhub.serve.cli.agent as agent_mod
+    import lionhub.state.db as db_mod
     from lionagi import Branch
     from lionagi.service.manager import iModelManager
     from lionhub.serve.cli.agent import _run_agent

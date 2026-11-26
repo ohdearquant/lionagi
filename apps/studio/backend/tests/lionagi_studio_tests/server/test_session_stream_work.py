@@ -160,7 +160,7 @@ class PollGate:
 def backend(tmp_path, monkeypatch):
     import aiosqlite
 
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
     from lionhub.serve.daemon.services import sessions, signals
 
     path = tmp_path / "stream.sqlite3"
@@ -175,7 +175,7 @@ def backend(tmp_path, monkeypatch):
 
 
 async def seed_history(backend, history, *, terminal):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     path, url, _sessions, _signals, aiosqlite = backend
     ids = [f"{index:032x}" for index in range(1, history + 1)]

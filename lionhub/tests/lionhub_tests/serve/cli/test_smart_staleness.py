@@ -10,18 +10,18 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.kill import (
     _do_kill_all_stale,
     _play_child_stale,
     _show_children_all_terminal,
 )
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

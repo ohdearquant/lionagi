@@ -9,7 +9,7 @@ import sys
 
 # The channels and their emitters live in the core so code outside the CLI can write to them;
 # this module decides how they print.
-from lionagi._log_channels import (
+from lionhub.state.log_channels import (
     ERROR_LOGGER_NAME,
     HINT_LOGGER_NAME,
     PROGRESS_LOGGER_NAME,

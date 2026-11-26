@@ -29,7 +29,7 @@ new-branch path. On the resume path it looks up `existing_branch`, adopts its
 `session_id`, and never touches the session's status. That session was already
 terminalized to `completed` by the leg that created it. At teardown the resumed leg
 calls `update_status(session, to_status="completed")`, and the emit in
-`lionagi/state/lifecycle/service.py` is gated on the status actually changing:
+`lionhub/src/lionhub/state/lifecycle/service.py` is gated on the status actually changing:
 
 ```python
 if (
@@ -138,7 +138,7 @@ if existing_branch:
         )
 ```
 
-`update_status` is the ADR-0035 machinery in `lionagi/state/db.py`; `new_status` and
+`update_status` is the ADR-0035 machinery in `lionhub/src/lionhub/state/db.py`; `new_status` and
 `reason_code` are required, and `expected_statuses` supplies the CAS guard.
 `SESSION_TERMINAL_STATUSES` is derived from the lifecycle policy registry rather than
 hand-maintained, and currently holds `aborted`, `cancelled`, `completed`,
@@ -147,8 +147,8 @@ hand-maintained, and currently holds `aborted`, `cancelled`, `completed`,
 The override is load-bearing and was missing from this ADR's first draft. The session
 policy declares exactly one edge, `running → {terminal}`, and the transition service
 rejects any move out of a terminal status unless an override is supplied
-(`lionagi/state/lifecycle/policy.py`, whose own comment states "No exit from a terminal
-status without override"; enforced at `lionagi/state/lifecycle/service.py` in the
+(`lionhub/src/lionhub/state/lifecycle/policy.py`, whose own comment states "No exit from a terminal
+status without override"; enforced at `lionhub/src/lionhub/state/lifecycle/service.py` in the
 `previous_status in policy.terminal_statuses` branch). Without it this write does not
 land. Measured rather than reasoned about: `StateDB.update_status` raises
 `TransitionRejectedError("refusing to write 'running' without override=True")`, and
@@ -159,7 +159,7 @@ state persistence, behind one warning line. That consequence is worse than the d
 and is the reason this correction is stated at the contract rather than left to
 implementation.
 
-`reason_code` must also be a code registered in `lionagi/state/reasons.py`; an
+`reason_code` must also be a code registered in `lionhub/src/lionhub/state/reasons.py`; an
 unregistered string raises before the transition is attempted. This ADR adds
 `SessionReasons.REOPENED_BY_RESUME` (`"session.reopened.by_resume"`), which satisfies the
 session policy's `reason_prefixes`.
@@ -174,7 +174,7 @@ attributable. A reopened session is a real event and should leave a record sayin
 reopened it and why; the declared-edge version would leave none.
 
 `ended_at` is already in the session policy's `patch_fields`. `node_metadata` is added to
-it, and to `EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE` in `lionagi/state/db.py`, so that
+it, and to `EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE` in `lionhub/src/lionhub/state/db.py`, so that
 the process markers move in the same transaction as the status.
 
 That is not a convenience. The sweeps select rows by status and then ask the recorded

@@ -11,8 +11,8 @@ import time
 import uuid
 from pathlib import Path
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import StateDB
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import StateDB
 
 from ._helpers import run_async
 

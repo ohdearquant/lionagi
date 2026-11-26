@@ -14,8 +14,8 @@ import pytest
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from lionagi.state.claude_mirror import session_db_id  # noqa: E402
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.claude_mirror import session_db_id  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
 
@@ -114,8 +114,8 @@ async def _wait_for_session_count(db_path: Path, expected: int) -> list[dict]:
 
 def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
     """A fresh transcript is mirrored to a live (running) session; stop ends the loop."""
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.mirror as service_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     root = tmp_path / "claude_projects"
@@ -160,7 +160,7 @@ def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
 
 def test_mirror_forever_missing_root_is_noop(tmp_path, monkeypatch):
     """A missing Claude projects dir returns immediately and writes nothing."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -184,8 +184,8 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
     selector a test (or any embedder) that carefully points the mirror at its own
     directory would still walk the machine's whole codex rollout corpus.
     """
-    import lionagi.state.db as state_db_mod
     import lionhub.serve.mirror as service_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
@@ -314,12 +314,12 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
     makes both decoys land in the fresh profile DB, even though the lower-level
     mirror already supports scoped roots.
     """
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.app as app_mod
     import lionagi_studio.config as config_mod
     import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
+    import lionhub.state.db as state_db_mod
 
     isolated_home = tmp_path / "isolated-profile"
     db_path = isolated_home / "state.db"
@@ -368,12 +368,12 @@ def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path
 
 def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     """Custom Claude and Codex roots remain an explicit isolated-profile opt-in."""
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.app as app_mod
     import lionagi_studio.config as config_mod
     import lionhub.serve.daemon.app as daemon_mod
     import lionhub.serve.daemon.settings as daemon_settings
     import lionhub.serve.mirror as service_mod
+    import lionhub.state.db as state_db_mod
 
     isolated_home = tmp_path / "isolated-profile"
     db_path = isolated_home / "state.db"

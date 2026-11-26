@@ -24,8 +24,8 @@ from sqlalchemy import text
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import StateDB, TransitionRejectedError  # noqa: E402
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import StateDB, TransitionRejectedError  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
 
@@ -100,7 +100,7 @@ async def _flip_status(db_path: Path, entity_type: str, entity_id: str, new_stat
 
 def test_session_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch):
     """An unguarded write out of a terminal session status is rejected loudly: the write path itself refuses to move a session out of a terminal status without an explicit override (independent of the caller passing expected_statuses), so the reaper race cannot corrupt a 'completed' session into 'failed'."""
-    from lionagi.state.reasons import SessionReasons
+    from lionhub.state.reasons import SessionReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -136,7 +136,7 @@ def test_session_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch):
 
 def test_session_race_guarded_preserves_terminal(tmp_path, monkeypatch):
     """PASS-after: WITH the CAS guard (expected_statuses={'running'}), 'completed' is preserved because 'completed' is not in the expected set."""
-    from lionagi.state.reasons import SessionReasons
+    from lionhub.state.reasons import SessionReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -172,7 +172,7 @@ def test_session_race_guarded_preserves_terminal(tmp_path, monkeypatch):
 
 def test_invocation_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch):
     """An unguarded write out of a terminal invocation status is rejected loudly: the write path refuses to leave a terminal status without an explicit override, independent of expected_statuses, so the deadline reaper cannot corrupt a 'completed' invocation into 'timed_out'."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -207,7 +207,7 @@ def test_invocation_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch
 
 def test_invocation_race_guarded_preserves_terminal(tmp_path, monkeypatch):
     """PASS-after for the invocation deadline reaper race: WITH the CAS guard (expected_statuses={'running'}), 'completed' is preserved."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -242,7 +242,7 @@ def test_invocation_race_guarded_preserves_terminal(tmp_path, monkeypatch):
 
 def test_null_status_reaper_cas_blocks_nonnull(tmp_path, monkeypatch):
     """Null-status reaper must not touch a session that already has a status: the candidate query selects status IS NULL, but by the time update_status runs the session may have received one -- the CAS guard with expected_statuses={None} must block the overwrite."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -275,7 +275,7 @@ def test_null_status_reaper_cas_blocks_nonnull(tmp_path, monkeypatch):
 
 def test_null_status_reaper_cas_allows_null(tmp_path, monkeypatch):
     """Null-status reaper succeeds when status is still NULL (happy path)."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -833,7 +833,7 @@ async def _get_updated_at(db_path: Path, entity_type: str, entity_id: str) -> fl
 
 def test_version_guard_blocks_write_when_updated_at_moved(tmp_path, monkeypatch):
     """expected_updated_at pins the transition to a row version: a caller acting on a stale snapshot (status still in the expected set, but updated_at bumped by a concurrent writer) must not win -- the guarded write matches zero rows and update_status returns False without moving the status."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -870,7 +870,7 @@ def test_version_guard_blocks_write_when_updated_at_moved(tmp_path, monkeypatch)
 def test_version_guard_allows_write_when_updated_at_matches(tmp_path, monkeypatch):
     """expected_updated_at matching the current row version lets the transition
     through — the guard only blocks when the row moved."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.monitor import _since_timestamp
 from lionhub.serve.cli.stats import (
     GROUP_BY_COLUMNS,
@@ -23,13 +22,14 @@ from lionhub.serve.cli.stats import (
     _validate_group_by,
     run_stats,
 )
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test temp file DB: patches DEFAULT_DB_PATH so `li stats` uses a throw-away file."""
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

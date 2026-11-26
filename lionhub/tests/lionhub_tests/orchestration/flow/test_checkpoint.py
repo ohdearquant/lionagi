@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.flow.checkpoint import (
     CheckpointWriter,
     FlowResumeError,
@@ -19,6 +18,7 @@ from lionhub.orchestration.flow.checkpoint import (
     resolve_checkpoint_target,
 )
 from lionhub.serve.cli.orchestrate._orchestration import start_live_persist, stop_live_persist
+from lionhub.state.db import StateDB
 from tests._checkpoint_test_support import _minimal_real_env as _minimal_real_env
 from tests._checkpoint_test_support import temp_db_path as temp_db_path
 from tests._cli_logging_test_support import _restore_cli_logging as _restore_cli_logging

@@ -53,8 +53,8 @@ Load more, but its pager increments page numbers and consumes has_next
 updated_at descending; cost orders reported values before NULL, including reported zero,
 then updated_at. Neither includes an id tie-break
 (`lionhub/src/lionhub/serve/daemon/services/sessions.py::_SESSION_SORTS`). Fresh schemas require updated_at, but legacy
-additive migration permits NULL (`lionagi/state/schema.sql:124`,
-`lionagi/state/schema_migrations.py::MIGRATION_COLUMNS`). Cursor keys must come from stored values,
+additive migration permits NULL (`lionhub/src/lionhub/state/schema.sql:124`,
+`lionhub/src/lionhub/state/schema_migrations.py::MIGRATION_COLUMNS`). Cursor keys must come from stored values,
 before the listing DTO's NULL-to-zero timestamp fallback
 (`lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`).
 
@@ -199,7 +199,7 @@ cost:
 ```
 
 The last tie-break is the existing Session id using its database text ordering/collation,
-not nullable run provenance (`lionagi/state/schema.sql:110`,
+not nullable run provenance (`lionhub/src/lionhub/state/schema.sql:110`,
 `lionhub/src/lionhub/serve/daemon/services/sessions.py::list_sessions`). Reported zero precedes unknown cost. Negative
 finite values keep ordinary numeric order. NULL updated_at is distinct from numeric zero.
 Capture the raw key before DTO conversion. Unsupported nonnumeric/nonfinite stored numeric
@@ -343,7 +343,7 @@ is present, and `none` otherwise. Name, stored-label and playbook precedence/mat
 remain unchanged.
 
 Tag matching must use candidate-constrained probes on `(session_id, tag)`; this primary
-key already exists (`lionagi/state/schema.sql:97`). Do not reuse the global grouped tag
+key already exists (`lionhub/src/lionhub/state/schema.sql:97`). Do not reuse the global grouped tag
 subquery in the default bounded path (`lionhub/src/lionhub/serve/daemon/services/sessions.py::SessionFilter.where`). Only
 returned-row tag hydration may enumerate all tags for those rows. Request tag count and
 returned tag fanout remain explicit work dimensions.
@@ -476,8 +476,8 @@ CREATE INDEX idx_sessions_listing_cost_unknown
 
 They are absent at the source baseline. Current time/status indexes omit the id tie-break,
 and current session index declarations contain no equivalent cost path
-(`lionagi/state/schema.sql:203`, `lionagi/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`, `lionagi/state/schema_meta.py` `Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)`,
-`lionagi/state/schema_migrations.py::RECENT_VISIBLE_INDEXES`, `lionagi/state/schema_migrations.py::MIGRATION_INDEXES`). An index's presence alone does not prove that
+(`lionhub/src/lionhub/state/schema.sql:203`, `lionhub/src/lionhub/state/schema_meta.py` `Index("idx_sessions_updated", sessions.c.updated_at)`, `lionhub/src/lionhub/state/schema_meta.py` `Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)`,
+`lionhub/src/lionhub/state/schema_migrations.py::RECENT_VISIBLE_INDEXES`, `lionhub/src/lionhub/state/schema_migrations.py::MIGRATION_INDEXES`). An index's presence alone does not prove that
 the chosen seek query avoids a prefix scan, tie-group sort or full-store sort. Test every
 NULL/equality/cost-partition boundary with the actual route SQL and supported SQLite runtime.
 
@@ -489,7 +489,7 @@ never fetched as candidates. An ordinary project index does not establish author
 Readiness also verifies the access paths used after candidate selection: Session id and
 progression id point lookups, an index with leading branches.session_id, and the
 `(session_id, tag)` primary key whenever run_tags exists. The baseline supplies those
-through `lionagi/state/schema.sql:110`, `lionagi/state/schema.sql:72`,
+through `lionhub/src/lionhub/state/schema.sql:110`, `lionhub/src/lionhub/state/schema.sql:72`,
 `lionagi/state/schema.sql:278-279` and `lionagi/state/schema.sql:97` at `1717674a2140d3571fcb90e3f68204845048ef80`. An equivalent branch
 index is sufficient; a full scan over unrelated branches/tags is not selected-row fanout.
 Missing required hydration access paths receive the same readiness refusal.
@@ -498,7 +498,7 @@ Add indexes and the singleton identity through the canonical schema/version/migr
 lifecycle, including fresh schema, upgrade and repeated-open parity. Runtime MetaData is
 the authority, and compatibility DDL must agree. Existing-table index additions need the
 explicit migration path because create_all does not repair them
-(`lionagi/state/schema_migrations.py` `# Declaring an index in the table metadata only reaches databases created after`, `lionagi/state/db.py::StateDB._apply_schema`, `lionagi/state/db.py::StateDB._reconcile_indexes`). Listing reads must
+(`lionhub/src/lionhub/state/schema_migrations.py` `# Declaring an index in the table metadata only reaches databases created after`, `lionhub/src/lionhub/state/db.py::StateDB._apply_schema`, `lionhub/src/lionhub/state/db.py::StateDB._reconcile_indexes`). Listing reads must
 not run a migration or fabricate an incarnation on an old read-only store.
 
 Missing required index, identity or keyring capability returns HTTP 503:

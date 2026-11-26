@@ -10,13 +10,13 @@ import pytest
 
 from lionagi import Branch
 from lionagi.operations.flow import DependencyAwareExecutor
-from lionagi.state.db import StateDB
 from lionagi_studio.operator.run_progress import _node_lanes_by_name
 from lionhub.agent.casts.emission import TaskAssignment
 from lionhub.orchestration.engines import PlanningEngine
 from lionhub.serve.cli.orchestrate import _orchestration as orchestration_module
 from lionhub.serve.cli.orchestrate import fanout as fanout_module
 from lionhub.serve.daemon.services.sessions import get_session
+from lionhub.state.db import StateDB
 from tests._fanout_test_support import _completed, _failed, _fanout_env
 
 
@@ -36,7 +36,7 @@ async def test_fanout_persists_the_executed_graph(
     tmp_path, monkeypatch, worker_count, with_synthesis, failure, role
 ):
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(orchestration_module, "save_last_branch_pointer", Mock(return_value=None))
     env, _, session = _fanout_env(tmp_path)
     env.cwd = str(tmp_path)

@@ -122,7 +122,7 @@ ROWS = """
 import asyncio, json, sys
 from pathlib import Path
 
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 
 async def main(mode):

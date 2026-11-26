@@ -41,8 +41,8 @@ class _FakeDB:
 @pytest.mark.integration
 class TestListDefinitionsNPlusOne:
     def _setup(self, tmp_path, monkeypatch, n_agents=3):
-        import lionagi.state.db as state_db_mod
         import lionagi_studio.services.definitions as defs_mod
+        import lionhub.state.db as state_db_mod
 
         fake_home = tmp_path / "lionagi_home"
         agents_dir = fake_home / "agents"
@@ -71,7 +71,7 @@ class TestListDefinitionsNPlusOne:
         `aiosqlite.connect` calls stops measuring anything at that point while
         continuing to pass.
         """
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         calls = []
 

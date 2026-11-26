@@ -23,8 +23,6 @@ import yaml
 
 from lionagi.ln._proc import process_create_time as _real_process_create_time
 from lionagi.ln._proc import raw_create_time
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.kill import _BOOT_TIME_TOLERANCE, _terminate_pid
 from lionhub.serve.cli.kill import (
     _REFUSED_SIGNAL_REASONS,
@@ -36,6 +34,8 @@ from lionhub.serve.cli.kill import (
     check_pid_identity,
     list_running_children,
 )
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 from tests._kill_scope_test_support import stable_boot_time as stable_boot_time
 from tests._kill_test_support import _await as _await
 from tests._kill_test_support import _is_zombie as _is_zombie
@@ -1264,8 +1264,8 @@ async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, 
         )
     )
 
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     callback_name = "notify.settings.on_terminal"
     DEFAULT_TERMINAL_CALLBACKS.unregister(callback_name)
@@ -1284,7 +1284,7 @@ async def test_do_kill_emits_settings_terminal_notification(temp_db_path: Path, 
 
 async def test_do_kill_play_emits_blocked_terminal_envelope(temp_db_path: Path):
     """A play kill emits its blocked envelope through the lifecycle callback seam."""
-    from lionagi.state.lifecycle.callbacks import (
+    from lionhub.state.lifecycle.callbacks import (
         DEFAULT_TERMINAL_CALLBACKS,
         RunTerminalEnvelope,
     )
@@ -1468,7 +1468,7 @@ def test_kill_all_stale_subparser_flags():
     """Verify --all-stale, --threshold, --dry-run are accepted."""
     import tempfile
 
-    import lionagi.state.db as _db_mod
+    import lionhub.state.db as _db_mod
     from lionhub.serve.cli.main import main
 
     # Calling with --dry-run + --all-stale against a missing DB should

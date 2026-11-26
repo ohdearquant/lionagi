@@ -14,7 +14,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -26,7 +26,7 @@ def _run(coro):
 
 
 def _patch_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
@@ -536,7 +536,7 @@ def _create_pre_revision_attention_db(db_path: Path) -> None:
     pre-existing tables without their new columns."""
     import sqlite3
 
-    from lionagi.state.db import _SCHEMA_PATH
+    from lionhub.state.db import _SCHEMA_PATH
 
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_SCHEMA_PATH.read_text())

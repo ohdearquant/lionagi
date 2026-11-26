@@ -37,7 +37,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     looking like it pinned something.
     """
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -73,8 +73,8 @@ async def _create_cron_schedule(name: str, **extra) -> str:
 
 async def _stamp_and_read(schedule_id: str) -> dict:
     """Run the scheduler's startup stamping pass and read the row back."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     await SchedulerEngine()._stamp_effective_timezones()
     async with StateDB() as db:
@@ -86,8 +86,8 @@ async def test_a_rearm_by_the_tick_loop_stamps_the_row_too(temp_db_path, monkeyp
     """Startup is not the only resolve point. A schedule armed by the tick
     loop must carry the stamp as well, or a row created between restarts
     stays unattributed until the daemon happens to bounce."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
     sid = await _create_cron_schedule("tz-armed-by-tick")
@@ -120,8 +120,8 @@ async def test_an_actual_fire_stamps_the_row_too(temp_db_path, monkeypatch):
     """
     from unittest.mock import AsyncMock, patch
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
     sid = await _create_cron_schedule("tz-fired")
@@ -163,8 +163,8 @@ async def test_a_fire_that_could_not_spawn_stamps_the_row_too(temp_db_path, monk
     """
     from unittest.mock import patch
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     _pin_scheduler_tz(monkeypatch, "America/New_York", "env:LIONAGI_SCHEDULER_TZ")
     sid = await _create_cron_schedule("tz-unspawnable")

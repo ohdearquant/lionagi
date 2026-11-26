@@ -28,8 +28,8 @@ class _MemoryContext:
 
 @pytest.fixture
 def polling(monkeypatch):
-    from lionagi.state import db
     from lionhub.serve.cli import wait
+    from lionhub.state import db
 
     context = _MemoryContext()
     monkeypatch.setattr(db, "StateDB", lambda: context)

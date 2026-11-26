@@ -686,7 +686,7 @@ invocation-terminal session Signal exists today: the bus carries `RunEnd` per op
 (`lionagi/session/signal.py::RunEnd`) and nothing terminal beyond it, the flow's own drain of node
 emissions emits no terminal (`lionhub/src/lionhub/orchestration/engines/flow_signals.py::flow_progress_signals`), and the invocation
 terminal that does exist is a process-local registry envelope rather than a session Signal
-(`lionagi/state/lifecycle/callbacks.py::RunTerminalEnvelope`, `lionagi/state/lifecycle/callbacks.py::TerminalCallbackRegistry.emit`), so the owner-scoped finalizer that records
+(`lionhub/src/lionhub/state/lifecycle/callbacks.py::RunTerminalEnvelope`, `lionhub/src/lionhub/state/lifecycle/callbacks.py::TerminalCallbackRegistry.emit`), so the owner-scoped finalizer that records
 closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` interim batches and one closing
 batch are minted; closure wakes only for remaining admitted facts. Closure drains admitted
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
@@ -710,10 +710,10 @@ reads from. Durable delivery covers committed `session_signals` rows, not every 
 the record says what is lost and when. For a durable subscriber the source fact is a
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
-(`lionagi/state/schema.sql:845-849`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py::StateDB.insert_session_signal`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py::StateDB.get_session_signals_after`), whose forward read defaults to 500 rows
-(`lionagi/state/db.py::StateDB.get_session_signals_after`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionhub/src/lionhub/state/schema.sql:845-849`), the sink writes it with the sequence the store assigns
+(`lionhub/src/lionhub/state/db.py::StateDB.insert_session_signal`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionhub/src/lionhub/state/db.py::StateDB.get_session_signals_after`), whose forward read defaults to 500 rows
+(`lionhub/src/lionhub/state/db.py::StateDB.get_session_signals_after`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -817,14 +817,14 @@ everything since; facts past the range belong to the next wake.
   `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_execute_dag._on_team_op_complete` at `7b60f151b2b907b1b3e14a256c6e9c1d6d8d727e`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:493`, `:564-572`; `lionagi/state/db.py::StateDB._build_update_schedule_stmt`, `lionagi/state/db.py::StateDB.create_schedule_run_and_advance`;
+  (`lionhub/src/lionhub/state/schema.sql:493`, `:564-572`; `lionhub/src/lionhub/state/db.py::StateDB._build_update_schedule_stmt`, `lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run_and_advance`;
   `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._github_due_pass_observed`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:845-849`; writer `lionagi/state/db.py::StateDB.insert_session_signal`; forward reader
-  `lionagi/state/db.py::StateDB.get_session_signals_after`).
+  (`lionhub/src/lionhub/state/schema.sql:845-849`; writer `lionhub/src/lionhub/state/db.py::StateDB.insert_session_signal`; forward reader
+  `lionhub/src/lionhub/state/db.py::StateDB.get_session_signals_after`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py::SessionObserver.persist_dropped`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast

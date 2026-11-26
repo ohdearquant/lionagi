@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -121,9 +121,9 @@ def _mock_chat_branch(name: str = "workflow-default"):
 
 @pytest.fixture
 def patched_env(tmp_path: Path, monkeypatch):
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.engine_defs as engine_defs_svc
     import lionagi_studio.services.workflow_defs as wf_svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -176,7 +176,7 @@ async def test_chat_turn_and_engine_subagent_branch_both_persist(patched_env):
     sub_branch_id = _FakeSubAgentEngine.calls[0]["sub_branch_id"]
     assert sub_branch_id != str(mock_branch.id)
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(db_path)
     await db.open()

@@ -673,10 +673,10 @@ async def test_worker_pass_reserves_adhoc_slot_and_counts_against_adhoc_cap(monk
     queued rather than execute as a cap+1'th concurrent action. Freeing
     ad-hoc capacity lets it execute and the slot is released once the row
     reaches a terminal status."""
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -742,10 +742,10 @@ async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monk
     -- so the ad-hoc row never gets admitted. With the ad-hoc lane's own
     independent pool, saturation on the scheduled side has no bearing on
     ad-hoc admission at all: the row is admitted on the very first tick."""
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
     from lionhub.serve.daemon.services.task_applications import TaskApplication, submit_task
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)

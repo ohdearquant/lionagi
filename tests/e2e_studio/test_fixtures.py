@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from lionagi.state.db import StateDB
+from lionhub.state.db import StateDB
 
 from . import harness
 from .fixtures import (

@@ -246,7 +246,7 @@ async def transition(
 ```
 
 The shipped schedule-run graph is registered in the lifecycle policy registry
-(`lionagi/state/lifecycle/policy.py::build_default_registry`):
+(`lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`):
 
 ```text
 queued ──► waiting_dependency | running | skipped | cancelled
@@ -555,7 +555,7 @@ known queue claim overlap without pretending to replace the OS resource lock.
 
 ## Notes
 
-An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionhub/src/lionhub/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
 
 The transition module's top docstring names both `dispatch` and `schedule_run`, and
 `_ENTITY_TABLES`, the vocabulary, and production callers include `schedule_run`. The executable

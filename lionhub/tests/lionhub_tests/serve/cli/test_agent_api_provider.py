@@ -189,9 +189,9 @@ async def test_the_run_record_holds_every_message_of_the_loop_and_the_terminal_s
 ):
     import lionhub.orchestration.runs as runs_mod
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     contexts = []
 
     async def setup(branch, **kw):
@@ -1842,8 +1842,8 @@ async def test_a_refused_turn_with_stop_details_fails_as_a_nonretryable_provider
     import lionhub.serve.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
     from lionagi._provider_errors import ProviderSafetyError
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused_with(stop_details=_STOP_DETAILS)])
@@ -1879,8 +1879,8 @@ async def test_a_refused_turn_without_stop_details_has_the_same_reason_and_no_su
 ):
     import lionhub.serve.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _refused_with(**extra)])
@@ -1939,8 +1939,8 @@ async def test_an_openai_refusal_carries_its_text_beside_the_stop_reason(
 ):
     import lionhub.serve.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     # The scripted endpoint speaks the Anthropic wire, so the pass's raw responses are
     # swapped for the OpenAI-shaped one the failed-round check reads.
@@ -1973,8 +1973,8 @@ async def test_a_failed_round_that_is_not_a_refusal_keeps_the_exception_reason_a
 ):
     import lionhub.serve.cli.agent as agent_mod
     from lionagi._errors import FailedRoundError
-    from lionagi.state.reasons import RunReasons
     from lionhub.orchestration.runs import resolve_run_reason
+    from lionhub.state.reasons import RunReasons
 
     for _ in range(agent_mod._API_ROUND_RESUMES + 1):
         leg.replies.extend([_last_round(), _text("")])

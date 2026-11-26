@@ -355,7 +355,7 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
     lifecycle = import_module("lionhub.orchestration.scheduler.lifecycle")
     operator = import_module("lionagi_studio.services.operator")
     launches = import_module("lionhub.serve.daemon.services.launches")
-    notify = import_module("lionagi.state.lifecycle.notify_settings")
+    notify = import_module("lionhub.state.lifecycle.notify_settings")
     calls = []
 
     async def noop():
@@ -422,7 +422,7 @@ async def test_registry_close_error_does_not_bypass_other_application_cleanup(mo
 
 
 async def _install_terminal_writer(live_backend, monkeypatch, *, own_kind=None, ddl=False):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     registry, path, url, _sessions, _signals, tail, sqlite = live_backend
     async with StateDB(url=url) as writer:
@@ -887,7 +887,7 @@ async def test_reopened_tail_does_not_reuse_another_connections_completed_versio
 async def test_cached_terminal_age_confirms_own_snapshot_before_done(
     live_backend, monkeypatch, kind
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     await seed(live_backend, terminal=True)
     registry, path, url, sessions, _signals, tail, sqlite = live_backend

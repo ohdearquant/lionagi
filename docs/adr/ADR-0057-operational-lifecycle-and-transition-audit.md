@@ -32,7 +32,7 @@ active state or oscillate to another terminal value. Deliberate repairs still ne
 actor and justification must be recorded.
 
 **P5 — Coverage is heterogeneous.** `StateDB.update_status()` covers six reason-bearing entity
-types. The smaller adapter in `lionagi/state/transitions.py` covers both dispatch and schedule run,
+types. The smaller adapter in `lionhub/src/lionhub/state/transitions.py` covers both dispatch and schedule run,
 so schedule run currently has two sanctioned-looking paths with different policies and results.
 Creation methods set initial status without a transition row. Branches and engine runs have status
 columns outside the six-type reason registry.
@@ -107,8 +107,8 @@ ENTITY_TYPE_TO_TABLE = {
 Aliases accepted by that registry are `run -> session` and plural table names to their singular
 forms.
 
-Code anchors: `lionagi/state/db.py`; `lionagi/state/reasons.py`;
-`lionagi/state/schema_meta.py`.
+Code anchors: `lionhub/src/lionhub/state/db.py`; `lionhub/src/lionhub/state/reasons.py`;
+`lionhub/src/lionhub/state/schema_meta.py`.
 
 **Exact semantics.**
 
@@ -121,12 +121,12 @@ Code anchors: `lionagi/state/db.py`; `lionagi/state/reasons.py`;
 - The schedule-run declarations are reconciled through the lifecycle policy registry. Both the
   `StateDB.update_status()` validator and the guarded adapter source the nine-value vocabulary and
   the five-value terminal set (which includes `timed_out`) from the registered policy
-  (`lionagi/state/db.py::TERMINAL_STATUSES_BY_ENTITY_TYPE`, `lionagi/state/db.py::VALID_STATUSES_BY_ENTITY_TYPE`, `lionagi/state/lifecycle/policy.py::build_default_registry`); `pending` is not
+  (`lionhub/src/lionhub/state/db.py::TERMINAL_STATUSES_BY_ENTITY_TYPE`, `lionhub/src/lionhub/state/db.py::VALID_STATUSES_BY_ENTITY_TYPE`, `lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`); `pending` is not
   admitted by either surface.
 - The registered schedule-run edge graph declares `queued -> {waiting_dependency, running, skipped,
   cancelled}`, `waiting_dependency -> {queued, cancelled}`, `running -> {completed, failed,
   timed_out, retry_wait, queued, cancelled}`, and `retry_wait -> {queued, cancelled}`; terminal
-  states have no outgoing edges (`lionagi/state/lifecycle/policy.py::build_default_registry`).
+  states have no outgoing edges (`lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`).
 - Dispatch is absent from `VALID_ENTITY_TYPES`; its adapter maps it directly to
   `dispatch_outbox` and validates only its reason code plus database CHECK at write time.
 
@@ -205,8 +205,8 @@ legacy:      legacy.imported
 All codes except `legacy.imported` follow three lowercase dot-separated segments; compound detail
 belongs in the summary rather than extending the code.
 
-Code anchors: `lionagi/state/schema_meta.py`; `lionagi/state/reasons.py`;
-`lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/schema_meta.py`; `lionhub/src/lionhub/state/reasons.py`;
+`lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -286,7 +286,7 @@ validate entity, reason, source, target, extra fields
   -> COMMIT
 ```
 
-Code anchor: `lionagi/state/db.py`.
+Code anchor: `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -357,7 +357,7 @@ Override writes:
 `admin_events` stores `id`, `created_at`, `action`, nullable `target_id`, JSON `details`, and
 non-null `actor`.
 
-Code anchors: `lionagi/state/db.py`; `lionagi/state/schema_meta.py`.
+Code anchors: `lionhub/src/lionhub/state/db.py`; `lionhub/src/lionhub/state/schema_meta.py`.
 
 **Exact semantics.**
 
@@ -437,7 +437,7 @@ _GUARD_PATCH_COLUMNS = {
 }
 ```
 
-Code anchors: `lionagi/state/transitions.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/transitions.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -516,7 +516,7 @@ flow/fanout/show-play:      43,200 seconds (12 hours)
 unknown/missing kind:       21,600 seconds (6 hours)
 ```
 
-Code anchors: `lionagi/state/health.py`; `lionagi/state/staleness.py`.
+Code anchors: `lionhub/src/lionhub/state/health.py`; `lionhub/src/lionhub/state/staleness.py`.
 
 **Exact semantics.**
 
@@ -571,7 +571,7 @@ why consolidation is a delta rather than claimed current architecture.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Reconcile the schedule-run database CHECK, status validator, terminal set, and guarded-transition vocabulary for `waiting_dependency`, `retry_wait`, and `timed_out`; acceptance requires one tested vocabulary in every sanctioned write path. | M | [#1906](https://github.com/ohdearquant/lionagi/issues/1906) (closed) |
-| 2 | Consolidate `StateDB.update_status()` and `lionagi/state/transitions.py` behind the lifecycle service in ADR-0058; acceptance requires one conflict result, one policy registry, atomic reason/history writes, and compatibility wrappers for existing callers. | M | [#2074](https://github.com/ohdearquant/lionagi/issues/2074) (closed) |
+| 2 | Consolidate `StateDB.update_status()` and `lionhub/src/lionhub/state/transitions.py` behind the lifecycle service in ADR-0058; acceptance requires one conflict result, one policy registry, atomic reason/history writes, and compatibility wrappers for existing callers. | M | [#2074](https://github.com/ohdearquant/lionagi/issues/2074) (closed) |
 | 3 | Define and enforce allowed transition graphs for sessions, schedule runs, dispatches, shows, and plays; acceptance requires tests for every allowed edge, every terminal edge, and the selected same-status reason-refresh rule. ADR-0058 supplied the seven current policies and the independent exhaustive baseline now pins them. Canonical Run remains a later eighth policy, so this behavior issue stays open. | M | [#2077](https://github.com/ohdearquant/lionagi/issues/2077) |
 | 4 | Make terminal companion fields such as `sessions.ended_at` part of the same guarded status transaction; acceptance requires teardown and wrapper paths to leave no crash window between terminal status and its companion fields. | S | [#2078](https://github.com/ohdearquant/lionagi/issues/2078) |
 | 5 | Emit a reason-bearing initial lifecycle event when creating every managed entity, as required by ADR-0058; acceptance requires `previous_status=NULL` creation history in the same transaction as the entity insert. | S | [#2079](https://github.com/ohdearquant/lionagi/issues/2079) |

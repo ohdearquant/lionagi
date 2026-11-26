@@ -46,7 +46,7 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     safely by this version).
     """
     try:
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
     except ImportError as exc:
         if _own_module(exc) is not None:
             raise

@@ -292,7 +292,7 @@ async def test_the_carried_name_is_the_loaded_profiles_own(completing_setup, mon
 @pytest.fixture
 def temp_db_path(tmp_path, monkeypatch):
     """Keep the state DB the persist layer opens inside tmp_path."""
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
 
 
 def _persisting_env(tmp_path, *, orc_profile_name):
@@ -359,7 +359,7 @@ async def test_a_bare_fanout_run_names_the_profile_it_used_on_disk(temp_db_path,
 
     # The manifest and the session row are two records of the same run, and a
     # reader may open either. Both have to name the profile.
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         row = await db.get_session(str(env.session.id))

@@ -35,17 +35,17 @@ async def _reached(event, *calls):
 @pytest_asyncio.fixture(loop_scope="function")
 async def orchestration_workers(tmp_path, monkeypatch):
     from lionagi import Branch, Session
-    from lionagi._cli_worker_context import (
-        _bind_cli_worker_recorder,
-        _get_cli_worker_recorder,
-    )
     from lionagi.operations.builder import OperationGraphBuilder
-    from lionagi.state import cli_workers
-    from lionagi.state import db as db_module
-    from lionagi.state.lifecycle import notify_settings
     from lionhub.orchestration.runs import RunDir, _unroute_message_hooks
     from lionhub.serve.cli.orchestrate import _orchestration as shared
     from lionhub.serve.cli.orchestrate import fanout, flow
+    from lionhub.state import cli_workers
+    from lionhub.state import db as db_module
+    from lionhub.state.cli_worker_context import (
+        _bind_cli_worker_recorder,
+        _get_cli_worker_recorder,
+    )
+    from lionhub.state.lifecycle import notify_settings
 
     state = SimpleNamespace(
         shared=shared,
@@ -717,8 +717,8 @@ async def test_native_cancellation_during_owner_drain_preserves_orchestration_ou
 ):
     from sqlalchemy.exc import OperationalError
 
-    from lionagi.state.compat import StateCompatibilityRefused
-    from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+    from lionhub.state.compat import StateCompatibilityRefused
+    from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
     h = orchestration_workers
     env = h.make_env("late-cancel-" + kind + "-" + terminal_outcome)

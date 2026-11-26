@@ -817,7 +817,7 @@ class TestPlaybookArtifactsPassThrough:
         "missing", ["root_cause", "implementation", "test_results", "assessment"]
     )
     def test_bundled_resolver_requires_each_workers_evidence(self, tmp_path, missing):
-        from lionagi.state.artifact_verifier import verify_artifact_contract
+        from lionhub.state.artifact_verifier import verify_artifact_contract
 
         source = (
             Path(__file__).resolve().parents[6]

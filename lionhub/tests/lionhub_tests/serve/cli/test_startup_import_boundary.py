@@ -346,7 +346,7 @@ def test_configuration_import_environment_fault_is_reported_before_a_run(
 
         sys.meta_path.insert(0, RefuseConfiguration())
         cli_main = import_main()
-        from lionagi._log_channels import log_error
+        from lionhub.state.log_channels import log_error
         assert cli_main.log_error is log_error
         code = cli_main.main({argv!r})
         assert refused == ['lionhub.orchestration.console']
@@ -430,7 +430,7 @@ def test_configuration_precedes_real_machine_output_and_keeps_the_core_emitter(
         tmp_path,
         """
         cli_main = import_main()
-        from lionagi._log_channels import log_error
+        from lionhub.state.log_channels import log_error
         assert cli_main.log_error is log_error
         assert 'lionhub.orchestration.console' not in sys.modules
         console_file = str(root / 'lionhub/src/lionhub/orchestration/console.py')

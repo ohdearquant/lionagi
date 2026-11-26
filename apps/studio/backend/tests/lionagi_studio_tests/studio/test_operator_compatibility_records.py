@@ -16,11 +16,11 @@ import anyio
 import pytest
 
 import lionhub.orchestration.runs as runs_mod
-from lionagi.state.compat import Closure, CompatibilityProfile, StateCompatibilityRefused
 from lionagi_studio.operator import coordinator as coordinator_mod
 from lionagi_studio.operator.coordinator import OperatorCoordinator
 from lionagi_studio.operator.store import OperatorStore
 from lionagi_studio.operator.types import OperatorEngineEvent
+from lionhub.state.compat import Closure, CompatibilityProfile, StateCompatibilityRefused
 
 # What a teardown the store refused records on the run's context, beside its terminal reason.
 _TEARDOWN_REFUSAL = StateCompatibilityRefused("update_status", "operator-records@1", "refused")
@@ -88,7 +88,7 @@ async def _drive(tmp_path, monkeypatch, *, compatibility, decided_status):
     status, the run.json status, and the order of the finish_turn/teardown calls.
     """
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     async def setup(*args, **kwargs):
@@ -302,7 +302,7 @@ async def _drive_interrupted(
     while teardown is still running.
     """
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     async def setup(*args, **kwargs):
@@ -439,7 +439,7 @@ async def test_a_stop_cancelling_the_first_frame_write_releases_the_store(tmp_pa
     import lionagi_studio.operator.store as store_mod
 
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     async def setup(*args, **kwargs):
@@ -532,7 +532,7 @@ async def test_a_cancel_in_the_final_checkpoint_still_finishes_the_turn(tmp_path
     """A cancel landing in the ``finally``'s final snapshot write must not skip teardown or
     the deferred finish: the record still carries the status teardown decided."""
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     calls: list[int] = []
@@ -608,7 +608,7 @@ async def test_shutdown_while_a_compatibility_turn_is_tearing_down_lets_teardown
 async def test_a_native_turn_is_still_cancelled_by_shutdown(tmp_path, monkeypatch):
     """Natively, shutdown cancels a turn that is not terminal, as before."""
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     async def setup(*args, **kwargs):
@@ -658,9 +658,9 @@ async def test_a_refused_setup_records_a_store_refusal_not_a_retryable_model_fai
     """An exception carrying a store refusal is not a retryable model failure: it is the
     store's refusal, with the same run details the branch already builds."""
     from lionagi.ln.concurrency import BaseExceptionGroup
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     refusal = StateCompatibilityRefused("create_progression", "operator-records", "refused")
 
@@ -712,7 +712,7 @@ async def test_an_ordinary_setup_failure_stays_a_retryable_model_failure(tmp_pat
     """A group holding only ordinary errors is still recorded as before."""
     from lionagi.ln.concurrency import BaseExceptionGroup
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
 
     async def setup(*args, **kwargs):
@@ -745,7 +745,7 @@ async def test_an_ordinary_setup_failure_stays_a_retryable_model_failure(tmp_pat
 async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_path, monkeypatch):
     """An ordinary setup failure is recovered on the store, and a store that refuses that
     recovery is the turn's refusal rather than a failure the recovery swallows."""
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     refusal = StateCompatibilityRefused("update_status", "operator-records", "refused")
 
@@ -796,9 +796,9 @@ async def test_a_setup_recovery_whose_native_open_is_refused_is_a_store_refusal(
     """The recovery opens the store natively, and a store at a later schema, one another
     application manages or one holding tables this package never creates refuses that open; no
     retry changes that, so the turn records it as the store's refusal."""
-    from lionagi.state import db as db_mod
+    from lionhub.state import db as db_mod
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
     refused_open = getattr(db_mod, error_name)(message)
 
@@ -869,7 +869,7 @@ class _EndingEngine:
 
 def _install_turn(monkeypatch, tmp_path, *, compatibility, teardown) -> Path:
     runs_root = tmp_path / "runs"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
 
     async def setup(*args, **kwargs):

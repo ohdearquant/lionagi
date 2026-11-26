@@ -71,7 +71,7 @@ async def _seed_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[s
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr("lionhub.orchestration.runs.RUNS_ROOT", runs_root)
     monkeypatch.setattr(_checkpoint, "RUNS_ROOT", runs_root)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda run_id: None)
 
     degraded_id = "20260808T000002-000002"
@@ -172,7 +172,7 @@ async def test_resume_with_unreadable_degradation_state_keeps_generic_error(
     async def unresolved(db, target):
         return None
 
-    monkeypatch.setattr("lionagi.state.db.StateDB", EmptyStateDB)
+    monkeypatch.setattr("lionhub.state.db.StateDB", EmptyStateDB)
     monkeypatch.setattr("lionhub.orchestration.inspection.resolve_any_target", unresolved)
 
     with pytest.raises(FlowResumeError, match=r"No run, session, invocation, or play found"):

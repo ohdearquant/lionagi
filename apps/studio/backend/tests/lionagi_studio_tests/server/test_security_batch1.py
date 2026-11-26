@@ -69,9 +69,9 @@ class TestPublicPath:
 class TestDefinitionsDiskPath:
     def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
         """list_definitions() must not expose absolute disk_path in response."""
-        import lionagi.state.db as state_db_mod
         import lionagi_studio.services.definitions as defs_mod
         import lionhub.orchestration.runs as cli_runs_mod
+        import lionhub.state.db as state_db_mod
 
         fake_home = _make_fake_home(tmp_path)
         agents_dir = fake_home / "agents"
@@ -416,7 +416,7 @@ class TestBearerTokenAuth:
         import lionagi_studio.app as app_mod
 
         if fake_db is not None:
-            import lionagi.state.db as state_db_mod
+            import lionhub.state.db as state_db_mod
 
             monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 

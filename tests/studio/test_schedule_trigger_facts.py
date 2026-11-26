@@ -7,8 +7,8 @@ import sqlite3
 
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.daemon.services import schedules
+from lionhub.state.db import StateDB
 
 
 def _past_the_parsers_depth(opener: str) -> str:
@@ -209,7 +209,7 @@ def test_a_refused_command_arg_render_does_not_carry_the_rendered_value(value):
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     return path
 
 

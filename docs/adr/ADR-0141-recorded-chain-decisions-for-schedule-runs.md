@@ -39,7 +39,7 @@ Out of scope, with the reason for each:
 
 - **Admission acknowledgement and waiting beyond the grace.** Acknowledging that a child was admitted needs a second write or a receipt, which this ADR does not add (see Consequences, and the follow-up named there).
 - **`li wait`.** It returns when the waited row is terminal and has no chain handling (`lionhub/src/lionhub/serve/cli/wait.py::wait_for_terminal`). It is unchanged.
-- **The queued-task worker lane.** Exhausted-lease and execution terminal transitions use legacy `transition()`, whose reason-column flag is off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`). Terminal admission rejection instead writes `skipped` and reason columns through `update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). These rows carry no ref, so the monitor applies D4's fallback to them; they have no schedule, so it resolves them without grace (Consequence 9).
+- **The queued-task worker lane.** Exhausted-lease and execution terminal transitions use legacy `transition()`, whose reason-column flag is off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionhub/src/lionhub/state/lifecycle/adapters.py::run_legacy_transition`). Terminal admission rejection instead writes `skipped` and reason columns through `update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). These rows carry no ref, so the monitor applies D4's fallback to them; they have no schedule, so it resolves them without grace (Consequence 9).
 - **The rest of ADR-0070 D4.** D4's selection rule is amended on one input only: the scheduler selects from the invocation's terminal status, and D4's `exit_code == 0` line is superseded by it (D1). The cap, the branch keys `on_success`/`on_fail`, and the inline recursion stay as written.
 - **Operator cancellation policy.** A cancelled invocation selects `on_fail` (D2). D4 gives a child of that recorded selection grace, and its fallback gives the same grace to a cancelled row without a ref whose schedule declares `on_fail`, where the monitor at the source pin resolves the cancelled row immediately (P5). Only an exemption for deliberate operator cancellation is deferred (#4395).
 - **Top-level recovery's current-definition lookup.** The stored schedule supplies the branch for top-level runs. Consequence 4 describes recovery of a chain child.
@@ -56,9 +56,9 @@ Each reader below is listed with what it does with the list and what it does wit
 | R1 | `lionhub/src/lionhub/serve/cli/monitor.py::_detail_session` | Prints each entry as `label`, else `kind`, for completed session rows | Printed by kind name | No: session rows only |
 | R2 | `lionhub/src/lionhub/serve/cli/status.py::_build_view`, `lionhub/src/lionhub/serve/cli/status.py::_render_human` | Prints `label` or `kind`, then `path`, `id` or `ref` | Printed as `kind: ref`; the new element prints as `chain_decision: on_fail` | No: `resolve_any_target` (`lionhub/src/lionhub/orchestration/inspection.py::resolve_any_target`) has no schedule-run lookup; only `lionhub/src/lionhub/serve/cli/wait.py::_resolve_wait_target` adds one, and `li wait` does not print refs. |
 | R3 | `lionhub/src/lionhub/serve/cli/monitor.py` wait path | None today | n/a | Yes, by design (D4) |
-| R4 | `lionagi/state/db.py::StateDB._reaper_evidence_exclusion_sql`, `lionagi/state/db.py::StateDB.metric_value` | Tests for the reaper's `kind == "invocation"` entry | Ignored (the predicate tests one kind) | No: reads the `invocations` table only |
-| R5 | `lionagi/state/db.py::StateDB._row_to_dict` | Decodes JSON text into a list. No interpretation | Passed through as a dict | Yes, pass-through |
-| R6 | `lionagi/state/db.py::StateDB.get_schedule_history` | Returns `status_transitions.evidence_refs` verbatim for `entity_type = 'schedule'` only | Passed through | No: schedule-run history is not returned |
+| R4 | `lionhub/src/lionhub/state/db.py::StateDB._reaper_evidence_exclusion_sql`, `lionhub/src/lionhub/state/db.py::StateDB.metric_value` | Tests for the reaper's `kind == "invocation"` entry | Ignored (the predicate tests one kind) | No: reads the `invocations` table only |
+| R5 | `lionhub/src/lionhub/state/db.py::StateDB._row_to_dict` | Decodes JSON text into a list. No interpretation | Passed through as a dict | Yes, pass-through |
+| R6 | `lionhub/src/lionhub/state/db.py::StateDB.get_schedule_history` | Returns `status_transitions.evidence_refs` verbatim for `entity_type = 'schedule'` only | Passed through | No: schedule-run history is not returned |
 | R7 | `lionhub/src/lionhub/serve/daemon/services/run_view.py::get_run_view`, `lionhub/src/lionhub/serve/daemon/services/run_view.py::list_run_views` | The in-process view keeps the schedule-run row | Service readers receive the field unchanged | Studio's schedule-run HTTP projections omit it (`lionhub/src/lionhub/serve/daemon/services/schedules.py::_run_view`, `lionhub/src/lionhub/serve/daemon/services/schedules.py::_run_record`). |
 | R8 | `lionhub/src/lionhub/serve/daemon/services/run_view.py::_with_skip_reasons` | Reads `reason_code` and `reason_summary` of skipped runs from `status_transitions`, not the refs | n/a | Unaffected |
 | R9 | `apps/studio/backend/src/lionagi_studio/operator/run_progress.py::_evidence_failed_op_ids` | Keeps entries with `kind == "failed_operation"` and a string `id` | Ignored | No: session rows (called at `apps/studio/backend/src/lionagi_studio/operator/run_progress.py::_dag_progress`, `apps/studio/backend/src/lionagi_studio/operator/run_progress.py::run_progress`) |
@@ -69,7 +69,7 @@ Each reader below is listed with what it does with the list and what it does wit
 | R14 | `apps/vscode/src/api/types.ts:29@45fd503ecf2af299d48b762cd895a2b8e650ced5`, `apps/vscode/src/api/types.ts:78@45fd503ecf2af299d48b762cd895a2b8e650ced5`; `apps/vscode/src/runs/runDetailPanel.ts:313@45fd503ecf2af299d48b762cd895a2b8e650ced5`, `apps/vscode/src/runs/runDetailPanel.ts:329-345@45fd503ecf2af299d48b762cd895a2b8e650ced5`, `apps/vscode/src/runs/runDetailPanel.ts:357-372@45fd503ecf2af299d48b762cd895a2b8e650ced5` | Typed as records. The run and invocation banner payloads copy the list | Passed through | No: run and invocation detail |
 | R15 | `apps/vscode/media/runDetail.js:328-336@45fd503ecf2af299d48b762cd895a2b8e650ced5` | Shows the count of entries as "N evidence ref(s)" | Counted as evidence. Misleading | No: run and invocation banners |
 
-Skipped writers: `lionhub/src/lionhub/orchestration/scheduler/engine.py` (the terminal, selection and setup-failure writes), `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`, `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::resolve_invocation_terminal`, `lionhub/src/lionhub/serve/daemon/services/admin.py::TransitionBody`, `lionhub/src/lionhub/serve/daemon/services/admin.py::transition_sessions` (it reads only the list its caller passes and appends its own kinds), `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_invocations`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_null_status_sessions`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_phantom_sessions`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_phantom_sessions_detailed`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_plays`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::_REAPABLE_SHOW_STATUSES`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::_recompute_show_status_from_disk`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_shows`, `lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::_write_terminal_session_status`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_resolve_invocation_terminal_flow`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_run_flow`, `lionhub/src/lionhub/orchestration/kill.py::_persist_cancel`, `apps/studio/backend/src/lionagi_studio/services/shows.py::import_shows`, `lionhub/src/lionhub/serve/daemon/services/launches.py::_spawn_detached`, `lionagi/state/_mirror_common.py::reconcile_status`, `lionagi/state/transitions.py::StateReason`, `lionagi/state/transitions.py::transition`, `lionagi/state/lifecycle/models.py::ReasonRecord`, `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`, `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`, the writes in `lionagi/state/db.py`, the schema declarations in `lionagi/state/schema.sql`, `lionagi/state/schema_meta.py` and `lionagi/state/schema_migrations.py`, and `lionhub/src/lionhub/agent/casts/emission.py::ComplianceVerdict`, whose `evidence_refs` is an unrelated `list[str]` field.
+Skipped writers: `lionhub/src/lionhub/orchestration/scheduler/engine.py` (the terminal, selection and setup-failure writes), `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`, `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::resolve_invocation_terminal`, `lionhub/src/lionhub/serve/daemon/services/admin.py::TransitionBody`, `lionhub/src/lionhub/serve/daemon/services/admin.py::transition_sessions` (it reads only the list its caller passes and appends its own kinds), `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_invocations`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_null_status_sessions`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_phantom_sessions`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_phantom_sessions_detailed`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_plays`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::_REAPABLE_SHOW_STATUSES`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::_recompute_show_status_from_disk`, `lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_shows`, `lionhub/src/lionhub/orchestration/runs.py::_teardown_common`, `lionhub/src/lionhub/orchestration/runs.py::_write_terminal_session_status`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_resolve_invocation_terminal_flow`, `lionhub/src/lionhub/serve/cli/orchestrate/flow.py::_run_flow`, `lionhub/src/lionhub/orchestration/kill.py::_persist_cancel`, `apps/studio/backend/src/lionagi_studio/services/shows.py::import_shows`, `lionhub/src/lionhub/serve/daemon/services/launches.py::_spawn_detached`, `lionhub/src/lionhub/state/_mirror_common.py::reconcile_status`, `lionhub/src/lionhub/state/transitions.py::StateReason`, `lionhub/src/lionhub/state/transitions.py::transition`, `lionhub/src/lionhub/state/lifecycle/models.py::ReasonRecord`, `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`, `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`, the writes in `lionhub/src/lionhub/state/db.py`, the schema declarations in `lionhub/src/lionhub/state/schema.sql`, `lionhub/src/lionhub/state/schema_meta.py` and `lionhub/src/lionhub/state/schema_migrations.py`, and `lionhub/src/lionhub/agent/casts/emission.py::ComplianceVerdict`, whose `evidence_refs` is an unrelated `list[str]` field.
 
 No reader breaks on an unknown kind. R15 would count the element as evidence if it ever received a schedule-run list; it is not reached by schedule-run rows today, and D1 does not change that. R7 passes the field through in process. The HTTP projections leave it out.
 
@@ -81,12 +81,12 @@ No reader breaks on an unknown kind. R15 would count the element as evidence if 
 | Scheduler dispatched exception/deadline handler (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`) | D1 records `none` on a winning `failed` or `timed_out` write. There is no child and no exit code. |
 | Creation-time skip and setup failure (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`) | D3 seeds `none` in the creation transaction, so both resolve at once. Without the element, D4's fallback resolves `skipped` at once but gives a `failed` row a grace wait when its schedule declares `on_fail`, although nothing launches its child. |
 | Scheduler fire task cancellation (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`) | A dispatched fire is finalized as `cancelled`; no selection or child. Without a selection, D4's fallback gives the row a grace wait when its schedule declares `on_fail`, then resolves it on its own status. Before dispatch, a committed running row is left for recovery. |
-| Orphan-only tombstone and atomic tombstone with replacement (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._tombstone_orphan_only`, `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`) | The undispatched row is marked `failed` without a ref or exit code; D4's fallback gives it a grace wait when its schedule declares `on_fail`. The replacement, when present, is a new occurrence without a chain parent. The atomic write calls the lifecycle writer directly and requires a running, undispatched source row. D1 reserves the selection kind from caller-supplied evidence on this path. |
+| Orphan-only tombstone and atomic tombstone with replacement (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._tombstone_orphan_only`, `lionhub/src/lionhub/state/db.py::StateDB.tombstone_and_replace_schedule_run`) | The undispatched row is marked `failed` without a ref or exit code; D4's fallback gives it a grace wait when its schedule declares `on_fail`. The replacement, when present, is a new occurrence without a chain parent. The atomic write calls the lifecycle writer directly and requires a running, undispatched source row. D1 reserves the selection kind from caller-supplied evidence on this path. |
 | Stale-run reaper (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`) | Writes `timed_out` with its own reason refs and no exit code. A late scheduler exit cannot update that row or launch a child under D2. D4's fallback gives the row a grace wait when its schedule declares `on_fail`, then resolves it on its own status. |
 | Queued-task lease exhaustion and execution completion (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`) | Terminal worker writes do not store a branch or exit code. The legacy writer omits reason columns. The rows have no schedule, so the monitor finds no declared action and resolves without grace. |
 | Queued-task admission rejection (`lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`) and operator cancellation before lease (`lionhub/src/lionhub/serve/daemon/services/task_applications.py::cancel_task`) | The first writes `skipped` through the reason-column path; the second writes `cancelled` through the legacy path. Neither launches a child. Task applications are created without a schedule (`lionhub/src/lionhub/serve/daemon/services/task_applications.py::submit_task`), so both resolve without grace. |
-| Operational override through `lionagi/state/db.py::StateDB.update_status` and `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition` | A terminal schedule run stays terminal. An override between terminal statuses carries its existing selection forward. |
-| Generic run update and insert APIs (`lionagi/state/db.py::StateDB.update_schedule_run`, `lionagi/state/db.py::StateDB._route_status_change`, `lionagi/state/db.py::StateDB._build_schedule_run_insert_stmt`) | The update API can accept a status or independent exit code. At the pin, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._mark_dispatched` is the sole production caller beyond the forwarding service (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_DBSchedulerStateService.update_schedule_run`). It only sets `dispatched_at`. The queued-task worker uses the status routes above. No production caller writes a running run's exit code before its terminal status. Direct terminal creation by the scheduler is the D3 pair above. |
+| Operational override through `lionhub/src/lionhub/state/db.py::StateDB.update_status` and `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition` | A terminal schedule run stays terminal. An override between terminal statuses carries its existing selection forward. |
+| Generic run update and insert APIs (`lionhub/src/lionhub/state/db.py::StateDB.update_schedule_run`, `lionhub/src/lionhub/state/db.py::StateDB._route_status_change`, `lionhub/src/lionhub/state/db.py::StateDB._build_schedule_run_insert_stmt`) | The update API can accept a status or independent exit code. At the pin, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._mark_dispatched` is the sole production caller beyond the forwarding service (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_DBSchedulerStateService.update_schedule_run`). It only sets `dispatched_at`. The queued-task worker uses the status routes above. No production caller writes a running run's exit code before its terminal status. Direct terminal creation by the scheduler is the D3 pair above. |
 
 ## Decision
 
@@ -115,7 +115,7 @@ selection = (
 
 Normal path: the terminal write at `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner` becomes `evidence_refs=[{"kind": "invocation", "id": inv_id}, chain_decision]`.
 
-Dispatched recovery: `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans` gives the schedule-run terminal write its own list with the invocation evidence and the selection. The invocation terminal write receives the original evidence list without a `chain_decision` element. The startup scan and the terminal write both require `running` (`lionagi/state/db.py::StateDB.list_dispatched_running_schedule_runs`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`).
+Dispatched recovery: `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans` gives the schedule-run terminal write its own list with the invocation evidence and the selection. The invocation terminal write receives the original evidence list without a `chain_decision` element. The startup scan and the terminal write both require `running` (`lionhub/src/lionhub/state/db.py::StateDB.list_dispatched_running_schedule_runs`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`).
 
 The dispatched exception or deadline handler records `none` in its existing guarded terminal write. It launches no follow-up (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`).
 
@@ -131,15 +131,15 @@ Exact semantics:
 
 Gate: the element is written in the same `UPDATE` as `status`, under the same compare-and-set.
 
-- Path: `_guarded_terminal_status` (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`), then `SchedulerStateService.update_status` (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_DBSchedulerStateService.update_status`), then `StateDB.update_status` (`lionagi/state/db.py::StateDB.update_status`, delegating at `lionagi/state/db.py` `return await _lifecycle_adapters.run_update_status(`), then `run_update_status` (`lionagi/state/lifecycle/adapters.py::run_update_status`). That function calls `service._transition(...)` without the reason-column flag (`lionagi/state/lifecycle/adapters.py::run_update_status`).
-- `_transition` defaults `write_reason_columns` to `True` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`). With the flag set, `_write` puts `status_evidence_refs = :evidence_refs` in the same `UPDATE` as `status` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). That statement is guarded by `status = :previous_status` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). The status change and the ref are one statement.
-- The policy's `reason_columns` defaults to `True` (`lionagi/state/lifecycle/models.py::LifecyclePolicy`). The schedule_run registration does not override it (`lionagi/state/lifecycle/policy.py::build_default_registry`). That flag is read only by `LifecycleService.transition` (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.transition`), which the scheduler does not call.
-- Result: the flag is true for all three D1 writers. The lifecycle reaper also goes through `db.update_status` and keeps the flag (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`), and records no selection. The queued-task worker's exhausted-lease and execution terminal writes call `transition()`, whose legacy route forces `write_reason_columns=False` (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/transitions.py::transition`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`). That route appends evidence to history without writing the current reason columns. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). Consequence 9 covers this.
+- Path: `_guarded_terminal_status` (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`), then `SchedulerStateService.update_status` (`lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::_DBSchedulerStateService.update_status`), then `StateDB.update_status` (`lionhub/src/lionhub/state/db.py::StateDB.update_status`, delegating at `lionhub/src/lionhub/state/db.py` `return await _lifecycle_adapters.run_update_status(`), then `run_update_status` (`lionhub/src/lionhub/state/lifecycle/adapters.py::run_update_status`). That function calls `service._transition(...)` without the reason-column flag (`lionhub/src/lionhub/state/lifecycle/adapters.py::run_update_status`).
+- `_transition` defaults `write_reason_columns` to `True` (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`). With the flag set, `_write` puts `status_evidence_refs = :evidence_refs` in the same `UPDATE` as `status` (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). That statement is guarded by `status = :previous_status` (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`). The status change and the ref are one statement.
+- The policy's `reason_columns` defaults to `True` (`lionhub/src/lionhub/state/lifecycle/models.py::LifecyclePolicy`). The schedule_run registration does not override it (`lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`). That flag is read only by `LifecycleService.transition` (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.transition`), which the scheduler does not call.
+- Result: the flag is true for all three D1 writers. The lifecycle reaper also goes through `db.update_status` and keeps the flag (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`), and records no selection. The queued-task worker's exhausted-lease and execution terminal writes call `transition()`, whose legacy route forces `write_reason_columns=False` (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionhub/src/lionhub/state/transitions.py::transition`; `lionhub/src/lionhub/state/lifecycle/adapters.py::run_legacy_transition`). That route appends evidence to history without writing the current reason columns. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). Consequence 9 covers this.
 
 Why this way:
 
 - The choice and the status are one row write under one compare-and-set. A scheduler terminal write from `running` can add a selection only when it wins. D2 and D4 depend on that property. D3 covers rows created terminal.
-- The choice is computed before the write. A crash before the write leaves no record, and the row stays `running` for startup reconciliation (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`, `lionagi/state/db.py::StateDB.list_dispatched_running_schedule_runs`).
+- The choice is computed before the write. A crash before the write leaves no record, and the row stays `running` for startup reconciliation (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`, `lionhub/src/lionhub/state/db.py::StateDB.list_dispatched_running_schedule_runs`).
 - A usable recorded branch stays authoritative for chain following after a schedule edit, even if the run's status and exit code disagree.
 
 The new terminal floor narrows the audited override contracts in
@@ -155,15 +155,15 @@ reopens a decided row. The next fire allocates and writes a new run
 `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._write_occurrence`).
 The existing operational override callers
 target sessions (`lionhub/src/lionhub/orchestration/runs.py::_reopen_session_for_resume`,
-`lionagi/state/_mirror_common.py::reconcile_status`).
+`lionhub/src/lionhub/state/_mirror_common.py::reconcile_status`).
 
 Apply the terminal floor and decision rules in
-`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`,
+`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`,
 using the schedule-run terminal set in
-`lionagi/state/lifecycle/policy.py::build_default_registry`. Read
+`lionhub/src/lionhub/state/lifecycle/policy.py::build_default_registry`. Read
 `status_evidence_refs` with the locked row (`SELECT ... FOR UPDATE` on PostgreSQL
 and the `BEGIN IMMEDIATE` write transaction from
-`lionagi/state/db.py::_install_begin_immediate` on SQLite).
+`lionhub/src/lionhub/state/db.py::_install_begin_immediate` on SQLite).
 
 For `schedule_run`, evaluate the applicable guards and policy in this order:
 
@@ -191,7 +191,7 @@ the terminal policy refuses, it continues to receive a rejection. Other
 entities keep their existing check order.
 
 D3 seeds a decision for a row created `skipped` or `failed`. After creation,
-`lionagi/state/lifecycle/models.py::TransitionCommand` has a keyword-only
+`lionhub/src/lionhub/state/lifecycle/models.py::TransitionCommand` has a keyword-only
 `record_chain_decision` attribute that defaults to `False`. Only the D1
 writers in the table set it for their schedule-run writes. The scheduler
 passes it through a keyword-only parameter of `SchedulerEngine._guarded_terminal_status`
@@ -205,7 +205,7 @@ check that rejects a boolean `v`. The attribute prevents
 accidental insertion by in-process callers. It is not a security boundary.
 
 On an otherwise applicable write, carry a stored decision into the command
-before `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`.
+before `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._write`.
 Preserve it by kind across versions, same-status appends and
 terminal-to-terminal overrides. An identical element is accepted. A different
 element or an insertion outside D1 takes the audited rejected path, including
@@ -223,13 +223,13 @@ carrying a decision and a marked `running`-to-terminal write without the running
 guard. The typed service already returns an audited `rejected` result with
 unchanged status for an ordinary undeclared edge, which can also start on a
 nonterminal row. That result is returned directly by
-`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.transition`.
+`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.transition`.
 `run_update_status` does not enforce the ordinary edge vocabulary, while
 legacy `transition()` raises at step 6, so neither facade receives that
 typed undeclared-edge rejection.
 
-`lionagi/state/lifecycle/adapters.py::run_update_status` and
-`lionagi/state/transitions.py::transition` raise `TransitionRejectedError` for
+`lionhub/src/lionhub/state/lifecycle/adapters.py::run_update_status` and
+`lionhub/src/lionhub/state/transitions.py::transition` raise `TransitionRejectedError` for
 these rejected outcomes after the audit commits. This adds a schedule-run
 mapping to [ADR-0058 D5](ADR-0058-unified-lifecycle-transition-service.md#d5--facade-preserving-staged-migration).
 Other entities keep their existing legacy behavior. The exception carries a
@@ -243,16 +243,16 @@ insertion.
 A reason-bearing update writes the resulting evidence list to the row and its
 new history entry. The legacy status-only route keeps its existing current reason
 columns, and includes the same stored decision in its history even when its other
-history evidence differs (`lionagi/state/lifecycle/adapters.py::run_legacy_transition`).
+history evidence differs (`lionhub/src/lionhub/state/lifecycle/adapters.py::run_legacy_transition`).
 This preserves the element without changing how that route writes other evidence.
 
 The direct writer in
-`lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run` must reject an
+`lionhub/src/lionhub/state/db.py::StateDB.tombstone_and_replace_schedule_run` must reject an
 expected orphan status other than `running` and any incoming `chain_decision`
 before opening the write. Its direct compare-and-set requires both `status =
 'running'` and `dispatched_at IS NULL`. A terminal row stays outside that
 path even if the caller read it before finalization; the undispatched startup
-scan also requires `running` (`lionagi/state/db.py::StateDB.list_undispatched_schedule_runs`).
+scan also requires `running` (`lionhub/src/lionhub/state/db.py::StateDB.list_undispatched_schedule_runs`).
 The separate replacement insert can seed `none` under D3 if setup failed.
 
 ### D2: A lost terminal compare-and-set never chains
@@ -283,7 +283,7 @@ Once the version check in D5 enables recording, a scheduler row created
 `skipped` or `failed` receives `{"kind": "chain_decision", "v": 1, "ref": "none"}`
 in the creation transaction. Seed the same evidence in the current row and the
 initial history entry in
-`lionagi/state/db.py::StateDB._initialize_managed_entity_in_tx`.
+`lionhub/src/lionhub/state/db.py::StateDB._initialize_managed_entity_in_tx`.
 The initializer takes a keyword-only `seed_chain_decision` flag, off by
 default. Keep the public StateDB creation signatures. Each public method
 shares its transaction implementation with a private StateDB entry point
@@ -298,14 +298,14 @@ rows keep the original evidence shape.
 
 - `lionhub/src/lionhub/orchestration/scheduler/scheduler_state.py::create_skipped_run`
   uses the dedicated skipped-insertion service method, which calls the
-  private counterpart of `lionagi/state/db.py::StateDB.create_schedule_run`.
+  private counterpart of `lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run`.
 - Setup failure in `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`
   records a failed row through
   `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._write_occurrence`.
   Only that setup-failure call selects the dedicated failed-creation service
   methods in the occurrence writer. Those methods use the private counterpart of
-  `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` for a normal
-  occurrence or of `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`
+  `lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run_and_advance` for a normal
+  occurrence or of `lionhub/src/lionhub/state/db.py::StateDB.tombstone_and_replace_schedule_run`
   when replacing an undispatched orphan. The latter seeds the new failed row only.
 - The later `update_status` appends its reason and schedule evidence as a
   same-status write and carries forward the seeded decision under the D1 lock.
@@ -325,9 +325,9 @@ def _recorded_selection(row: dict[str, Any]) -> str | None:
     """'on_success' | 'on_fail' | 'none' for a usable v1 chain_decision ref, else None."""
 ```
 
-Input: `row["status_evidence_refs"]` as a list, or as JSON text. `get_schedule_run` decodes the column (`lionagi/state/db.py::StateDB.get_schedule_run`, `lionagi/state/db.py::StateDB._row_to_dict`). The monitor already accepts both forms for session rows (`lionhub/src/lionhub/serve/cli/monitor.py::_detail_session`).
+Input: `row["status_evidence_refs"]` as a list, or as JSON text. `get_schedule_run` decodes the column (`lionhub/src/lionhub/state/db.py::StateDB.get_schedule_run`, `lionhub/src/lionhub/state/db.py::StateDB._row_to_dict`). The monitor already accepts both forms for session rows (`lionhub/src/lionhub/serve/cli/monitor.py::_detail_session`).
 
-A ref is usable when it is a dict with `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Ignore malformed and unsupported chain-decision elements when selecting a branch. One usable v1 selection wins when the list also contains an unusable element. Duplicate usable elements that agree describe the same selection. Conflicting usable selections make the record unusable, so the monitor applies its fallback. An affected row emits one warning per wait for malformed, unsupported or conflicting elements, including when a usable selection wins. The warning names the run ID and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionagi/_log_channels.py::warn`). The implementation chooses the channel.
+A ref is usable when it is a dict with `kind == "chain_decision"`, `v` is the integer `1` (not a boolean), and `ref` is one of the three values. Ignore malformed and unsupported chain-decision elements when selecting a branch. One usable v1 selection wins when the list also contains an unusable element. Duplicate usable elements that agree describe the same selection. Conflicting usable selections make the record unusable, so the monitor applies its fallback. An affected row emits one warning per wait for malformed, unsupported or conflicting elements, including when a usable selection wins. The warning names the run ID and the reason. The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The implementation chooses the channel.
 
 Cases in `_advance_chains` (`lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`), applied to a row that has become terminal, in this order:
 
@@ -361,7 +361,7 @@ writer admitted to a decision-enabled store must include preservation.
 
 During the offline cutover, run `li state migrate` or call `StateDB.migrate()`
 with the upgraded binary to stamp its version on SQLite or PostgreSQL
-(`lionhub/src/lionhub/serve/cli/state.py::_migrate`, `lionagi/state/db.py::StateDB.migrate`).
+(`lionhub/src/lionhub/serve/cli/state.py::_migrate`, `lionhub/src/lionhub/state/db.py::StateDB.migrate`).
 Setting `LIONAGI_STATE_AUTO_MIGRATE=1` lets an upgraded native writable open run
 the same migration path. That setting defaults to off. It waives nothing in
 the cutover: steps 1 and 2 still come first, and a process that has it set is
@@ -371,13 +371,13 @@ write transaction's own connection, under the same lock as the row read
 for the transition or creation. They enable decisions at the preservation
 version or later. An older native binary is
 refused on a fresh writable open by
-`lionagi/state/db.py::StateDB._raise_if_schema_too_new`; step 2 handles
+`lionhub/src/lionhub/state/db.py::StateDB._raise_if_schema_too_new`; step 2 handles
 previously opened handles (Consequence 11).
 
 SQLite compatibility mode can write to an existing store without migrating
 it, within its restricted operations
-(`lionagi/state/db.py::StateDB._open_compatibility`,
-`lionagi/state/db.py::StateDB.update_status`). Its status writes are limited
+(`lionhub/src/lionhub/state/db.py::StateDB._open_compatibility`,
+`lionhub/src/lionhub/state/db.py::StateDB.update_status`). Its status writes are limited
 to owned sessions and its transaction scope does not admit schedule-run
 creation, so it neither writes nor consumes a schedule-run decision.
 
@@ -401,7 +401,7 @@ The cutover procedure applies to both backends:
    still closed, exercise a fresh writable open by a binary at the version
    immediately below the preservation version and verify that it
    fails with the version error
-   (`lionagi/state/db.py::StateDB._raise_if_schema_too_new`).
+   (`lionhub/src/lionhub/state/db.py::StateDB._raise_if_schema_too_new`).
 4. Restart only the upgraded clients for acceptance. Check a fresh store open
    and representative writes through each client path listed in this step.
    Record one acceptance schedule and use it for the scheduler's normal fire
@@ -412,9 +412,9 @@ The cutover procedure applies to both backends:
    (`lionhub/src/lionhub/serve/daemon/services/schedules.py::create_schedule`,
    `lionhub/src/lionhub/serve/daemon/services/schedules.py::update_schedule`), and direct SDK
    schedule-run create, update and override
-   (`lionagi/state/db.py::StateDB.create_schedule_run`,
-   `lionagi/state/db.py::StateDB.update_schedule_run`,
-   `lionagi/state/db.py::StateDB.update_status`). Record every run ID those
+   (`lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run`,
+   `lionhub/src/lionhub/state/db.py::StateDB.update_schedule_run`,
+   `lionhub/src/lionhub/state/db.py::StateDB.update_status`). Record every run ID those
    writes produce, including recovery replacements and chain children.
 
    Exercise standalone Studio task submission and cancellation
@@ -443,7 +443,7 @@ The cutover procedure applies to both backends:
    foreign-key links below can refuse it beyond those validations. Run the
    delete under the native profile on either backend. SQLite compatibility
    mode refuses it on every store, whatever the owner: the connection's
-   authorizer denies every `DELETE` (`lionagi/state/compat.py`).
+   authorizer denies every `DELETE` (`lionhub/src/lionhub/state/compat.py`).
    The delete cascades to runs under that schedule, including parent and child when
    both belong to it. A surviving link such as a child in another schedule, an
    outbox reference or a worker lease can block deletion
@@ -461,25 +461,25 @@ The cutover procedure applies to both backends:
 ## Consequences
 
 1. **No admission receipt; the wait is bounded.** The monitor waits at most two ticks for a child. A child whose row is inserted after the grace is not followed, and `li monitor run` returns the parent's result. A follow-up issue tracks admission acknowledgement and waiting beyond the grace. It is #4207.
-2. **Interruption after the terminal write looks like grace expiry.** A crash, exception or cancellation after the winning write and before the child row exists leaves the terminal parent's recorded branch in place. In the normal path the signal, invocation write, telemetry flush and max-runs check all precede the child fire (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`). The monitor resolves on the parent's stored status when grace expires. Startup reconciliation selects only rows still `running` (`lionagi/state/db.py::StateDB.list_dispatched_running_schedule_runs`; `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`).
+2. **Interruption after the terminal write looks like grace expiry.** A crash, exception or cancellation after the winning write and before the child row exists leaves the terminal parent's recorded branch in place. In the normal path the signal, invocation write, telemetry flush and max-runs check all precede the child fire (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`). The monitor resolves on the parent's stored status when grace expires. Startup reconciliation selects only rows still `running` (`lionhub/src/lionhub/state/db.py::StateDB.list_dispatched_running_schedule_runs`; `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`).
 3. **A child refused before its row exists looks the same.** `_fire_inner` can return False before the occurrence write (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`). For a child, that leaves the parent's selection recorded and no child row. The monitor takes the grace path.
 4. **A restart stops a chain at its running child.** The child's overlay exists only in memory (`lionhub/src/lionhub/orchestration/schedule/parsing.py::_merge_chain_action`). Recovery records `none` even when the lost overlay would have continued the chain, and logs the stop (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._reconcile_dispatched_orphans`). Later steps do not run. An operator who wants to continue must fire them by hand. A top-level run still uses the current stored definition.
 5. **Behavior change for lost compare-and-sets.** A run that another finalizer ended, such as the reaper's `timed_out` write (`lionhub/src/lionhub/orchestration/scheduler/lifecycle.py::reap_stale_schedule_runs`), no longer launches its follow-up when its process later exits. Today it does (P3). A normal scheduler occurrence starts with `exit_code` unset (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`). The reaper leaves that value unset and writes no `chain_decision` ref. The late exit supplies its exit code only in the terminal update guarded by `status = running` (`lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._guarded_terminal_status`, `lionhub/src/lionhub/orchestration/scheduler/engine.py::SchedulerEngine._fire_inner`). That update loses, so the row keeps `timed_out` and no exit code. Without a ref, D4's fallback gives the run a grace wait when its schedule declares `on_fail`; no child appears, and the monitor then resolves it and returns 1 when that run is watched alone (`lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`, `lionhub/src/lionhub/serve/cli/monitor.py::_dispatch_wait`). No in-tree production caller writes the exit code ahead of the terminal transition at the source pin. The generic database API can still set it explicitly. A separately populated value is preserved; the fallback does not read it.
 6. **`li wait` does not follow chains.** It returns when the waited row is terminal (`lionhub/src/lionhub/serve/cli/wait.py::wait_for_terminal`). A caller who needs a follow-up's result must use `li monitor run`. This ADR does not change `li wait`.
 7. **Rows written before this change get the fallback.** That includes rows written by the queued-task worker and by any other finalizer. For those rows the monitor can still disagree with the scheduler when the stored schedule changed after the run, or when the row is a chain child whose follow-up action set its own `on_success` or `on_fail`, including to null. The change does not repair history.
-8. **Recording a selection adds one element to the current row and the corresponding history entry.** The status history row copies the decision-bearing write's list (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`, `lionagi/state/schema.sql:787-796@45fd503ecf2af299d48b762cd895a2b8e650ced5`). Of the readers of `status_transitions`, only `get_schedule_history` returns its `evidence_refs`, and only for schedule definitions (`lionagi/state/db.py::StateDB.get_schedule_history`). The others select counts, identifiers or reason columns, or delete rows.
-9. **The queued-task worker lane gets the fallback and no grace.** Exhausted-lease and execution terminal writes use legacy `transition()` with reason columns off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionagi/state/lifecycle/adapters.py::run_legacy_transition`), so that route writes its evidence to history only. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). The worker has no chain logic and cannot fire a child. It claims only rows without a schedule (`lionhub/src/lionhub/orchestration/scheduler/worker.py::_CLAIM_FIRST_PAGE_SQL`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_CLAIM_NEXT_PAGE_SQL`), only that claim sets a lease (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`), and task applications are created without a schedule (`lionhub/src/lionhub/serve/daemon/services/task_applications.py::submit_task`). With no stored schedule the fallback finds no declared action, so every terminal row of this lane resolves without grace, as it did before (`lionhub/src/lionhub/serve/cli/monitor.py::_schedule_declares_chain_action`, `lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`). The lane pays no grace cost. Moving the remaining legacy worker writes to the reason-column route is a separate change; this ADR neither requires nor blocks it.
-10. **Maintenance.** A contributor who adds a reader of `status_evidence_refs` must ignore unknown kinds, and the table above is the list to keep current. The legacy `transition()` route rejects a decision insertion and keeps the current reason columns unchanged on applied writes (`lionagi/state/lifecycle/adapters.py::run_legacy_transition`). The D1 gate test guards the distinction.
+8. **Recording a selection adds one element to the current row and the corresponding history entry.** The status history row copies the decision-bearing write's list (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`, `lionagi/state/schema.sql:787-796@45fd503ecf2af299d48b762cd895a2b8e650ced5`). Of the readers of `status_transitions`, only `get_schedule_history` returns its `evidence_refs`, and only for schedule definitions (`lionhub/src/lionhub/state/db.py::StateDB.get_schedule_history`). The others select counts, identifiers or reason columns, or delete rows.
+9. **The queued-task worker lane gets the fallback and no grace.** Exhausted-lease and execution terminal writes use legacy `transition()` with reason columns off (`lionhub/src/lionhub/orchestration/scheduler/worker.py::reap_expired_leases`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_execute_claimed`; `lionhub/src/lionhub/state/lifecycle/adapters.py::run_legacy_transition`), so that route writes its evidence to history only. Terminal admission rejection instead writes `skipped` and reason columns through `StateDB.update_status`, without supplying a chain-decision ref (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_reject_claim`). The worker has no chain logic and cannot fire a child. It claims only rows without a schedule (`lionhub/src/lionhub/orchestration/scheduler/worker.py::_CLAIM_FIRST_PAGE_SQL`, `lionhub/src/lionhub/orchestration/scheduler/worker.py::_CLAIM_NEXT_PAGE_SQL`), only that claim sets a lease (`lionhub/src/lionhub/orchestration/scheduler/worker.py::claim_and_execute`), and task applications are created without a schedule (`lionhub/src/lionhub/serve/daemon/services/task_applications.py::submit_task`). With no stored schedule the fallback finds no declared action, so every terminal row of this lane resolves without grace, as it did before (`lionhub/src/lionhub/serve/cli/monitor.py::_schedule_declares_chain_action`, `lionhub/src/lionhub/serve/cli/monitor.py::_advance_chains`). The lane pays no grace cost. Moving the remaining legacy worker writes to the reason-column route is a separate change; this ADR neither requires nor blocks it.
+10. **Maintenance.** A contributor who adds a reader of `status_evidence_refs` must ignore unknown kinds, and the table above is the list to keep current. The legacy `transition()` route rejects a decision insertion and keeps the current reason columns unchanged on applied writes (`lionhub/src/lionhub/state/lifecycle/adapters.py::run_legacy_transition`). The D1 gate test guards the distinction.
 11. **Open handles require the offline cutover.** A version-6 binary cannot make a fresh
     native writable open of the stamped store
-    (`lionagi/state/db.py::StateDB._refuse_newer_schema`,
-    `lionagi/state/db.py::StateDB._raise_if_schema_too_new`). An initialized SQLite
+    (`lionhub/src/lionhub/state/db.py::StateDB._refuse_newer_schema`,
+    `lionhub/src/lionhub/state/db.py::StateDB._raise_if_schema_too_new`). An initialized SQLite
     handle's subsequent pooled connections check only lineage
-    (`lionagi/state/db.py::StateDB._refuse_a_managed_store`). PostgreSQL's migration
+    (`lionhub/src/lionhub/state/db.py::StateDB._refuse_a_managed_store`). PostgreSQL's migration
     lock covers its migration transaction, so an already-open old handle can keep
     writing, so the process and connection controls in D5 step 2 are required.
     True read-only SQLite file opens bypass native migration
-    (`lionagi/state/db.py::StateDB._open`, `lionagi/state/db.py::read_only_open_supported`).
+    (`lionhub/src/lionhub/state/db.py::StateDB._open`, `lionhub/src/lionhub/state/db.py::read_only_open_supported`).
     Studio schedule reads and machine monitor use that mode when supported
     (`lionhub/src/lionhub/serve/daemon/services/schedules.py::get_schedule_run`,
     `lionhub/src/lionhub/serve/cli/machine.py::readonly_state_db`). Older readers
@@ -648,7 +648,7 @@ Existing tests whose fixtures carry no ref and so exercise the fallback. They ta
 
 ## Open questions
 
-1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionagi/_log_channels.py::warn`). The channel for the D4 warning remains an implementation choice.
+1. **Warning channel.** The CLI logging module re-exports `warn` (`lionhub/src/lionhub/orchestration/console.py` `from lionagi._log_channels import (`, `lionhub/src/lionhub/orchestration/console.py::__all__`; `lionhub/src/lionhub/state/log_channels.py::warn`). The channel for the D4 warning remains an implementation choice.
 
 2. **Operator cancellation.** Whether an explicit operator cancellation should launch `on_fail` is tracked in #4395.
 

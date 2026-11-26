@@ -19,7 +19,6 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 
 from pydantic import ValidationError
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.schedule.declaration import (
     _ADOPT_DECLARATION_FIELDS,
     _ADOPT_UNDECLARED_COLUMNS,
@@ -36,6 +35,7 @@ from lionhub.orchestration.schedule.declaration import (
     resolve_schedule_set,
 )
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.state.db import StateDB
 
 from . import _test_support_schedule_declaration as _support
 from ._test_support_schedule_declaration import (

@@ -328,9 +328,9 @@ def test_a_safe_host_starts(host: Path, monkeypatch: pytest.MonkeyPatch, bind: s
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
-    import lionagi.state.db as state_db_mod
     import lionagi_studio.app as app_mod
     import lionhub.serve.daemon.services.launches as svc
+    import lionhub.state.db as state_db_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(svc, "_launch_semaphore", None)

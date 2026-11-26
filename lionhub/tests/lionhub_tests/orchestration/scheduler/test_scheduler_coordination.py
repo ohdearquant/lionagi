@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.scheduler.coordination import compute_files_overlap
 from lionhub.orchestration.scheduler.signals import SchedulerSignalBus, ScheduleRunSucceeded
+from lionhub.state.db import StateDB
 
 
 @pytest_asyncio.fixture

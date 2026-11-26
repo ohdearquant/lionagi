@@ -11,12 +11,12 @@ from contextlib import asynccontextmanager, closing
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
 from lionhub.serve.daemon.services import sessions as svc  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 @pytest.mark.parametrize(

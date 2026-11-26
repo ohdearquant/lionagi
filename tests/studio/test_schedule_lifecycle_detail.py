@@ -11,8 +11,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from lionagi.state.db import StateDB
 from lionhub.serve.daemon.services import schedules
+from lionhub.state.db import StateDB
 
 
 @pytest.mark.parametrize("history_kind", ["recorded", "legacy", "unavailable"])
@@ -20,7 +20,7 @@ async def test_detail_projects_latest_definition_event_separately_from_occurrenc
     tmp_path, monkeypatch, history_kind
 ):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -62,7 +62,7 @@ async def test_detail_projects_latest_definition_event_separately_from_occurrenc
 
 async def test_deleted_detail_is_404_but_definition_history_remains(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -86,7 +86,7 @@ async def test_deleted_detail_is_404_but_definition_history_remains(tmp_path, mo
 
 async def test_schedule_routes_refuse_unsupported_persisted_kinds(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     body = {
         "name": "daily",
         "trigger_type": "interval",
@@ -126,7 +126,7 @@ async def test_schedule_routes_report_an_action_kind_check_as_bad_input(
 ):
     from sqlalchemy.exc import IntegrityError
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     original = sqlite3.IntegrityError("CHECK constraint failed: ck_schedules_action_kind")
 
     async def refuse(*_args, **_kwargs):
@@ -155,7 +155,7 @@ async def test_schedule_routes_report_an_action_kind_check_as_bad_input(
 
 async def test_disable_persists_the_reason_in_definition_history(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -182,7 +182,7 @@ async def test_a_disable_records_no_provenance_it_did_not_observe(tmp_path, monk
     """The request carries a reason at most and nothing about its sender, so a reason
     must not turn the edge into one attributed to an operator."""
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -209,7 +209,7 @@ async def test_a_disable_records_no_provenance_it_did_not_observe(tmp_path, monk
 
 async def test_disable_without_a_reason_records_an_unspecified_disable(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -234,7 +234,7 @@ async def test_repeated_disable_cannot_claim_to_record_a_new_reason(
     tmp_path, monkeypatch, entrypoint
 ):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -268,7 +268,7 @@ async def test_repeated_disable_cannot_claim_to_record_a_new_reason(
 
 async def test_concurrent_reasoned_disables_report_only_the_recorded_winner(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {
@@ -310,7 +310,7 @@ def test_the_request_body_takes_the_reasons_the_service_takes():
 @pytest.mark.parametrize("reason", ["", "   ", "x" * 501])
 async def test_disable_refuses_an_unusable_reason_before_writing(tmp_path, monkeypatch, reason):
     path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     async with StateDB(path) as db:
         await db.create_schedule(
             {

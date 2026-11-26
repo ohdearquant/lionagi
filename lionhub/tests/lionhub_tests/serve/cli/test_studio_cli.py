@@ -1034,9 +1034,9 @@ def test_await_vite_ready_url_uses_the_first_of_multiple_network_lines(caplog):
 
 
 def test_studio_cli_uses_core_log_channel_emitters():
-    from lionagi import _log_channels
     from lionhub.orchestration import console
     from lionhub.serve.cli import studio as studio_cli
+    from lionhub.state import log_channels as _log_channels
 
     assert studio_cli.log_error is _log_channels.log_error
     assert studio_cli.warn is _log_channels.warn

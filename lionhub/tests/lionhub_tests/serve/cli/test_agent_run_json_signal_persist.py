@@ -50,8 +50,8 @@ async def test_a_run_under_a_held_writer_writes_its_dropped_signals_into_run_jso
     """The writer is held by another connection while the run emits signals, then released
     before the real teardown runs."""
     from lionagi.session.signal import NodeStarted
-    from lionagi.state import engine as state_engine
     from lionhub.serve.cli.agent import _run_agent
+    from lionhub.state import engine as state_engine
 
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", BUSY_MS)
     agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
@@ -145,8 +145,8 @@ def _operate_with_the_writer_held(monkeypatch, tmp_path, body):
     ``body(observer, blocker)`` runs, so the signals it emits find the writer refused. The real
     setup and teardown run around it."""
     from lionagi import Branch
-    from lionagi.state import engine as state_engine
     from lionhub.serve.cli import agent as agent_mod
+    from lionhub.state import engine as state_engine
 
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", BUSY_MS)
     real_setup = agent_mod.setup_agent_persist
@@ -328,10 +328,10 @@ async def test_a_binding_without_a_run_manifest_marks_nothing(monkeypatch, tmp_p
     """Only the `li agent` binding, which passes its manifest and run directory, is marked."""
     from lionagi import Branch
     from lionagi.session.signal import NodeStarted
-    from lionagi.state import engine as state_engine
     from lionhub.orchestration.runs import RunDir
+    from lionhub.state import engine as state_engine
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", BUSY_MS)
     run = RunDir(run_id="run-g", state_root=tmp_path / "g", artifact_root=tmp_path / "g-art")
     run.ensure_state_dirs()

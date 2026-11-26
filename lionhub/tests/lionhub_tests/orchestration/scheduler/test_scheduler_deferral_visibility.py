@@ -11,13 +11,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
-from lionagi.state.db import NO_CURSOR_CLAIM
 from lionhub.orchestration.scheduler.engine import (
     _MAX_PREDISPATCH_REFUSALS,
     SchedulerEngine,
     _GithubPollAttempt,
 )
 from lionhub.orchestration.scheduler.github import GithubPollResult
+from lionhub.state.db import NO_CURSOR_CLAIM
 
 from .test_scheduler_github_fire_per_event import _item
 from .test_scheduler_global_slot import _make_svc, _minimal_schedule

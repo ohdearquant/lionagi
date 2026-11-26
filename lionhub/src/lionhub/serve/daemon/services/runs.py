@@ -139,7 +139,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
     """
     effective_health: str | None = None
     if s.get("status") == "running":
-        from lionagi.state.health import classify_session_health
+        from lionhub.state.health import classify_session_health
 
         health = classify_session_health(
             s,

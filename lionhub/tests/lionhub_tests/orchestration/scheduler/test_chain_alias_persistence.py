@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.state.db import NO_CURSOR_CLAIM, StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
+from lionhub.state.db import NO_CURSOR_CLAIM, StateDB
+from lionhub.state.reasons import RunReasons
 
 from .test_scheduler_occurrence_atomicity import _schedule_row
 
@@ -32,7 +32,7 @@ from .test_scheduler_occurrence_atomicity import _schedule_row
 async def test_chained_playbook_alias_launch_preserves_record_kind(
     tmp_path, monkeypatch, chain, expected_depth
 ):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

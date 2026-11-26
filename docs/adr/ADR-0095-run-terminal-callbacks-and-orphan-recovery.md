@@ -785,9 +785,9 @@ context keeps its existing behavior. The rest of ADR-0095 keeps its own status.
 
 Today, new now-registration and now-reactivation insert one physical acknowledgment per
 eligible transition in their transaction. The operator paths also count pending transitions
-(`lionagi/state/lifecycle/deliveries.py::register_consumer`,
-`lionagi/state/lifecycle/deliveries.py::change_consumer`). On SQLite the transaction reserves
-the database writer (`lionagi/state/db.py::StateDB._tx`). At one million eligible rows, a
+(`lionhub/src/lionhub/state/lifecycle/deliveries.py::register_consumer`,
+`lionhub/src/lionhub/state/lifecycle/deliveries.py::change_consumer`). On SQLite the transaction reserves
+the database writer (`lionhub/src/lionhub/state/db.py::StateDB._tx`). At one million eligible rows, a
 three-trial SQLite fixture measured median holds of 944 ms for fresh registration and
 1,239 ms for now-reactivation. A concurrent terminal write took 1,229 ms during reactivation
 compared with 2.13 ms uncontended. This is synthetic measurement and does not establish a
@@ -803,8 +803,8 @@ outside it stays owed unless its actual acknowledgment exists. An epoch is an en
 boundary shared by events on the same side of a cut. The existing traversal key of
 `(created_at, transition_id)` remains process-local. An event's timestamp, identifier, and
 allocation order are unsafe as a commit boundary
-(`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`,
-`lionagi/state/lifecycle/deliveries.py::reconcile_unacknowledged`).
+(`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`,
+`lionhub/src/lionhub/state/lifecycle/deliveries.py::reconcile_unacknowledged`).
 
 - **SQLite.** The eligible writer reads and stamps the epoch under its existing writer
   reservation. Enrollment uses the same reservation to read the cut, advance the epoch and
@@ -829,7 +829,7 @@ allocation order are unsafe as a commit boundary
   active connection and cleared at transaction end. On PostgreSQL record the
   mode after the database grants the transaction lock. On SQLite
   record the writer reservation after `BEGIN IMMEDIATE` succeeds
-  (`lionagi/state/db.py::_install_begin_immediate`). A pooled connection or a
+  (`lionhub/src/lionhub/state/db.py::_install_begin_immediate`). A pooled connection or a
   deferred read transaction does not supply that proof. The entry helper
   checks the recorded mode and refuses a shared-to-exclusive request before it
   attempts another lock. History writers and nested helpers verify the proof
@@ -839,7 +839,7 @@ allocation order are unsafe as a commit boundary
   and acknowledgment DML. No participant waits on the fence while holding a
   later lock. Ordinary writers can still take entity and dependency locks in
   a different order, including message, progression and session writes in
-  `lionagi/state/db.py::StateDB.insert_messages`. Apply the confirmed-rollback
+  `lionhub/src/lionhub/state/db.py::StateDB.insert_messages`. Apply the confirmed-rollback
   retry below if these operations contend.
 
   Each query after the lock is granted starts with a new READ COMMITTED snapshot.
@@ -848,7 +848,7 @@ allocation order are unsafe as a commit boundary
   from a single statement snapshot. A producer holding the shared lock before the cut can
   commit into that cut. One acquiring it afterward stamps the new epoch, even with an
   earlier timestamp. Rollback contributes no event. The current registration transaction
-  uses REPEATABLE READ (`lionagi/state/lifecycle/deliveries.py::_registration_transaction`).
+  uses REPEATABLE READ (`lionhub/src/lionhub/state/lifecycle/deliveries.py::_registration_transaction`).
   Replace that transaction mode as a unit.
 
   Set the path's lock timeout before taking the fence or any entity lock. Keep the
@@ -861,34 +861,34 @@ allocation order are unsafe as a commit boundary
   deletion. Never repeat a callback. No lock spans callback execution.
   See [PostgreSQL lock modes and deadlocks](https://www.postgresql.org/docs/16/explicit-locking.html)
   and [READ COMMITTED snapshots](https://www.postgresql.org/docs/16/transaction-iso.html#XACT-READ-COMMITTED).
-- **Ingress.** `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`
+- **Ingress.** `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService._transition`
   takes shared mode at the start of its outer transaction, before the locked
   entity read, for any kind that can produce eligible history. The write-time
   eligibility check still needs the previous status
-  (`lionagi/state/terminal_eligibility.py::is_delivery_eligible`).
-  `lionagi/state/db.py::StateDB.transaction` declares the mode at entry for
-  caller-owned writes. `lionagi/state/db.py::StateDB._create_session_in_tx`
-  verifies it; its callers, `lionagi/state/db.py::StateDB.create_session` and
+  (`lionhub/src/lionhub/state/terminal_eligibility.py::is_delivery_eligible`).
+  `lionhub/src/lionhub/state/db.py::StateDB.transaction` declares the mode at entry for
+  caller-owned writes. `lionhub/src/lionhub/state/db.py::StateDB._create_session_in_tx`
+  verifies it; its callers, `lionhub/src/lionhub/state/db.py::StateDB.create_session` and
   `lionhub/src/lionhub/serve/cli/state.py::_import_one_run`, enter with shared
   mode before insert or message locks. Creation history remains ineligible.
   The same entry order applies to
-  `lionagi/state/db.py::StateDB.create_schedule_run_and_advance` and
-  `lionagi/state/db.py::StateDB.tombstone_and_replace_schedule_run`.
+  `lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run_and_advance` and
+  `lionhub/src/lionhub/state/db.py::StateDB.tombstone_and_replace_schedule_run`.
   Studio's `lionhub/src/lionhub/serve/daemon/services/admin.py::transition_sessions` opens its
   own outer transaction with shared mode before its session reads and
   updates. Its raw writer and
-  `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`
+  `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.append_history_in_transaction`
   verify the existing grant for eligible history and fail closed if it is
   missing. They do not acquire a grant after locking application rows.
   Creation for a schedule run, invocation or play remains inherently
-  ineligible, including via `lionagi/state/db.py::StateDB.create_schedule_run`,
-  `lionagi/state/db.py::StateDB.create_invocation` and
-  `lionagi/state/db.py::StateDB.create_play`. The composite writers above
+  ineligible, including via `lionhub/src/lionhub/state/db.py::StateDB.create_schedule_run`,
+  `lionhub/src/lionhub/state/db.py::StateDB.create_invocation` and
+  `lionhub/src/lionhub/state/db.py::StateDB.create_play`. The composite writers above
   retain their entry requirement. Schedule-definition, show, team and
   dispatch history needs no producer grant. Standalone dispatch initialization remains ineligible
   (`lionhub/src/lionhub/orchestration/dispatch/outbox.py::enqueue_dispatch`).
   Keep the history classification migration separate from these writes
-  (`lionagi/state/db.py::StateDB._classify_terminal_delivery_history_once`).
+  (`lionhub/src/lionhub/state/db.py::StateDB._classify_terminal_delivery_history_once`).
 
 ### Consumer state, readers and operator reporting
 
@@ -933,14 +933,14 @@ standalone v1 named consumers:
 
 | Reader or writer | Rule |
 | --- | --- |
-| `lionagi/state/lifecycle/deliveries.py::_check_schema`, `lionagi/state/lifecycle/deliveries.py::register_consumer`, `lionagi/state/lifecycle/deliveries.py::change_consumer`, `lionagi/state/lifecycle/deliveries.py::retire_consumer` | Validate the native epoch shape and classification metadata. Read and update the cutoff with the registration. The simple retirement path only changes state. |
-| `lionagi/state/lifecycle/deliveries.py::_unacknowledged_count`, `lionagi/state/lifecycle/deliveries.py::get_owed_transition`, `lionagi/state/lifecycle/deliveries.py::reconcile_unacknowledged` | Use one logical predicate: eligible, without the resolver-pruned disposition, outside the cutoff, and no physical row for this consumer. The two delivery readers require an active registration. Exact and paged reads apply the same cutoff. |
-| `lionagi/state/lifecycle/consumer_inspection.py::list_consumers`, `lionagi/state/lifecycle/consumer_inspection.py::preview_consumer_change` | Count retained candidates with the logical predicate in the existing read snapshot. Retired consumers owe zero but their candidates still use the cutoff. The CLI and machine listing both use `lionhub/src/lionhub/serve/cli/state.py::_terminal_consumer_list_data`. Keep their existing SQLite support boundary. The listing exposes persisted settled-after-prune attempts and a separate store-wide resolver-pruned transition count. |
-| `lionagi/state/lifecycle/deliveries.py::ack_delivery`, `lionagi/state/lifecycle/deliveries.py::is_acknowledged`, `lionagi/state/lifecycle/reconciler.py::_keeper_ack` | Keep physical ACK readback distinct from settlement after prune. Normal and keeper completions validate schema, the registered identity and the admission. Carry the same admission through `lionagi/state/lifecycle/reconciler.py::_acknowledge_late`, `lionagi/state/lifecycle/reconciler.py::_finish_late_result` and `lionagi/state/lifecycle/reconciler.py::_drain_deferred`. |
-| `lionagi/state/lifecycle/reconciler.py::_consumer_is_active`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Immediately before the effect, one statement returns registration activity and this event's debt separately. Exact attempts report `not_owed` for a settled event. Replay keeps its existing stop and cursor rewind when the registration is inactive. An active registration with a settled event skips it, clears any previous backoff and continues from the advanced cursor without an attempt, failure or ACK. A prepare failure or timeout follows the same activity and debt check before it can count as failed. |
-| `lionagi/state/db.py::StateDB.delete_imported_session`, `lionagi/state/codex_mirror.py::absorb_orchestrated_session`, `lionagi/state/codex_mirror.py::absorb_orchestrated_backfill`, `lionhub/src/lionhub/serve/mirror.py::_mirror_one_codex`, `lionhub/src/lionhub/serve/mirror.py::_absorb_backfill` | Apply retention to the imported session and its dependencies. Report debt deferral separately, keep both per-file IDs pending when needed, and keep the backfill retryable. |
+| `lionhub/src/lionhub/state/lifecycle/deliveries.py::_check_schema`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::register_consumer`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::change_consumer`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::retire_consumer` | Validate the native epoch shape and classification metadata. Read and update the cutoff with the registration. The simple retirement path only changes state. |
+| `lionhub/src/lionhub/state/lifecycle/deliveries.py::_unacknowledged_count`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::get_owed_transition`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::reconcile_unacknowledged` | Use one logical predicate: eligible, without the resolver-pruned disposition, outside the cutoff, and no physical row for this consumer. The two delivery readers require an active registration. Exact and paged reads apply the same cutoff. |
+| `lionhub/src/lionhub/state/lifecycle/consumer_inspection.py::list_consumers`, `lionhub/src/lionhub/state/lifecycle/consumer_inspection.py::preview_consumer_change` | Count retained candidates with the logical predicate in the existing read snapshot. Retired consumers owe zero but their candidates still use the cutoff. The CLI and machine listing both use `lionhub/src/lionhub/serve/cli/state.py::_terminal_consumer_list_data`. Keep their existing SQLite support boundary. The listing exposes persisted settled-after-prune attempts and a separate store-wide resolver-pruned transition count. |
+| `lionhub/src/lionhub/state/lifecycle/deliveries.py::ack_delivery`, `lionhub/src/lionhub/state/lifecycle/deliveries.py::is_acknowledged`, `lionhub/src/lionhub/state/lifecycle/reconciler.py::_keeper_ack` | Keep physical ACK readback distinct from settlement after prune. Normal and keeper completions validate schema, the registered identity and the admission. Carry the same admission through `lionhub/src/lionhub/state/lifecycle/reconciler.py::_acknowledge_late`, `lionhub/src/lionhub/state/lifecycle/reconciler.py::_finish_late_result` and `lionhub/src/lionhub/state/lifecycle/reconciler.py::_drain_deferred`. |
+| `lionhub/src/lionhub/state/lifecycle/reconciler.py::_consumer_is_active`, `lionhub/src/lionhub/state/lifecycle/reconciler.py::TerminalReconciler._attempt_one`, `lionhub/src/lionhub/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`, `lionhub/src/lionhub/orchestration/scheduler/terminal_reconciliation.py::run_terminal_reconciliation` | Immediately before the effect, one statement returns registration activity and this event's debt separately. Exact attempts report `not_owed` for a settled event. Replay keeps its existing stop and cursor rewind when the registration is inactive. An active registration with a settled event skips it, clears any previous backoff and continues from the advanced cursor without an attempt, failure or ACK. A prepare failure or timeout follows the same activity and debt check before it can count as failed. |
+| `lionhub/src/lionhub/state/db.py::StateDB.delete_imported_session`, `lionhub/src/lionhub/state/codex_mirror.py::absorb_orchestrated_session`, `lionhub/src/lionhub/state/codex_mirror.py::absorb_orchestrated_backfill`, `lionhub/src/lionhub/serve/mirror.py::_mirror_one_codex`, `lionhub/src/lionhub/serve/mirror.py::_absorb_backfill` | Apply retention to the imported session and its dependencies. Report debt deferral separately, keep both per-file IDs pending when needed, and keep the backfill retryable. |
 | `lionhub/src/lionhub/serve/cli/state.py::_prune` and its `retained_tables`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Protect the complete resolving links: `plays.session_id`, invocation-to-sessions, and schedule-run-to-invocation-to-sessions. Archive history for removed entities. If their own entity survives, disposition history that loses its last resolver under the retention policy. |
-| `lionagi/state/db.py::StateDB.delete_schedule`, `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted`, and `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` | Take the retention locks, lock the parent schedule, then check debt for all child schedule runs. Report a refused cascade separately from a missing schedule. |
+| `lionhub/src/lionhub/state/db.py::StateDB.delete_schedule`, `lionhub/src/lionhub/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted`, and `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` | Take the retention locks, lock the parent schedule, then check debt for all child schedule runs. Report a refused cascade separately from a missing schedule. |
 
 Continue returning exact transaction-snapshot integers for the existing operator mutation.
 For now-reactivation, one pre-change logical debt count gives both `candidate_before` and
@@ -1042,9 +1042,9 @@ Ineligible and unclassified rows remain distinct and have no epoch-based eligibi
 In the native migration, backfill eligible history to epoch zero and validate a constraint
 that requires a non-null epoch whenever `delivery_eligible IS TRUE`. Both native schema
 builders and the migration enforce it
-(`lionagi/state/schema.sql`, `lionagi/state/schema_meta.py`).
-In `lionagi/state/db.py::StateDB._apply_schema`, after
-`lionagi/state/db.py::StateDB._classify_terminal_delivery_history_once`, backfill
+(`lionhub/src/lionhub/state/schema.sql`, `lionhub/src/lionhub/state/schema_meta.py`).
+In `lionhub/src/lionhub/state/db.py::StateDB._apply_schema`, after
+`lionhub/src/lionhub/state/db.py::StateDB._classify_terminal_delivery_history_once`, backfill
 the eligible rows before enforcing the constraint. On migrated SQLite stores,
 install and validate INSERT and UPDATE triggers that reject eligible rows
 without an epoch before stamping the new version. PostgreSQL validates the
@@ -1055,14 +1055,14 @@ enrollment operate only against the validated schema. Keep compatibility-mode re
 Require an offline, coordinated cutover for the native store. Quiesce and close handles in
 every old producer, consumer, daemon and client using the store, and stop old instances from
 reopening it during the migration. The open-time version check cannot exclude a handle that
-is already open (`lionagi/state/db.py::StateDB._open`). Fresh native writable
+is already open (`lionhub/src/lionhub/state/db.py::StateDB._open`). Fresh native writable
 opens compare versions. True read-only SQLite file opens skip the general
 open-time check because they perform no writes
-(`lionagi/state/db.py::read_only_open_supported`). Debt counts, consumer lists
+(`lionhub/src/lionhub/state/db.py::read_only_open_supported`). Debt counts, consumer lists
 and previews, and exact and paged replay must check the supported schema
 version in the same read snapshot that supplies the result
-(`lionagi/state/lifecycle/deliveries.py::_check_schema`,
-`lionagi/state/lifecycle/consumer_inspection.py::list_consumers`). Refuse an
+(`lionhub/src/lionhub/state/lifecycle/deliveries.py::_check_schema`,
+`lionhub/src/lionhub/state/lifecycle/consumer_inspection.py::list_consumers`). Refuse an
 unsupported version through the existing schema and compatibility error
 paths before interpreting eligibility, the cutoff or the resolver disposition.
 A newer version uses the existing `SchemaTooNewError` contract. Binaries
@@ -1094,11 +1094,11 @@ replay reports these cases as post-acknowledgment diagnostics
 Stabilize every surviving link used to prove resolution through the write
 boundary. Serialize link creation, reparenting, detachment and project changes
 with that check, or retain affected candidates whose survival cannot be
-proved. This includes `lionagi/state/db.py::StateDB.attach_session_invocation`,
-`lionagi/state/db.py::StateDB.update_session`,
-`lionagi/state/db.py::StateDB.set_session_provenance`,
-`lionagi/state/db.py::StateDB.update_play` and
-`lionagi/state/db.py::StateDB.update_schedule_run`.
+proved. This includes `lionhub/src/lionhub/state/db.py::StateDB.attach_session_invocation`,
+`lionhub/src/lionhub/state/db.py::StateDB.update_session`,
+`lionhub/src/lionhub/state/db.py::StateDB.set_session_provenance`,
+`lionhub/src/lionhub/state/db.py::StateDB.update_play` and
+`lionhub/src/lionhub/state/db.py::StateDB.update_schedule_run`.
 Use the same debt and resolver checks for detachments through those writers.
 
 Keep existing terminal-state and worker-ownership guards. The CLI's
@@ -1117,7 +1117,7 @@ remove an owed child or a last resolver protected by this rule, refuse the
 delete for the entire schedule and report the refusal separately from a
 missing schedule. Keep the schedule row locked from the child check through
 delete. The schema's schedule-run cascade otherwise removes those runs with
-the parent schedule (`lionagi/state/schema.sql`). Refuse the entire delete
+the parent schedule (`lionhub/src/lionhub/state/schema.sql`). Refuse the entire delete
 if a surviving dependency would prevent it. Report the dependency refusal
 through the same result boundary before a partial deletion or receipt.
 
@@ -1168,17 +1168,17 @@ retention rules under the same fence:
 | Entity removal path | History behavior before this amendment |
 | --- | --- |
 | `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_session_chunk`, shared by explicit `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_terminal_sessions_by_id` and age-based `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::prune_old_data` | Deletes session transitions with no ACK children. An ACK referencing a transition prevents its deletion and rolls back the chunk. The optional ZIP covers other session dependencies. Add ACK deletion before transition deletion, with the own-history archive and receipt. |
-| `lionagi/state/db.py::StateDB.delete_imported_session` | Deletes the imported session's ACKs and transitions without an own-history archive or receipt. Add both for mirror absorption. |
+| `lionhub/src/lionhub/state/db.py::StateDB.delete_imported_session` | Deletes the imported session's ACKs and transitions without an own-history archive or receipt. Add both for mirror absorption. |
 | `lionhub/src/lionhub/serve/cli/state.py::_prune` and `lionhub/src/lionhub/orchestration/scheduler/db_maintenance.py::_prune_run_chunk` | Delete sessions or runs and leave their own transition history in the store. Add ACK and transition cleanup together with the archive and receipt. For run pruning, removing the run's own transitions and ACKs is new behavior. |
-| `lionagi/state/db.py::StateDB.delete_schedule` and `lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
+| `lionhub/src/lionhub/state/db.py::StateDB.delete_schedule` and `lionhub/src/lionhub/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.transition` to `deleted` | Both delete the schedule and cascade its runs. Studio's `lionhub/src/lionhub/serve/daemon/services/schedules.py::delete_schedule` delegates to StateDB. Polymorphic history has no entity foreign key, so the cascade leaves the schedule and run history behind. Archive and receipt the previous history and ACKs for the schedule and every deleted run. |
 
 Keep the new `deleted` audit event in the live schedule history. It records
 the deletion and remains the row that prevents reuse of the definition's ID
-(`lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.record_change`,
-`lionagi/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.assert_id_available`).
+(`lionhub/src/lionhub/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.record_change`,
+`lionhub/src/lionhub/state/lifecycle/schedules.py::ScheduleLifecycleAdapter.assert_id_available`).
 
 ACKs reference transitions without a cascade in
-`lionagi/state/schema.sql`. Neither foreign-key entity cascades nor consumer
+`lionhub/src/lionhub/state/schema.sql`. Neither foreign-key entity cascades nor consumer
 retirement remove ACKs implicitly. Dispatch retention removes outbox rows,
 and `lionhub/src/lionhub/orchestration/scheduler/retention_archive.py::read_archive_chunk`
 only decodes a ZIP. Those paths remove no own lifecycle history.
@@ -1217,9 +1217,9 @@ receipt that names it is a recovery error. This order also makes
 the reverse entity locking against `insert_messages` retryable.
 
 Mirror reconciliation can add eligible events to imported sessions through
-`lionagi/state/_mirror_common.py::reconcile_status`. Absorption checks debt
+`lionhub/src/lionhub/state/_mirror_common.py::reconcile_status`. Absorption checks debt
 and dependencies before detaching or deleting any row. In
-`lionagi/state/db.py::StateDB.delete_imported_session`, a debt deferral is
+`lionhub/src/lionhub/state/db.py::StateDB.delete_imported_session`, a debt deferral is
 distinct from deleted, absent or ineligible. Persist both candidate session
 IDs for a debt-deferred rollout before leaving it pending, including a
 pre-header ID derived from the file stem. While pending, exclude the rollout
@@ -1244,15 +1244,15 @@ and worker-protection outcomes retain their own handling.
   establishes no fixed wall-time bound.
 - **Producer budgets also apply while waiting on the fence.** At the source pin,
   cancel and quarantine use 5 s
-  (`lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.guarded_cancel_session`,
-  `lionagi/state/lifecycle/service.py::SQLAlchemyLifecycleService.guarded_quarantine_disposition`).
+  (`lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.guarded_cancel_session`,
+  `lionhub/src/lionhub/state/lifecycle/service.py::SQLAlchemyLifecycleService.guarded_quarantine_disposition`).
   Import absorption uses a 250 ms PostgreSQL lock timeout and its proposed
   retry budget permits at most three attempts, subject to the original deadline
-  (`lionagi/state/db.py::StateDB.delete_imported_session`). The Studio
+  (`lionhub/src/lionhub/state/db.py::StateDB.delete_imported_session`). The Studio
   readiness probe defaults to 1,000 ms for its SQLite read
   (`lionhub/src/lionhub/serve/daemon/services/admin.py::store_probe`). The reconciliation
   budget defaults to 10 s and is checked across pages
-  (`lionagi/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`,
+  (`lionhub/src/lionhub/state/lifecycle/reconciler.py::TerminalReconciler.run_pass`,
   `lionhub/src/lionhub/orchestration/scheduler/settings.py`).
   Moving external archive I/O shortens the retention write window on both
   backends. The already-active attachment path uses a shared fence on

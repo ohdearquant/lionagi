@@ -36,7 +36,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import sleep
-from lionagi.state.session_naming import resolve_display_name
 
 # The predicate lives in lionhub so the daemon's session routes can read it without this module.
 from lionhub.serve.daemon.services.control_consumers import (  # noqa: F401 -- preserve the compatibility import
@@ -46,6 +45,7 @@ from lionhub.serve.daemon.services.control_consumers import (  # noqa: F401 -- p
     session_has_control_consumer,
 )
 from lionhub.serve.daemon.services.redact import public_project, scrub_text
+from lionhub.state.session_naming import resolve_display_name
 
 from . import _common
 from .run_progress import resolve_run
@@ -181,7 +181,7 @@ def _admission_refusal(session: dict[str, Any], verb: str) -> str | None:
 
 
 async def _load_run(session_id: str) -> dict[str, Any] | None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(readonly=True) as db:
         row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -379,7 +379,7 @@ async def execute_run_control_command(
 ) -> dict[str, Any]:
     """Revalidate the approved target, then atomically enqueue its control."""
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     session_id, verb, payload, project = _validated_command(command, expected_verb=expected_verb)
     async with StateDB() as db:

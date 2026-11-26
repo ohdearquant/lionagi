@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 

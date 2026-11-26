@@ -19,7 +19,6 @@ from unicodedata import category
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi.ln import parse_duration
 from lionagi.ln.concurrency import sleep
-from lionagi.state.engine import mask_credentials
 from lionhub.orchestration.job import (
     EXIT_CODE_BY_STATUS,
     AmbiguousIdError,
@@ -30,6 +29,7 @@ from lionhub.orchestration.job import pid_alive as _pid_alive_int
 from lionhub.orchestration.project import detect_project
 from lionhub.orchestration.runs import _resolved_run_state_dir
 from lionhub.orchestration.schedule import parsing
+from lionhub.state.engine import mask_credentials
 
 __all__ = (
     "add_monitor_subparser",
@@ -488,19 +488,19 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
 
 def _is_unverifiable_quarantined(row: dict[str, Any]) -> bool:
     """Show a running row's disposition only while its recorded identity matches."""
-    from lionagi.state._quarantine_identity import is_current_quarantine
+    from lionhub.state._quarantine_identity import is_current_quarantine
 
     return is_current_quarantine(row)
 
 
 def _quarantine_label(row: dict[str, Any]) -> str | None:
-    from lionagi.state._quarantine_identity import _quarantine_status_label
+    from lionhub.state._quarantine_identity import _quarantine_status_label
 
     return _quarantine_status_label(row)
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     return {
         "id": sess["id"][:16],
@@ -547,7 +547,7 @@ def _invocation_kind(inv: dict[str, Any]) -> str:
 
 
 def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     return {
         "id": inv["id"][:16],
@@ -580,7 +580,7 @@ def _show_to_row(show: dict[str, Any]) -> dict[str, Any]:
 
 
 def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
-    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+    from lionhub.state.db import PLAY_TERMINAL_STATUSES
 
     return {
         "id": play["id"][:16],
@@ -623,7 +623,7 @@ def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> l
 
 
 async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
@@ -785,7 +785,7 @@ def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
 
 
 async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
@@ -882,7 +882,7 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
 
 
 async def _detail_show(db: Any, show: dict[str, Any]) -> str:
-    from lionagi.state.db import PLAY_ACTIVE_STATUSES, PLAY_TERMINAL_STATUSES
+    from lionhub.state.db import PLAY_ACTIVE_STATUSES, PLAY_TERMINAL_STATUSES
 
     lines: list[str] = []
     lines.append(_bold(f"SHOW  {show['id']}"))
@@ -931,7 +931,7 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
 
 
 async def _detail_play(db: Any, play: dict[str, Any]) -> str:
-    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+    from lionhub.state.db import PLAY_TERMINAL_STATUSES
 
     lines: list[str] = []
     lines.append(_bold(f"PLAY  {play['id']}"))
@@ -1165,7 +1165,7 @@ async def _run_table(
     project: str | None,
 ) -> str:
     try:
-        from lionagi.state.db import StateDB, state_db_known_absent
+        from lionhub.state.db import StateDB, state_db_known_absent
 
         if state_db_known_absent():
             # The slots live outside the store, so they are shown without one.
@@ -1186,7 +1186,7 @@ async def _run_table(
 
 async def _run_detail(entity_id: str) -> str:
     try:
-        from lionagi.state.db import StateDB, state_db_known_absent
+        from lionhub.state.db import StateDB, state_db_known_absent
 
         if state_db_known_absent():
             return _red(f"state.db not found — cannot look up {entity_id!r}")
@@ -1340,7 +1340,7 @@ async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
 
 
 def _format_session_wait_line(row: dict[str, Any]) -> str:
-    from lionagi.state.session_naming import resolve_display_name
+    from lionhub.state.session_naming import resolve_display_name
 
     name = resolve_display_name(row)
     artifacts = row.get("artifacts_path") or "-"
@@ -1350,8 +1350,8 @@ def _format_session_wait_line(row: dict[str, Any]) -> str:
 async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, Any]:
     """Reconcile a profile session's status against its linked engine session.
     See docs/internals/cli.md for the CAS/terminal-guard contract (ADR-0035)."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
+    from lionhub.state.reasons import RunReasons
 
     if row["status"] in SESSION_TERMINAL_STATUSES:
         return row
@@ -1412,7 +1412,7 @@ async def _poll_pending_sessions_once(
     done: list[dict[str, Any]],
 ) -> None:
     """Session analogue of _poll_pending_once: no schedule chain, just terminal-status polling."""
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     for run_id in list(pending):
         row = await db.get_session(run_id)
@@ -1496,8 +1496,8 @@ async def _poll_pending_once(
     ones. See docs/internals/cli.md for the cancellation-atomicity contract."""
     # Shared schema vocabulary — a hand-listed subset here once omitted
     # timed_out, leaving timed-out occurrences waiting forever.
-    from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
     from lionhub.orchestration.console import log_error
+    from lionhub.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 
     for run_id in list(pending):
         row = await db.get_schedule_run(run_id)
@@ -1576,7 +1576,7 @@ def _recorded_selection(row: dict[str, Any], *, warned_runs: set[str]) -> str | 
         except (ValueError, RecursionError):
             refs = None
 
-    from lionagi.state.lifecycle.models import _chain_decision_selection, _is_chain_decision_ref
+    from lionhub.state.lifecycle.models import _chain_decision_selection, _is_chain_decision_ref
 
     selections: set[str] = set()
     problems: set[str] = set()
@@ -1731,8 +1731,8 @@ def _dispatch_wait(
     """Block until every id in `ids` reaches a terminal schedule_run status;
     see docs/internals/cli.md for chain-following and max_wait semantics."""
     from lionagi.ln.concurrency import SigtermInterrupt, run_async, temporary_signal_handlers
-    from lionagi.state.db import StateDB, state_db_known_absent
     from lionhub.orchestration.console import log_error
+    from lionhub.state.db import StateDB, state_db_known_absent
 
     from .status import EXIT_RUNNING, EXIT_UNKNOWN
 
@@ -2174,7 +2174,7 @@ _ENTITY_BOOL_FIELDS = frozenset({"ended_at_is_approximate"})
 
 
 def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     from .machine import optional_flag
 

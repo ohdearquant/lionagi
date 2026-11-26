@@ -2118,7 +2118,7 @@ def agent_profile_cwd(tmp_path, monkeypatch):
 @pytest.fixture
 def temp_state_db(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 
@@ -2182,8 +2182,8 @@ def test_schedule_validate_missing_file_exits_nonzero(capsys):
 def test_schedule_apply_dry_run_never_writes(agent_profile_cwd, temp_state_db, capsys):
     import asyncio
 
-    from lionagi.state.db import StateDB
     from lionhub.serve.cli.schedule import run_schedule
+    from lionhub.state.db import StateDB
 
     manifest = _write_manifest(agent_profile_cwd)
     args = _parse_schedule_args(["apply", str(manifest), "--dry-run"])
@@ -2312,7 +2312,7 @@ def test_a_global_set_labels_a_plan_error_with_its_prefix_once(agent_profile_cwd
 def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
     import asyncio
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     profile_name = next(
         path.stem

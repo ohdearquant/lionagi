@@ -12,18 +12,18 @@ import lionhub.orchestration.scheduler.liveness as scheduler_liveness
 
 pytest.importorskip("fastapi")
 
-from lionagi.state.db import StateDB
-from lionagi.state.health import SessionHealth
-from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
-from lionagi.state.lifecycle.deliveries import reconcile_unacknowledged, register_consumer
+from lionhub.state.db import StateDB
+from lionhub.state.health import SessionHealth
+from lionhub.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+from lionhub.state.lifecycle.deliveries import reconcile_unacknowledged, register_consumer
 from tests._stale_session_seed import _seed_stale_session
 from tests.apps_studio_server._helpers import run_async
 
 
 def test_admin_committed_transition_is_pushed_and_replayable(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
-    import lionagi.state.health as health_mod
     import lionhub.serve.daemon.services.admin as admin
+    import lionhub.state.db as state_db_mod
+    import lionhub.state.health as health_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())

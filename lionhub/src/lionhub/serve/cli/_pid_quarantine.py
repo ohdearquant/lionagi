@@ -4,7 +4,7 @@
 
 from typing import Any
 
-from lionagi.state._quarantine_identity import quarantine_identity as _quarantine_identity
+from lionhub.state._quarantine_identity import quarantine_identity as _quarantine_identity
 
 
 def quarantine_identity(row: dict[str, Any]) -> tuple[int, float | None, str | None] | None:

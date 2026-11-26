@@ -23,7 +23,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):
@@ -79,9 +79,9 @@ _SOME_PLAN = [{"agent_id": "worker-1", "assignee": "worker", "dep_indices": []}]
 
 @pytest.fixture
 def flow_resume_harness(tmp_path: Path, monkeypatch: Any):
-    import lionagi.state.db as state_db_mod
     import lionhub.orchestration.flow.checkpoint as ckmod
     import lionhub.serve.daemon.services.run_resume as resume_svc
+    import lionhub.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)

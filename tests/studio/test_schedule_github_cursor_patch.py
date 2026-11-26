@@ -261,7 +261,7 @@ def test_update_rejects_an_impossible_cursor_before_any_write():
 
 # The interleaving: an operator PATCH vs an in-flight poll, against a real store
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 from tests._scheduler_claims import claim_and_advance
 
 
@@ -430,7 +430,7 @@ def test_guarded_statement_compiles_on_both_dialects():
     """
     from sqlalchemy.dialects import postgresql, sqlite
 
-    from lionagi.state.db import StateDB as _StateDB
+    from lionhub.state.db import StateDB as _StateDB
 
     stmt, _params = _StateDB._build_update_schedule_stmt(
         "sid",

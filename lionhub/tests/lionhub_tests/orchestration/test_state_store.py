@@ -11,14 +11,14 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from lionagi.state import engine as eng
-from lionagi.state.db import StateDB
 from lionhub.orchestration.state_store import (
     StoreNotAddressableError,
     require_file_store,
     store_exists,
     store_path,
 )
+from lionhub.state import engine as eng
+from lionhub.state.db import StateDB
 
 from ._test_support_state_store import (
     ENV,
@@ -75,8 +75,8 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_busy_timeout(self, tmp_path):
         """open_db() must set a busy_timeout, and the shared one."""
-        from lionagi.state.engine import SQLITE_BUSY_TIMEOUT_MS
         from lionhub.orchestration.state_store import open_db
+        from lionhub.state.engine import SQLITE_BUSY_TIMEOUT_MS
 
         db_path = str(tmp_path / "test.db")
 
@@ -101,8 +101,8 @@ class TestOpenDb:
         happens to be spelled the same as the constant's current value.
         """
         pytest.importorskip("sqlalchemy", reason="sqlalchemy not installed")
-        from lionagi.state.engine import make_engine
         from lionhub.orchestration.state_store import open_db
+        from lionhub.state.engine import make_engine
 
         db_path = tmp_path / "test.db"
 

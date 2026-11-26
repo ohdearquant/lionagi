@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+from lionhub.state.message_retry import MessagePersistRetryQueue, PendingMessageEvent
 
 
 class _FakeDB:

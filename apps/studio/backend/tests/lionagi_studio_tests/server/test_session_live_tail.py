@@ -20,7 +20,7 @@ import pytest_asyncio
 async def live_backend(tmp_path, monkeypatch):
     import aiosqlite
 
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
     from lionhub.serve.daemon.services import _session_tail, sessions, signals
 
     path = tmp_path / "live.sqlite3"
@@ -36,7 +36,7 @@ async def live_backend(tmp_path, monkeypatch):
 
 
 async def seed(live_backend, count=0, *, terminal=False):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     _registry, path, url, _sessions, _signals, _tail, aiosqlite = live_backend
     ids = [f"{index:032x}" for index in range(1, count + 1)]
@@ -101,7 +101,7 @@ async def seed(live_backend, count=0, *, terminal=False):
 
 
 async def append(live_backend, ids, *, timestamp=1.0, progression="branch-pool"):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(url=live_backend[2]) as db:
         await db.insert_messages(
@@ -146,7 +146,7 @@ async def test_live_bootstrap_is_optional_and_creates_no_reader(live_backend):
 
 
 async def test_same_snapshot_marks_and_backdated_handoff(live_backend, monkeypatch):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     await seed(live_backend, 1)
     registry, _path, url, sessions, *_ = live_backend
@@ -181,7 +181,7 @@ async def test_same_snapshot_marks_and_backdated_handoff(live_backend, monkeypat
 
 
 async def test_signal_pages_pin_upper_cut_and_preserve_legacy_after_semantics(live_backend):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     await seed(live_backend, 501)
     _detail, mark = await bootstrap(live_backend)
@@ -207,7 +207,7 @@ async def test_signal_pages_pin_upper_cut_and_preserve_legacy_after_semantics(li
 
 
 async def test_empty_cut_observes_a_new_branch_without_replay(live_backend):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     await seed(live_backend)
     _detail, mark = await bootstrap(live_backend)
@@ -379,7 +379,7 @@ async def test_shared_resource_has_no_transaction_or_capability_probe_at_idle(
 async def test_final_same_connection_fence_retries_a_commit_before_decision(
     live_backend, monkeypatch
 ):
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     await seed(live_backend, terminal=True)
     registry, _path, url, _sessions, _signals, tail, _sqlite = live_backend
@@ -632,7 +632,7 @@ async def test_live_modes_use_the_existing_bearer_boundary(
 
 
 async def test_signal_prefix_http_refuses_non_file_store(live_backend, live_http, monkeypatch):
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     await seed(live_backend)
     url = "sqlite+aiosqlite:///:memory:"

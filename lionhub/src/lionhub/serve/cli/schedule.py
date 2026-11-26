@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
-from lionagi._log_channels import log_error, warn
-from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 from lionhub.orchestration.console import _refused_inside_an_agent
 from lionhub.orchestration.schedule.parsing import (
     _base_url,
@@ -29,6 +27,8 @@ from lionhub.orchestration.schedule.parsing import (
     build_quick_create_parser,
 )
 from lionhub.serve.cli.studio_client import studio_request, with_unauthorized_hint
+from lionhub.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+from lionhub.state.log_channels import log_error, warn
 
 # --- `li schedule` — manage lionagi Studio schedules from the CLI ---
 
@@ -438,12 +438,12 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
 
 
 def _cmd_apply_set(args: argparse.Namespace) -> int:
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.schedule.declaration import (
         ScheduleSetError,
         apply_schedule_set,
         build_plan,
     )
+    from lionhub.state.db import StateDB
 
     doc, manifest_dir = _load_schedule_set_doc(args.file)
     if doc is None:
@@ -548,7 +548,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
     per distinct project when the export spans more than one. Read-only:
     never opens a write transaction against the database. Exit code 2 (not
     0/1) when any row was BLOCKED -- see EXIT_EXPORT_PARTIAL."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.schedule.export import (
         build_managed_export_document,
         convert_legacy_rows,
@@ -557,6 +556,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         is_legacy_row,
         is_managed_row,
     )
+    from lionhub.state.db import StateDB
 
     output_path = Path(args.output).resolve() if args.output else None
     manifest_dir = output_path.parent if output_path else Path.cwd()
@@ -745,13 +745,13 @@ def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
         return 1
     from pydantic import ValidationError
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.schedule.declaration import (
         Execution,
         ScheduleMember,
         ScheduleSetError,
         create_quick_schedule,
     )
+    from lionhub.state.db import StateDB
 
     parser = build_quick_create_parser(kind)
     command_argv: list[str] = []

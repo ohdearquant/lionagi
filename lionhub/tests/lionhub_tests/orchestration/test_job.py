@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.state.db import StateDB
 from lionhub.orchestration.job import (
     EXIT_CODE_BY_STATUS,
     EXIT_CODE_ENVIRONMENT_ERROR,
@@ -23,6 +22,7 @@ from lionhub.orchestration.job import (
     run_was_allocated,
     validate_cwd_exists,
 )
+from lionhub.state.db import StateDB
 from tests._id_resolution_test_support import (
     FIRST,
     SECOND,

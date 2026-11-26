@@ -13,7 +13,7 @@ def test_the_core_does_not_import_tools():
     files = core_files()
     assert ROOT / "lionagi" / "__init__.py" in files
     assert ROOT / "lionagi" / "_auto.py" in files
-    assert ROOT / "lionagi" / "state" / "db.py" in files
+    assert ROOT / "lionagi" / "session" / "branch.py" in files
     hits = [hit for path in files for hit in package_imports(path, "tools")]
     assert hits == [], hits
 
@@ -90,6 +90,45 @@ def test_relative_imports_use_the_containing_package(relative: str):
         "from .tools import base" if path.parent.name == "lionagi" else "from ..tools import base"
     )
     assert package_imports(path, "tools", source) == [f"{relative}:1: lionagi.tools"]
+
+
+# Modules that left the core for lionhub in 0.39.0, by their old and their new names. The core
+# keeps no import of either: the old names resolve only through the moved-module table.
+_STATE_MOVE = (
+    ("lionagi", "state"),
+    ("lionagi", "_log_channels"),
+    ("lionagi", "_cli_worker_context"),
+    ("lionagi", "hooks._message_retry"),
+    ("lionagi", "hooks._persistence_handlers"),
+    ("lionhub", "state"),
+    ("lionhub", "orchestration.run_persistence"),
+)
+
+
+def test_the_core_imports_nothing_that_moved_out_with_the_state_store():
+    package = ROOT / "lionagi"
+    files = [path for path in sorted(package.rglob("*.py")) if path.name != "_moved.py"]
+    assert package / "hooks" / "builtins.py" in files
+    assert package / "session" / "observer.py" in files
+    hits = [
+        hit
+        for path in files
+        for top, target in _STATE_MOVE
+        for hit in package_imports(path, target, top=top)
+    ]
+    assert hits == [], hits
+
+
+@pytest.mark.parametrize(("top", "target"), _STATE_MOVE)
+def test_the_state_move_check_sees_each_moved_name(top: str, target: str):
+    probe = ROOT / "lionagi" / "session" / "_probe.py"
+    source = (
+        f"import {top}.{target}\n"
+        f"importlib.import_module('{top}.{target}')\n"
+        f"WARN = '{top}.{target}'\n"
+    )
+    hits = package_imports(probe, target, source, top=top)
+    assert [int(hit.split(":")[1]) for hit in hits] == [1, 2], hits
 
 
 def test_the_import_check_detects_the_original_branch_dependency():

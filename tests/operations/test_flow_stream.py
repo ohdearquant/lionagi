@@ -238,7 +238,7 @@ def _driver_error_session(*, refusal: bool):
     cancelled by the task group, so whatever the stream's error path settles it to is the
     only terminal it gets.
     """
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     async def first(**kw):
         return "first"
@@ -269,7 +269,7 @@ async def test_an_ordinary_driver_error_leaves_announced_nodes_queued():
     which is the signal it held before the refusal path's sweep existed."""
     from lionagi.ln.concurrency import BaseExceptionGroup
     from lionagi.operations.flow import ReactiveExecutor
-    from lionagi.state.compat import refusal_in
+    from lionhub.state.compat import refusal_in
 
     session, graph, _node_a, node_b, run_tracked = _driver_error_session(refusal=False)
     executor = ReactiveExecutor(session=session, graph=graph)
@@ -291,7 +291,7 @@ async def test_a_refusal_from_the_driver_settles_announced_nodes_and_raises_itse
     """A refusal from the driver settles every announced unfinished node with a terminal
     signal before it is raised as itself (ADR-0128 D6)."""
     from lionagi.operations.flow import ReactiveExecutor
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionhub.state.compat import StateCompatibilityRefused
 
     session, graph, node_a, node_b, run_tracked = _driver_error_session(refusal=True)
     executor = ReactiveExecutor(session=session, graph=graph)

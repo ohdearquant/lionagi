@@ -18,15 +18,6 @@ from sqlalchemy.exc import OperationalError as _SAOperationalError
 import lionhub.orchestration.scheduler.liveness as _liveness
 from lionagi.ln import now_utc
 from lionagi.ln.concurrency import run_sync as _run_sync
-from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
-from lionagi.state.db import state_db_known_absent
-from lionagi.state.lifecycle.models import ActorRecord, ReasonRecord, TransitionCommand
-from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
-from lionagi.state.session_naming import resolve_display_name
-from lionagi.state.terminal_eligibility import (
-    has_delivery_eligibility_column,
-    is_delivery_eligible,
-)
 from lionhub.orchestration.scheduler.liveness import (
     _BUDGET_CHECK_INTERVAL,  # noqa: F401 -- preserve the compatibility import
     _PHANTOM_REASON_CODES,  # noqa: F401 -- preserve the compatibility import
@@ -67,6 +58,15 @@ from lionhub.orchestration.state_store import open_db as _open_db
 from lionhub.orchestration.state_store import require_file_store, store_exists, store_path
 from lionhub.serve.daemon.routes import studio_route
 from lionhub.serve.daemon.services._path_safety import public_path
+from lionhub.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
+from lionhub.state.db import state_db_known_absent
+from lionhub.state.lifecycle.models import ActorRecord, ReasonRecord, TransitionCommand
+from lionhub.state.reasons import RunReasons, SessionReasons, validate_reason_code
+from lionhub.state.session_naming import resolve_display_name
+from lionhub.state.terminal_eligibility import (
+    has_delivery_eligibility_column,
+    is_delivery_eligible,
+)
 
 # Fallback mapping for deprecated 'reason' field without reason_code.
 _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
@@ -276,12 +276,12 @@ async def health_report() -> dict[str, Any]:
     """Composite session health snapshot for the admin console."""
     from collections import Counter
 
-    from lionagi.state.health import (
+    from lionhub.orchestration.schedule.timing import scheduler_timezone_report
+    from lionhub.orchestration.state_store import _user_label_selection
+    from lionhub.state.health import (
         SessionHealth,
         classify_session_health,
     )
-    from lionhub.orchestration.schedule.timing import scheduler_timezone_report
-    from lionhub.orchestration.state_store import _user_label_selection
 
     require_file_store()
     if not store_exists():
@@ -461,12 +461,12 @@ async def health_report() -> dict[str, Any]:
 def _resolve_session_health_reason_code(
     *,
     phantom_reason: str | None,
-    health,  # SessionHealth enum from lionagi.state.health
+    health,  # SessionHealth enum from lionhub.state.health
 ) -> str | None:
     """Return the most-specific health-derived reason code, or None."""
     if phantom_reason is not None:
         return _PHANTOM_REASON_CODES.get(phantom_reason)
-    from lionagi.state.health import SessionHealth
+    from lionhub.state.health import SessionHealth
 
     if health == SessionHealth.STALE:
         return SessionReasons.HEALTH_STALE_NO_HEARTBEAT
@@ -488,7 +488,7 @@ async def transition_sessions(
     legacy_reason: str | None = None,
 ) -> dict[str, Any]:
     """Transition running sessions to a terminal status with an audit-log entry."""
-    from lionagi.state.reasons import validate_reason_code
+    from lionhub.state.reasons import validate_reason_code
 
     if target_status not in _ADMIN_TRANSITION_TARGETS:
         raise ValueError(
@@ -504,8 +504,8 @@ async def transition_sessions(
     if state_db_known_absent():
         return {"transitioned": [], "skipped": session_ids, "event_id": None}
 
-    from lionagi.state.db import StateDB
-    from lionagi.state.health import SessionHealth, classify_session_health
+    from lionhub.state.db import StateDB
+    from lionhub.state.health import SessionHealth, classify_session_health
 
     transitioned: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -744,7 +744,7 @@ async def list_admin_events(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         return await db.list_admin_events(action=action, target_id=target_id, limit=limit)
@@ -763,7 +763,7 @@ async def prune_sessions(session_ids: list[str]) -> int:
     from lionhub.orchestration.scheduler.db_maintenance import prune_terminal_sessions_by_id
 
     pruned = await prune_terminal_sessions_by_id(unique_ids)
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as sdb:
         await sdb.insert_admin_event(
@@ -777,8 +777,8 @@ async def prune_sessions(session_ids: list[str]) -> int:
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     """Transition phantom sessions to 'failed' via the sanctioned status path;
     rows are preserved so reason history and artifacts stay inspectable."""
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.scheduler.lifecycle import reap_phantom_sessions_detailed
+    from lionhub.state.db import StateDB
 
     count, session_ids = await reap_phantom_sessions_detailed(
         stale_hours=stale_hours, actor="admin_prune"

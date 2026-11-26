@@ -96,9 +96,9 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     monkeypatch.delenv("LIONAGI_LOGINS_DIR", raising=False)
     monkeypatch.setattr("lionagi._paths.LIONAGI_HOME", home / ".lionagi")
-    # The store path is fixed when lionagi.state.db is first imported, under whichever HOME
+    # The store path is fixed when lionhub.state.db is first imported, under whichever HOME
     # that was; the reconnect socket directory the deny list names sits beside it.
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", home / ".lionagi" / "state.db")
     agents = home / ".lionagi" / "agents"
     agents.mkdir(parents=True)
     for name in GLOBAL_PROFILES:

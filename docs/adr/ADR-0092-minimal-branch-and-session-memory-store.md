@@ -526,5 +526,5 @@ Primary code anchors: `lionagi/protocols/memory.py`;
 `lionagi/protocols/generic/progression.py`; `lionagi/protocols/types.py`;
 `lionagi/__init__.py`; `lionagi/session/branch.py`; `lionagi/session/session.py`;
 `lionagi/config.py`; `lionagi/protocols/graph/node.py`;
-`lionagi/protocols/messages/message.py`; `lionagi/state/schema_meta.py`;
-`lionagi/state/db.py`.
+`lionagi/protocols/messages/message.py`; `lionhub/src/lionhub/state/schema_meta.py`;
+`lionhub/src/lionhub/state/db.py`.

@@ -864,9 +864,9 @@ async def test_the_switched_run_is_handed_no_mcp_server(leg, subscription, monke
 async def test_the_session_rows_name_the_route_that_ran(leg, subscription, monkeypatch, tmp_path):
     import lionhub.orchestration.runs as runs_mod
     import lionhub.serve.cli.agent as agent_mod
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     contexts = []
 
     async def setup(branch, **kw):

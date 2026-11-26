@@ -14,7 +14,7 @@ today.
 
 **The exception's message is not carried, and that is a decision rather than an
 omission.** Provider messages quote whatever the provider said, which routinely
-includes an API key. The credential masker in ``lionagi.state.engine`` closes the
+includes an API key. The credential masker in ``lionhub.state.engine`` closes the
 ``user:secret@`` shape and documents itself as a backstop, so it would not catch
 a bare token. The message is already in the run's console log, which is one
 channel with whatever exposure it already has. Copying it into the job record —

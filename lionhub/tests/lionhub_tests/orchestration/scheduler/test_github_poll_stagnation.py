@@ -14,12 +14,12 @@ import pytest
 import pytest_asyncio
 
 import lionhub.orchestration.scheduler.settings as scheduler_settings
-from lionagi.state.db import StateDB
 from lionhub.orchestration.scheduler import github as github_module
 from lionhub.orchestration.scheduler import subprocess as subprocess_module
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
 from lionhub.orchestration.scheduler.scheduler_state import _DBSchedulerStateService
 from lionhub.serve.daemon.services.schedules import compute_schedule_health
+from lionhub.state.db import StateDB
 
 _COUNTER = "poller_consecutive_cap_no_dispatch"
 _NOW = 2_000_000_000.0

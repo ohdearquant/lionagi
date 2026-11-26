@@ -216,7 +216,7 @@ def validate_flow_spec_fields(spec: dict[str, Any]) -> str | None:
         if artifacts is None:
             return "spec field 'artifacts' must be a dict, got NoneType"
         try:
-            from lionagi.state.artifact_verifier import (
+            from lionhub.state.artifact_verifier import (
                 validate_artifact_contract,
                 warn_unknown_artifact_keys,
             )

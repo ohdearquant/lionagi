@@ -31,12 +31,6 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
             seed_names.update(
                 alias.asname or alias.name for alias in node.names if alias.name == "CliSeed"
             )
-    logger_names = {
-        "lionagi.cli.progress",
-        "lionagi.cli.hint",
-        "lionagi.cli.warn",
-        "lionagi.cli.error",
-    }
     logger_arguments = {
         id(node.args[0])
         for node in ast.walk(tree)
@@ -55,9 +49,7 @@ def _core_catalog_references(path: Path, source: str) -> list[tuple[int, str]]:
                 hits.append((node.lineno, "CliSeed"))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
-            if id(node) in logger_arguments or (
-                path == CORE / "_log_channels.py" and value in logger_names
-            ):
+            if id(node) in logger_arguments:
                 continue
             # The core keeps lazy forwards to the catalog's public functions for 0.x
             # callers; they name the catalog, not a command module.
@@ -102,7 +94,8 @@ def test_core_catalog_guard_sees_construction_and_target_literals():
     )
     hits = _core_catalog_references(probe, source)
     assert sorted(line for line, _ in hits) == [2, 2, 3, 4, 4]
-    assert _core_catalog_references(CORE / "_log_channels.py", "name = 'lionagi.cli.warn'") == []
+    # The output channels live in the hub now, so a channel name literal in core is a hit.
+    assert _core_catalog_references(probe, "name = 'lionagi.cli.warn'") == [(1, "lionagi.cli.warn")]
     assert _core_catalog_references(probe, "logging.getLogger('lionagi.cli')") == []
     assert _core_catalog_references(probe, "target = 'lionagi.cli'") == [(1, "lionagi.cli")]
     assert _core_catalog_references(probe, "target = 'lionhub.serve.cli'") == [

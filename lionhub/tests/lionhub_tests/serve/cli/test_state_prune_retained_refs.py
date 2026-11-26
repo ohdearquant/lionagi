@@ -13,8 +13,8 @@ from pathlib import Path
 import anyio
 import pytest
 
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.state import _prune, add_state_subparser, run_state
+from lionhub.state.db import StateDB
 
 TABLES = ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals")
 
@@ -23,7 +23,7 @@ TABLES = ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals")
 def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "state.db"
     monkeypatch.delenv("LIONAGI_STATE_DB_URL", raising=False)
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", path)
     return path
 
 

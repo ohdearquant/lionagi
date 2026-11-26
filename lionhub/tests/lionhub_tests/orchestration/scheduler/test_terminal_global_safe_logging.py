@@ -12,9 +12,9 @@ import subprocess
 
 import pytest
 
-from lionagi.state.lifecycle import notify_settings, settings_delivery
-from lionagi.state.lifecycle.reconciler import DeliveryOutcome
 from lionhub.orchestration.scheduler.terminal_reconciliation import prepare_global_settings_delivery
+from lionhub.state.lifecycle import notify_settings, settings_delivery
+from lionhub.state.lifecycle.reconciler import DeliveryOutcome
 
 
 @pytest.fixture(autouse=True)
@@ -175,10 +175,10 @@ async def test_python_execution_exception_has_no_payload_in_durable_log(
 async def test_exec_cleanup_error_preserves_primary_and_never_acknowledges(
     tmp_path, monkeypatch, caplog, mode
 ):
-    from lionagi.state.db import StateDB
-    from lionagi.state.lifecycle import reconciler as reconciliation
-    from lionagi.state.lifecycle.callbacks import TerminalCallbackRegistry
-    from lionagi.state.lifecycle.deliveries import is_acknowledged, register_consumer
+    from lionhub.state.db import StateDB
+    from lionhub.state.lifecycle import reconciler as reconciliation
+    from lionhub.state.lifecycle.callbacks import TerminalCallbackRegistry
+    from lionhub.state.lifecycle.deliveries import is_acknowledged, register_consumer
 
     entered, cleanup_entered, cleanup_release, observed = (asyncio.Event() for _ in range(4))
     observed_cancelled = []

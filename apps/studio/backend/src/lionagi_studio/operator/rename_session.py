@@ -27,8 +27,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lionagi.ln.concurrency import sleep
-from lionagi.state.session_naming import resolve_display_name, validate_name_characters
 from lionhub.serve.daemon.services.redact import public_project
+from lionhub.state.session_naming import resolve_display_name, validate_name_characters
 
 from . import _common
 from .run_progress import MissingOwnerContextError, resolve_run
@@ -135,7 +135,7 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     run_id = resolution["session_id"]
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
@@ -184,7 +184,7 @@ async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, A
     reason: the human's approval window is a gap the run's project could
     change across.
     """
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     run_id = command.get("session_id")
     if not isinstance(run_id, str) or not run_id:

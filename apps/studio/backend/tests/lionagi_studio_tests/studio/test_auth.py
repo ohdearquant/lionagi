@@ -18,7 +18,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 # Every data-returning GET prefix that must be gated when a token is configured.
 _DATA_GET_PREFIXES = [

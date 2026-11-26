@@ -34,8 +34,8 @@ def add_casts_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 @auto_register(area="casts", cli=CliDeclaration(seed="casts", parser_factory=add_casts_subparser))
 def run_casts(args: argparse.Namespace) -> int:
-    from lionagi._log_channels import log_error
     from lionhub.agent.casts.catalog import build_catalog
+    from lionhub.state.log_channels import log_error
 
     catalog = build_catalog()
 

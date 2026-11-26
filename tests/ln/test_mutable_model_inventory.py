@@ -300,7 +300,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Call(func=Name(id='setattr', ctx=Load()), args=[Name(id='exc', ctx=Load()), Name(id='_MCP_TRANSPORT_PROBE_ATTR', ctx=Load()), Name(id='probe', ctx=Load())], keywords=[])",
     ): "a probe attribute set on an exception",
     (
-        "lionagi.state.compat",
+        "lionhub.state.compat",
         "OwnerRule.__post_init__",
         "setattr-arguments",
         "Call(func=Attribute(value=Name(id='object', ctx=Load()), attr='__setattr__', ctx=Load()), args=[Name(id='self', ctx=Load()), Name(id='name', ctx=Load()), Call(func=Name(id='_fold', ctx=Load()), args=[Name(id='value', ctx=Load())], keywords=[])], keywords=[])",
@@ -502,7 +502,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
     (
-        "lionagi.state.engine",
+        "lionhub.state.engine",
         "_stop_aiosqlite_once",
         "class-authority-assignment",
         "Attribute(value=Name(id='driver_connection', ctx=Load()), attr='__class__', ctx=Store())",
@@ -510,7 +510,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
     (
-        "lionagi.state.engine",
+        "lionhub.state.engine",
         "_stop_once_class.<locals>.StopOnceConnection",
         "class-base-unresolved",
         "Name(id='cls', ctx=Load())",

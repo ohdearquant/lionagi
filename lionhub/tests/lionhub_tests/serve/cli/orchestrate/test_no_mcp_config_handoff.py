@@ -1289,7 +1289,7 @@ async def test_the_run_record_stores_the_orchestrators_own_effort(
     monkeypatch.setattr(module, "start_live_persist", _start)
     monkeypatch.setattr(module, "stamp_worker_depth", lambda: 1)
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        "lionhub.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
         lambda *args, **kwargs: None,
     )
     run = flow._run_flow if pattern == "flow" else fanout._run_fanout

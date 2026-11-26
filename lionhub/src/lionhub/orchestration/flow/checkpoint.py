@@ -257,8 +257,8 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
     if loaded is not None:
         return loaded
 
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.inspection import resolve_any_target, resolve_primary_session
+    from lionhub.state.db import StateDB
 
     async with StateDB() as db:
         resolved = await resolve_any_target(db, target)

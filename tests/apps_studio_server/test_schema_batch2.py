@@ -22,7 +22,7 @@ from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 class TestStatusSourceMigration:
     def test_new_db_has_status_source_column(self, tmp_path):
         """Fresh StateDB must have status_source on the shows table."""
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         db_path = tmp_path / "state.db"
 
@@ -71,7 +71,7 @@ class TestStatusSourceMigration:
         _run(_create_legacy())
 
         # Now open through StateDB — migration should add the column
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         async def _migrate_and_check():
             async with StateDB(db_path) as db:
@@ -89,7 +89,7 @@ class TestStatusSourceMigration:
 
     def test_create_show_stores_status_source(self, tmp_path):
         """create_show() with status_source='db' must persist that value."""
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         db_path = tmp_path / "state.db"
         show_id = str(uuid.uuid4())
@@ -113,7 +113,7 @@ class TestStatusSourceMigration:
 
     def test_create_show_defaults_status_source_unknown(self, tmp_path):
         """create_show() without status_source must default to 'unknown'."""
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         db_path = tmp_path / "state.db"
         show_id = str(uuid.uuid4())
@@ -134,7 +134,7 @@ class TestStatusSourceMigration:
 
     def test_update_show_can_change_status_source(self, tmp_path):
         """update_show() must accept status_source as an updatable field."""
-        from lionagi.state.db import StateDB
+        from lionhub.state.db import StateDB
 
         db_path = tmp_path / "state.db"
         show_id = str(uuid.uuid4())

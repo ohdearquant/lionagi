@@ -14,14 +14,14 @@ import pytest
 
 pytest.importorskip("croniter", reason="studio extra not installed")
 
-from lionagi.state.db import StateDB
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionhub.state.db import StateDB
 
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
 
 

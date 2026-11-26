@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 
-from lionagi.state.artifact_verifier import verify_artifact_contract
 from lionhub.serve.daemon.services.artifact_verification import resolve_artifact_verification
+from lionhub.state.artifact_verifier import verify_artifact_contract
 
 CONTRACT = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
 

@@ -101,7 +101,7 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 async def _run(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import sleep
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     source = getattr(args, "source", "both")
     want_claude = source in ("both", "claude")

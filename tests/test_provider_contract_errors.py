@@ -41,7 +41,7 @@ def _missing_with_extra() -> MissingFeatureError:
         provider="scripted",
         endpoint="chat",
         reason="missing_extra",
-        source="lionagi.state",
+        source="lionhub.state",
         import_root="aiosqlite",
     )
 
@@ -153,7 +153,7 @@ def test_missing_feature_error_fields_and_message_with_extra():
     assert err.provider == "scripted"
     assert err.endpoint == "chat"
     assert err.reason == "missing_extra"
-    assert err.source == "lionagi.state"
+    assert err.source == "lionhub.state"
     assert str(err) == (
         "LionAGI feature 'state' requires optional extra 'state'; "
         "install it with: pip install 'lionagi[state]'"

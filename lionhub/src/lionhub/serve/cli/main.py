@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import logging
 import os
 import signal
 import sys
@@ -22,7 +23,19 @@ except ModuleNotFoundError as exc:
 else:
     _catalog_import_error = None
 
-from lionagi._log_channels import log_error, mask_credentials
+if _catalog_import_error is None:
+    from lionhub.state.log_channels import log_error, mask_credentials
+else:
+    # Without the hub its log channels are missing too, and the startup refusal still has to
+    # reach stderr. The refusal message is built from a module name and fixed text, so there
+    # is no credential in it to mask; the logger name matches the hub's error channel.
+
+    def log_error(msg: str) -> None:
+        logging.getLogger("lionagi.cli.error").error(msg)
+
+    def mask_credentials(text: str) -> str:
+        return text
+
 
 # The canonical exit constant lives in the module whose absence this startup path reports.
 _STARTUP_ENVIRONMENT_EXIT = 78
@@ -133,12 +146,12 @@ def _handle_play_check(argv: list[str]) -> int:
         return 1
     name = argv[0]
 
-    from lionagi.state.artifact_verifier import (
+    from lionhub.serve.cli.orchestrate import _load_flow_spec, _resolve_playbook_path
+    from lionhub.state.artifact_verifier import (
         ArtifactPathError,
         resolve_artifact_contract,
         warn_unknown_artifact_keys,
     )
-    from lionhub.serve.cli.orchestrate import _load_flow_spec, _resolve_playbook_path
 
     path, err = _resolve_playbook_path(name)
     if err is not None:
@@ -375,7 +388,7 @@ def _run(argv: list[str] | None = None) -> int:
 
     # The first of the two settings-driven notify bootstrap points (Studio
     # service startup is the other); resolution failures are swallowed inside.
-    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+    from lionhub.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback(project_dir=_cwd_override)
 

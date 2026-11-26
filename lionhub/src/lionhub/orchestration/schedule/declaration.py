@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
 from lionagi.ln import compute_hash, parse_duration, short_id
-from lionagi.state.db import (
+from lionhub.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     ScheduleOwnershipConflictError,
     StateDB,

@@ -242,7 +242,7 @@ async def _validate_flow_invocation(invocation_id: str) -> None:
     letting the read error escape would surface a traceback where the caller
     expects a refusal it can act on.
     """
-    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+    from lionhub.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
     registered = False
     if not state_db_known_absent():
@@ -716,8 +716,8 @@ async def _resolve_invocation_terminal_flow(
     *,
     fallback_status: str,
 ) -> tuple[str, str, str, list[dict], dict]:
-    from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.db import StateDB
+    from lionhub.state.reasons import RunReasons
 
     async with StateDB() as db:
         sessions = await db.list_sessions_for_invocation(invocation_id)
@@ -894,7 +894,7 @@ def _fallback_notify_reason(status: str) -> str:
     would have returned for the same status, so a consumer sees the same cause
     for the same run whether or not finalization failed. In particular an
     aborted flow is a SIGINT cancellation."""
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     return {
         "completed": RunReasons.COMPLETED_OK,
@@ -1216,7 +1216,7 @@ async def _build_dag(
     # env._live_persist — see docs/internals/cli.md for the write-class split
     # with reactively spawned nodes' append-only write in _execute_dag.
     if role_artifact_entries and ctx_lp is not None:
-        from lionagi.state.artifact_verifier import validate_artifact_contract
+        from lionhub.state.artifact_verifier import validate_artifact_contract
 
         existing = ctx_lp.get("artifact_contract") or {"expected": []}
         merged_contract = {"expected": [*existing.get("expected", []), *role_artifact_entries]}
@@ -1758,7 +1758,7 @@ async def _execute_dag(
         ``uncancel()`` itself if it means to withdraw the request; the drain
         does not withdraw a request it did not make.
         """
-        from lionagi.state import engine as _state_engine
+        from lionhub.state import engine as _state_engine
 
         branch_status_tasks, _branch_status_tasks[:] = list(_branch_status_tasks), []
         checkpoint_tasks, _checkpoint_tasks[:] = list(_checkpoint_tasks), []
@@ -2271,7 +2271,7 @@ async def _execute_dag(
         project_source = "escalation_parent" if project else None
 
         async def _do() -> None:
-            from lionagi.state.claude_mirror import link_escalation_session
+            from lionhub.state.claude_mirror import link_escalation_session
 
             for attempt in range(_ESCALATION_LINK_RETRIES):
                 if attempt:
@@ -2905,7 +2905,7 @@ async def _execute_dag(
         if graph_node is not None and graph_node.branch_id is not None:
             with contextlib.suppress(Exception):
                 branch = env.session.branches[graph_node.branch_id]
-                from lionagi.state import provenance as _provenance
+                from lionhub.state import provenance as _provenance
 
                 ep_cfg = branch.chat_model.endpoint.config
                 spawn_model = _provenance.resolve_model_spec(
@@ -2937,7 +2937,7 @@ async def _execute_dag(
 
     ctx_lp = getattr(env, "_live_persist", None)
     if spawned_contract_entries and ctx_lp is not None:
-        from lionagi.state.artifact_verifier import validate_artifact_contract
+        from lionhub.state.artifact_verifier import validate_artifact_contract
 
         existing = ctx_lp.get("artifact_contract") or {"expected": []}
         merged_contract = {"expected": [*existing.get("expected", []), *spawned_contract_entries]}
@@ -3316,8 +3316,8 @@ async def _run_flow(
     *graph_source*, a written graph already loaded and checked, replaces the planner: its
     bytes are copied into this run's directory and recorded in the checkpoint config.
     """
-    from lionagi._cli_worker_context import _bind_cli_worker_recorder
     from lionagi._provider_errors import _WorkerSpawnAdmissionError
+    from lionhub.state.cli_worker_context import _bind_cli_worker_recorder
 
     with contextlib.ExitStack() as _worker_spawn_bindings:
         _worker_spawn_bindings.enter_context(_bind_cli_worker_recorder(None))
@@ -3431,7 +3431,7 @@ async def _run_flow(
         _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
         notice_context = notice_context_for_run(env.run, cwd=cwd, sender=notify_sender)
         if notify:
-            from lionagi.state.lifecycle.notify_settings import (
+            from lionhub.state.lifecycle.notify_settings import (
                 record_notify_rejection_to_run,
             )
 
@@ -3460,7 +3460,7 @@ async def _run_flow(
         # Bind this run into the notify.on_terminal handler at registration time so
         # a late outcome lands here or nowhere, never on a later run. Skipped when
         # --notify already owns this entity (a second override would double-fire).
-        from lionagi.state.lifecycle.notify_settings import (
+        from lionhub.state.lifecycle.notify_settings import (
             bind_terminal_notice_context,
             register_run_notify_outcome_scope,
             unregister_run_notify_outcome_scope,
@@ -3485,7 +3485,7 @@ async def _run_flow(
             agent_name is not None
             and getattr(env.orc_profile, "artifact_defaults", None) is not None
         ):
-            from lionagi.state.artifact_verifier import resolve_artifact_contract
+            from lionhub.state.artifact_verifier import resolve_artifact_contract
 
             agent_defaults = (
                 getattr(env.orc_profile, "artifact_defaults", None)
@@ -3630,13 +3630,13 @@ async def _run_flow(
                         # sweep refuses a session whose stored status is not terminal, and
                         # leaves a claimed row to whoever claimed it; teardown closed the
                         # live handle, so it gets a fresh one.
-                        from lionagi.state.db import (
+                        from lionhub.serve.cli.agent import _tombstone_pending_steers
+                        from lionhub.state.db import (
                             SESSION_TERMINAL_STATUSES,
                             StateDB,
                             read_only_open_supported,
                             state_db_known_absent,
                         )
-                        from lionhub.serve.cli.agent import _tombstone_pending_steers
 
                         try:
                             # A read-only probe first, because the sweep needs a writable
@@ -3682,7 +3682,7 @@ async def _run_flow(
                 # transitions that push through the terminal-callback registry.
                 _ended_at = _time.time()
                 if invocation_id:
-                    from lionagi.state.db import StateDB
+                    from lionhub.state.db import StateDB
 
                     _invocation_previous_status = "unknown"
                     # Populated once resolution succeeds, so the fallback below can
@@ -3756,7 +3756,7 @@ async def _run_flow(
                         try:
                             import uuid as _uuid
 
-                            from lionagi.state.lifecycle.callbacks import (
+                            from lionhub.state.lifecycle.callbacks import (
                                 DEFAULT_TERMINAL_CALLBACKS,
                                 Correlation,
                                 EntityRef,

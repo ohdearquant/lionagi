@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionhub.state.db import StateDB  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 

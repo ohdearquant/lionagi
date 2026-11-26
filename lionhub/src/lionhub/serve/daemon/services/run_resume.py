@@ -16,10 +16,10 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 from lionhub.orchestration.scheduler import subprocess as _subprocess
 from lionhub.orchestration.spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionhub.serve.daemon.routes import studio_route
+from lionhub.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from . import launches as _launches
 from .schedules import (
@@ -239,7 +239,7 @@ async def _require_resumable_snapshot(run_id: str, branch_id: str) -> bool:
     outcome can only disagree when something about the run genuinely changed
     between the two calls.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionhub.state.db import SESSION_TERMINAL_STATUSES
 
     source_status = await _run_status(run_id)
     queued = source_status not in SESSION_TERMINAL_STATUSES

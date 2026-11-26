@@ -33,7 +33,7 @@ def _is_live_connection_worker(t, target) -> bool:
 
 
 def _seed(db_path, *, sessions: int, branches_per_session: int = 1) -> list[str]:
-    from lionagi.state.db import _SCHEMA_PATH
+    from lionhub.state.db import _SCHEMA_PATH
 
     conn = sqlite3.connect(str(db_path))
     conn.executescript(_SCHEMA_PATH.read_text())
@@ -106,7 +106,7 @@ def _hold_the_write_lock(db_path):
 def seeded(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     ids = _seed(db_path, sessions=25)
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     return db_path, ids
@@ -141,7 +141,7 @@ class TestPageBoundsTheWork:
         conn.commit()
         conn.close()
 
-        import lionagi.state.db as db_mod
+        import lionhub.state.db as db_mod
         from lionhub.serve.daemon.services import sessions as sessions_svc
 
         monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -291,7 +291,7 @@ class TestStoreProbe:
         assert body["latency_ms"] >= 0
 
     def test_missing_store_reports_unavailable_not_healthy(self, client, tmp_path, monkeypatch):
-        import lionagi.state.db as db_mod
+        import lionhub.state.db as db_mod
 
         monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", tmp_path / "gone.db")
         body = client.get("/api/admin/readiness").json()

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import lionagi.state.db as state_db_mod
+import lionhub.state.db as state_db_mod
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -106,9 +106,9 @@ def _mock_chat_branch(name: str = "workflow-default"):
 
 @pytest.fixture
 def patched_env(tmp_path: Path, monkeypatch):
-    import lionagi.state.db as db_mod
     import lionagi_studio.services.engine_defs as engine_defs_svc
     import lionagi_studio.services.workflow_defs as wf_svc
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -260,7 +260,7 @@ async def test_workflow_run_persists_node_lifecycle_signals(patched_env, tmp_pat
 
     # Read signals back from a FRESH StateDB connection (the run's own db is
     # closed by teardown) — the same path RunDetail/SSE reads.
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db = StateDB(tmp_path / "state.db")
     await db.open()
@@ -410,7 +410,7 @@ async def test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth
     import time
     import uuid
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     def_id = uuid.uuid4().hex[:12]
     now = time.time()
@@ -574,7 +574,7 @@ async def test_workflow_run_spec_level_base_dir_rejected(patched_env):
     import time
     import uuid
 
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     def_id = uuid.uuid4().hex[:12]
     now = time.time()

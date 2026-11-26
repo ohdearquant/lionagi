@@ -13,8 +13,8 @@ import pytest
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-import lionagi.state.db as state_db_mod
-from lionagi.state.db import StateDB  # noqa: E402
+import lionhub.state.db as state_db_mod
+from lionhub.state.db import StateDB  # noqa: E402
 
 # Helpers
 

@@ -22,7 +22,7 @@ def catalog_app(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
@@ -36,7 +36,7 @@ def catalog_app(tmp_path, monkeypatch):
 
 
 async def _initialize(db_path: Path) -> None:
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     async with StateDB(db_path):
         pass
@@ -391,7 +391,7 @@ async def test_single_trailing_oversized_id_has_no_stop_reason(catalog_app):
 async def test_nul_id_and_cursor_are_rejected_before_opening_store(
     catalog_app, monkeypatch, endpoint
 ):
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
     from lionagi_studio.services import engine_defs
 
     db_path, client = catalog_app
@@ -590,10 +590,10 @@ async def test_existing_http_create_with_omitted_options_is_available(catalog_ap
 
 async def test_catalog_excludes_legacy_null_ids_but_keeps_empty_id(catalog_app):
     """Legacy SQLite permits NULL primary keys, which the catalog excludes."""
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     db_path, client = catalog_app
-    schema = Path(__file__).resolve().parents[6] / "lionagi/state/schema.sql"
+    schema = Path(__file__).resolve().parents[6] / "lionhub/src/lionhub/state/schema.sql"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(schema.read_text())
     _insert(
@@ -772,7 +772,7 @@ async def test_options_depth_boundary_and_quoted_brackets(catalog_app):
 
 @pytest.mark.parametrize("field", ["max_depth", "max_agents"])
 async def test_stored_budget_bounds_affect_list_and_detail(catalog_app, monkeypatch, field):
-    import lionagi.state.db as db_mod
+    import lionhub.state.db as db_mod
 
     db_path, client = catalog_app
     await _initialize(db_path)

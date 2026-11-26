@@ -19,7 +19,7 @@ This ADR answers six problems created by that hybrid boundary.
 **P1 — Duplicating runtime truth would split lifecycle state.** Schedule, workflow,
 launch, invocation, artifact, session, and status records already originate in StateDB.
 A separate Studio database would force synchronization before a UI could answer whether a
-run is current or terminal (`lionagi/state/schema.sql`; `lionagi/studio/services/*.py`).
+run is current or terminal (`lionhub/src/lionhub/state/schema.sql`; `lionagi/studio/services/*.py`).
 
 **P2 — “Definition” names two different persistence contracts.** Agent and playbook
 definitions are current files with append-only snapshots in `definitions`; workflow
@@ -35,7 +35,7 @@ editor writes update the file without creating a version (`definitions.py`; `sta
 **P4 — Schema ownership is not consistently mediated.** Many services use `StateDB`, but
 sessions, runs, shows, statistics, definition history, and projects also issue SQL directly.
 `projects.py` even repeats the `projects` table and index DDL already present in
-`lionagi/state/schema.sql`, then runs it lazily from requests. A schema change can therefore
+`lionhub/src/lionhub/state/schema.sql`, then runs it lazily from requests. A schema change can therefore
 break code outside typed StateDB methods.
 
 **P5 — Shows and artifacts cross the state/file boundary differently.** Shows merge rows
@@ -104,7 +104,7 @@ The shared schema contains the operational nouns Studio projects: messages,
 progressions, sessions, branches, definitions, shows, plays, invocations, schedules,
 schedule runs/task applications, artifacts, status transitions, session signals, engine
 runs/definitions, workflow definitions, projects, and related indexes
-(`lionagi/state/schema.sql`).
+(`lionhub/src/lionhub/state/schema.sql`).
 
 Exact semantics:
 
@@ -302,7 +302,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_source ON projects(source);
 CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 ```
 
-The same table and indexes also appear in `lionagi/state/schema.sql`. This is duplicated
+The same table and indexes also appear in `lionhub/src/lionhub/state/schema.sql`. This is duplicated
 ownership, not a second database. Each project request calls `_ensure_table()` before its
 query or mutation.
 

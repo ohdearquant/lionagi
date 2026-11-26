@@ -46,7 +46,7 @@ def _recording_lifespan(monkeypatch: pytest.MonkeyPatch, *, fail_at: str | None 
     lifecycle = import_module("lionhub.orchestration.scheduler.lifecycle")
     operator = import_module("lionagi_studio.services.operator")
     launches = import_module("lionhub.serve.daemon.services.launches")
-    notify = import_module("lionagi.state.lifecycle.notify_settings")
+    notify = import_module("lionhub.state.lifecycle.notify_settings")
     events: list[str] = []
 
     def step(name: str):

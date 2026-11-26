@@ -1,0 +1,1509 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Regression tests for StateDB schema migration — verifies _reconcile_columns adds all expected columns to old-schema tables."""
+
+from __future__ import annotations
+
+import asyncio
+import multiprocessing
+import queue
+import sqlite3
+import traceback
+from pathlib import Path
+
+import aiosqlite
+import pytest
+import pytest_asyncio
+
+from lionhub.state.schema_migrations import MIGRATION_COLUMNS
+
+_NUM_CONCURRENT_WORKERS = 4
+_BARRIER_TIMEOUT_SECONDS = 15
+
+# Helpers
+
+
+async def _column_names(db: aiosqlite.Connection, table: str) -> set[str]:
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    return {row["name"] for row in rows}
+
+
+def _create_pre_cc_session_db(db_path: Path) -> None:
+    """Create a current SQLite schema whose sessions table predates cc_session_id."""
+    from lionhub.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP INDEX idx_sessions_cc_session")
+        conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
+
+
+def _create_pre_branches_index_db(db_path: Path) -> None:
+    """Create a current schema whose branches table carries the single-column
+    index a real pre-migration deployment had (`idx_branches_session` on
+    `session_id` alone), not the composite `idx_branches_session_created`
+    schema.sql now declares directly."""
+    from lionhub.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP INDEX idx_branches_session_created")
+        conn.execute("CREATE INDEX idx_branches_session ON branches(session_id)")
+
+
+def _create_pre_claim_controls_db(db_path: Path) -> None:
+    """Create a current schema whose session_controls table predates claimed_at."""
+    from lionhub.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("ALTER TABLE session_controls DROP COLUMN claimed_at")
+        conn.execute("INSERT INTO progressions (id, created_at) VALUES ('prog-1', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id) "
+            "VALUES ('sess-1', 1.0, 1.0, 'prog-1')"
+        )
+        conn.execute(
+            "INSERT INTO session_controls "
+            "(id, session_id, verb, payload, created_at, applied_at, result) "
+            "VALUES ('ctl-1', 'sess-1', 'message', '{\"text\": \"queued before\"}', "
+            "1.0, NULL, NULL)"
+        )
+
+
+def _migrate_state_db_worker(db_path: str, start_barrier, result_queue) -> None:
+    """Run an explicit migration in a spawned process."""
+    from lionhub.state.db import StateDB
+
+    async def _migrate() -> None:
+        state = StateDB(db_path)
+        await state.migrate()
+        await state.close()
+
+    try:
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        asyncio.run(_migrate())
+    except Exception:  # noqa: BLE001
+        result_queue.put(traceback.format_exc())
+    else:
+        result_queue.put(None)
+
+
+# Old-schema fixture
+
+
+@pytest_asyncio.fixture
+async def old_schema_db():
+    """In-memory DB with bare-minimum columns simulating a pre-migration schema."""
+    async with aiosqlite.connect(":memory:") as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        # sessions: bare-minimum columns from the ADR-0057 era
+        await db.execute("""
+            CREATE TABLE sessions (
+                id           TEXT PRIMARY KEY,
+                created_at   REAL NOT NULL,
+                progression_id TEXT NOT NULL
+            )
+        """)
+        # branches: bare-minimum
+        await db.execute("""
+            CREATE TABLE branches (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                session_id TEXT NOT NULL
+            )
+        """)
+        # shows: bare-minimum
+        await db.execute("""
+            CREATE TABLE shows (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        # plays: bare-minimum
+        await db.execute("""
+            CREATE TABLE plays (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        # invocations: bare-minimum
+        await db.execute("""
+            CREATE TABLE invocations (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        # teams: bare-minimum
+        await db.execute("""
+            CREATE TABLE teams (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        # artifacts: bare-minimum (without updated_at)
+        await db.execute("""
+            CREATE TABLE artifacts (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE schedules (
+                id         TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        # schedule_runs: bare-minimum (without updated_at, reason cols)
+        await db.execute("""
+            CREATE TABLE schedule_runs (
+                id          TEXT PRIMARY KEY,
+                created_at  REAL NOT NULL,
+                schedule_id TEXT NOT NULL
+            )
+        """)
+        # session_controls as it stood before the claim protocol: no claimed_at.
+        # Present here so the migration that adds that column is exercised
+        # against a table that actually exists — the reconcile test skips absent
+        # tables, so a controls table missing from this fixture would let an
+        # empty migration list pass as though it had been checked.
+        await db.execute("""
+            CREATE TABLE session_controls (
+                id         TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                verb       TEXT NOT NULL,
+                payload    TEXT,
+                created_at REAL NOT NULL,
+                applied_at REAL,
+                result     TEXT
+            )
+        """)
+        await db.execute(
+            "INSERT INTO session_controls "
+            "(id, session_id, verb, payload, created_at, applied_at, result) "
+            "VALUES ('ctl-old', 'sess-old', 'message', '{\"text\": \"before\"}', 1.0, NULL, NULL)"
+        )
+        await db.commit()
+        yield db
+
+
+# Tests
+
+
+async def test_migration_columns_constant_is_importable():
+    """MIGRATION_COLUMNS can be imported and has the expected tables."""
+    expected_tables = {
+        "sessions",
+        "branches",
+        "shows",
+        "plays",
+        "invocations",
+        "teams",
+        "artifacts",
+        "schedules",
+        "schedule_runs",
+        "session_controls",  # claimed_at, added with the claim protocol
+        "engine_runs",  # Phase C Move 2 — new table registered for future migrations
+        "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
+        "attention_dispositions",  # revision fencing column
+        "attention_disposition_history",  # sequence append-order column
+        "approvals",  # who granted or denied
+        "approval_evidence",  # who granted or denied, on the evidence row
+    }
+    assert set(MIGRATION_COLUMNS.keys()) == expected_tables
+
+
+async def test_an_existing_controls_table_gains_claimed_at_without_losing_its_rows(tmp_path):
+    """The claimed_at migration runs against a controls table that already exists.
+
+    The generic reconcile test skips tables the old-schema fixture does not
+    create, so it cannot tell an applied migration from an empty migration list.
+    This drives the real StateDB open path against a store whose
+    session_controls predates the column and still holds a pending row.
+    """
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "pre-claim-controls.db"
+    _create_pre_claim_controls_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        before = {row[1] for row in conn.execute("PRAGMA table_info(session_controls)")}
+    assert "claimed_at" not in before, "fixture did not actually predate the column"
+
+    state = StateDB(db_path)
+    await state.migrate()
+    try:
+        async with state._read() as conn:
+            columns = (
+                (await conn.execute(text("PRAGMA table_info(session_controls)"))).mappings().all()
+            )
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, verb, result, claimed_at FROM session_controls "
+                            "WHERE id = 'ctl-1'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+    finally:
+        await state.close()
+
+    claimed_at = next(c for c in columns if c["name"] == "claimed_at")
+    assert claimed_at["notnull"] == 0, "claimed_at must stay nullable for pre-existing rows"
+    assert row is not None, "the pre-migration control row did not survive the upgrade"
+    assert row["verb"] == "message"
+    assert row["result"] is None
+    assert row["claimed_at"] is None
+
+
+async def test_migration_columns_no_duplicates():
+    """Each table's migration list has no duplicate column names."""
+    for table, cols in MIGRATION_COLUMNS.items():
+        names = [name for name, _ in cols]
+        assert len(names) == len(set(names)), f"Duplicate columns in {table}: {names}"
+
+
+async def test_reconcile_adds_all_columns(old_schema_db):
+    """_reconcile_columns upgrades an old-schema DB to have every migration column."""
+    db = old_schema_db
+
+    # Run the same logic as StateDB._reconcile_columns
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    # Verify every migration column now exists (skip tables not in old_schema_db
+    # — newly added tables like engine_runs are created by schema.sql, not via
+    # ALTER TABLE, so they won't be present in an "old schema" DB fixture).
+    for table, columns in MIGRATION_COLUMNS.items():
+        if not columns:
+            continue
+        actual = await _column_names(db, table)
+        if not actual:
+            continue  # table not present in old_schema_db — skip (new table, not migrated)
+        for col_name, _ in columns:
+            assert col_name in actual, (
+                f"Migration column '{col_name}' missing from table '{table}' after reconcile"
+            )
+
+
+async def test_reconcile_is_idempotent(old_schema_db):
+    """Running _reconcile_columns twice does not raise or corrupt the schema."""
+    db = old_schema_db
+
+    async def reconcile():
+        for table, columns in MIGRATION_COLUMNS.items():
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            if not rows:
+                continue
+            existing = {row["name"] for row in rows}
+            for name, defn in columns:
+                if name not in existing:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+        await db.commit()
+
+    await reconcile()
+    await reconcile()  # second pass — all columns already exist, nothing to do
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        if not columns:
+            continue
+        actual = await _column_names(db, table)
+        if not actual:
+            continue  # new table not in old_schema_db — skip
+        for col_name, _ in columns:
+            assert col_name in actual
+
+
+async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> None:
+    """Existing databases gain the partial lookup index after the column migration."""
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    state = StateDB(db_path)
+    await state.migrate()
+    try:
+        await state.create_progression("progression-1")
+        await state.execute(
+            "INSERT INTO sessions "
+            "(id, cc_session_id, created_at, progression_id, updated_at) "
+            "VALUES (:id, :cc_session_id, :created_at, :progression_id, :updated_at)",
+            {
+                "id": "session-1",
+                "cc_session_id": "cc-session-1",
+                "created_at": 1.0,
+                "progression_id": "progression-1",
+                "updated_at": 1.0,
+            },
+        )
+        async with state._read() as conn:
+            indexes = (await conn.execute(text("PRAGMA index_list(sessions)"))).mappings().all()
+            plan = (
+                (
+                    await conn.execute(
+                        text(
+                            "EXPLAIN QUERY PLAN SELECT * FROM sessions "
+                            "WHERE cc_session_id = :cc_session_id LIMIT 1"
+                        ),
+                        {"cc_session_id": "cc-session-1"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        await state.close()
+
+    assert "idx_sessions_cc_session" in {row["name"] for row in indexes}
+    details = [row["detail"] for row in plan]
+    assert any("SEARCH sessions" in detail for detail in details), details
+    assert any("idx_sessions_cc_session" in detail for detail in details), details
+
+
+_BRANCHES_LISTING_QUERY = (
+    "SELECT * FROM branches WHERE session_id = :session_id ORDER BY created_at"
+)
+
+
+async def _migrate_and_populate_branches_index_db(db_path: Path) -> None:
+    from lionhub.state.db import StateDB
+
+    state = StateDB(db_path)
+    await state.migrate()
+    try:
+        await state.create_progression("progression-idx")
+        await state.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at) "
+            "VALUES (:id, :created_at, :progression_id, :updated_at)",
+            {
+                "id": "session-idx",
+                "created_at": 1.0,
+                "progression_id": "progression-idx",
+                "updated_at": 1.0,
+            },
+        )
+        # Populate branches so the EXPLAIN runs against a table with rows —
+        # a plan over an empty table is weaker evidence that the index is
+        # actually chosen for the shape the listing query uses.
+        for i in range(3):
+            await state.execute(
+                "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                "VALUES (:id, :created_at, :session_id, :progression_id)",
+                {
+                    "id": f"branch-idx-{i}",
+                    "created_at": float(i),
+                    "session_id": "session-idx",
+                    "progression_id": "progression-idx",
+                },
+            )
+    finally:
+        await state.close()
+
+
+async def _branches_index_evidence(db_path: Path) -> tuple[list[str], list[str]]:
+    """Column list (ordered) of idx_branches_session_created plus the EXPLAIN
+    QUERY PLAN detail lines for the branch-listing query, read back through a
+    fresh connection so the evidence reflects what's on disk, not in-process
+    state left over from the StateDB session that populated it."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = [
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM pragma_index_info('idx_branches_session_created') ORDER BY seqno"
+            )
+        ]
+        plan = [
+            row["detail"]
+            for row in conn.execute(
+                f"EXPLAIN QUERY PLAN {_BRANCHES_LISTING_QUERY}",
+                {"session_id": "session-idx"},
+            )
+        ]
+    return columns, plan
+
+
+async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Path) -> None:
+    """A database provisioned before this migration — carrying the old
+    single-column `idx_branches_session(session_id)` a real deployment would
+    have — gains the composite `idx_branches_session_created(session_id,
+    created_at)` after StateDB.migrate() runs the migration, with the
+    same name, column order, and query plan as a freshly provisioned
+    database. Without migrating the pre-index database, a regression in
+    MIGRATION_INDEXES would leave real deployed databases on the old index
+    while fresh ones pass — this proves the upgrade path itself adds it."""
+    fresh_db_path = tmp_path / "fresh-branches-index.db"
+    pre_index_db_path = tmp_path / "pre-branches-index.db"
+
+    from lionhub.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(fresh_db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+    _create_pre_branches_index_db(pre_index_db_path)
+
+    # Sanity check the fixture actually starts from the old shape, not a
+    # no-op-equivalent of the target.
+    with sqlite3.connect(pre_index_db_path) as conn:
+        pre_index_names = {row[1] for row in conn.execute("PRAGMA index_list(branches)")}
+    assert "idx_branches_session" in pre_index_names
+    assert "idx_branches_session_created" not in pre_index_names
+
+    await _migrate_and_populate_branches_index_db(fresh_db_path)
+    await _migrate_and_populate_branches_index_db(pre_index_db_path)
+
+    fresh_columns, fresh_plan = await _branches_index_evidence(fresh_db_path)
+    upgraded_columns, upgraded_plan = await _branches_index_evidence(pre_index_db_path)
+
+    assert fresh_columns == ["session_id", "created_at"]
+    assert upgraded_columns == fresh_columns
+
+    for plan in (fresh_plan, upgraded_plan):
+        assert any("idx_branches_session_created" in detail for detail in plan), plan
+        assert not any("USE TEMP B-TREE" in detail for detail in plan), plan
+    assert upgraded_plan == fresh_plan
+
+
+def test_concurrent_migrations_reconcile_cc_session_column_once(tmp_path: Path) -> None:
+    """Concurrent migrations serialize the inspection and ALTER under the write lock."""
+    db_path = tmp_path / "concurrent-pre-cc-session.db"
+    _create_pre_cc_session_db(db_path)
+
+    context = multiprocessing.get_context("spawn")
+    start_barrier = context.Barrier(_NUM_CONCURRENT_WORKERS + 1)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_migrate_state_db_worker,
+            args=(
+                str(db_path),
+                start_barrier,
+                result_queue,
+            ),
+        )
+        for _ in range(_NUM_CONCURRENT_WORKERS)
+    ]
+
+    results: list[str | None] = []
+    try:
+        for process in processes:
+            process.start()
+        start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+        for process in processes:
+            process.join(timeout=30)
+        for _ in processes:
+            try:
+                results.append(result_queue.get(timeout=2))
+            except queue.Empty:
+                results.append("worker exited without reporting a result")
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        result_queue.close()
+        result_queue.join_thread()
+
+    exit_codes = [process.exitcode for process in processes]
+    assert all(code == 0 for code in exit_codes), exit_codes
+    assert results == [None] * len(processes), results
+
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)")]
+    assert columns.count("cc_session_id") == 1
+
+
+async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
+    """After upgrade, sessions table has the ADR-0057 status-reason columns."""
+    db = old_schema_db
+
+    # Perform migration
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    # Insert a row and write to the ADR-0057 columns
+    await db.execute(
+        "INSERT INTO sessions (id, created_at, progression_id,"
+        " status_reason_code, status_reason_summary, status_evidence_refs)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        ("sess-1", 1.0, "prog-1", "run.completed.ok", "all good", "[]"),
+    )
+    await db.commit()
+
+    cur = await db.execute(
+        "SELECT status_reason_code, status_reason_summary, status_evidence_refs"
+        " FROM sessions WHERE id = ?",
+        ("sess-1",),
+    )
+    row = await cur.fetchone()
+    assert row["status_reason_code"] == "run.completed.ok"
+    assert row["status_reason_summary"] == "all good"
+    assert row["status_evidence_refs"] == "[]"
+
+
+async def test_schedule_runs_upgrade_path(old_schema_db):
+    """After upgrade, schedule_runs has updated_at and ADR-0057 reason columns."""
+    db = old_schema_db
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    adr28_cols = {
+        "status_reason_code",
+        "status_reason_summary",
+        "status_evidence_refs",
+        "updated_at",
+    }
+    actual = await _column_names(db, "schedule_runs")
+    assert adr28_cols <= actual, f"Missing cols: {adr28_cols - actual}"
+
+
+async def test_schedule_runs_upgrade_path_gains_resume_packet(old_schema_db):
+    """After upgrade, an existing schedule_runs table gains resume_packet."""
+    db = old_schema_db
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    actual = await _column_names(db, "schedule_runs")
+    assert "resume_packet" in actual
+
+
+async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
+    """After upgrade, an existing schedules table gains its optional budget columns."""
+    db = old_schema_db
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    actual = await _column_names(db, "schedules")
+    assert {"budget_usd", "budget_tokens", "rate_limit"} <= actual
+
+
+async def test_drop_legacy_invocations_status_check_with_fk_referencing_rows(tmp_path):
+    """Rebuilding invocations for the completion-trust gate must not choke on
+    real FK-referencing child rows (sessions.invocation_id, artifacts.invocation_id).
+
+    `invocations` is an FK target; dropping it while foreign_keys enforcement
+    is (still) active raises a FOREIGN KEY constraint failure even though the
+    data was already copied into the replacement table first. The migration
+    must actually disable enforcement for the drop, not just attempt to.
+    """
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "legacy.db"
+
+    # Build a legacy-shaped DB by hand: invocations with the pre-gate 6-value
+    # CHECK, plus a session row and an artifact row that both FK-reference it.
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute("PRAGMA foreign_keys = ON")
+        await raw.execute(
+            """
+            CREATE TABLE invocations (
+              id              TEXT    PRIMARY KEY,
+              skill           TEXT    NOT NULL,
+              plugin          TEXT,
+              prompt          TEXT,
+              started_at      REAL    NOT NULL,
+              ended_at        REAL,
+              status          TEXT    NOT NULL DEFAULT 'running' CHECK(
+                                status IN ('running', 'completed', 'failed',
+                                           'timed_out', 'aborted', 'cancelled')
+                              ),
+              session_count   INTEGER NOT NULL DEFAULT 0,
+              created_at      REAL    NOT NULL,
+              updated_at      REAL    NOT NULL,
+              node_metadata   JSON
+            )
+            """
+        )
+        await raw.execute(
+            """
+            CREATE TABLE sessions (
+              id              TEXT    PRIMARY KEY,
+              created_at      REAL    NOT NULL,
+              progression_id  TEXT    NOT NULL,
+              updated_at      REAL    NOT NULL,
+              invocation_id   TEXT    REFERENCES invocations(id)
+            )
+            """
+        )
+        await raw.execute(
+            """
+            CREATE TABLE artifacts (
+              id              TEXT    PRIMARY KEY,
+              created_at      REAL    NOT NULL,
+              invocation_id   TEXT    REFERENCES invocations(id)
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO invocations (id, skill, started_at, created_at, updated_at) "
+            "VALUES ('inv-1', 'agent', 1.0, 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at, invocation_id) "
+            "VALUES ('sess-1', 1.0, 'prog-1', 1.0, 'inv-1')"
+        )
+        await raw.execute(
+            "INSERT INTO artifacts (id, created_at, invocation_id) VALUES ('art-1', 1.0, 'inv-1')"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            assert "'completed_empty'" in row["sql"]
+
+            inv = (
+                (await conn.execute(text("SELECT * FROM invocations WHERE id='inv-1'")))
+                .mappings()
+                .first()
+            )
+            assert inv is not None
+
+            # The FK-referencing rows in other tables survived the rebuild
+            # untouched — the migration only ever touches `invocations`.
+            sess = (
+                (await conn.execute(text("SELECT invocation_id FROM sessions WHERE id='sess-1'")))
+                .mappings()
+                .first()
+            )
+            assert sess["invocation_id"] == "inv-1"
+    finally:
+        await state.close()
+
+
+async def test_statedb_open_exposes_migration_columns():
+    """StateDB.open() on a fresh :memory: DB has all migration columns.
+
+    Confirms the import chain StateDB → MIGRATION_COLUMNS works end-to-end:
+    _reconcile_columns is a no-op on a fresh DB (columns already exist), but
+    verifying their presence confirms that MIGRATION_COLUMNS and the schema.sql
+    agree on what the current schema looks like.
+    """
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        if not columns:
+            continue
+        async with state._read() as conn:
+            rows = (await conn.execute(text(f"PRAGMA table_info({table})"))).mappings().all()
+        if not rows:
+            continue
+        actual = {row["name"] for row in rows}
+        for col_name, _ in columns:
+            assert col_name in actual, (
+                f"Column '{col_name}' missing from '{table}' in a fresh StateDB"
+            )
+
+    await state.close()
+
+
+# max_runs / count_schedule_runs (one-shot semantics)
+
+
+async def test_count_schedule_runs_excludes_skipped_and_running():
+    """count_schedule_runs only counts terminal, top-level (chain_depth=0) runs."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-count-1",
+            "name": "count-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    statuses = ["completed", "failed", "cancelled", "timed_out", "skipped", "running"]
+    for i, status in enumerate(statuses):
+        await state.create_schedule_run(
+            {
+                "id": f"run-{i}",
+                "schedule_id": "sched-count-1",
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": [],
+                "status": status,
+                "chain_depth": 0,
+                "fired_at": 1.0,
+            }
+        )
+
+    # timed_out counts: a reaped run fired and did real work, so a one-shot
+    # schedule whose only run timed out must not become eligible to re-fire.
+    count = await state.count_schedule_runs("sched-count-1", chain_depth=0)
+    assert count == 4  # completed, failed, cancelled, timed_out — not skipped/running
+
+    batch = await state.count_schedule_runs_batch(["sched-count-1"], chain_depth=0)
+    assert batch == {"sched-count-1": 4}
+
+    await state.close()
+
+
+async def test_count_schedule_runs_excludes_chain_children():
+    """Chain children (chain_depth>0) never count toward the parent's max_runs."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-count-2",
+            "name": "count-test-chain",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-parent",
+            "schedule_id": "sched-count-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "chain_depth": 0,
+            "fired_at": 1.0,
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-child",
+            "schedule_id": "sched-count-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "chain_depth": 1,
+            "chain_parent_id": "run-parent",
+            "fired_at": 2.0,
+        }
+    )
+
+    count = await state.count_schedule_runs("sched-count-2", chain_depth=0)
+    assert count == 1
+
+    await state.close()
+
+
+async def test_max_runs_nullable_defaults_unlimited():
+    """A schedule created without max_runs stores it as NULL, not counted against."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-unlimited",
+            "name": "unlimited-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    fetched = await state.get_schedule("sched-unlimited")
+    assert fetched["max_runs"] is None
+
+    await state.close()
+
+
+# resume_packet round-trip
+
+
+async def test_resume_packet_roundtrips_as_dict():
+    """A dict-shaped resume_packet written via update_schedule_run reads back
+    identical via get_schedule_run, mirroring an Element.to_dict(mode="db")
+    sidecar payload."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-1",
+            "name": "resume-test-1",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-1",
+            "schedule_id": "sched-resume-1",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    packet = {
+        "lion_class": "lionagi.protocols.generic.element.Element",
+        "id": "elem-1",
+        "created_at": 1700000000.0,
+        "metadata": {"turn": 3, "tags": ["a", "b"]},
+    }
+    await state.update_schedule_run(
+        "run-resume-1",
+        resume_packet=packet,
+    )
+
+    fetched = await state.get_schedule_run("run-resume-1")
+    assert fetched is not None
+    assert fetched["resume_packet"] == packet
+
+    await state.close()
+
+
+async def test_resume_packet_null_roundtrips_as_none():
+    """A schedule_run created without resume_packet stores NULL, which reads
+    back as None, not a JSON-decode error or empty dict."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-2",
+            "name": "resume-test-2",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-2",
+            "schedule_id": "sched-resume-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    fetched = await state.get_schedule_run("run-resume-2")
+    assert fetched is not None
+    assert fetched["resume_packet"] is None
+
+    await state.close()
+
+
+async def test_clearing_resume_packet_stores_sql_null():
+    """update_schedule_run(resume_packet=None) must write a real SQL NULL,
+    not the JSON literal ``null`` -- the read mapper decodes both forms to
+    Python None, which would hide a regression here, so this asserts against
+    the raw stored column via ``IS NULL``/``IS NOT NULL``."""
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-clear",
+            "name": "resume-test-clear",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-clear",
+            "schedule_id": "sched-resume-clear",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    await state.update_schedule_run(
+        "run-resume-clear",
+        resume_packet={"lion_class": "x", "id": "elem-1"},
+    )
+
+    async with state._engine.connect() as conn:
+        not_null_row = (
+            await conn.execute(
+                text(
+                    "SELECT resume_packet FROM schedule_runs "
+                    "WHERE id = :id AND resume_packet IS NOT NULL"
+                ),
+                {"id": "run-resume-clear"},
+            )
+        ).first()
+    assert not_null_row is not None
+
+    await state.update_schedule_run("run-resume-clear", resume_packet=None)
+
+    async with state._engine.connect() as conn:
+        null_row = (
+            await conn.execute(
+                text(
+                    "SELECT resume_packet FROM schedule_runs "
+                    "WHERE id = :id AND resume_packet IS NULL"
+                ),
+                {"id": "run-resume-clear"},
+            )
+        ).first()
+    assert null_row is not None, (
+        "resume_packet should be SQL NULL after clearing, not the JSON literal 'null'"
+    )
+
+    fetched = await state.get_schedule_run("run-resume-clear")
+    assert fetched is not None
+    assert fetched["resume_packet"] is None
+
+    await state.close()
+
+
+async def test_update_schedule_run_rejects_unknown_field():
+    """update_schedule_run's field allowlist still rejects unrecognized
+    fields — resume_packet joining the allowed set must not widen it."""
+    from lionhub.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-3",
+            "name": "resume-test-3",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-3",
+            "schedule_id": "sched-resume-3",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="Invalid schedule_run field"):
+        await state.update_schedule_run("run-resume-3", not_a_real_field="x")
+
+    await state.close()
+
+
+async def test_dispatched_at_migration_backfills_preexisting_running_rows(tmp_path):
+    """A ``schedule_runs`` row already at ``status='running'`` when the
+    ``dispatched_at`` column is first added must have it backfilled to its
+    ``fired_at`` — not left ``NULL``.
+
+    Without the backfill, ``dispatched_at IS NULL`` is indistinguishable
+    between "genuinely never dispatched" and "predates the column
+    entirely", so ``list_undispatched_schedule_runs()`` (consumed by
+    ``SchedulerEngine._recover_undispatched_fires()`` on the next daemon
+    startup) would treat every pre-existing running row as crashed and
+    duplicate-fire a replacement for it — including one that is still
+    genuinely executing across the upgrade restart.
+    """
+    from sqlalchemy import text
+
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "legacy_no_dispatched_at.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(
+            """
+            CREATE TABLE schedules (
+              id           TEXT    PRIMARY KEY,
+              name         TEXT    NOT NULL UNIQUE,
+              enabled      INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+              trigger_type TEXT    NOT NULL CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+              action_kind  TEXT    NOT NULL CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+              created_at   REAL    NOT NULL,
+              updated_at   REAL    NOT NULL
+            )
+            """
+        )
+        # schedule_runs at ADR-0071 D4 shape (lease_attempts present) but
+        # pre-dating the dispatched_at / resume_packet columns entirely.
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                                   'retry_wait', 'completed', 'failed',
+                                                   'timed_out', 'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              queued_at           REAL,
+              leased_by           TEXT,
+              lease_expires_at    REAL,
+              concurrency_key     TEXT,
+              lease_attempts      INTEGER NOT NULL DEFAULT 0,
+              required_capabilities  JSON,
+              execution_target       TEXT,
+              library_ref             TEXT,
+              library_content_hash    TEXT
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-da', 'sched-da', 'interval', 'agent', 1.0, 1.0)"
+        )
+        # A row still genuinely running (or orphaned by an unrelated earlier
+        # crash) at the moment of the upgrade -- fired_at is deliberately
+        # far in the past so a naive "treat as undispatched" scan would be
+        # the only thing standing between it and a duplicate re-fire.
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-running', 'sched-da', '{}', 'agent', '{}', 'running', 0, 100.0, 100.0)"
+        )
+        # A row already terminal before the upgrade -- must NOT be touched
+        # by the backfill (it was never a candidate for the recovery scan).
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-da-completed', 'sched-da', '{}', 'agent', '{}', 'completed', 0, 50.0, 50.0)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            running_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-running"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            completed_row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM schedule_runs WHERE id = :id"),
+                        {"id": "run-da-completed"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        assert running_row["dispatched_at"] == running_row["fired_at"] == 100.0
+        assert completed_row["dispatched_at"] is None
+
+        # The whole point of the backfill: the recovery scan must no longer
+        # pick up the pre-existing running row as an undispatched orphan.
+        orphans = await state.list_undispatched_schedule_runs()
+        assert orphans == []
+    finally:
+        await state.close()
+
+
+async def test_dispatched_at_backfill_runs_when_column_already_exists(tmp_path):
+    from lionhub.state.db import _SCHEMA_PATH, StateDB
+
+    db_path = tmp_path / "legacy_with_dispatched_at.db"
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.executescript(_SCHEMA_PATH.read_text())
+        await raw.execute("UPDATE schema_meta SET value = '1' WHERE key = 'version'")
+        await raw.execute(
+            "INSERT INTO schedules "
+            "(id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-existing-da', 'sched-existing-da', 'interval', 'agent', 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at, dispatched_at) "
+            "VALUES ('run-existing-da', 'sched-existing-da', '{}', 'agent', '{}', "
+            " 'running', 0, 100.0, 100.0, NULL)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    try:
+        await state.migrate()
+        migrated = await state.get_schedule_run("run-existing-da")
+        assert migrated is not None
+        assert migrated["dispatched_at"] == migrated["fired_at"] == 100.0
+
+        await state.create_schedule_run(
+            {
+                "id": "run-after-backfill",
+                "schedule_id": "sched-existing-da",
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": {},
+                "status": "running",
+                "fired_at": 200.0,
+            }
+        )
+    finally:
+        await state.close()
+
+    reopened = StateDB(db_path)
+    await reopened.open()
+    try:
+        new_run = await reopened.get_schedule_run("run-after-backfill")
+        assert new_run is not None
+        assert new_run["dispatched_at"] is None
+        assert [row["id"] for row in await reopened.list_undispatched_schedule_runs()] == [
+            "run-after-backfill"
+        ]
+    finally:
+        await reopened.close()
+
+
+def _create_legacy_session_status_db(db_path: Path) -> None:
+    """Create a database whose sessions table still carries the four-value
+    status CHECK that ``_rebuild_legacy_sessions_table`` rebuilds away."""
+    from lionhub.state.db import _SCHEMA_PATH
+
+    schema = _SCHEMA_PATH.read_text()
+    current = "  status          TEXT,\n"
+    assert current in schema, "sessions.status declaration not found in schema.sql"
+    legacy = schema.replace(
+        current,
+        "  status          TEXT CHECK(status IS NULL OR status IN "
+        "('running', 'completed', 'failed', 'aborted')),\n",
+        1,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(legacy)
+
+
+def _sessions_create_sql(db_path: Path) -> str:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchone()
+    return row[0] or ""
+
+
+def _schema_meta_version(db_path: Path) -> str | None:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
+    return row[0] if row else None
+
+
+async def test_migrated_db_reports_current_schema_version(tmp_path):
+    """A database whose tables were rewritten by migration reports the version this
+    code applies, not the version it was created at."""
+    from lionhub.state.db import SCHEMA_VERSION, StateDB
+
+    db_path = tmp_path / "legacy.db"
+    _create_legacy_session_status_db(db_path)
+    # Stand in for a database created by an older release: the version row says
+    # "1" and the sessions table still has the old CHECK.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE schema_meta SET value = '1' WHERE key = 'version'")
+    assert _schema_meta_version(db_path) == "1"
+    assert "'aborted')" in _sessions_create_sql(db_path)
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await state.migrate()
+        version = await state.schema_version()
+    finally:
+        await state.close()
+
+    # The migration ran ...
+    assert "'aborted')" not in _sessions_create_sql(db_path)
+    # ... so the stamp moved with it.
+    assert version == SCHEMA_VERSION
+    assert _schema_meta_version(db_path) == SCHEMA_VERSION
+
+
+def _create_narrow_source_kind_db(db_path: Path) -> None:
+    """Create a database whose sessions.source_kind CHECK predates transcript
+    imports having their own provenance value."""
+    from lionhub.state.db import _SCHEMA_PATH
+
+    schema = _SCHEMA_PATH.read_text()
+    current = "OR source_kind IN ('live', 'imported_fs', 'imported_codex')"
+    assert current in schema, "widened source_kind CHECK not found in schema.sql"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(schema.replace(current, "OR source_kind IN ('live', 'imported_fs')", 1))
+
+
+def _insert_session(db_path: Path, sid: str, source_kind: str) -> None:
+    """Insert one session, satisfying every constraint except the one under test,
+    so a rejection can only have come from the source_kind CHECK."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO progressions (id, created_at) VALUES ('p', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id, source_kind) "
+            "VALUES (?, ?, ?, 'p', ?)",
+            (sid, 1.0, 1.0, source_kind),
+        )
+
+
+async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
+    """A database created before codex transcripts had their own provenance value
+    rejects 'imported_codex' until the sessions rebuild widens its CHECK."""
+    from lionhub.state.db import StateDB
+
+    db_path = tmp_path / "narrow.db"
+    _create_narrow_source_kind_db(db_path)
+
+    # Pre-state: the value the codex mirror writes is refused outright.
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _insert_session(db_path, "pre", "imported_codex")
+    # ... and the DB is otherwise usable, so the rebuild has real rows to carry.
+    _insert_session(db_path, "kept", "imported_fs")
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    await state.migrate()
+    await state.close()
+
+    assert "'imported_codex'" in _sessions_create_sql(db_path)
+    _insert_session(db_path, "post", "imported_codex")
+    with sqlite3.connect(db_path) as conn:
+        rows = dict(conn.execute("SELECT id, source_kind FROM sessions").fetchall())
+    assert rows == {"kept": "imported_fs", "post": "imported_codex"}
+
+    # A value outside the vocabulary is still refused, so the rebuild widened the
+    # CHECK rather than dropping it.
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        _insert_session(db_path, "bogus", "imported_elsewhere")
+
+
+async def test_current_schema_db_is_not_rebuilt(tmp_path):
+    """A database created by this release carries neither legacy CHECK, so opening
+    it leaves the sessions table byte-identical."""
+    from lionhub.state.db import _SCHEMA_PATH, _SESSION_ENDED_AT_BACKFILL_KEY, StateDB
+
+    db_path = tmp_path / "current.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?, '1')",
+            (_SESSION_ENDED_AT_BACKFILL_KEY,),
+        )
+    before = _sessions_create_sql(db_path)
+    assert not StateDB._sessions_rebuild_needed(before)
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        pass
+
+    assert _sessions_create_sql(db_path) == before
+
+
+def test_sessions_rebuild_needed_reads_both_triggers():
+    """Each legacy marker fires on its own, and the widened form fires on neither."""
+    from lionhub.state.db import StateDB
+
+    legacy_status = (
+        "CREATE TABLE sessions (status TEXT CHECK(status IN "
+        "('running', 'completed', 'failed', 'aborted')), "
+        "source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs', 'imported_codex')))"
+    )
+    narrow_source = (
+        "CREATE TABLE sessions (status TEXT, source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs')))"
+    )
+    current = (
+        "CREATE TABLE sessions (status TEXT, source_kind TEXT CHECK(source_kind IN "
+        "('live', 'imported_fs', 'imported_codex')))"
+    )
+    assert StateDB._sessions_rebuild_needed(legacy_status)
+    assert StateDB._sessions_rebuild_needed(narrow_source)
+    assert not StateDB._sessions_rebuild_needed(current)
+
+
+def test_schema_sql_seed_version_matches_constant():
+    """schema.sql seeds the same version the applying code stamps."""
+    from lionhub.state.db import _SCHEMA_PATH, SCHEMA_VERSION
+
+    seed = f"INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '{SCHEMA_VERSION}');"
+    assert seed in _SCHEMA_PATH.read_text()
+
+
+async def test_stagnation_column_matches_raw_and_metadata_schema_defaults(tmp_path):
+    """Both fresh-schema paths expose the same non-null zero-default counter."""
+    from lionhub.state.db import _SCHEMA_PATH, StateDB
+
+    raw_path = tmp_path / "raw-schema.db"
+    fresh_path = tmp_path / "metadata-schema.db"
+    with sqlite3.connect(raw_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+    async with StateDB(fresh_path):
+        pass
+
+    columns = []
+    for path in (raw_path, fresh_path):
+        with sqlite3.connect(path) as conn:
+            info = {row[1]: row for row in conn.execute("PRAGMA table_info(schedules)")}
+            counter = info["poller_consecutive_cap_no_dispatch"]
+            assert counter[2:4] == ("INTEGER", 1)
+            assert counter[4] in ("0", "'0'")
+            columns.append(set(info))
+            conn.execute(
+                "INSERT INTO schedules "
+                "(id, name, trigger_type, action_kind, created_at, updated_at) "
+                "VALUES ('github', 'github', 'github_poll', 'agent', 10.0, 10.0)"
+            )
+            assert conn.execute(
+                "SELECT poller_consecutive_cap_no_dispatch FROM schedules WHERE id='github'"
+            ).fetchone() == (0,)
+            with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+                conn.execute(
+                    "UPDATE schedules SET poller_consecutive_cap_no_dispatch=NULL WHERE id='github'"
+                )
+    assert columns[0] == columns[1]
+
+
+async def test_old_schedules_gain_zero_stagnation_without_history_backfill(tmp_path):
+    """Existing HTTP stamps and dispatch history do not invent a new streak."""
+    from lionhub.state.db import _SCHEMA_PATH, StateDB
+
+    path = tmp_path / "pre-stagnation.db"
+    schema = _SCHEMA_PATH.read_text()
+    declaration = "  poller_consecutive_cap_no_dispatch INTEGER NOT NULL DEFAULT 0,\n"
+    assert schema.count(declaration) == 1
+    with sqlite3.connect(path) as conn:
+        conn.executescript(schema.replace(declaration, ""))
+        conn.execute(
+            "INSERT INTO schedules "
+            "(id, name, trigger_type, action_kind, created_at, updated_at, "
+            "last_healthy_poll_at, poller_consecutive_401, last_fired_at, next_fire_at) "
+            "VALUES ('old', 'old', 'github_poll', 'agent', 10.0, 20.0, 100.0, 7, 80.0, 200.0)"
+        )
+        conn.row_factory = sqlite3.Row
+        before = dict(conn.execute("SELECT * FROM schedules WHERE id='old'").fetchone())
+        assert "poller_consecutive_cap_no_dispatch" not in before
+
+    state = StateDB(path)
+    await state.migrate()
+    async with state:
+        row = await state.get_schedule("old")
+        assert row["poller_consecutive_cap_no_dispatch"] == 0
+        assert row["poller_consecutive_401"] == 7
+        assert row["last_healthy_poll_at"] == 100.0
+        assert row["updated_at"] == 20.0
+
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        after = dict(conn.execute("SELECT * FROM schedules WHERE id='old'").fetchone())
+        assert after.pop("poller_consecutive_cap_no_dispatch") == 0
+        assert after == before
+
+    async with StateDB(path) as reopened:
+        assert (await reopened.get_schedule("old"))["poller_consecutive_cap_no_dispatch"] == 0
+        assert await reopened.record_github_poll_stagnation("old", reset=False)
+    async with StateDB(path) as reopened_again:
+        assert (await reopened_again.get_schedule("old"))["poller_consecutive_cap_no_dispatch"] == 1

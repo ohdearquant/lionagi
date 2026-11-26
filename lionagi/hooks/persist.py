@@ -21,11 +21,15 @@ def route_message_persistence(
     on_message: Callable[[Any], Awaitable[None]],
 ) -> HookHandler:
     """Wire ``on_message`` for ``branch`` through the session bus; returns handler for teardown."""
-    from .builtins import persist_message
+    from .loader import _registered_handler
 
     bus = session.hooks  # lazily builds the bus, bound to session.observer
-    # Exactly one persistence path: the CLI callback supersedes the built-in.
-    bus.off(HookPoint.MESSAGE_ADD, persist_message)
+    # Exactly one persistence path: the CLI callback supersedes the store's message handler.
+    # It is found by its registered name, so a process that never registered it has nothing
+    # to remove, and a caller's own handler on the same point is left in place.
+    persist_message = _registered_handler("persist_message")
+    if persist_message is not None:
+        bus.off(HookPoint.MESSAGE_ADD, persist_message)
     branch._hooks = bus  # enable Branch._persist_via_bus to emit MESSAGE_ADD
     # Register the async emit hook here (not at construction): the sync
     # add_message path used at construction can't accept async callbacks.

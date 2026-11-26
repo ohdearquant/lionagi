@@ -27,8 +27,8 @@ async def _setup_run_persist(
     invocation_kind: str,
     extra_node_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from lionagi.state.db import StateDB
     from lionhub.orchestration.runs import register_branch_hook
+    from lionhub.state.db import StateDB
 
     db = StateDB()
     await db.open()

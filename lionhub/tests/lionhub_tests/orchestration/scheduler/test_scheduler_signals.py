@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler.signals import (
     SchedulerHandlerCancelled,
     SchedulerSignalBus,
@@ -25,6 +24,7 @@ from lionhub.orchestration.scheduler.signals import (
     build_schedule_run_signal,
     record_handler_failure,
 )
+from lionhub.state.reasons import RunReasons
 from tests._scheduler_claims import fire_with_claim
 
 # Helpers (mirrors tests/studio/test_scheduler_engine.py's fixtures)
@@ -592,9 +592,9 @@ async def test_emit_reraises_cancellation_even_with_other_handler_failures():
 
 @pytest.mark.asyncio
 async def test_record_handler_failure_writes_admin_event(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
     from lionagi.ln.concurrency import ExceptionGroup
-    from lionagi.state.db import StateDB
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -633,7 +633,7 @@ async def test_record_handler_failure_is_best_effort_and_never_raises(monkeypatc
         def __init__(self, *a, **kw):
             raise RuntimeError("db unavailable")
 
-    monkeypatch.setattr("lionagi.state.db.StateDB", _BoomStateDB)
+    monkeypatch.setattr("lionhub.state.db.StateDB", _BoomStateDB)
 
     sig = ScheduleRunFailed(
         run_id="run-1", schedule_id="s1", reason_code=RunReasons.FAILED_EXCEPTION
@@ -912,9 +912,9 @@ async def test_fire_build_argv_exception_does_not_mint_when_write_lost_race():
 
 @pytest.mark.asyncio
 async def test_broken_handler_surfaces_admin_event_and_fire_completes(tmp_path, monkeypatch):
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -960,9 +960,9 @@ async def test_handler_cancelled_error_at_exit_mint_does_not_cancel_completed_ru
     tmp_path, monkeypatch
 ):
     """A handler-raised cancellation is a handler failure, not scheduler shutdown."""
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -1045,9 +1045,9 @@ async def test_broken_predicate_does_not_block_sibling_handler_and_surfaces_admi
     before a sibling, independently-registered handler ever runs -- the
     predicate failure becomes a collected dispatch failure, surfaced as the
     same durable admin_events record as any other handler bug."""
-    import lionagi.state.db as state_db_mod
-    from lionagi.state.db import StateDB
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
+    from lionhub.state.db import StateDB
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -1094,7 +1094,7 @@ async def test_broken_predicate_does_not_block_sibling_handler_and_surfaces_admi
 async def test_unrelated_fire_still_succeeds_after_a_prior_handler_failure(tmp_path, monkeypatch):
     """One schedule's broken handler must not poison a subsequent, unrelated
     fire on the same engine/bus."""
-    import lionagi.state.db as state_db_mod
+    import lionhub.state.db as state_db_mod
     from lionhub.orchestration.scheduler.engine import SchedulerEngine
 
     fake_db = tmp_path / "state.db"

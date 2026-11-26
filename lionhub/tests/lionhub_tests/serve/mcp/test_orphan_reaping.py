@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from lionagi.state.reasons import RunReasons
 from lionhub.serve.mcp import _notify_hook, config, jobs
+from lionhub.state.reasons import RunReasons
 
 _SPAWNED_AT = 1_700_000_000.0
 
@@ -1000,7 +1000,7 @@ def test_a_run_that_named_a_recipient_with_no_command_ends_with_that_recorded(sa
 
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     monkeypatch.setattr(
-        "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
+        "lionhub.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_kw: SimpleNamespace(reason=None, handler=None),
     )
     _pid_absent(monkeypatch)

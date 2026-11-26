@@ -16,6 +16,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
+| `lionhub/src/lionhub/state/` | The state store (`StateDB`, over SQLite or PostgreSQL), its schema and migrations, lifecycle transitions, the Claude Code and Codex mirrors, log channels, the CLI worker context and the message retry queue. |
 | `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
 | `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
@@ -83,6 +84,19 @@ and are scheduled for removal in 2.0.0.
 | --- | --- |
 | `lionagi._command_env` | `lionhub.tools.command_env` |
 | `lionagi._command_env_metadata` | `lionhub.tools.command_env_metadata` |
+
+The state store, its log channels, the CLI worker context, the message retry queue and the
+run persistence handlers below are deprecated at their old paths in 0.39.0 and are scheduled
+for removal in 2.0.0. The core no longer opens a state store itself: a caller that wants
+signals, sessions or messages stored passes one in.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.state` | `lionhub.state` |
+| `lionagi._log_channels` | `lionhub.state.log_channels` |
+| `lionagi._cli_worker_context` | `lionhub.state.cli_worker_context` |
+| `lionagi.hooks._message_retry` | `lionhub.state.message_retry` |
+| `lionagi.hooks._persistence_handlers` | `lionhub.orchestration.run_persistence` |
 
 The prompt size bound below is deprecated at its old path in 0.39.0 and is scheduled for
 removal in 2.0.0.

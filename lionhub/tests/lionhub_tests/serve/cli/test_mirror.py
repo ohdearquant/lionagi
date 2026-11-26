@@ -12,15 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state._mirror_common import SourceLine
-from lionagi.state.claude_mirror import (
-    _det,
-    messages_for_event,
-    mirror_session,
-    reconcile_session_status,
-    session_db_id,
-)
-from lionagi.state.db import StateDB
 from lionhub.serve.cli.mirror import (
     _derive_metadata,
     _fallback_project,
@@ -35,6 +26,15 @@ from lionhub.serve.cli.mirror import (
     _seed_lineage,
     _since_window,
 )
+from lionhub.state._mirror_common import SourceLine
+from lionhub.state.claude_mirror import (
+    _det,
+    messages_for_event,
+    mirror_session,
+    reconcile_session_status,
+    session_db_id,
+)
+from lionhub.state.db import StateDB
 from tests._mirror_test_support import _OVERSIZED_TEXT as _OVERSIZED_TEXT
 from tests._mirror_test_support import SID as SID
 from tests._mirror_test_support import _assistant as _assistant
@@ -266,7 +266,7 @@ async def test_cc_session_id_backfill_does_not_bump_updated_at(
     # The cc_session_id backfill is not activity: it must not move the liveness
     # clock, or a concurrent reconcile_session_status CAS (expected_updated_at)
     # can be silently defeated by this one-time backfill.
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     sprog = _det(SID, "sprog")
     sid = session_db_id(SID)
@@ -366,7 +366,7 @@ async def test_link_escalation_session_overwrites_orphan_attribution(
     common case, since the mirror polls continuously while the leg is running.
     The link write must override both, and stamp a pointer back to the parent op.
     """
-    from lionagi.state.claude_mirror import link_escalation_session
+    from lionhub.state.claude_mirror import link_escalation_session
 
     async with StateDB() as db:
         await mirror_session(
@@ -409,7 +409,7 @@ async def test_link_engine_child_session_stamps_marker_and_name(
     """An engine-backed actor's CLI transcript is mirrored with a name derived
     from its first prompt (the actor's own system prompt). The link write must
     replace that name and stamp the flat parent marker listings filter on."""
-    from lionagi.state.claude_mirror import link_engine_child_session
+    from lionhub.state.claude_mirror import link_engine_child_session
 
     async with StateDB() as db:
         await mirror_session(
@@ -439,7 +439,7 @@ async def test_link_engine_child_session_missing_row_returns_false(
 ) -> None:
     """Before the mirror mints the row there is nothing to stamp; the caller
     retries on False rather than treating it as done."""
-    from lionagi.state.claude_mirror import link_engine_child_session
+    from lionhub.state.claude_mirror import link_engine_child_session
 
     async with StateDB() as db:
         linked = await link_engine_child_session(
@@ -458,7 +458,7 @@ async def test_link_escalation_session_leaves_project_alone_when_run_project_unk
     """An unresolved run project is not evidence the mirror's cwd guess is wrong
     — name/run_id/pointer still get linked, but project is left as the mirror's
     best-effort value rather than overwritten with NULL."""
-    from lionagi.state.claude_mirror import link_escalation_session
+    from lionhub.state.claude_mirror import link_escalation_session
 
     async with StateDB() as db:
         await mirror_session(
@@ -497,7 +497,7 @@ async def test_link_escalation_session_returns_false_when_row_missing(
     """The escalation call site can learn the CLI session id before the mirror's
     next sweep has even created the row; the caller is expected to retry rather
     than lose the link, so this must report the miss, not raise or fabricate a row."""
-    from lionagi.state.claude_mirror import link_escalation_session
+    from lionhub.state.claude_mirror import link_escalation_session
 
     async with StateDB() as db:
         linked = await link_escalation_session(
@@ -523,7 +523,7 @@ async def test_link_escalation_session_survives_a_later_mirror_pass(
     the poller's in-memory _FileState) name/project on every call — mirror_session
     must not let that clobber a link already recorded, since the mirror has no
     way to know the row it is about to rewrite was already linked."""
-    from lionagi.state.claude_mirror import link_escalation_session
+    from lionhub.state.claude_mirror import link_escalation_session
 
     async with StateDB() as db:
         await mirror_session(
@@ -592,7 +592,7 @@ async def test_non_escalation_transcript_gets_ordinary_cwd_attribution(
 
 @pytest.mark.asyncio
 async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path) -> None:
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     async with StateDB() as db:
         await mirror_session(
@@ -612,7 +612,7 @@ async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path
 
 @pytest.mark.asyncio
 async def test_reconcile_marks_idle_provider_refusal_failed(temp_db_path: Path) -> None:
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     refusal = (
         "Prompt is too long · the request is ~225306 tokens (limit 200000). "
@@ -658,7 +658,7 @@ async def test_reconcile_marks_idle_provider_refusal_failed(temp_db_path: Path) 
 async def test_reconcile_does_not_classify_successful_assistant_summary(
     temp_db_path: Path, summary: str
 ) -> None:
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.reasons import RunReasons
 
     events = [
         _user_text("u1", "do the thing"),
@@ -985,7 +985,7 @@ async def test_a_repeated_results_pointer_covers_the_named_row(
     ActionResponse and accept it as the full content."""
     from sqlalchemy import event
 
-    from lionagi.state._mirror_common import resolve_mirrored_content
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
     first = _tool_result("u2", "tool_1", "first")
@@ -1072,8 +1072,8 @@ async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) 
 
 
 async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(tmp_path):
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000006"
     records = [
@@ -1096,10 +1096,10 @@ async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(
 
 @pytest.mark.asyncio
 async def test_codex_task_complete_provider_error_marks_idle_session_failed(tmp_path):
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import reconcile_session_status as codex_reconcile_status
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
-    from lionagi.state.reasons import RunReasons
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import reconcile_session_status as codex_reconcile_status
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
+    from lionhub.state.reasons import RunReasons
 
     uid = "0199bbbb-0000-0000-0000-000000000020"
     records = [
@@ -1144,8 +1144,8 @@ async def test_codex_task_complete_provider_error_marks_idle_session_failed(tmp_
 
 @pytest.mark.asyncio
 async def test_codex_successful_task_complete_clears_prior_provider_error(tmp_path):
-    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
-    from lionagi.state.codex_mirror import session_db_id as codex_sid
+    from lionhub.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionhub.state.codex_mirror import session_db_id as codex_sid
 
     uid = "0199bbbb-0000-0000-0000-000000000021"
     user = {
@@ -1220,7 +1220,7 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror_mod, "_codex_pass", fake_codex_pass)
     monkeypatch.setattr(mirror_mod, "_load_states", lambda: {})
     monkeypatch.setattr(mirror_mod, "_save_states", lambda states, previous=None: None)
-    monkeypatch.setattr("lionagi.state.db.StateDB", lambda: FakeDB())
+    monkeypatch.setattr("lionhub.state.db.StateDB", lambda: FakeDB())
     monkeypatch.setattr("anyio.sleep", fake_sleep)
 
     args = argparse.Namespace(
@@ -1243,7 +1243,7 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
 
 
 def _source_line_for(raw: bytes, path: Path) -> SourceLine:
-    from lionagi.state._mirror_common import SourceLine
+    from lionhub.state._mirror_common import SourceLine
 
     return SourceLine(
         value=json.loads(raw),
@@ -1255,7 +1255,7 @@ def _source_line_for(raw: bytes, path: Path) -> SourceLine:
 
 
 def test_bound_mirror_content_default_truncates_long_instruction():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     long_text = "x" * 600
     content = {"instruction": long_text}
@@ -1281,7 +1281,7 @@ def test_bound_mirror_content_default_truncates_long_instruction():
 
 
 def test_bound_mirror_content_zero_stores_empty_preview_with_valid_pointer():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     content = {"assistant_response": "hello world"}
     line = SourceLine(
@@ -1306,7 +1306,7 @@ def test_bound_mirror_content_zero_stores_empty_preview_with_valid_pointer():
 
 
 def test_bound_mirror_content_exact_boundary_not_truncated():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     text = "y" * 500
     line = SourceLine(
@@ -1329,7 +1329,7 @@ def test_bound_mirror_content_exact_boundary_not_truncated():
 
 
 def test_bound_mirror_content_short_content_unchanged_and_not_truncated():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     line = SourceLine(
         value={},
@@ -1351,7 +1351,7 @@ def test_bound_mirror_content_short_content_unchanged_and_not_truncated():
 
 
 def test_bound_mirror_content_negative_budget_rejected():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     line = SourceLine(
         value={},
@@ -1372,7 +1372,7 @@ def test_bound_mirror_content_negative_budget_rejected():
 
 
 def test_bound_mirror_content_action_request_bounds_arguments_and_caps_function():
-    from lionagi.state._mirror_common import bound_mirror_content, canonical_json
+    from lionhub.state._mirror_common import bound_mirror_content, canonical_json
 
     content = {"function": "z" * 200, "arguments": {"payload": "w" * 900}}
     line = SourceLine(
@@ -1396,7 +1396,7 @@ def test_bound_mirror_content_action_request_bounds_arguments_and_caps_function(
 
 
 def test_bound_mirror_content_metadata_merge_preserves_lion_class():
-    from lionagi.state._mirror_common import bound_mirror_content
+    from lionhub.state._mirror_common import bound_mirror_content
 
     line = SourceLine(
         value={},
@@ -1419,7 +1419,7 @@ def test_bound_mirror_content_metadata_merge_preserves_lion_class():
 
 
 def test_resolve_mirrored_content_legacy_row_without_pointer_unchanged():
-    from lionagi.state._mirror_common import resolve_mirrored_content
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     row = {"content": {"assistant_response": "hi"}, "node_metadata": {"lion_class": "X"}}
     resolved = resolve_mirrored_content(row)
@@ -1430,7 +1430,7 @@ def test_resolve_mirrored_content_legacy_row_without_pointer_unchanged():
 def test_resolve_mirrored_content_round_trip_claude_assistant_response(tmp_path):
     """bound -> resolve reconstructs the exact full content via the real Claude
     adapter mapper, proving the pointer/hash/offset chain is internally consistent."""
-    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+    from lionhub.state._mirror_common import bound_mirror_content, resolve_mirrored_content
 
     session_uid = "sess-roundtrip"
     event = {
@@ -1471,7 +1471,7 @@ def test_resolve_mirrored_content_round_trip_claude_assistant_response(tmp_path)
 
 
 def test_resolve_mirrored_content_source_missing_falls_back_to_preview(tmp_path):
-    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+    from lionhub.state._mirror_common import bound_mirror_content, resolve_mirrored_content
 
     path = tmp_path / "gone.jsonl"
     raw = b'{"a": 1}'
@@ -1494,7 +1494,7 @@ def test_resolve_mirrored_content_source_missing_falls_back_to_preview(tmp_path)
 
 
 def test_resolve_mirrored_content_source_replaced_hash_mismatch(tmp_path):
-    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+    from lionhub.state._mirror_common import bound_mirror_content, resolve_mirrored_content
 
     path = tmp_path / "replaced.jsonl"
     raw = b'{"a": 1}'
@@ -1516,7 +1516,7 @@ def test_resolve_mirrored_content_source_replaced_hash_mismatch(tmp_path):
 
 
 def test_resolve_mirrored_content_short_read_falls_back_to_preview(tmp_path):
-    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+    from lionhub.state._mirror_common import bound_mirror_content, resolve_mirrored_content
 
     path = tmp_path / "short.jsonl"
     raw = b'{"a": 1}'
@@ -1538,7 +1538,7 @@ def test_resolve_mirrored_content_short_read_falls_back_to_preview(tmp_path):
 
 
 def test_resolve_mirrored_content_unsupported_pointer_version(tmp_path):
-    from lionagi.state._mirror_common import resolve_mirrored_content
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     row = {
         "content": {"assistant_response": "hi"},
@@ -1558,7 +1558,7 @@ def test_resolve_mirrored_content_unsupported_pointer_version(tmp_path):
 
 
 def test_resolve_mirrored_content_no_message_match_falls_back(tmp_path):
-    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+    from lionhub.state._mirror_common import bound_mirror_content, resolve_mirrored_content
 
     path = tmp_path / "t.jsonl"
     raw = b'{"a": 1}'
@@ -1588,9 +1588,9 @@ async def test_live_cli_mirror_run_once_bounds_oversized_message_end_to_end(
     the lower-level per-file helpers exercised by the other two live tests."""
     import argparse
 
-    from lionagi.state._mirror_common import resolve_mirrored_content
     from lionhub.serve import mirror as service_mod
     from lionhub.serve.cli import mirror as mirror_mod
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
 
@@ -1649,9 +1649,9 @@ async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointe
     """
     import argparse
 
-    from lionagi.state._mirror_common import resolve_mirrored_content
     from lionhub.serve import mirror as service_mod
     from lionhub.serve.cli import mirror as mirror_mod
+    from lionhub.state._mirror_common import resolve_mirrored_content
 
     monkeypatch.setattr(service_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
     monkeypatch.chdir(tmp_path)
@@ -1697,7 +1697,7 @@ async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointe
 
 def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
     """The bounding codec must not end up with zero callers: both writers call it directly and the mirror service threads the source-pointer data into every live write."""
-    root = Path(__file__).resolve().parents[5] / "lionagi"
+    root = Path(__file__).resolve().parents[5] / "lionhub" / "src" / "lionhub"
     codec_callers = {
         root / "state" / "claude_mirror.py": "claude_mirror.py",
         root / "state" / "codex_mirror.py": "codex_mirror.py",
@@ -1709,7 +1709,7 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
     ]
     assert not missing, f"bound_mirror_content has zero callers in: {missing}"
 
-    service_text = (root.parent / "lionhub" / "src" / "lionhub" / "serve" / "mirror.py").read_text()
+    service_text = (root / "serve" / "mirror.py").read_text()
     assert "max_preview_chars" in service_text and "event_sources" in service_text, (
         "lionhub/src/lionhub/serve/mirror.py does not thread the mirror bounding budget/source pointers "
         "into mirror_session()"
@@ -1832,7 +1832,7 @@ def test_an_unset_flag_still_takes_the_computed_default(monkeypatch, tmp_path):
 async def test_a_result_takes_a_name_only_from_a_stored_use_row() -> None:
     from lionagi.protocols.messages.action_request import ActionRequest
     from lionagi.protocols.messages.action_response import ActionResponse
-    from lionagi.state._mirror_common import name_answered_results
+    from lionhub.state._mirror_common import name_answered_results
 
     def _stored(message) -> dict:
         # The shape StateDB.get_messages returns: content as to_dict(mode="db") left
@@ -1885,7 +1885,7 @@ async def test_a_stored_use_row_with_no_recorded_class_lends_its_name(temp_db_pa
     Such a row is judged by its fields, so a use row (function and arguments, no output)
     still names the result linked to it.
     """
-    from lionagi.state._mirror_common import name_answered_results
+    from lionhub.state._mirror_common import name_answered_results
 
     async with StateDB() as db:
         await db.insert_message(
@@ -1910,7 +1910,7 @@ async def test_a_stored_row_without_arguments_is_not_a_use() -> None:
     A stored row with a function name and no arguments (and no recorded class) is not a
     use row, so a result linked to it keeps the empty name rather than taking that name.
     """
-    from lionagi.state._mirror_common import name_answered_results
+    from lionhub.state._mirror_common import name_answered_results
 
     class _Store:
         async def get_messages(self, ids):

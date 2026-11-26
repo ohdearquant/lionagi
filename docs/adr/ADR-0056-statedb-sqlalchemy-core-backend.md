@@ -116,7 +116,7 @@ URL normalization is:
 | `postgresql+asyncpg://...` | unchanged |
 | another scheme | returned unchanged; `dialect_of()` derives its prefix |
 
-Code anchors: `lionagi/state/db.py`; `lionagi/state/engine.py`;
+Code anchors: `lionhub/src/lionhub/state/db.py`; `lionhub/src/lionhub/state/engine.py`;
 `lionagi/config.py`.
 
 **Exact semantics.**
@@ -141,7 +141,7 @@ normalization also prevents callers from needing to know `aiosqlite` or `asyncpg
 
 ### D2 — `MetaData` is runtime schema authority
 
-SQLAlchemy `MetaData` in `lionagi/state/schema_meta.py` is the authoritative runtime schema for
+SQLAlchemy `MetaData` in `lionhub/src/lionhub/state/schema_meta.py` is the authoritative runtime schema for
 both dialects. `StateDB.open()` reconciles compatible existing databases before creating missing
 objects.
 
@@ -188,8 +188,8 @@ session_signals, engine_runs, engine_defs, workflow_defs, session_controls,
 dispatch_outbox, run_tags, approvals, approval_evidence
 ```
 
-Code anchors: `lionagi/state/db.py`; `lionagi/state/schema_meta.py`;
-`lionagi/state/schema_migrations.py`; `lionagi/state/schema.sql`.
+Code anchors: `lionhub/src/lionhub/state/db.py`; `lionhub/src/lionhub/state/schema_meta.py`;
+`lionhub/src/lionhub/state/schema_migrations.py`; `lionhub/src/lionhub/state/schema.sql`.
 
 **Exact semantics.**
 
@@ -249,7 +249,7 @@ async def vacuum(self) -> None: ...
 async def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int] | None: ...
 ```
 
-Code anchors: `lionagi/state/engine.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/engine.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -301,7 +301,7 @@ disable     -> ssl=False
 
 The `sslmode` query parameter is removed before the URL is passed to asyncpg.
 
-Code anchors: `lionagi/state/engine.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/engine.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 
@@ -358,7 +358,7 @@ Known semantic branches include:
 > remains binding in full until that aspirational record is accepted with its first dependent
 > implementation.
 
-Code anchors: `lionagi/state/db.py`; `lionagi/state/engine.py`.
+Code anchors: `lionhub/src/lionhub/state/db.py`; `lionhub/src/lionhub/state/engine.py`.
 
 **Exact semantics.**
 
@@ -398,7 +398,7 @@ PRAGMA busy_timeout = 5000
 PRAGMA query_only = 1
 ```
 
-Code anchors: `lionagi/state/engine.py`; `lionagi/state/db.py`.
+Code anchors: `lionhub/src/lionhub/state/engine.py`; `lionhub/src/lionhub/state/db.py`.
 
 **Exact semantics.**
 

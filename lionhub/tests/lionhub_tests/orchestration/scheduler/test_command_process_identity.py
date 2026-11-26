@@ -12,10 +12,10 @@ import psutil
 import pytest
 
 from lionagi.ln import _proc
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
 from lionhub.orchestration.scheduler import subprocess as scheduler_process
 from lionhub.orchestration.scheduler.engine import SchedulerEngine
+from lionhub.state.db import StateDB
+from lionhub.state.reasons import RunReasons
 from tests._scheduler_claims import fire_with_claim
 
 _RUN_ID = "scheduled-command-run"
@@ -100,7 +100,7 @@ class _CommandChild:
 def command_child(monkeypatch, tmp_path):
     child = _CommandChild()
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "probe-cmd")
-    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr("lionhub.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.setattr(scheduler_process.asyncio, "create_subprocess_exec", child.spawn)
     monkeypatch.setattr(_proc, "pinned_member", child.observe_member)
     monkeypatch.setattr(scheduler_process, "capture_group_witnesses", child.capture_witnesses)
