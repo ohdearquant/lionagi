@@ -655,7 +655,7 @@ def _apply_operator_effort(
     dependent clamping); the gemini-code CLI has no effort kwarg at all and
     instead folds it into the resolved ``--model`` display name.
     """
-    from lionagi.service.providers import (
+    from lionhub.providers.model_spec import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_EFFORT_VIA_MODEL_NAME,
         _clamp_claude_effort,
@@ -932,7 +932,7 @@ def build_operator_branch(
             **({"resume": turn.provider_session_id} if turn.provider_session_id else {}),
         }
     if execution_root is not None:
-        from lionagi.service.providers import PROVIDER_REPO_KWARG
+        from lionhub.providers.model_spec import PROVIDER_REPO_KWARG
 
         repo_kwarg = PROVIDER_REPO_KWARG.get(provider)
         if repo_kwarg is not None:

@@ -19,7 +19,10 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from lionagi.service.providers import codex_unset_effort_default, reclamp_effort_for_model
+from lionhub.providers.model_spec import (
+    codex_unset_effort_default,
+    reclamp_effort_for_model,
+)
 from tests._core_imports import ROOT
 from tests.service.test_hub_absent_characterization import _run_blocked
 
@@ -35,12 +38,12 @@ def global_ultra(tmp_path, monkeypatch):
 
 @pytest.fixture
 def refuse_codex_compatibility_lookup(monkeypatch):
-    from lionagi.service import providers
+    from lionhub.providers import model_spec
 
     def unexpected_lookup(*args, **kwargs):
         pytest.fail("A selected Codex adapter called the adapter-less default")
 
-    monkeypatch.setattr(providers, "codex_unset_effort_default", unexpected_lookup)
+    monkeypatch.setattr(model_spec, "codex_unset_effort_default", unexpected_lookup)
 
 
 class TestTheStudioOperatorSeam:
@@ -416,55 +419,63 @@ class TestTheHelperItself:
     def test_a_provider_qualified_model_resolves_to_its_bare_name(self, global_ultra):
         assert codex_unset_effort_default("codex/gpt-5.3-codex-spark") == "xhigh"
 
-    def test_injected_reader_and_public_fallback_without_hub(self, tmp_path):
+    def test_the_injected_reader_derives_and_pins_as_the_config_reader_does(self):
+        from lionhub.providers.model_spec import _codex_unset_effort_from_reader
+
+        model = "gpt-5.3-codex-spark"
+        replacement = {}
+        calls = []
+
+        def read_global_effort(env):
+            calls.append(env)
+            return "ULTRA"
+
+        derived = [
+            _codex_unset_effort_from_reader(model, None, env, read_global_effort=read_global_effort)
+            for env in (None, replacement)
+        ]
+        pinned = [
+            _codex_unset_effort_from_reader(
+                model,
+                {"model_reasoning_effort": pin},
+                replacement,
+                read_global_effort=read_global_effort,
+            )
+            for pin in ("medium", None)
+        ]
+
+        assert derived == ["xhigh", "xhigh"]
+        assert pinned == [None, None]
+        assert len(calls) == 2 and calls[0] is None and calls[1] is replacement
+        assert codex_unset_effort_default(model, {"model_reasoning_effort": None}) is None
+
+    def test_with_the_hub_blocked_the_old_name_reports_it_missing(self, tmp_path):
         report = _run_blocked(
             """
-from lionagi.service.providers import (
-    _codex_unset_effort_from_reader,
-    codex_unset_effort_default,
-)
+from lionagi.service.providers import EFFORT_LEVELS, split_effort_suffix
 
-model = "gpt-5.3-codex-spark"
-replacement = {}
-calls = []
-
-
-def read_global_effort(env):
-    calls.append(env)
-    return "ULTRA"
-
-
-derived = [
-    _codex_unset_effort_from_reader(model, None, env, read_global_effort=read_global_effort)
-    for env in (None, replacement)
-]
-pinned = [
-    _codex_unset_effort_from_reader(
-        model, {"model_reasoning_effort": pin}, replacement, read_global_effort=read_global_effort
-    )
-    for pin in ("medium", None)
-]
-public_pinned = codex_unset_effort_default(model, {"model_reasoning_effort": None})
-public_default = codex_unset_effort_default(model)
+try:
+    from lionagi.service.providers import codex_unset_effort_default
+except ImportError as error:
+    refused = type(error).__name__
+else:
+    refused = None
 
 print(json.dumps({
-    "derived": derived,
-    "pinned": pinned,
-    "reader_received_original_envs": len(calls) == 2 and calls[0] is None and calls[1] is replacement,
-    "public_pinned": public_pinned,
-    "public_default": public_default,
+    "split": list(split_effort_suffix("gpt-5.4-max")),
+    "levels": len(EFFORT_LEVELS),
+    "refused": refused,
 }))
 """,
             tmp_path,
         )
 
+        # The suffix grammar stays in the core. The default moved to the hub with the codex
+        # tables, so its old name raises an import error rather than answering.
         assert report == {
-            "derived": ["xhigh", "xhigh"],
-            "pinned": [None, None],
-            "reader_received_original_envs": True,
-            "public_pinned": None,
-            # A blocked hub is a missing feature to the catalog, so no effort is emitted.
-            "public_default": None,
+            "split": ["gpt-5.4", "max"],
+            "levels": 8,
+            "refused": "ModuleNotFoundError",
         }
 
     def test_cold_public_default_goes_through_the_provider_catalog(self, global_ultra):
@@ -474,9 +485,10 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 sys.path[:0] = [str(root), str(root / "lionhub" / "src")]
-from lionagi.service.providers import codex_unset_effort_default
+from lionhub.providers.model_spec import codex_unset_effort_default
 
-assert "lionhub" not in sys.modules
+# The module reaches the codex adapter only through the catalog, when the policy is asked for.
+assert "lionhub.providers.openai.codex" not in sys.modules
 assert codex_unset_effort_default("gpt-5.3-codex-spark") == "xhigh"
 # The policy is reached through the catalog's codex endpoint class.
 assert "lionhub.providers.manifest" in sys.modules
@@ -520,7 +532,8 @@ def _use_catalog(monkeypatch, catalog):
 
 class TestThePolicyComesFromTheCodexAdapter:
     def test_both_routes_agree_for_every_known_model_and_configured_effort(self, tmp_path):
-        from lionagi.service.providers import _CODEX_KNOWN_EFFORT_MODELS, EFFORT_LEVELS
+        from lionagi.service.providers import EFFORT_LEVELS
+        from lionhub.providers.model_spec import _CODEX_KNOWN_EFFORT_MODELS
         from lionhub.providers.openai._codex_profile import codex_unset_effort_from_config
 
         models = [*sorted(_CODEX_KNOWN_EFFORT_MODELS), "gpt-9.9-future"]
@@ -595,11 +608,11 @@ class TestThePolicyComesFromTheCodexAdapter:
         with pytest.raises(RuntimeError, match="a defect in the endpoint module"):
             codex_unset_effort_default("gpt-5.3-codex-spark")
 
-    def test_with_the_hub_physically_absent_no_effort_is_emitted(self, tmp_path):
+    def test_with_the_hub_physically_absent_the_old_name_reports_it_missing(self, tmp_path):
         """Only the core package is on the path: no import system refusal stands in for the hub.
 
-        The configured effort is one the hub would clamp and emit, so reaching the hub would
-        show as ``xhigh`` rather than ``None``.
+        The suffix grammar stays in the core and works. The default moved to the hub with the
+        codex tables, so its old name raises an import error rather than answering.
         """
         from tests._core_imports import ROOT
 
@@ -607,9 +620,6 @@ class TestThePolicyComesFromTheCodexAdapter:
         shutil.copytree(
             ROOT / "lionagi", site / "lionagi", ignore=shutil.ignore_patterns("__pycache__")
         )
-        home = tmp_path / "codex-home"
-        home.mkdir()
-        (home / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
         code = """
 import importlib.util
 import json
@@ -626,12 +636,20 @@ sys.meta_path[:] = [f for f in sys.meta_path if "editable" not in type(f).__modu
 absent = importlib.util.find_spec("lionhub") is None
 
 import lionagi
-from lionagi.service.providers import codex_unset_effort_default
+from lionagi.service.providers import split_effort_suffix
+
+try:
+    from lionagi.service.providers import codex_unset_effort_default
+except ImportError as error:
+    refused = type(error).__name__
+else:
+    refused = None
 
 print(json.dumps({
     "hub_absent": absent,
     "core_from_site": Path(lionagi.__file__).resolve().is_relative_to(site),
-    "default": codex_unset_effort_default("gpt-5.3-codex-spark"),
+    "split": list(split_effort_suffix("gpt-5.3-codex-spark-ultra")),
+    "refused": refused,
     "still_absent": "lionhub" not in sys.modules,
 }))
 """
@@ -639,7 +657,6 @@ print(json.dumps({
             [sys.executable, "-c", code, str(site)],
             cwd=tmp_path,
             env={
-                "CODEX_HOME": str(home),
                 "HOME": str(tmp_path),
                 "PATH": os.environ.get("PATH", ""),
                 "TMPDIR": os.environ.get("TMPDIR", str(tmp_path)),
@@ -653,6 +670,7 @@ print(json.dumps({
         assert json.loads(proc.stdout.strip().splitlines()[-1]) == {
             "hub_absent": True,
             "core_from_site": True,
-            "default": None,
+            "split": ["gpt-5.3-codex-spark", "ultra"],
+            "refused": "ModuleNotFoundError",
             "still_absent": True,
         }

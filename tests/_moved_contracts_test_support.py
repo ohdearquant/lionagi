@@ -1419,6 +1419,34 @@ CONTRACTS: tuple[MoveContract, ...] = (
         ),
         shared_values=frozenset({"_router", "_test_ledger_path", "_test_sources"}),
     ),
+    MoveContract(
+        old="lionagi.service._model_spec",
+        new="lionhub.providers.model_spec",
+        kind="module",
+        public_names=frozenset(
+            {
+                "ModelSpec",
+                "codex_unset_effort_default",
+                "parse_model_spec",
+                "reclamp_effort_for_model",
+            }
+        ),
+        private_names=frozenset(
+            {
+                "_clamp_claude_effort",
+                "_clamp_codex_effort",
+                "_clamp_gemini_effort",
+                "_clamp_name",
+                "_codex_unset_effort_from_reader",
+                "_normalize_model",
+                "_normalize_model_name",
+                "_validate_provider_permission_tables",
+            }
+        ),
+        shared_values=frozenset(
+            {"BACKENDS", "PROVIDER_BYPASS_KWARGS", "PROVIDER_EFFORT_KWARG", "PROVIDER_YOLO_KWARGS"}
+        ),
+    ),
 )
 
 

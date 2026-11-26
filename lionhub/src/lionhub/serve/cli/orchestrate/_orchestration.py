@@ -793,8 +793,8 @@ def _isolate_worker_cli_config(
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     kwargs = imodel.endpoint.config.kwargs
     provider = _canonical_provider(imodel.endpoint.config.provider)
@@ -924,9 +924,9 @@ def _confine_claude_worker(imodel, profile_name: str | None) -> None:
     """
     if not getattr(imodel, "is_cli", False):
         return
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.child_sandbox import resolve_child_sandbox
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     if _canonical_provider(imodel.endpoint.config.provider) not in _CLAUDE_PROVIDER_NAMES:
         return
@@ -942,8 +942,8 @@ def _uncontainable_cli_provider(imodel) -> str | None:
     """
     if not getattr(imodel, "is_cli", False):
         return None
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
     from lionhub.agent.factory import _canonical_provider
+    from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 
     provider = _canonical_provider(imodel.endpoint.config.provider)
     if provider == "codex" or provider in _CLAUDE_PROVIDER_NAMES:
@@ -1242,8 +1242,8 @@ async def setup_orchestration(
         # An empty set left the orchestrator loading no user config, so the effort
         # build_imodel_from_spec derived from that config goes too (create_agent
         # drops it the same way).
-        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
         from lionhub.agent.factory import _canonical_provider
+        from lionhub.providers.model_spec import PROVIDER_EFFORT_KWARG
 
         effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
         if effort_kwarg:

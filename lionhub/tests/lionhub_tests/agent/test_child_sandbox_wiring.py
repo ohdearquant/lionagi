@@ -18,9 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi._errors import ConfigurationError
-from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionhub.agent.factory import create_agent
 from lionhub.agent.spec import AgentSpec
+from lionhub.providers.model_spec import _CLAUDE_PROVIDER_NAMES
 from lionhub.serve.cli.orchestrate._orchestration import _confine_claude_worker
 
 child_sandbox = importlib.import_module("lionhub.agent.child_sandbox")

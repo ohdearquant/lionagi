@@ -443,38 +443,32 @@ class iModel:  # noqa: N801
 
                     provider = settings.LIONAGI_CHAT_PROVIDER
 
-            # Effort-suffixed model names ("gpt-5.6-luna-high") are stripped and
-            # routed to the provider's effort kwarg here so it works at every
-            # construction site. See docs/internals/service-layer.md#effort-suffix-routing.
+            # Effort-suffixed model names ("gpt-5.6-luna-high") are stripped and routed to
+            # the effort kwarg the selected endpoint class declares (``effort_kwarg``), clamped
+            # by its ``clamp_effort`` when it has one, so it works at every construction site.
+            # See docs/internals/service-layer.md#effort-suffix-routing.
             from .connections.registry import EndpointRegistry
-            from .providers import (
-                _CLAUDE_PROVIDER_NAMES,
-                PROVIDER_EFFORT_KWARG,
-                _clamp_claude_effort,
-                normalize_effort,
-                split_effort_suffix,
-            )
+            from .providers import normalize_effort, split_effort_suffix
 
-            # An alias ("openai-codex") routes as the provider it names. A supplied catalog
-            # names it: the automatic source is not consulted.
-            if provider_catalog is None:
-                _canonical = EndpointRegistry.canonical_provider(provider) if provider else None
-            elif provider:
-                _fragment = provider_catalog.fragment(provider)
-                _canonical = _fragment.key if _fragment else provider.lower()
-            else:
-                _canonical = None
-            _effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical) if _canonical else None
             _model_name = kwargs.get("model")
-            if _effort_kwarg and isinstance(_model_name, str):
-                _split = split_effort_suffix(_model_name)
-                if _split is not None:
+            _split = split_effort_suffix(_model_name) if isinstance(_model_name, str) else None
+            if _split is not None and provider:
+                # An alias ("openai-codex") routes as the provider it names. A supplied catalog
+                # names it: the automatic source is not consulted.
+                _endpoint_class = EndpointRegistry.declared_endpoint_class(
+                    provider,
+                    endpoint if isinstance(endpoint, str) else None,
+                    provider_catalog=provider_catalog,
+                )
+                _effort_kwarg = getattr(_endpoint_class, "effort_kwarg", None)
+                if _effort_kwarg:
                     _name, _raw_effort = _split
                     kwargs["model"] = _name
                     if _effort_kwarg not in kwargs:
                         _eff = normalize_effort(_raw_effort)
-                        if _canonical in _CLAUDE_PROVIDER_NAMES:
-                            _eff = _clamp_claude_effort(_eff, kwargs["model"])
+                        _clamp = getattr(_endpoint_class, "clamp_effort", None)
+                        if callable(_clamp):
+                            _eff = _clamp(_eff, _name)
                         kwargs[_effort_kwarg] = _eff
 
         if api_key is not None:

@@ -604,9 +604,10 @@ decorator forwards named values into the generic registry.
   least two adapters use them.
 - In-process and remote agent adapters own their request objects and agent/network calls while still
   yielding `StreamChunk`.
-- `lionagi/service/providers.py` currently remains a second vendor-identity table for model aliases,
-  effort mapping, fast mode, bypass, and safety kwargs. `parse_model_spec()` is a public compatibility
-  surface consumed outside provider packages.
+- `lionagi/service/providers.py` was a second vendor-identity table for model aliases, effort
+  mapping, fast mode, bypass, and safety kwargs. Those tables and `parse_model_spec()` now live in
+  `lionhub.providers.model_spec` (ADR-0136 Amendment 8); the core file keeps the effort-suffix
+  grammar, and the effort kwarg comes from the endpoint class's `effort_kwarg`.
 - A provider adapter depends on the service registry decorator and base endpoint. Conversely the
   service registry imports a fixed list of provider modules at runtime. This is a real two-way
   package dependency, not full dependency inversion.
@@ -627,7 +628,8 @@ the shared agentic output and cleanup contract.
   `APICalling`, and `StreamChunk` names remain stable.
 - Provider selection and construction are inspectable at one resolver. A new provider must still
   coordinate its local registration with the generic bootstrap list and, where model aliases or
-  effort behavior apply, the second table in `service/providers.py`.
+  effort behavior apply, the tables in `lionhub.providers.model_spec`; an effort suffix needs only the
+  endpoint class's `effort_kwarg`.
 - HTTP adapters inherit one SSRF and transport implementation. Agentic adapters cannot accidentally
   use the HTTP helpers because those helpers fail explicitly.
 - Reversing D1 would require changing Branch, operation, serialization, and lifecycle call sites;
