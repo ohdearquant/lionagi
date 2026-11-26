@@ -12,7 +12,7 @@ REPOSITORY = "ohdearquant/lionagi"
 API_ROOT = f"repos/{REPOSITORY}"
 LABEL = "dev-full-matrix-failure"
 TITLE = "The dev Python test matrix failed"
-PYTHON_VERSIONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+PYTHON_VERSIONS = ("3.11", "3.12", "3.13", "3.14")
 REPORTER_LOGIN = "github-actions[bot]"
 
 

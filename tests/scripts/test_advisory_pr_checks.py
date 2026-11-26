@@ -744,7 +744,7 @@ def _pull_request_branch_filter(parsed: object) -> bool:
 # still runs every version before main moves. It is matched as this exact text
 # and removed before the scan, so any edit to it is refused here and has to be
 # argued again; its selections are pinned by the matrix tests below.
-SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.10\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.10\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.10\",\"3.14\"]' || '[\"3.10\",\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
+SANCTIONED_TEST_MATRIX = "${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '[\"3.11\",\"3.14\"]' || (github.event_name == 'pull_request' && needs.changes.outputs.code == 'false' && github.base_ref == 'dev/lionagi') && '[\"3.11\"]' || (github.event_name == 'pull_request' && github.base_ref == 'dev/lionagi') && '[\"3.11\",\"3.14\"]' || '[\"3.11\",\"3.12\",\"3.13\",\"3.14\"]') }}"
 
 
 def _sanctioned_matrix_removed(parsed: object) -> object:
@@ -902,7 +902,7 @@ def _test_matrix_versions(
     return eval(inner, {"__builtins__": {}}, scope)  # noqa: S307 - the pinned text above
 
 
-FULL_SET = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+FULL_SET = ["3.11", "3.12", "3.13", "3.14"]
 
 
 def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
@@ -913,19 +913,19 @@ def test_the_test_matrix_reads_the_sanctioned_expression() -> None:
 @pytest.mark.parametrize(
     ("event", "base", "code", "matrix", "expected"),
     [
-        ("pull_request", "dev/lionagi", "true", "", ["3.10", "3.14"]),
+        ("pull_request", "dev/lionagi", "true", "", ["3.11", "3.14"]),
         ("pull_request", "main", "true", "", FULL_SET),
         ("pull_request", "release/x", "true", "", FULL_SET),
-        ("pull_request", "dev/lionagi", "false", "", ["3.10"]),
+        ("pull_request", "dev/lionagi", "false", "", ["3.11"]),
         ("pull_request", "main", "false", "", FULL_SET),
         ("pull_request", "release/x", "false", "", FULL_SET),
         # `changes` failed or was skipped: its output is empty.
-        ("pull_request", "dev/lionagi", "", "", ["3.10", "3.14"]),
+        ("pull_request", "dev/lionagi", "", "", ["3.11", "3.14"]),
         ("pull_request", "main", "", "", FULL_SET),
         ("push", "", "true", "", FULL_SET),
         ("push", "", "false", "", FULL_SET),
         ("workflow_dispatch", "", "", "full", FULL_SET),
-        ("workflow_dispatch", "", "", "endpoints", ["3.10", "3.14"]),
+        ("workflow_dispatch", "", "", "endpoints", ["3.11", "3.14"]),
     ],
 )
 def test_the_test_matrix_selection(event, base, code, matrix, expected) -> None:
