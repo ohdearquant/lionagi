@@ -14,7 +14,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/serve/cli/` | The `li` command-line interface: the entry point, the built-in command catalog, lazy command discovery, and every command module. |
 | `lionhub/src/lionhub/orchestration/` | Orchestration, engines, dispatch, work forms, and scheduler services and helpers. |
 | `lionhub/src/lionhub/orchestration/scheduler/` | Scheduler engine, state service, workers, signals, process execution, GitHub polling, admission, coordination, thresholds, maintenance, lifecycle, and dependency helpers. |
-| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers. |
+| `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers, including the Anthropic account engine (`providers/anthropic/accounts/`): routed accounts, the monthly budget ledger, pricing and key resolution. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/state/` | The state store (`StateDB`, over SQLite or PostgreSQL), its schema and migrations, lifecycle transitions, the Claude Code and Codex mirrors, log channels, the CLI worker context and the message retry queue. |
 | `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
@@ -97,6 +97,18 @@ signals, sessions or messages stored passes one in.
 | `lionagi._cli_worker_context` | `lionhub.state.cli_worker_context` |
 | `lionagi.hooks._message_retry` | `lionhub.state.message_retry` |
 | `lionagi.hooks._persistence_handlers` | `lionhub.orchestration.run_persistence` |
+
+The Anthropic account engine below is deprecated at its old paths in 0.39.0 and is scheduled
+for removal in 2.0.0. The core keeps the seam the engine is reached through:
+`lionagi.service.accounts` still holds the shared types, the routing scope, the request guard
+and the usage-shape helpers.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.service.accounts._credentials` | `lionhub.providers.anthropic.accounts._credentials` |
+| `lionagi.service.accounts._ledger` | `lionhub.providers.anthropic.accounts._ledger` |
+| `lionagi.service.accounts._pricing` | `lionhub.providers.anthropic.accounts._pricing` |
+| `lionagi.service.accounts._router` | `lionhub.providers.anthropic.accounts._router` |
 
 The prompt size bound below is deprecated at its old path in 0.39.0 and is scheduled for
 removal in 2.0.0.

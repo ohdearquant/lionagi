@@ -87,7 +87,7 @@ _PRELOAD_MODULES = (
     "lionagi.operations.run.stream_buffer",
     "lionagi.plugins",
     "lionagi.protocols.action.gate",
-    "lionagi.service.accounts._router",
+    "lionhub.providers.anthropic.accounts._router",
     "lionagi.service.accounts._scope",
     "lionagi.service.connections._chat_schemas",
     "lionagi.service.connections.registry",

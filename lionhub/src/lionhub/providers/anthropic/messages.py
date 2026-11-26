@@ -31,8 +31,8 @@ from ._config import ANTHROPIC_CONTEXT_WINDOWS as CONTEXT_WINDOWS  # noqa: F401
 from ._config import AnthropicConfigs
 
 if TYPE_CHECKING:
-    from lionagi.service.accounts._router import AccountRouter, RouterAttempt
     from lionagi.service.accounts._types import Evidence
+    from lionhub.providers.anthropic.accounts._router import AccountRouter, RouterAttempt
 
 logger = logging.getLogger("lionagi.providers.anthropic.messages")
 
@@ -204,7 +204,7 @@ def _rename_masked_names(value: dict, names: list, key: Any) -> dict:
     one an earlier name took, is numbered, so every entry stays reachable. Only a string
     name is matched. The object is rebuilt once, however many names change.
     """
-    from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_key_runs
 
     present = set(value)
     renames: dict = {}
@@ -239,7 +239,7 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
     values stay reachable; a number whose text holds a run is replaced by its masked
     text. A bool and None are never matched.
     """
-    from lionagi.service.accounts._router import mask_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_key_runs
 
     changed = False
     if isinstance(value, dict):
@@ -394,7 +394,7 @@ class _AccountingStreamParser:
             if isinstance(model, str) and model:
                 self.models.add(model)
                 self.model = model if len(self.models) == 1 else None
-            from lionagi.service.accounts._router import provider_request_id
+            from lionhub.providers.anthropic.accounts._router import provider_request_id
 
             self.request_id = provider_request_id(reading.get("id"), self.key) or self.request_id
             # A start's counts are placeholders: once a message_delta has counted the output,
@@ -436,7 +436,7 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
     masked (see ``StreamTextRedactor``). A dict name and a number are matched as their
     text; see ``_mask_key_runs_in_strings``. The body is changed in place.
     """
-    from lionagi.service.accounts._router import mask_joined_key_runs
+    from lionhub.providers.anthropic.accounts._router import mask_joined_key_runs
 
     raw = body.get("content") if isinstance(body, dict) else None
     content = raw if isinstance(raw, list) else [raw] if raw is not None else []
@@ -771,7 +771,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             routed_client_kwargs,
             validate_routed_request,
         )
-        from lionagi.service.accounts._router import get_router
+        from lionhub.providers.anthropic.accounts._router import get_router
 
         url = self.config.full_url
         method = self.config.method
@@ -859,7 +859,6 @@ class AnthropicMessagesEndpoint(Endpoint):
             routed_client_kwargs,
             validate_routed_request,
         )
-        from lionagi.service.accounts._router import get_router, redact_value
         from lionagi.service.accounts._types import (
             _BILLING_BLOCKS,
             AccountRoutingError,
@@ -870,6 +869,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             _RoutedNoRetryError,
             _RoutedRetryableError,
         )
+        from lionhub.providers.anthropic.accounts._router import get_router, redact_value
 
         try:
             # Read once: the URL, method, headers and client options checked are the ones sent,
@@ -1184,17 +1184,10 @@ class AnthropicMessagesEndpoint(Endpoint):
         import json
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
-        from lionagi.service.accounts._pricing import stream_usage_estimate, usage_outcome
         from lionagi.service.accounts._request_guard import (
             header_pairs,
             routed_client_kwargs,
             validate_routed_request,
-        )
-        from lionagi.service.accounts._router import (
-            StreamingSecretRedactor,
-            StreamTextRedactor,
-            get_router,
-            redact_value,
         )
         from lionagi.service.accounts._types import (
             _BILLING_BLOCKS,
@@ -1207,6 +1200,16 @@ class AnthropicMessagesEndpoint(Endpoint):
             _RoutedNoRetryError,
             _RoutedRetryableError,
             _SSEFrame,
+        )
+        from lionhub.providers.anthropic.accounts._pricing import (
+            stream_usage_estimate,
+            usage_outcome,
+        )
+        from lionhub.providers.anthropic.accounts._router import (
+            StreamingSecretRedactor,
+            StreamTextRedactor,
+            get_router,
+            redact_value,
         )
 
         self._assert_ssrf_safe_url()

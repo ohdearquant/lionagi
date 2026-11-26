@@ -595,6 +595,11 @@ def test_a_moved_module_keeps_the_logger_name_it_had():
         ("lionhub.providers.ag2.agent", "logger", "lionagi.providers.ag2.agent"),
         ("lionhub.providers.ag2.groupchat", "logger", "lionagi.providers.ag2.groupchat"),
         ("lionhub.providers.ag2.nlip", "logger", "lionagi.providers.ag2.nlip"),
+        (
+            "lionhub.providers.anthropic.accounts._ledger",
+            "_LOGGER",
+            "lionagi.service.accounts._ledger",
+        ),
         ("lionhub.providers.anthropic.messages", "logger", "lionagi.providers.anthropic.messages"),
         ("lionhub.providers.ollama.chat", "logger", "lionagi.providers.ollama.chat"),
         ("lionhub.providers.ollama.generate", "logger", "lionagi.providers.ollama.generate"),
