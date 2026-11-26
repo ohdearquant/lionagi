@@ -46,8 +46,7 @@
 Instructions this amendment serves, from the maintainer on 2026-11-25:
 
 - "not ready, https://github.com/ohdearquant/lionagi/tree/main/lionagi/state needs to leave lionagi core, some other stuff as well,"
-- "那我清楚了，你先继续拆迁吧，搬的差不多了，估计会清爽一点。先把肯定不是core的东西搬迁完再说" (keep moving, and move what is
-  clearly not core first)
+- "先把肯定不是core的东西搬迁完再说" (move what is clearly not core first)
 - "Core stops persisting by default. the expected behavior should be, if using via mcp, should store, if using as sdk, we don't default persist"
   (served by ADR-0047's amendment of 2026-11-25)
 
@@ -85,8 +84,17 @@ persistence handler names stay importable from it until 2.0.0: the module resolv
 access through a table row for the private old name `lionagi.hooks._persistence_handlers`, mapped to
 `lionhub.orchestration.run_persistence`. The core names only a `lionagi` path and the finder does the
 hub lookup, as A3 does for the root's nine LNDL names, and the first access emits D3's warning at the
-caller's line. This is a stated exception, limited to these five names. At 2.0 the row and the
-attribute hook go together, and the release notes name the five names.
+caller's line. This is a stated exception, limited to these five names, and it holds only under four
+conditions, each tested in the move change:
+
+1. The table marks this row as an attribute-forwarding row whose old name never existed as a file,
+   and the table tests name this row explicitly rather than accepting any row of that shape.
+2. A plain `import lionagi.hooks.builtins` loads no hub module.
+3. Each of the five names is the same object under both paths, and the deprecation warning fires
+   once, at the caller's line.
+4. At 2.0 the row and the attribute hook go together, the release notes name the five names, and a
+   release guard that does not read the table, since the row is gone by then, requires the five
+   names to be absent from `lionagi.hooks.builtins` attribute access, as A3's guard does for its nine.
 
 ### H2. What stays in the core, and what each core use of the store becomes
 
@@ -113,7 +121,8 @@ opt-in sentence of ADR-0047's amendment of 2026-11-25.
 `lionagi.hooks.persist.route_message_persistence` stays in the core. It wires the caller's callback and
 takes `persist_message` off the bus so that one path persists each message; today it imports the
 handler to do that. After the move it looks the handler up in the registry by name and removes it if it
-is registered. A process that has not imported the hub module has no such handler to put on a bus, so
+is registered. The lookup is by the handler's registered name and removes only that object, so a
+caller's own handler on the same hook point is untouched; a test shows it. A process that has not imported the hub module has no such handler to put on a bus, so
 there is nothing to remove.
 
 `SessionObserver.bind_db_persistence(session_id, db=None)` today opens a fresh store for every signal
