@@ -241,10 +241,6 @@
       "layer": "foundation",
       "owner": "primitives"
     },
-    "lionagi.ln._paths": {
-      "layer": "foundation",
-      "owner": "primitives"
-    },
     "lionagi.ln._proc": {
       "layer": "foundation",
       "owner": "primitives"

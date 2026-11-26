@@ -91,6 +91,13 @@ removal in 2.0.0.
 | --- | --- |
 | `lionagi._spec_limits` | `lionhub.orchestration.spec_limits` |
 
+The private workspace-root helper the tool constructors share is deprecated at its old path in
+0.39.0 and is scheduled for removal in 2.0.0.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.ln._paths` | `lionhub.tools._paths` |
+
 The schedule services below are deprecated at their old paths in 0.38.0
 and are scheduled for removal in 2.0.0.
 
