@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import anyio
 import pytest
 
+import lionhub.providers.anthropic.accounts._ledger as ledger_module
 from lionagi.service.accounts._types import (
     INT64_MAX,
     AccountRoutingError,
@@ -929,3 +930,81 @@ async def test_cancel_waits_for_reservation_worker_to_commit(tmp_path, monkeypat
     assert row[0:2] == ("open", None)
     status = await ledger.status("anthropic", "2026-01")
     assert (status[0].open_attempts, status[0].open_ceiling_nusd) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("settled", "adjustments", "opened", "readable"),
+    [
+        (INT64_MAX, 0, 0, True),
+        (INT64_MAX + 1, -1, 0, False),
+        (0, INT64_MAX, 0, True),
+        (0, INT64_MAX + 1, 0, False),
+        (INT64_MAX, -INT64_MAX, 0, True),
+        (INT64_MAX, -INT64_MAX - 1, 0, False),
+        (0, 0, INT64_MAX, True),
+        (0, 0, INT64_MAX + 1, False),
+        (1, 0, INT64_MAX, False),
+        (2, -1, INT64_MAX - 1, True),
+        (0, 0, -1, False),
+        (-1, 1, 0, False),
+    ],
+    ids=[
+        "settled-at-top",
+        "settled-past-top-total-inside",
+        "adjustments-at-top",
+        "adjustments-past-top",
+        "spend-zero-at-bottom",
+        "spend-negative",
+        "opened-at-top",
+        "opened-past-top",
+        "total-past-top",
+        "total-at-top",
+        "opened-negative",
+        "settled-negative",
+    ],
+)
+def test_account_total_range_at_the_signed_64_bit_edges(settled, adjustments, opened, readable):
+    assert ledger_module._account_total_in_range(settled, adjustments, opened) is readable
+
+
+@pytest.mark.parametrize(
+    ("settled", "adjustments", "delta", "readable"),
+    [
+        (0, INT64_MAX - 1, 1, True),
+        (0, INT64_MAX - 1, 2, False),
+        (INT64_MAX, 0, -INT64_MAX, True),
+        (INT64_MAX, 0, -INT64_MAX - 1, False),
+    ],
+    ids=["up-to-top", "up-past-top", "down-to-zero", "down-past-zero"],
+)
+def test_one_refusal_for_a_delta_of_either_sign(settled, adjustments, delta, readable):
+    attempt_id = uuid4()
+    if readable:
+        ledger_module._require_account_total(
+            settled, adjustments + delta, 0, account="alpha", attempt_id=attempt_id
+        )
+        return
+    with pytest.raises(AccountRoutingError) as caught:
+        ledger_module._require_account_total(
+            settled, adjustments + delta, 0, account="alpha", attempt_id=attempt_id
+        )
+    assert caught.value.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert (caught.value.account, caught.value.attempt_id) == ("alpha", attempt_id)
+
+
+@pytest.mark.anyio
+async def test_an_adjustment_past_the_signed_64_bit_total_is_budget_exhausted(tmp_path):
+    ledger = CredentialLedger(
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    await reserve_one(ledger)
+
+    # The open reservation holds 1 nusd, so INT64_MAX more leaves the total one past the top.
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.adjust(uuid4(), "anthropic", "alpha", "2026-01", INT64_MAX, "invoice-a")
+
+    assert caught.value.code is RouterErrorCode.BUDGET_EXHAUSTED
+    assert caught.value.account == "alpha"
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == 0
+    await ledger.adjust(uuid4(), "anthropic", "alpha", "2026-01", INT64_MAX - 1, "invoice-b")
+    assert (await ledger.status("anthropic", "2026-01"))[0].adjustments_nusd == INT64_MAX - 1

@@ -169,6 +169,36 @@ def _checked_int(value: object, *, minimum: int, maximum: int, label: str) -> in
     return value
 
 
+def _account_total_in_range(settled: int, adjustments: int, opened: int) -> bool:
+    """Whether an account's month, in these three parts, is one the ledger can read back.
+
+    ``_spend_parts`` refuses a month whose settled spend, adjustments or open reservations fall
+    outside a signed 64-bit integer, or whose settled spend plus adjustments is negative, and
+    ``status()`` also refuses one whose three parts together pass ``INT64_MAX``. Every write is
+    checked against this range before it lands, so no write leaves a month unreadable.
+    """
+    return (
+        0 <= settled <= INT64_MAX
+        and _INT64_MIN <= adjustments <= INT64_MAX
+        and 0 <= opened <= INT64_MAX
+        and settled + adjustments >= 0
+        and settled + adjustments + opened <= INT64_MAX
+    )
+
+
+def _require_account_total(
+    settled: int, adjustments: int, opened: int, *, account: str, attempt_id: UUID | None
+) -> None:
+    """Refuse with ``budget_exhausted`` a write that would leave the month out of range.
+
+    The caller passes the three parts as they would stand after its write.
+    """
+    if not _account_total_in_range(settled, adjustments, opened):
+        raise _routing_error(
+            RouterErrorCode.BUDGET_EXHAUSTED, account=account, attempt_id=attempt_id
+        )
+
+
 def _validate_source(source_ref: object) -> str:
     if not isinstance(source_ref, str) or not source_ref or len(source_ref) > 512:
         raise ValueError("invalid source reference")
@@ -1115,9 +1145,11 @@ class CredentialLedger:
         return settled, adjustments, opened, scopes
 
     @staticmethod
-    def _fits(spent: int, opened: int, ceiling: int, budget: int) -> bool:
-        total = spent + opened + ceiling
-        return total <= INT64_MAX and total <= budget
+    def _fits(settled: int, adjustments: int, opened: int, ceiling: int, budget: int) -> bool:
+        return (
+            _account_total_in_range(settled, adjustments, opened + ceiling)
+            and settled + adjustments + opened + ceiling <= budget
+        )
 
     @staticmethod
     def _ratio_order(
@@ -1423,7 +1455,7 @@ class CredentialLedger:
                         connection, provider, selected.name, month_utc
                     )
                     if not self._fits(
-                        settled + adjustments, opened, quote.ceiling_nusd, selected.budget_nusd
+                        settled, adjustments, opened, quote.ceiling_nusd, selected.budget_nusd
                     ):
                         raise _routing_error(
                             RouterErrorCode.BUDGET_EXHAUSTED,
@@ -1464,7 +1496,7 @@ class CredentialLedger:
                         (provider, bound_name, month_utc),
                     ).fetchone()
                     budget = selected.budget_nusd if budget_row is None else budget_row[0]
-                    if not self._fits(settled + adjustments, opened, quote.ceiling_nusd, budget):
+                    if not self._fits(settled, adjustments, opened, quote.ceiling_nusd, budget):
                         raise _routing_error(
                             RouterErrorCode.BUDGET_EXHAUSTED,
                             account=bound_name,
@@ -1485,7 +1517,9 @@ class CredentialLedger:
                             connection, provider, spec.name, month_utc
                         )
                         spent = settled + adjustments
-                        if self._fits(spent, opened, quote.ceiling_nusd, spec.budget_nusd):
+                        if self._fits(
+                            settled, adjustments, opened, quote.ceiling_nusd, spec.budget_nusd
+                        ):
                             candidates.append((spec, spent, opened, scope_count))
                     if not candidates:
                         if blocked_count == len(specs):
@@ -1690,19 +1724,18 @@ class CredentialLedger:
             f"lease expiry (adjustment {closure[0]}); cost {cost_nusd} nusd, recorded before "
             f"{recorded} nusd; request {request_id or 'none'}"
         )
-        # The same range the open-row settle and the operator adjustment hold the account to: a correction that would push settled
-        # spend, adjustments and open reservations past a signed 64-bit total would leave status() unreadable.
+        # A correction is held to the range every other write is (_require_account_total), so
+        # status() can still read the account after it lands.
         settled, adjustments, opened, _ = self._spend_parts(
             connection, provider, account, month_utc
         )
-        updated_adjustments = adjustments + (cost_nusd - recorded)
-        if (
-            not _INT64_MIN <= updated_adjustments <= INT64_MAX
-            or settled + updated_adjustments + opened > INT64_MAX
-        ):
-            raise _routing_error(
-                RouterErrorCode.BUDGET_EXHAUSTED, account=account, attempt_id=attempt_id
-            )
+        _require_account_total(
+            settled,
+            adjustments + (cost_nusd - recorded),
+            opened,
+            account=account,
+            attempt_id=attempt_id,
+        )
         _, recorded_at = _month_and_iso(self._clock)
         self._insert_adjustment(
             connection,
@@ -2177,13 +2210,13 @@ class CredentialLedger:
                             settled, adjustments, opened, _ = self._spend_parts(
                                 connection, provider, account, month_utc
                             )
-                            rest = opened - ceiling
-                            if rest < 0 or settled + cost_nusd + adjustments + rest > INT64_MAX:
-                                raise _routing_error(
-                                    RouterErrorCode.BUDGET_EXHAUSTED,
-                                    account=account,
-                                    attempt_id=attempt_id,
-                                )
+                            _require_account_total(
+                                settled + cost_nusd,
+                                adjustments,
+                                opened - ceiling,
+                                account=account,
+                                attempt_id=attempt_id,
+                            )
                             _, settled_at = _month_and_iso(self._clock)
                             connection.execute(
                                 "UPDATE attempt SET state='settled', cost_nusd=?, usage_json=NULL, request_id=?, outcome=?, settled_at=?, settlement_evidence_json=? WHERE id=? AND state='open'",
@@ -2335,19 +2368,13 @@ class CredentialLedger:
                     settled, adjustments, opened, _ = self._spend_parts(
                         connection, provider, account, month_utc
                     )
-                    remaining_open = opened - ceiling
-                    updated_settled = settled + cost_nusd
-                    updated_spend = updated_settled + adjustments
-                    if (
-                        remaining_open < 0
-                        or updated_settled > INT64_MAX
-                        or updated_spend + remaining_open > INT64_MAX
-                    ):
-                        raise _routing_error(
-                            RouterErrorCode.BUDGET_EXHAUSTED,
-                            account=account,
-                            attempt_id=attempt_id,
-                        )
+                    _require_account_total(
+                        settled + cost_nusd,
+                        adjustments,
+                        opened - ceiling,
+                        account=account,
+                        attempt_id=attempt_id,
+                    )
                     _, settled_at = _month_and_iso(self._clock)
                     connection.execute(
                         """
@@ -2651,19 +2678,13 @@ class CredentialLedger:
                 attempt_ceiling = connection.execute(
                     "SELECT ceiling_nusd FROM attempt WHERE id = ?", (str(attempt_id),)
                 ).fetchone()[0]
-                remaining_open = opened - attempt_ceiling
-                updated_settled = settled + cost_nusd
-                updated_spend = updated_settled + adjustments
-                if (
-                    remaining_open < 0
-                    or updated_settled > INT64_MAX
-                    or updated_spend + remaining_open > INT64_MAX
-                ):
-                    raise _routing_error(
-                        RouterErrorCode.BUDGET_EXHAUSTED,
-                        account=account,
-                        attempt_id=attempt_id,
-                    )
+                _require_account_total(
+                    settled + cost_nusd,
+                    adjustments,
+                    opened - attempt_ceiling,
+                    account=account,
+                    attempt_id=attempt_id,
+                )
                 _, settled_at = _month_and_iso(self._clock)
                 self._reconcile_open_attempt(
                     connection,
@@ -2738,14 +2759,15 @@ class CredentialLedger:
                     connection, provider, account, month_utc
                 )
                 updated_adjustments = adjustments + delta_nusd
-                updated_spend = settled + updated_adjustments
-                if updated_spend < 0:
+                if settled + updated_adjustments < 0:
                     raise ValueError("adjustment would make settled spend negative")
-                if (
-                    not _INT64_MIN <= updated_adjustments <= INT64_MAX
-                    or updated_spend + opened > INT64_MAX
-                ):
-                    raise ValueError("adjustment exceeds signed 64-bit range")
+                _require_account_total(
+                    settled,
+                    updated_adjustments,
+                    opened,
+                    account=account,
+                    attempt_id=attempt_id,
+                )
                 _, created_at = _month_and_iso(self._clock)
                 self._insert_adjustment(
                     connection,
