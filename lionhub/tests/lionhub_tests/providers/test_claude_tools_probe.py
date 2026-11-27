@@ -145,8 +145,10 @@ class FakeClaude:
     ``rejects_empty_tools`` (the CLI refuses ``--tools ""`` and exits before any request),
     ``no_native_control`` (a run without ``--tools`` offers no built-in tool),
     ``deferred_with_natives`` (with built-in tools on, server tools are held back behind a tool
-    search) and ``placeholder`` (every request also offers a placeholder tool, which
-    ``--disallowed-tools`` removes by name).
+    search), ``placeholder`` (while tool search is on, every request also offers a placeholder
+    tool, which ``--disallowed-tools`` does not remove and ``ENABLE_TOOL_SEARCH=false`` in the
+    ``--settings`` environment does) and ``settings_ignored`` (the ``--settings`` environment
+    never reaches the CLI).
     """
 
     def __init__(self, *leaks: str) -> None:
@@ -187,8 +189,11 @@ class FakeClaude:
             visible = server_tools
             if tools is None and "deferred_with_natives" in self.leaks:
                 native, visible = [*native, "ToolSearch"], []
-            disallowed = _list_value(argv, "--disallowed-tools") or []
-            placeholder = "placeholder" in self.leaks and _PLACEHOLDER["name"] not in disallowed
+            settings = {}
+            if "--settings" in argv and "settings_ignored" not in self.leaks:
+                settings = json.loads(argv[argv.index("--settings") + 1])
+            search_off = settings.get("env", {}).get("ENABLE_TOOL_SEARCH") == "false"
+            placeholder = "placeholder" in self.leaks and not search_off
             stand_in = _LIVE[env["ANTHROPIC_BASE_URL"]]
             results: list[dict] = []
             for turn in range(8):
@@ -265,10 +270,14 @@ def test_the_measured_run_carries_the_launch_flags_and_each_control_drops_one(tm
 
     off = runs["tools_off"]["argv"]
     config = off[off.index("--mcp-config") + 1]
-    start = off.index("--tools")
-    assert off[start : start + 7] == tools_off_flags(config, SERVER_NAME)
-    assert off[start + 7] == "--permission-prompts"
+    flags = tools_off_flags(config, SERVER_NAME)
+    start = off.index("--settings")
+    assert off[start : start + len(flags)] == flags
+    assert off[start + len(flags)] == "--permission-prompts"
     assert "--bare" not in off
+    for control in ("native_control", "ambient_control"):
+        argv = runs[control]["argv"]
+        assert argv[argv.index("--settings") + 1] == flags[1]
     assert "--tools" not in runs["native_control"]["argv"]
     assert "--strict-mcp-config" in runs["native_control"]["argv"]
     assert "--strict-mcp-config" not in runs["ambient_control"]["argv"]
@@ -288,7 +297,8 @@ def test_the_measured_run_carries_the_launch_flags_and_each_control_drops_one(tm
             {"offers_only_server_tools", "ambient_servers_absent", "server_connected"},
         ),
         ("no_native_control", {"control_offers_native_tools"}),
-        ("placeholder", {"offers_only_server_tools"}),
+        ("placeholder", set()),
+        ("settings_ignored", set()),
     ],
 )
 def test_each_leak_fails_the_arm_that_exists_for_it(tmp_path, leak, expected):
@@ -311,8 +321,22 @@ def test_a_run_offering_the_server_tool_says_so_in_the_control_evidence(tmp_path
     assert "with mcp__probe__ping" in arms["control_offers_native_tools"]["evidence"]
 
 
-def test_the_placeholder_is_recorded_by_shape_and_never_by_text(tmp_path):
+def test_the_launch_settings_remove_the_placeholder_that_tool_search_offers(tmp_path):
     arms, runs, _ = _probe(tmp_path, "placeholder")
+
+    assert _failed(arms) == set(), arms
+    assert runs["tools_off"]["offered"] == [["mcp__probe__ping"], ["mcp__probe__ping"]]
+
+
+def test_a_binary_the_settings_never_reach_fails_on_its_placeholder(tmp_path):
+    arms, _, _ = _probe(tmp_path, "placeholder", "settings_ignored")
+
+    assert _failed(arms) == {"offers_only_server_tools"}, arms
+    assert "DeferredToolPlaceholder" in arms["offers_only_server_tools"]["evidence"]
+
+
+def test_the_placeholder_is_recorded_by_shape_and_never_by_text(tmp_path):
+    arms, runs, _ = _probe(tmp_path, "placeholder", "settings_ignored")
 
     off = runs["tools_off"]
     assert off["offered"][0] == ["DeferredToolPlaceholder", "mcp__probe__ping"]
@@ -329,7 +353,7 @@ def test_the_placeholder_is_recorded_by_shape_and_never_by_text(tmp_path):
 
 
 def test_an_extra_flag_reaches_every_run_after_the_tool_flags(tmp_path):
-    fake = FakeClaude("placeholder")
+    fake = FakeClaude()
     extra = ["--disallowed-tools", "DeferredToolPlaceholder"]
 
     arms, runs = probe_module.probe(
@@ -411,7 +435,12 @@ def test_the_stand_in_keeps_tool_names_and_shapes_and_no_text(tmp_path):
 
 
 def test_the_flags_put_the_empty_tool_list_before_the_next_flag():
-    assert tools_off_flags("/x/mcp.json", "kc") == [
+    flags = tools_off_flags("/x/mcp.json", "kc")
+
+    assert json.loads(flags[1]) == {"env": {"ENABLE_TOOL_SEARCH": "false"}}
+    assert flags == [
+        "--settings",
+        '{"env":{"ENABLE_TOOL_SEARCH":"false"}}',
         "--tools",
         "",
         "--strict-mcp-config",
@@ -474,7 +503,7 @@ def test_a_record_made_with_extra_flags_never_takes_the_launch_records_place(tmp
             "--disallowed-tools DeferredToolPlaceholder",
             ["--disallowed-tools", "DeferredToolPlaceholder"],
         ),
-        ("--settings '{\"a\": 1}'", ["--settings", '{"a": 1}']),
+        ("--append-system-prompt '{\"a\": 1}'", ["--append-system-prompt", '{"a": 1}']),
         ("--verbose", ["--verbose"]),
     ],
 )
@@ -492,6 +521,8 @@ def test_an_extra_flag_splits_as_a_shell_splits_it(text, tokens):
         ("--verbose --strict-mcp-config", "--strict-mcp-config"),
         ("--mcp-config=/x.json", "--mcp-config"),
         ("--allowedTools Bash", "--allowedTools"),
+        ("--settings '{}'", "--settings"),
+        ("--settings={}", "--settings"),
         ("-p", "-p"),
     ],
 )
@@ -553,7 +584,7 @@ def test_main_hands_every_extra_flag_on_and_prints_what_sat_beside_the_server(
         seen["probe"] = list(extra_flags)
         return real_probe(
             binary,
-            runner=FakeClaude("placeholder"),
+            runner=FakeClaude("placeholder", "settings_ignored"),
             scratch=tmp_path / "s",
             extra_flags=extra_flags,
         )
