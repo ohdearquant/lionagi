@@ -29,11 +29,14 @@ The arms of each candidate's row:
 
 - ``offers_only_server_tools``: the run sent at least one request offering the server's tool, and
   no request, the first or any later one, offered any other tool.
-- ``control_offers_native_tools``: ``native_control`` offered a tool beside the server's, so a
-  candidate that offers none is not a blind read of the array. It is the same for every row.
-- ``ambient_servers_absent``: ``ambient_control`` offered the user-scope decoy's tool, which shows
-  this binary loads that decoy, and the candidate's run offered neither decoy's tool and started
-  neither decoy server. The project decoy is checked for absence only.
+- ``control_offers_native_tools``: ``native_control`` offered a tool of codex's own, so a
+  candidate that offers none is not a blind read of the array. The server's tool need not be
+  offered in that run: with its own tools on, a binary may hold MCP tools back. The evidence says
+  whether it was offered. The arm is the same for every row.
+- ``ambient_servers_absent``: ``ambient_control`` offered the user-scope decoy's tool or asked
+  that decoy server for its tools, which shows this binary loads that decoy, and the candidate's
+  run offered neither decoy's tool and started neither decoy server. The evidence names each
+  decoy the control loaded; the project decoy's absence shows something only when it is one.
 - ``server_connected``: the server received ``initialize``, ``tools/list`` and ``tools/call``, and
   the call came back with its answer.
 
@@ -42,7 +45,7 @@ version and bytes, with every row, the controls and the MCP flags measured. No l
 
 Run ``python -m lionhub.providers.openai.codex_tools_probe --candidate '<args>' ...``. It exits 0
 when some candidate passes every arm, 1 when none does, 3 when ``native_control`` offered no tool
-beside the server's (the table then shows nothing), and 2 when it cannot run.
+of codex's own (the table then shows nothing), and 2 when it cannot run.
 """
 
 from __future__ import annotations
@@ -350,10 +353,11 @@ def _native_arm(native: Mapping[str, Any]) -> dict[str, Any]:
     natives = [label for label in offered if _owner(label) is None]
     has_server = any(_owner(label) == SERVER_NAME for label in offered)
     return {
-        "passed": bool(natives) and has_server,
+        "passed": bool(natives),
         "evidence": (
-            f"with no candidate the run offered {_clip(offered)}; exit status "
-            f"{native['exit_status']}"
+            f"with no candidate the run offered {_clip(offered)}, "
+            + ("with" if has_server else "without")
+            + f" the server's tool; exit status {native['exit_status']}"
         ),
     }
 
@@ -377,20 +381,29 @@ def _row_arms(
     arms["control_offers_native_tools"] = dict(native_arm)
 
     ambient_offered = _union(ambient)
-    control_ok = any(_owner(label) == _USER_DECOY for label in ambient_offered)
+    # The control runs with codex's own tools on, which may hold MCP tools back from the array, so
+    # a decoy server that was asked for its tools shows the decoy loaded as well as its tool does.
+    loaded = [
+        name
+        for name in (_USER_DECOY, _PROJECT_DECOY)
+        if any(_owner(label) == name for label in ambient_offered)
+        or "tools/list" in ambient["server_methods"].get(name, [])
+    ]
+    control_ok = _USER_DECOY in loaded
     leaked = [label for label in offered if _owner(label) in (_USER_DECOY, _PROJECT_DECOY)]
     started = [name for name in (_USER_DECOY, _PROJECT_DECOY) if run["server_methods"].get(name)]
     arms["ambient_servers_absent"] = {
         "passed": control_ok and not leaked and not started,
         "evidence": (
-            f"without --ignore-user-config the control offered {_clip(ambient_offered)}"
+            f"without --ignore-user-config the control offered {_clip(ambient_offered)} and "
+            f"loaded the decoys {_clip(loaded)}"
             + (
                 ", so the user-scope decoy is one this binary loads"
                 if control_ok
                 else ", without the user-scope decoy, so its absence below shows nothing"
             )
             + f"; with the candidate decoy tools offered: {_clip(leaked)}, decoy servers "
-            f"started: {_clip(started)}; the project decoy is checked for absence only"
+            f"started: {_clip(started)}"
         ),
     }
 
