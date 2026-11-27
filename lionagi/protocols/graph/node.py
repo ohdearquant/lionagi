@@ -210,22 +210,32 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
         return new_hash
 
 
-def _ensure_postgres_adapter():
-    """Register the async postgres adapter once, on first use; no-op if extras missing."""
-    if not hasattr(Node, "_postgres_adapter_checked"):
-        from lionagi.adapters._utils import check_async_postgres_available
+def _ensure_postgres_adapter() -> None:
+    """Register the async PostgreSQL adapter (key ``lionagi_async_pg``) on first use.
 
-        if check_async_postgres_available() is True:
-            try:
-                from lionagi.adapters.async_postgres_adapter import (
-                    create_lionagi_async_postgres_adapter,
-                )
+    The adapter is built by ``lionhub.integrations.postgres_adapter``. When sqlalchemy or
+    asyncpg is missing this raises the ``ImportError`` that names the ``postgres`` extra, and
+    when lionhub is not installed it raises the same error, chained to the
+    ``ModuleNotFoundError``. Any other failure to import or build the adapter propagates.
+    The adapter is recorded as registered only once it is, so a call after a failure tries
+    again.
+    """
+    if getattr(Node, "_postgres_adapter_checked", False):
+        return
+    from lionagi.adapters._utils import check_async_postgres_available, postgres_extra_error
 
-                adapter_cls = create_lionagi_async_postgres_adapter()
-                Node.register_async_adapter(adapter_cls)
-            except Exception:  # noqa: BLE001, S110
-                pass  # Graceful degradation if postgres dependencies missing
-        Node._postgres_adapter_checked = True
+    available = check_async_postgres_available()
+    if available is not True:
+        raise available
+    try:
+        # The core's one import of the hub in this package, until 2.0 (ADR-0136 Amendment 10).
+        from lionhub.integrations.postgres_adapter import create_lionagi_async_postgres_adapter
+    except ModuleNotFoundError as exc:
+        if exc.name != "lionhub":
+            raise
+        raise postgres_extra_error() from exc
+    Node.register_async_adapter(create_lionagi_async_postgres_adapter())
+    Node._postgres_adapter_checked = True
 
 
 if not _ADAPTER_REGISTERED:

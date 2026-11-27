@@ -320,7 +320,7 @@ _ALLOWLIST: dict[tuple[str, str, str, str], str] = {
         "Subscript(value=Name(id='Protocol', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",
     ): "``Protocol[T]``, a protocol parameterized by a type",
     (
-        "lionagi.adapters.async_postgres_adapter",
+        "lionhub.integrations.postgres_adapter",
         "create_lionagi_async_postgres_adapter.<locals>.LionAGIAsyncPostgresAdapter",
         "class-base-subscript",
         "Subscript(value=Name(id='AsyncPostgresAdapter', ctx=Load()), slice=Name(id='T', ctx=Load()), ctx=Load())",

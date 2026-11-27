@@ -403,6 +403,13 @@ MOVED: tuple[Moved, ...] = (
     Moved("lionagi.libs.frontmatter", "lionhub.orchestration.frontmatter", "1.0.0", "2.0.0"),
     # The CLI command declaration types and the registration marker the catalog reads.
     Moved("lionagi._auto", "lionhub.serve.cli.registration", "1.0.0", "2.0.0"),
+    # The async PostgreSQL Node adapter, registered by the core on first use of its key.
+    Moved(
+        "lionagi.adapters.async_postgres_adapter",
+        "lionhub.integrations.postgres_adapter",
+        "1.1.0",
+        "2.0.0",
+    ),
 )
 
 # Rows whose old name never existed as a file. ``lionagi.hooks.builtins`` serves its five former

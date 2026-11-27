@@ -1,5 +1,9 @@
 """Coverage boost tests for Node: embedding validation, serialization, adaptation, and registration."""
 
+import builtins
+import importlib.abc
+import sys
+import types
 from unittest.mock import patch
 
 import orjson
@@ -309,88 +313,172 @@ class TestNodeRegistration:
             mock_super.assert_called_once()
 
 
+_HUB_ADAPTER = "lionhub.integrations.postgres_adapter"
+
+
+class _BlockTheHub(importlib.abc.MetaPathFinder):
+    """Answer every lionhub import the way an install without the hub does."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "lionhub" or fullname.startswith("lionhub."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
 class TestPostgresAdapterIntegration:
-    """Postgres adapter functionality."""
+    """Registration of the async PostgreSQL adapter on first use of its key.
 
-    def test_ensure_postgres_adapter_already_checked(self):
-        """Test _ensure_postgres_adapter when already checked."""
-        # Set the flag to indicate already checked
-        Node._postgres_adapter_checked = True
+    Every test stands the hub module in with a fake or blocks the hub, so the suite needs
+    neither lionhub nor the postgres extra.
+    """
 
-        # Should return immediately without doing anything
+    @pytest.fixture
+    def unchecked(self, monkeypatch):
+        monkeypatch.setattr(Node, "_postgres_adapter_checked", False, raising=False)
+        registered = []
+        monkeypatch.setattr(Node, "register_async_adapter", registered.append)
+        return registered
+
+    @pytest.fixture
+    def extra_present(self, monkeypatch):
+        monkeypatch.setattr("lionagi.adapters._utils.check_async_postgres_available", lambda: True)
+
+    @pytest.fixture
+    def hub_adapter(self, monkeypatch):
+        built = []
+
+        def create_lionagi_async_postgres_adapter():
+            adapter = type("FakeAdapter", (), {"obj_key": "lionagi_async_pg"})
+            built.append(adapter)
+            return adapter
+
+        module = types.ModuleType(_HUB_ADAPTER)
+        module.create_lionagi_async_postgres_adapter = create_lionagi_async_postgres_adapter
+        monkeypatch.setitem(sys.modules, _HUB_ADAPTER, module)
+        return built
+
+    @pytest.fixture
+    def hub_absent(self, monkeypatch):
+        for name in list(sys.modules):
+            if name == "lionhub" or name.startswith("lionhub."):
+                monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setattr(sys, "meta_path", [_BlockTheHub(), *sys.meta_path])
+
+    def test_returns_at_once_when_already_registered(self, monkeypatch):
+        monkeypatch.setattr(Node, "_postgres_adapter_checked", True, raising=False)
+        monkeypatch.setattr(
+            "lionagi.adapters._utils.check_async_postgres_available",
+            lambda: pytest.fail("checked again after registration"),
+        )
         _ensure_postgres_adapter()
 
-        # Should still have the flag set
-        assert hasattr(Node, "_postgres_adapter_checked")
+    def test_registers_the_hub_adapter_once(self, unchecked, extra_present, hub_adapter):
+        _ensure_postgres_adapter()
+        _ensure_postgres_adapter()
+
+        assert unchecked == hub_adapter
+        assert len(hub_adapter) == 1
         assert Node._postgres_adapter_checked is True
 
-    def test_ensure_postgres_adapter_available(self):
-        """Test _ensure_postgres_adapter when postgres is available."""
-        # Remove the flag to force checking
-        if hasattr(Node, "_postgres_adapter_checked"):
-            delattr(Node, "_postgres_adapter_checked")
+    def test_missing_extra_raises_the_extra_error_and_registers_nothing(
+        self, monkeypatch, unchecked, hub_adapter
+    ):
+        missing = ImportError("postgres extra missing")
+        monkeypatch.setattr(
+            "lionagi.adapters._utils.check_async_postgres_available", lambda: missing
+        )
 
-        mock_adapter_cls = object()  # stand-in for the adapter class
+        with pytest.raises(ImportError) as info:
+            _ensure_postgres_adapter()
 
-        with patch("lionagi.adapters._utils.check_async_postgres_available") as mock_check:
-            mock_check.return_value = True
+        assert info.value is missing
+        assert unchecked == []
+        assert hub_adapter == []
+        assert Node._postgres_adapter_checked is False
 
-            # Mock the factory function (adapter is now built lazily via factory)
-            with patch(
-                "lionagi.adapters.async_postgres_adapter.create_lionagi_async_postgres_adapter",
-                return_value=mock_adapter_cls,
-            ):
-                with patch.object(Node, "register_async_adapter") as mock_register:
-                    _ensure_postgres_adapter()
+    def test_absent_hub_raises_the_extra_error_chained_to_the_missing_hub(
+        self, unchecked, extra_present, hub_absent
+    ):
+        from lionagi.adapters._utils import postgres_extra_error
 
-                    # Should have checked availability
-                    mock_check.assert_called_once()
-                    # Should have tried to register adapter
-                    mock_register.assert_called_once()
+        with pytest.raises(ImportError) as info:
+            _ensure_postgres_adapter()
 
-        # Should have set the flag
-        assert hasattr(Node, "_postgres_adapter_checked")
-        assert Node._postgres_adapter_checked is True
+        assert type(info.value) is ImportError
+        assert info.value.args == postgres_extra_error().args
+        assert isinstance(info.value.__cause__, ModuleNotFoundError)
+        assert info.value.__cause__.name == "lionhub"
+        assert unchecked == []
+        assert Node._postgres_adapter_checked is False
 
-    def test_ensure_postgres_adapter_unavailable(self):
-        """Test _ensure_postgres_adapter when postgres is unavailable."""
-        # Remove the flag to force checking
-        if hasattr(Node, "_postgres_adapter_checked"):
-            delattr(Node, "_postgres_adapter_checked")
+    def test_a_missing_module_other_than_the_hub_at_import_propagates(
+        self, monkeypatch, unchecked, extra_present
+    ):
+        real_import = builtins.__import__
 
-        with patch("lionagi.adapters._utils.check_async_postgres_available") as mock_check:
-            mock_check.return_value = False
+        def importing(name, *args, **kwargs):
+            if name == _HUB_ADAPTER:
+                raise ModuleNotFoundError(
+                    "No module named 'pydapter.extras'", name="pydapter.extras"
+                )
+            return real_import(name, *args, **kwargs)
 
-            with patch.object(Node, "register_async_adapter") as mock_register:
-                _ensure_postgres_adapter()
+        monkeypatch.setattr(builtins, "__import__", importing)
 
-                # Should have checked availability
-                mock_check.assert_called_once()
-                # Should NOT have tried to register adapter
-                mock_register.assert_not_called()
+        with pytest.raises(ModuleNotFoundError) as info:
+            _ensure_postgres_adapter()
 
-        # Should still have set the flag
-        assert hasattr(Node, "_postgres_adapter_checked")
-        assert Node._postgres_adapter_checked is True
+        assert info.value.name == "pydapter.extras"
+        assert info.value.__cause__ is None
+        assert unchecked == []
+        assert Node._postgres_adapter_checked is False
 
-    def test_ensure_postgres_adapter_flag_setting(self):
-        """_ensure_postgres_adapter sets the flag regardless of outcome."""
-        # Remove the flag to force checking
-        if hasattr(Node, "_postgres_adapter_checked"):
-            delattr(Node, "_postgres_adapter_checked")
+    def test_a_missing_module_while_building_the_adapter_propagates(
+        self, monkeypatch, unchecked, extra_present
+    ):
+        module = types.ModuleType(_HUB_ADAPTER)
 
-        with patch("lionagi.adapters._utils.check_async_postgres_available") as mock_check:
-            mock_check.return_value = True
+        def create_lionagi_async_postgres_adapter():
+            raise ModuleNotFoundError("No module named 'pydapter.extras'", name="pydapter.extras")
 
-            with patch(
-                "lionagi.adapters.async_postgres_adapter.create_lionagi_async_postgres_adapter",
-                return_value=object(),
-            ):
-                with patch.object(Node, "register_async_adapter"):
-                    _ensure_postgres_adapter()
+        module.create_lionagi_async_postgres_adapter = create_lionagi_async_postgres_adapter
+        monkeypatch.setitem(sys.modules, _HUB_ADAPTER, module)
 
-        # Should have set the flag
-        assert hasattr(Node, "_postgres_adapter_checked")
+        with pytest.raises(ModuleNotFoundError) as info:
+            _ensure_postgres_adapter()
+
+        assert info.value.name == "pydapter.extras"
+        assert info.value.__cause__ is None
+        assert unchecked == []
+        assert Node._postgres_adapter_checked is False
+
+    def test_a_failure_to_build_the_adapter_propagates(self, monkeypatch, unchecked, extra_present):
+        module = types.ModuleType(_HUB_ADAPTER)
+
+        def create_lionagi_async_postgres_adapter():
+            raise RuntimeError("adapter construction failed")
+
+        module.create_lionagi_async_postgres_adapter = create_lionagi_async_postgres_adapter
+        monkeypatch.setitem(sys.modules, _HUB_ADAPTER, module)
+
+        with pytest.raises(RuntimeError, match="adapter construction failed"):
+            _ensure_postgres_adapter()
+
+        assert unchecked == []
+        assert Node._postgres_adapter_checked is False
+
+    def test_a_call_after_a_failure_tries_again(self, monkeypatch, unchecked, hub_adapter):
+        answers = iter([ImportError("postgres extra missing"), True])
+        monkeypatch.setattr(
+            "lionagi.adapters._utils.check_async_postgres_available", lambda: next(answers)
+        )
+
+        with pytest.raises(ImportError):
+            _ensure_postgres_adapter()
+        _ensure_postgres_adapter()
+
+        assert unchecked == hub_adapter
+        assert len(hub_adapter) == 1
         assert Node._postgres_adapter_checked is True
 
 

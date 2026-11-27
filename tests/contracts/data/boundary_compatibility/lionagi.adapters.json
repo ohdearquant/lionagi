@@ -11,10 +11,7 @@
       "__all__ = (\n    \"Adaptable\",\n    \"AsyncAdaptable\",\n    \"Adapter\",\n    \"AsyncAdapter\",\n    \"AdapterBase\",\n    \"AdapterRegistry\",\n    \"AsyncAdapterRegistry\",\n    \"dispatch_adapt_meth\",\n    # Exceptions\n    \"AdapterError\",\n    \"AdapterValidationError\",\n    \"AdapterParseError\",\n    \"AdapterNotFoundError\",\n    \"AdapterConfigurationError\",\n    \"AdapterResourceError\",\n    \"AdapterConnectionError\",\n    \"AdapterQueryError\",\n    \"_ADAPTER_PYTHON_ERRORS\",\n)"
     ],
     "lionagi/adapters/_utils.py": [
-      "__all__ = (\"check_async_postgres_available\",)"
-    ],
-    "lionagi/adapters/async_postgres_adapter.py": [
-      "__all__ = (\"LionAGIAsyncPostgresAdapter\", \"create_lionagi_async_postgres_adapter\")"
+      "__all__ = (\"check_async_postgres_available\", \"postgres_extra_error\")"
     ],
     "lionagi/adapters/csv_.py": [
       "__all__ = (\"CsvAdapter\",)"
@@ -60,10 +57,8 @@
       "dispatch_adapt_meth"
     ],
     "lionagi/adapters/_utils.py": [
-      "check_async_postgres_available"
-    ],
-    "lionagi/adapters/async_postgres_adapter.py": [
-      "create_lionagi_async_postgres_adapter"
+      "check_async_postgres_available",
+      "postgres_extra_error"
     ],
     "lionagi/adapters/csv_.py": [
       "CsvAdapter"

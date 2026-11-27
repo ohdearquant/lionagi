@@ -1,9 +1,11 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi async postgres adapter and availability check."""
+"""Tests for the async postgres availability check.
 
-import pytest
+The adapter itself is in ``lionhub.integrations.postgres_adapter`` and is tested in
+``lionhub/tests``.
+"""
 
 # check_async_postgres_available
 
@@ -33,43 +35,14 @@ def test_check_async_postgres_available_true_when_dependencies_present(monkeypat
     assert result is True
 
 
-# to_obj calls _ensure_table before delegating to parent
+def test_the_missing_extra_error_is_what_the_check_returns(monkeypatch):
+    import lionagi.utils as utils_mod
 
+    monkeypatch.setattr(utils_mod, "is_import_installed", lambda pkg: False)
 
-async def test_async_postgres_to_obj_ensures_table_for_dsn_before_delegating(
-    monkeypatch,
-):
-    """Requires lionagi[postgres] extra (pydapter[postgres], sqlalchemy, asyncpg)."""
-    # The module the body needs, not one of its dependencies: sqlalchemy is
-    # present without the extra, so guarding on it lets the import below raise.
-    # The returned module is what the body uses, so the path is named once.
-    async_postgres_ = pytest.importorskip(
-        "pydapter.extras.async_postgres_", reason="requires lionagi[postgres] extra"
-    )
-    AsyncPostgresAdapter = async_postgres_.AsyncPostgresAdapter
+    from lionagi.adapters._utils import check_async_postgres_available, postgres_extra_error
 
-    from unittest.mock import AsyncMock
-
-    from lionagi.adapters.async_postgres_adapter import (
-        create_lionagi_async_postgres_adapter,
-    )
-    from lionagi.protocols.graph.node import Node
-
-    # Build the adapter class using the factory (lazily, now that we confirmed deps exist)
-    LionAGIAsyncPostgresAdapter = create_lionagi_async_postgres_adapter()
-
-    ensure_mock = AsyncMock()
-    parent_to_obj_mock = AsyncMock(return_value="ok")
-
-    monkeypatch.setattr(LionAGIAsyncPostgresAdapter, "_ensure_table", ensure_mock)
-    monkeypatch.setattr(AsyncPostgresAdapter, "to_obj", parent_to_obj_mock)
-
-    node = Node()
-    result = await LionAGIAsyncPostgresAdapter.to_obj(
-        node,
-        table="nodes",
-        dsn="postgresql+asyncpg://u:p@h/db",
-    )
-
-    ensure_mock.assert_awaited_once_with("postgresql+asyncpg://u:p@h/db", "nodes")
-    assert result == "ok"
+    returned = check_async_postgres_available()
+    built = postgres_extra_error()
+    assert type(returned) is type(built) is ImportError
+    assert returned.args == built.args

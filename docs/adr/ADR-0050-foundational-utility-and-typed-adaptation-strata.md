@@ -513,10 +513,11 @@ The shipped registrations are:
 - Error string rendering recursively redacts known credential keys and sensitive
   URL query parameters. Long string details are truncated under D6.
 - `Node` forces `to_dict(mode="db")` on synchronous and asynchronous output and
-  `from_dict` on input. Requesting `lionagi_async_pg` runs the availability check
-  once. Missing optional dependencies or construction failures are swallowed and
-  leave the key unregistered; the subsequent registry lookup therefore fails with
-  `AdapterNotFoundError` instead of making the base package unimportable.
+  `from_dict` on input. Requesting `lionagi_async_pg` registers the adapter from
+  `lionhub.integrations.postgres_adapter` the first time it succeeds. A missing
+  optional dependency or a missing lionhub raises the `ImportError` that names the
+  `postgres` extra, and a construction failure propagates; the base package stays
+  importable either way (ADR-0136 Amendment 10).
 - Registry contents are in memory. On process restart, module import and lazy
   registration reconstruct them; there is no persisted registry state.
 
