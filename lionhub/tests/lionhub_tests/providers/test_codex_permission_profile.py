@@ -68,8 +68,18 @@ def _project(tmp_path: Path) -> Path:
     return project
 
 
-def _default_roots() -> list[str]:
-    return [os.path.expanduser(path) for path in default_allow_write()]
+def _default_roots(env: dict[str, str]) -> list[str]:
+    """The child sandbox's default write roots, a leading ``~`` expanded against the child's
+    ``HOME``: the absolute ``HOME`` of ``env``, else the account's home directory."""
+    import pwd
+
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    return [
+        os.path.join(home, path[2:]) if path.startswith("~/") else path
+        for path in default_allow_write()
+    ]
 
 
 def _profile_table(args: list[str]) -> dict:
@@ -229,7 +239,10 @@ def test_with_the_child_sandbox_on_there_is_no_sandbox_mode_on_the_command_line(
     read_only = kw.get("sandbox") == "read-only" or names_no_sandbox
     table = _profile_table(args)
     assert table == _expected_profile(
-        env, write=[] if light or read_only else _default_roots(), light=light, read_only=read_only
+        env,
+        write=[] if light or read_only else _default_roots(env),
+        light=light,
+        read_only=read_only,
     )
     assert table["extends"] == (":read-only" if read_only else ":workspace")
     # The test's user config sets no `network_access`, so the network is off for every request.
@@ -266,7 +279,7 @@ def test_a_heavy_profile_writes_exactly_the_roots_the_sandbox_mode_granted(
     added = _pairs(args, "--add-dir")
     assert str(extra) in added
     assert len(added) > 1  # the linked worktree's git directories follow the caller's
-    legacy = list(dict.fromkeys([*_default_roots(), *added]))
+    legacy = list(dict.fromkeys([*_default_roots(env), *added]))
     assert _profile_table(args) == _expected_profile(env, write=legacy)
     assert set(added) <= set(_profile_table(args)["filesystem"])
 
@@ -465,8 +478,9 @@ def test_argv_is_rendered_against_the_environment_the_child_really_gets(
     # The renderer `prepare_argv` calls once the secret fill has built the child's environment.
     args = codex_module._exclusive_cmd_args(request, plain, project, {"CODEX_HOME": str(final)})
     table = _profile_table(args)
-    assert table == _expected_profile({"CODEX_HOME": str(final)}, write=_default_roots())
-    assert table != _expected_profile({"CODEX_HOME": str(declared)}, write=_default_roots())
+    final_env, declared_env = {"CODEX_HOME": str(final)}, {"CODEX_HOME": str(declared)}
+    assert table == _expected_profile(final_env, write=_default_roots(final_env))
+    assert table != _expected_profile(declared_env, write=_default_roots(declared_env))
     row = [o for o in _pairs(args, "-c") if o.startswith(f"permissions.{PERMISSION_PROFILE}=")][0]
     assert str(final) in row
     assert str(declared) not in row

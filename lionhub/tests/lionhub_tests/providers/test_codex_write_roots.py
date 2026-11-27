@@ -5,7 +5,8 @@
 the set the sandbox mode it replaces granted: nothing for a read-only child, the working directory
 alone for a light one, and for a heavy one the child sandbox's roots. A heavy child that names no
 sandbox gets the mode Codex would have used without one, and read-only when no user config layer
-sets it. A deny entry that begins with `~` is placed against the child's own home."""
+sets it. A deny entry that begins with `~` is placed against the child's own home, and so is a
+write root that begins with `~`, the child sandbox's or the caller's."""
 
 from __future__ import annotations
 
@@ -97,11 +98,25 @@ def _expected(
     return _toml("table = " + toml_override_value(table))["table"]
 
 
-def _legacy_roots() -> list[str]:
-    """The writable roots the workspace-write mode gave a heavy child: the child sandbox's list."""
+def _account_home() -> str:
+    import pwd
+
+    return pwd.getpwuid(os.getuid()).pw_dir
+
+
+def _legacy_roots(env: dict[str, str] | None = None) -> list[str]:
+    """The writable roots the workspace-write mode gave a heavy child: the child sandbox's list,
+    a leading ``~`` expanded against the child's ``HOME`` (the absolute ``HOME`` of ``env``, else
+    the account's home directory)."""
     from lionhub.agent.child_sandbox import default_allow_write
 
-    return [os.path.expanduser(path) for path in default_allow_write()]
+    home = (env or {}).get("HOME", "")
+    if not os.path.isabs(home):
+        home = _account_home()
+    return [
+        os.path.join(home, path[2:]) if path.startswith("~/") else path
+        for path in default_allow_write()
+    ]
 
 
 def _legacy(workload: str, mode: str | None) -> dict:
@@ -264,18 +279,87 @@ def test_caller_writable_roots_of_every_shape_are_write_entries_not_pins(tmp_pat
     assert _table(args) == _expected(env, write=["/opt/build"])
 
 
-def test_a_tilde_in_caller_writable_roots_is_expanded(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    env = _config_home(tmp_path)
-    args = _codex(
-        _project(tmp_path),
-        env=env,
-        full_auto=True,
-        config_overrides={"sandbox_workspace_write.writable_roots": ["~/cache"]},
+def _parent_and_child_homes(tmp_path, monkeypatch):
+    """Two homes: this process's ``HOME`` is the first, and the second is the child's to give."""
+    parent, child = tmp_path / "parent-home", tmp_path / "child-home"
+    parent.mkdir()
+    child.mkdir()
+    monkeypatch.setenv("HOME", str(parent))
+    return parent, child
+
+
+def _under(table: dict, home) -> list[str]:
+    return [path for path in table["filesystem"] if path.startswith(f"{home}/")]
+
+
+def _tilde_roots(tmp_path, env) -> dict:
+    return _table(
+        _codex(
+            _project(tmp_path),
+            env=env,
+            full_auto=True,
+            config_overrides={"sandbox_workspace_write.writable_roots": ["~/cache"]},
+        )
     )
-    assert _table(args) == _expected(env, write=[str(home / "cache")])
+
+
+def test_a_tilde_in_caller_writable_roots_is_placed_against_the_child_home(tmp_path, monkeypatch):
+    parent, child = _parent_and_child_homes(tmp_path, monkeypatch)
+    env = {**_config_home(tmp_path), "HOME": str(child)}
+    table = _tilde_roots(tmp_path, env)
+    assert table == _expected(env, write=[str(child / "cache")])
+    assert not _under(table, parent)
+
+
+def test_a_tilde_in_caller_writable_roots_takes_the_account_home_when_the_child_has_none(
+    tmp_path, monkeypatch
+):
+    parent, _ = _parent_and_child_homes(tmp_path, monkeypatch)
+    assert str(parent) != _account_home()
+    env = _config_home(tmp_path)
+    table = _tilde_roots(tmp_path, env)
+    assert table == _expected(env, write=[os.path.join(_account_home(), "cache")])
+    assert not _under(table, parent)
+
+
+def _allow_write(monkeypatch, *entries: str) -> None:
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    monkeypatch.setattr(
+        child_sandbox, "_global_settings", lambda: {"child_sandbox": {"allow_write": [*entries]}}
+    )
+
+
+def test_a_tilde_in_allow_write_is_placed_against_the_child_home(tmp_path, monkeypatch):
+    parent, child = _parent_and_child_homes(tmp_path, monkeypatch)
+    _allow_write(monkeypatch, "~/build")
+    env = {**_config_home(tmp_path), "HOME": str(child)}
+    table = _table(_codex(_project(tmp_path), env=env, full_auto=True))
+    assert table == _expected(env, write=[*_legacy_roots(env), str(child / "build")])
+    # The default roots begin with `~` too, so none of them lands in this process's HOME.
+    assert not _under(table, parent)
+
+
+def test_a_tilde_in_allow_write_takes_the_account_home_when_the_child_has_none(
+    tmp_path, monkeypatch
+):
+    parent, _ = _parent_and_child_homes(tmp_path, monkeypatch)
+    assert str(parent) != _account_home()
+    _allow_write(monkeypatch, "~/build")
+    env = _config_home(tmp_path)
+    table = _table(_codex(_project(tmp_path), env=env, full_auto=True))
+    assert table == _expected(
+        env, write=[*_legacy_roots(env), os.path.join(_account_home(), "build")]
+    )
+    assert not _under(table, parent)
+
+
+def test_a_relative_child_home_gives_way_to_the_account_home(tmp_path, monkeypatch):
+    parent, _ = _parent_and_child_homes(tmp_path, monkeypatch)
+    env = {**_config_home(tmp_path), "HOME": "relative-home"}
+    table = _tilde_roots(tmp_path, env)
+    assert table == _expected(env, write=[os.path.join(_account_home(), "cache")])
+    assert not _under(table, parent)
 
 
 def test_writable_roots_set_in_the_selected_config_profile_are_write_entries(tmp_path):
