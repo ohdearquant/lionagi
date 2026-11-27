@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,11 @@ _VERSION = re.compile(
     r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?"
 )
 _SHA = re.compile(r"[0-9a-f]{40}")
+# PyPI can answer 404 for a version for a while after its upload succeeded,
+# until its index serves the new release. Image preparation starts right after
+# the upload, so it reads PyPI again on this interval before it gives up.
+WHEEL_WAIT_ATTEMPTS = 10
+WHEEL_WAIT_INTERVAL_SECONDS = 30
 
 
 class ReleaseError(ValueError):
@@ -94,6 +100,25 @@ def _require_published_wheel(read: JsonReader, version: str) -> None:
         raise ReleaseError("the release has no non-yanked wheel on PyPI")
 
 
+def _await_published_wheel(read: JsonReader, version: str, sleep: Callable[[float], None]) -> None:
+    for attempt in range(1, WHEEL_WAIT_ATTEMPTS + 1):
+        try:
+            _require_published_wheel(read, version)
+            return
+        except ReleaseError as exc:
+            if attempt == WHEEL_WAIT_ATTEMPTS:
+                raise ReleaseError(
+                    f"{exc} (after {WHEEL_WAIT_ATTEMPTS} reads"
+                    f" {WHEEL_WAIT_INTERVAL_SECONDS} s apart)"
+                ) from exc
+            print(
+                f"PyPI does not serve a wheel for lionagi {version} yet ({exc});"
+                f" reading again in {WHEEL_WAIT_INTERVAL_SECONDS} s",
+                file=sys.stderr,
+            )
+            sleep(WHEEL_WAIT_INTERVAL_SECONDS)
+
+
 def _require_publish_evidence(read: JsonReader, repo: str, tag: str, sha: str) -> None:
     # A release's target_commitish may be a moving branch. The Actions run
     # records the commit that actually ran the wheel upload, even if a tag moves.
@@ -140,6 +165,7 @@ def resolve(
     read_pypi: JsonReader = pypi_json,
     *,
     prepare_image: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, str]:
     event = env.get("GITHUB_EVENT_NAME")
     repo = env.get("GITHUB_REPOSITORY", "")
@@ -183,8 +209,8 @@ def resolve(
     # The checks below narrow by path, so a reader can tell which evidence each
     # caller demands. A release event only needs the tag, the tag's commit and
     # the source metadata; it can run before PyPI has the wheel. An image
-    # preparation rechecks the pinned source and version and then requires the
-    # published wheel. A manual repair (workflow_dispatch) additionally requires
+    # preparation rechecks the pinned source and version and then waits for PyPI
+    # to serve the published wheel. A manual repair (workflow_dispatch) additionally requires
     # the wheel and the release workflow's successful upload history, neither of
     # which a release event can assume exist yet.
     source = read_github(f"repos/{repo}/contents/pyproject.toml?ref={sha}")
@@ -194,7 +220,9 @@ def resolve(
     if project.get("name") != "lionagi" or project.get("version") != version:
         raise ReleaseError("release tag and source package version do not match")
 
-    if event == "workflow_dispatch" or prepare_image:
+    if prepare_image:
+        _await_published_wheel(read_pypi, version, sleep)
+    elif event == "workflow_dispatch":
         _require_published_wheel(read_pypi, version)
     if event == "workflow_dispatch":
         _require_publish_evidence(read_github, repo, tag, sha)
