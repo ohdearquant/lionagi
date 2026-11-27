@@ -14,17 +14,13 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import entry_points
 from pathlib import Path
 
 import pytest
 
 from lionagi import _moved
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 OLD, NEW = "lionagi.cli", "lionhub.serve.cli"

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -135,7 +134,7 @@ async def test_two_warm_accounts_keep_the_spend_ratio_order(tmp_path):
         ("2026-01-15T13:00:00", False),
         ("not a time", False),
         (b"2026-01-15T13:00:00+00:00", False),
-        ("2026-01-15T13:00:00Z", sys.version_info >= (3, 11)),
+        ("2026-01-15T13:00:00Z", True),
     ],
 )
 async def test_expiry_value_decides_whether_a_row_counts(tmp_path, expires, counts):

@@ -37,16 +37,12 @@ from __future__ import annotations
 import os
 import re
 import stat
+import tomllib as _tomllib
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError, _ExclusiveMcpSelectionError
 from lionhub.providers.openai._codex_profile import refuse_non_absolute_codex_home
-
-try:
-    import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
-    import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = (
     "declaring_project_layer",
@@ -67,8 +63,8 @@ _TOML_CODE_POINT = re.compile(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})|\\x([0-9
 
 
 def _reads_toml_1_1() -> bool:
-    """Whether this Python's TOML parser reads TOML 1.1, as ``tomli`` does from 2.4; ``tomllib``
-    on Python 3.11 to 3.14 reads 1.0 only. A trailing comma in an inline table is 1.1 syntax."""
+    """Whether this Python reads TOML 1.1 with ``tomllib``; on Python 3.11 to 3.14 it reads 1.0
+    only. A trailing comma in an inline table is 1.1 syntax."""
     try:
         _tomllib.loads("t = {a = 1,}")
     except _tomllib.TOMLDecodeError:

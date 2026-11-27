@@ -140,39 +140,8 @@ class TestDetectProjectGlobalOverrides:
         assert source == "global_override"
 
 
-class TestReadProjectFromTomlFallback:
-    """Python 3.10 TOML fallback must use `toml`, not `tomli`."""
-
-    def test_falls_back_to_toml_when_tomllib_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Simulate Python 3.10: tomllib raises ModuleNotFoundError.
-        _read_project_from_toml must still work via the `toml` package
-        (declared dependency) and must NOT import tomli (undeclared).
-        """
-        import sys
-        import types
-
-        # Build a minimal fake tomllib that always raises ModuleNotFoundError.
-        fake_tomllib = types.ModuleType("tomllib")
-        original = sys.modules.get("tomllib")
-
-        def fail_load(f):
-            raise Exception("should not be called")
-
-        # Patch out tomllib so the except branch is taken.
-        # We do this by making the import inside the function raise.
-        original_tomllib = sys.modules.pop("tomllib", None)
-        try:
-            toml_file = tmp_path / "config.toml"
-            toml_file.write_text('[project]\nname = "compat-project"\n')
-            result = _read_project_from_toml(toml_file)
-            # Either tomllib was available (3.11+) or toml was used (3.10).
-            # Either way, the result should be correct and no ModuleNotFoundError raised.
-            assert result == "compat-project"
-        finally:
-            if original_tomllib is not None:
-                sys.modules["tomllib"] = original_tomllib
+class TestReadProjectFromTomlImports:
+    """[project].name is read with tomllib alone."""
 
     def test_tomli_is_never_imported(self, tmp_path: Path):
         """tomli must not appear in sys.modules after _read_project_from_toml."""

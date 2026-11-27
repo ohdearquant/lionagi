@@ -17,16 +17,12 @@ import os
 import re
 import stat
 import tempfile
+import tomllib as _toml
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from lionagi.ln import compute_hash
-
-try:
-    import tomllib as _toml
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as _toml  # type: ignore[no-redef]
 
 __all__ = [
     "ChildActorError",

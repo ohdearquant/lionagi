@@ -3269,7 +3269,6 @@ class Known(IdentityMixin, HashableModel): pass
         "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    {}",
         pytest.param(
             "try:\n    pass\nexcept* ImportError:\n    {}",
-            marks=pytest.mark.skipif(sys.version_info < (3, 11), reason="except* is 3.11 syntax"),
             id="except-star",
         ),
         "async def make():\n    async with context:\n        {}",

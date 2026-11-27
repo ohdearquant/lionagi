@@ -27,7 +27,6 @@ import argparse
 import ast
 import inspect
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -2742,10 +2741,6 @@ def test_class_body_import_provenance_visible_to_class_body_construction(tmp_pat
     assert key in discovery.executor_sites
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="try/except* syntax requires Python 3.11+",
-)
 def test_try_star_suite_global_declaration_overlays_module_scope(tmp_path):
     """A `global` declaration is a compile-time scope directive wherever it
     parses, including inside a `try`/`except*` suite -- declaration

@@ -116,11 +116,7 @@ if TYPE_CHECKING:
 
     from lionhub.agent.child_sandbox import ChildSandboxPolicy
 
-try:
-    import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
-    # (`toml` 0.10 does not normalize whitespace around dotted key parts)
-    import tomli as _tomllib  # type: ignore[no-redef]
+import tomllib as _tomllib
 
 HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 

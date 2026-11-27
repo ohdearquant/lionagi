@@ -9,14 +9,10 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 test environments.
-    import tomli as tomllib
 
 JsonReader = Callable[[str], dict[str, Any]]
 _VERSION = re.compile(
