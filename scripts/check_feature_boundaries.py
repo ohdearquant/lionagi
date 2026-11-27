@@ -415,8 +415,15 @@ class Scanner(ast.NodeVisitor):
             head, sep, tail = name.partition(".")
             name = self.aliases.get(head, head) + (sep + tail if sep else "")
         wrapped = name in {"lionagi.ln.import_module", "lionagi.ln._utils.import_module"}
-        if (name in {"importlib.import_module", "__import__"} or wrapped) and node.args:
-            arg = node.args[0]
+        if name in {"importlib.import_module", "__import__"} or wrapped:
+            # The module name can also arrive by keyword: ``name`` for importlib and the
+            # builtin, ``package_name`` for the lionagi wrapper.
+            keyword = "package_name" if wrapped else "name"
+            arg = (
+                node.args[0]
+                if node.args
+                else next((kw.value for kw in node.keywords if kw.arg == keyword), None)
+            )
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 module = arg.value
                 child = node.args[1] if wrapped and len(node.args) > 1 else None
