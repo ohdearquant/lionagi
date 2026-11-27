@@ -211,13 +211,14 @@ def _deny_homes(env: Mapping[str, str] | None) -> list[str | None]:
     return present or [None]
 
 
-def _expand_home(entry: str, home: str | None) -> str:
+def _expand_home(entry: str, home: str | None, what: str = "child_sandbox: deny_read entry") -> str:
     """``entry`` with a leading ``~`` or ``~/`` replaced by ``home``; ``~name`` is left to the
-    account database, and an entry that does not start with ``~`` is returned as written."""
+    account database, and an entry that does not start with ``~`` is returned as written.
+    ``what`` names the entry in the refusal when ``home`` is None."""
     if entry == "~" or entry.startswith("~/"):
         if home is None:
             raise ConfigurationError(
-                f"child_sandbox: deny_read entry {entry!r} names a home directory, and neither "
+                f"{what} {entry!r} names a home directory, and neither "
                 "the child's HOME nor the account database gives one"
             )
         return home if entry == "~" else os.path.join(home, entry[2:])

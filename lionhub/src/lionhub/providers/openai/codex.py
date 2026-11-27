@@ -79,6 +79,8 @@ from lionhub.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWork
 
 from ._codex_permissions import (
     PERMISSION_PROFILE,
+    _child_home,
+    _expand_home,
     deny_entries,
     permission_profile_table,
     refuse_a_second_sandbox_setting,
@@ -1230,7 +1232,9 @@ def _roots_reaching_home(
     return reasons
 
 
-def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
+def _heavy_writable_roots(
+    plain: _PlainRequest, expand: Callable[[str], str] = os.path.expanduser
+) -> list[str] | None:
     """The extra writable roots a heavy codex agent gets in its workspace-write sandbox.
 
     The user config's ``[sandbox_workspace_write] writable_roots`` reach every
@@ -1240,7 +1244,8 @@ def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
     ``~/.lionagi/settings.yaml``), beside its working directory, ``add_dir`` and its
     linked worktree's git directory, which codex takes from ``--add-dir``. ``None`` leaves
     the setting alone: when the run's own overrides set ``writable_roots`` (the caller
-    chose them), or when ``child_sandbox`` is switched off.
+    chose them), or when ``child_sandbox`` is switched off. ``expand`` expands a leading ``~``
+    of each entry: this process's home by default, the child's under a permission profile.
     """
     if _sets(_command_line_layer(plain), ("sandbox_workspace_write", "writable_roots")):
         return None
@@ -1249,7 +1254,7 @@ def _heavy_writable_roots(plain: _PlainRequest) -> list[str] | None:
     policy = resolve_child_sandbox(None)
     if not policy.enabled:
         return None
-    roots = (os.path.expanduser(path) for path in policy.allow_write)
+    roots = (expand(path) for path in policy.allow_write)
     return list(dict.fromkeys(root for root in roots if os.path.isabs(root)))
 
 
@@ -1460,7 +1465,16 @@ def _is_workspace_write_override(key: str) -> bool:
     )
 
 
-def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
+def _expand_write_root(entry: str, env: Mapping[str, str] | None) -> str:
+    """A write root with a leading ``~`` expanded by the rule a denied location's follows: the
+    child's ``HOME`` (the absolute ``HOME`` of ``env``, else the account's home directory), never
+    this process's own ``HOME``. ``~name`` is left to the account database."""
+    return _expand_home(entry, _child_home(env), what="writable root")
+
+
+def _profile_write_roots(
+    plain: _PlainRequest, cwd: Path, env: Mapping[str, str] | None = None
+) -> list[str]:
     """The writable roots, beyond the working directory, that the permission profile grants.
 
     These are the roots the workspace-write mode this profile replaces granted, so no request
@@ -1468,18 +1482,26 @@ def _profile_write_roots(plain: _PlainRequest, cwd: Path) -> list[str]:
     own overrides set (a string, list or tuple, at the root or in the selected config profile),
     else the child sandbox's ``allow_write`` list, then every ``add_dir`` directory and the
     linked worktree's git roots, the last two being the directories passed with ``--add-dir``.
-    A leading ``~`` is expanded and a relative entry is made absolute against the working
-    directory, which codex starts in. A root that contains the probe record directory or lies
-    inside it is refused: a child that could write there could forge the record the launch
-    rests on.
+    A leading ``~`` of a caller's ``writable_roots`` entry or an ``allow_write`` entry expands
+    against the child's ``HOME`` in ``env``, as a denied location's does; an ``add_dir`` entry's
+    expands as codex's own ``--add-dir`` is given it. A relative entry is made absolute against
+    the working directory, which codex starts in. A root that contains the probe record
+    directory or lies inside it is refused: a child that could write there could forge the
+    record the launch rests on.
     """
     if plain.workload == "light":
         return []
+
+    def expand(entry: str) -> str:
+        return _expand_write_root(entry, env)
+
     roots = _caller_writable_roots(plain)
     if roots is None:
-        roots = _heavy_writable_roots(plain) or []
+        roots = _heavy_writable_roots(plain, expand) or []
+    else:
+        roots = [expand(root) for root in roots]
     git_roots = (str(path) for path in _linked_worktree_git_writable_roots(cwd))
-    entries = (os.path.expanduser(entry) for entry in [*roots, *plain.add_dir, *git_roots])
+    entries = [*roots, *(os.path.expanduser(entry) for entry in plain.add_dir), *git_roots]
     absolute = (
         entry if os.path.isabs(entry) else os.path.join(str(cwd), entry) for entry in entries
     )
@@ -1659,7 +1681,7 @@ def _permission_profile_launch_table(
     # Computed in every mode, read-only included, so a root on the probe record directory is
     # refused even where the table grants no write entry: the command line still carries each
     # `add_dir` directory as `--add-dir`.
-    write_roots = _profile_write_roots(plain, cwd)
+    write_roots = _profile_write_roots(plain, cwd, env)
     deny = deny_entries(policy.deny_read, codex_home_for_env(env), env)
     # The same holds for every denied location: no write root, the working directory included
     # when the profile writes it, may be one, hold one or lie inside one, so nothing rests on a

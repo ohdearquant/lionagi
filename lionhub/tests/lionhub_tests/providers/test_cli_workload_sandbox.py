@@ -88,12 +88,20 @@ def _no_host_probe_record(monkeypatch):
     )
 
 
-def _default_roots():
-    import os
+def _default_roots(env):
+    """The child sandbox's default write roots, a leading ``~`` expanded against the child's
+    ``HOME``: the absolute ``HOME`` of ``env``, else the account's home directory."""
+    import pwd
 
     from lionhub.agent.child_sandbox import default_allow_write
 
-    return [os.path.expanduser(path) for path in default_allow_write()]
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    return [
+        os.path.join(home, path[2:]) if path.startswith("~/") else path
+        for path in default_allow_write()
+    ]
 
 
 def _profile_table(args: list[str]) -> dict:
@@ -150,8 +158,8 @@ def test_a_heavy_codex_agent_writes_only_the_toolchain_caches_beyond_its_cwd(
     assert not [o for o in overrides if o.startswith("sandbox_workspace_write.")]
     assert overrides[-1].startswith("permissions.lionagi_child=")
     assert overrides[-2].startswith("default_permissions=")
-    assert _profile_table(args) == _expected_profile(env, write=_default_roots())
-    assert all(root.startswith("/") for root in _default_roots())
+    assert _profile_table(args) == _expected_profile(env, write=_default_roots(env))
+    assert all(root.startswith("/") for root in _default_roots(env))
 
 
 def test_a_heavy_codex_agent_that_bypasses_the_sandbox_gets_no_pin(tmp_path):
@@ -175,7 +183,7 @@ def test_the_heavy_profile_beats_the_user_configs_writable_roots(tmp_path, sandb
     # are the child sandbox's roots and never the roots the user config lists.
     table = _profile_table(args)
     # The ignored config's `network_access = true` carries into the profile's network key.
-    assert table == _expected_profile(env, write=_default_roots(), network=True)
+    assert table == _expected_profile(env, write=_default_roots(env), network=True)
     assert "everything" not in str(table)
     assert _pairs(args, "-c")[-1].startswith("permissions.lionagi_child=")
 
@@ -204,7 +212,7 @@ def test_the_heavy_roots_follow_the_child_sandbox_settings(tmp_path, monkeypatch
     )
     env = _home_with_config(tmp_path, "")
     args = _codex(tmp_path, env=env, full_auto=True)
-    assert _profile_table(args) == _expected_profile(env, write=[*_default_roots(), "/opt/c"])
+    assert _profile_table(args) == _expected_profile(env, write=[*_default_roots(env), "/opt/c"])
     monkeypatch.setattr(
         child_sandbox, "_global_settings", lambda: {"child_sandbox": {"enabled": False}}
     )
@@ -614,7 +622,7 @@ def test_a_request_mode_with_a_harmless_config_mode_renders_the_profile_only(tmp
     # The profile governs, so the request's own mode is not rendered as a sandbox flag at all.
     assert "--sandbox" not in args
     assert "-s" not in args
-    assert _profile_table(args) == _expected_profile(env, write=_default_roots())
+    assert _profile_table(args) == _expected_profile(env, write=_default_roots(env))
 
 
 def test_a_project_codex_config_that_turns_the_sandbox_off_is_refused(tmp_path, sandbox_on):
