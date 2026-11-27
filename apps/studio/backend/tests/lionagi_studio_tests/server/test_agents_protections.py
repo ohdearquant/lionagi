@@ -727,16 +727,42 @@ def test_agent_routes_refuse_later_system_block(tmp_path, monkeypatch, method, u
             id="malformed-empty-block",
         ),
         pytest.param(
+            # The loaders read no block after a malformed opener, so a false value
+            # there is unread text that names the marker.
             "---invalid\nname: sample\n---\nlion_system: false\n---\nPrompt.\n",
-            False,
             True,
-            id="later-nonsystem-block",
+            True,
+            id="later-block-naming-lion-system-false",
         ),
         pytest.param(
             "---invalid\nname: sample\n---\nlion_system: true\nnotes: [unfinished\n---\nPrompt.\n",
             True,
             True,
             id="later-unreadable-system-block",
+        ),
+        pytest.param(
+            "--- # agent\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-commented-opener",
+        ),
+        pytest.param(
+            "---\u200b\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-zero-width-opener",
+        ),
+        pytest.param(
+            "--- # agent\nname: sample\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-commented-opener",
+        ),
+        pytest.param(
+            "---\u200b\nname: sample\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-zero-width-opener",
         ),
         pytest.param(
             '---\n"lion\\x5fsystem": true\nnotes: [unfinished\n---\nPrompt.\n',

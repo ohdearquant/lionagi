@@ -1101,6 +1101,63 @@ def test_other_machine_exit_codes_mask_before_cutting_the_stderr_tail(machine_pr
     assert result["error"]["detail"] == {"stderr": expected_stderr}
 
 
+_FAILING_MACHINE_EXITS = pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (78, b""),
+        (0, b""),
+        (1, b'{"ok": false,'),
+        (7, b'{"ok": true, "contract_version": 1, "data": {}}'),
+    ],
+    ids=["environment", "no-result", "not-json", "success-beside-failure"],
+)
+
+
+@_FAILING_MACHINE_EXITS
+def test_failing_machine_exits_mask_a_bounded_window_of_stderr(
+    machine_process_result, monkeypatch, returncode, stdout
+):
+    import lionhub.state.engine as engine
+
+    real_mask = engine.mask_credentials
+    lengths = []
+
+    def recording_mask(text):
+        lengths.append(len(text))
+        return real_mask(text)
+
+    monkeypatch.setattr(engine, "mask_credentials", recording_mask)
+    machine_process_result(returncode, stdout, b"e" * 1_000_000)
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert result["error"]["detail"]["stderr"] == "e" * 2000
+    assert lengths
+    assert max(lengths) <= dispatch._MACHINE_STDERR_TAIL + dispatch._MACHINE_STDERR_MARGIN
+
+
+@_FAILING_MACHINE_EXITS
+def test_failing_machine_exits_mask_a_credential_the_tail_splits_after_long_output(
+    machine_process_result, returncode, stdout
+):
+    credential = "postgresql://fixture:" + "x" * 2010 + "@example.invalid\n"
+    stderr = "q" * 1_000_000 + credential + "p" * 1980
+    machine_process_result(returncode, stdout, stderr.encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    expected_stderr = ("postgresql://fixture:***@example.invalid\n" + "p" * 1980)[-2000:]
+    assert result["error"]["detail"]["stderr"] == expected_stderr
+    assert "x" * 100 not in json.dumps(result)
+
+
+@pytest.mark.parametrize("prefix", [b"", b"a", b"ab"], ids=["aligned", "shift-1", "shift-2"])
+def test_failing_machine_exit_keeps_multibyte_stderr_whole(machine_process_result, prefix):
+    machine_process_result(0, b"", prefix + ("\u20ac" * 100_000).encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["error"]["detail"] == {"stderr": "\u20ac" * 2000}
+
+
 def test_machine_environment_exit_masks_envelope_detail_keys(machine_process_result):
     uri = "postgresql://fixture:synthetic-password@example.invalid"
     masked = "postgresql://fixture:***@example.invalid"

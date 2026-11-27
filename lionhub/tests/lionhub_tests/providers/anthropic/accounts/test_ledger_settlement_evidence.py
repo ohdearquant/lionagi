@@ -16,6 +16,7 @@ import pytest
 
 import lionhub.providers.anthropic.accounts._ledger as ledger_module
 from lionagi.service.accounts._types import (
+    INT64_MAX,
     AccountRoutingError,
     AccountSpec,
     CompleteUsage,
@@ -836,3 +837,34 @@ async def test_rejection_zero_clears_warmth_and_preserves_529_null_columns(
     assert warmth == 0
     if status == 529:
         assert fields == (None, None)
+
+
+@pytest.mark.anyio
+async def test_stream_settle_refuses_settled_spend_past_the_signed_64_bit_top(tmp_path):
+    # A credit can keep the month's total inside a signed 64-bit integer while settled spend
+    # alone passes it; status() could not read such a month back, so the settlement is refused.
+    path = tmp_path / "ledger.sqlite3"
+    ledger, attempt, quote, revision = await priced_reservation(path)
+    value = estimate(quote, revision, "cancelled")
+    other = uuid4()
+    await ledger.reserve(
+        Scope("branch", uuid4(), "anthropic"),
+        other,
+        Quote("model-a", 10, "price-a", "a" * 64),
+        (AccountSpec("alpha", "ALPHA_KEY", 100_000),),
+    )
+    assert await ledger.settle(other, CompleteUsage("model-a", 1, 2, 3, 4, 5, 1)) == "settled"
+    settled_before = INT64_MAX - value.cost_nusd + 1
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE attempt SET cost_nusd=? WHERE id=?", (settled_before, str(other)))
+    await ledger.adjust(uuid4(), "anthropic", "alpha", "2026-01", -(2**40), "credit-a")
+
+    with pytest.raises(AccountRoutingError) as caught:
+        await ledger.settle(attempt, value)
+
+    assert caught.value.code is RouterErrorCode.BUDGET_EXHAUSTED
+    with sqlite3.connect(path) as db:
+        state = db.execute("SELECT state FROM attempt WHERE id=?", (str(attempt),)).fetchone()[0]
+    assert state == "open"
+    status = (await ledger.status("anthropic", "2026-01"))[0]
+    assert (status.settled_nusd, status.adjustments_nusd) == (settled_before, -(2**40))

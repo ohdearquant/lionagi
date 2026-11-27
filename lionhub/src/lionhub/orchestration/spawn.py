@@ -1617,6 +1617,24 @@ def _token_depth(tokens: list[Any]) -> int:
     return deepest
 
 
+def _malformed_opener_span(text: str) -> str | None:
+    """The text a first line that starts with ``---`` but is not a bare ``---`` leaves unread.
+
+    The frontmatter readers take no settings from such a file. The span runs from after the
+    three dashes up to the second bare ``---`` line, so it holds both the block that line
+    seems to open and the block after the first bare ``---``; with fewer than two bare
+    ``---`` lines it runs to the end. ``None`` when the file does not open that way.
+    """
+    from lionhub.orchestration.frontmatter import _FM_SPLIT
+
+    if not text.startswith("---") or _FM_SPLIT.match(text) is not None:
+        return None
+    delimiters = _FM_SPLIT.finditer(text)
+    next(delimiters, None)
+    second = next(delimiters, None)
+    return text[3 : len(text) if second is None else second.start()]
+
+
 def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
     """Refuse an unreadable or ambiguous MCP declaration without changing other settings."""
     if not text.startswith("---"):
@@ -1666,15 +1684,21 @@ def _check_profile_mcp_frontmatter(name: str, text: str) -> None:
                 expecting_key = False
         return False
 
+    malformed = _malformed_opener_span(text)
     parts = _FM_SPLIT.split(text.strip(), maxsplit=2)
-    if len(parts) < 3:
-        block = text[3:]
+    if malformed is not None or len(parts) < 3:
+        block = text[3:] if malformed is None else malformed
         try:
             _load_frontmatter_yaml(block)
         except (yaml.YAMLError, RecursionError):
             sensitive = unreadable_yaml_has_sensitive_text(block)
         else:
             sensitive = readable_yaml_has_mcp_key(block)
+        if sensitive and malformed is not None:
+            raise ConfigurationError(
+                f"agent profile {name!r}: frontmatter with mcp text or a backslash opens "
+                "with a line that is not a bare ---; put --- alone on the first line"
+            )
         if sensitive:
             raise ConfigurationError(
                 f"agent profile {name!r}: frontmatter with mcp text or a backslash has no "
@@ -2069,6 +2093,8 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     worker, so keep it when a readable mapping sets it or an unreadable block has
     a top-level line declaring it. Empty blocks have no settings to lose. A block
     after prompt text that declares containment or tool settings raises with its opening line.
+    After a first line that starts with ``---`` but is not a bare ``---``, the text through
+    the second bare ``---`` is the unreadable block.
     """
     import yaml
 
@@ -2165,9 +2191,11 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         else:
             _check_readable_profile_settings(name, text, {}, line_offset=line_offset)
             return {}
-        parts = _FM_SPLIT.split(text, maxsplit=2)
-        # An unclosed block runs to the end, since where it was meant to end is not known.
-        block = parts[1] if len(parts) == 3 else text[3:]
+        block = _malformed_opener_span(text)
+        if block is None:
+            parts = _FM_SPLIT.split(text, maxsplit=2)
+            # An unclosed block runs to the end, since where it was meant to end is not known.
+            block = parts[1] if len(parts) == 3 else text[3:]
         reads, document = _read_profile_settings(block)
         # A block with no settings in it, empty or comments only, has none to lose.
         if reads and document is None:

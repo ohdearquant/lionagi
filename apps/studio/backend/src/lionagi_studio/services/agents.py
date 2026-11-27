@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -117,8 +117,8 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
     if normalized.startswith("---"):
         text = normalized
         if _FM_SPLIT.match(text) is None:
-            # Check the malformed opening block itself. The profile loaders
-            # can also read a closed block between the first two bare delimiters.
+            # The profile loaders read no settings after a first line that is not a
+            # bare ---. Check the malformed opening block, then the block after it.
             block, *rest = _FM_SPLIT.split(text, maxsplit=1)
             unreadable_header = _read_unreadable_agent_block(block, rest[0].strip() if rest else "")
             if unreadable_header.protection is not None or not rest:
@@ -142,8 +142,6 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
             block, rest, allow_empty=unreadable_header is None and len(parts) > 2
         )
     reason = "is a system agent" if _is_protected_system(fm) else None
-    if unreadable_header is not None:
-        return replace(unreadable_header, protection=reason)
     return _AgentWriteRead(fm, body, reason)
 
 
