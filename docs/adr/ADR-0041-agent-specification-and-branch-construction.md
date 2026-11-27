@@ -10,14 +10,20 @@
 
 ## Amendment 9 (2026-11-27) — a leg host whose legs reach only their caller's computer
 
-**Status: Proposed.** Two questions stay open until answered, and this amendment is not accepted
-before then: whether codex and gemini-cli profiles may launch no leg on a computer host until
-their provider passes a tools record (D2), and whether flow and fanout may be refused there until
-every model child goes through one builder (D6).
+**Status: Proposed.** Three questions stay open until answered, and this amendment is not
+accepted before then: whether codex and gemini-cli profiles may launch no leg on a computer host
+until their provider passes a tools record (D2); whether flow and fanout may be refused there
+until every model child goes through one builder (D6); and whether a leg's model process may run
+on the host under the host's own account, acting only through its caller's computer's verbs, or
+must itself run under that computer's account (D1 to D5).
 
 This amendment serves the owner's direction of 2026-11-23: callers keep the usual lion verbs, a
 leg a caller launches runs in that caller's own khive computer, lionagi is installed as an app on
-the computer host, and no leg process runs on the caller's machine.
+the computer host, and no leg process runs on the caller's machine. D1 to D5 decide something
+narrower than a leg running in the computer: the leg's model process runs on the host, under the
+host's own account, and everything the leg does it does in the caller's computer through that
+computer's MCP verbs. Whether that is what was asked, or whether the model process itself must
+run under the computer's account, is the third open question.
 
 Today a leg host runs `agent` launches only. Each leg gets a worktree of a repository the host
 serves, runs with no MCP server and keeps its provider's native tools inside the child sandbox
