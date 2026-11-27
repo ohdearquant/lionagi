@@ -102,8 +102,11 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
         event_id = await _seed(db)
         await register_consumer(db, "ack-timeout", start="all")
         # Only the timeout origin needs the budget to expire during the ACK; a
-        # direct cancel must reach the ACK before any budget can fire.
-        first_budget = 0.10 if origin == "timeout" else 30.0
+        # direct cancel must reach the ACK before any budget can fire. The ACK
+        # stays blocked until release is set, so the budget only has to outlast
+        # the reads, preparation and effect that come before it, which a loaded
+        # runner has stretched past 0.1 s.
+        first_budget = 1.0 if origin == "timeout" else 30.0
         first = TerminalReconciler("ack-timeout", prepare, batch_size=1, timeout=first_budget)
         second = TerminalReconciler("ack-timeout", prepare, batch_size=1, timeout=0.10)
         task = asyncio.create_task(first.attempt_exact(db, event_id))
@@ -199,17 +202,19 @@ async def test_cancel_resistant_preparation_keeps_admission_until_settled(tmp_pa
     async with StateDB(tmp_path / "state.db") as db:
         event_id = await _seed(db)
         await register_consumer(db, "preparation", start="all")
-        first = TerminalReconciler("preparation", prepare, batch_size=1, timeout=0.10)
+        # Preparation stays blocked until release is set, so the first budget only
+        # has to outlast the read before preparation starts.
+        first = TerminalReconciler("preparation", prepare, batch_size=1, timeout=1.0)
         second = TerminalReconciler("preparation", prepare, batch_size=1, timeout=0.10)
         task = asyncio.create_task(first.attempt_exact(db, event_id))
         try:
-            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(entered.wait(), 10)
             if origin == "cancel":
                 task.cancel("caller cancelled")
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, 1)
+                    await asyncio.wait_for(task, 10)
             else:
-                result = await asyncio.wait_for(task, 1)
+                result = await asyncio.wait_for(task, 10)
                 assert result.status == "failed" and not result.attempted
             await asyncio.wait_for(cancellation_seen.wait(), 1)
             assert (await second.attempt_exact(db, event_id)).status == "busy"
