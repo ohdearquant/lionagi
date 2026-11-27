@@ -3,7 +3,7 @@
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
   Amendment 6 (2026-11-26), Amendment 7 (2026-11-26), Amendment 8 (2026-11-26) and Amendment 9
-  (2026-11-26) accepted 2026-11-26; Amendment 10 (2026-11-27) proposed
+  (2026-11-26) accepted 2026-11-26; Amendment 10 (2026-11-27) accepted 2026-11-27
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -53,7 +53,7 @@
 
 ## Amendment 10 (2026-11-27): the async PostgreSQL Node adapter moves into lionhub
 
-**Status**: Proposed (2026-11-27).
+**Status**: Accepted (2026-11-27).
 
 `lionagi.adapters.async_postgres_adapter` builds the adapter that writes `Node` objects to
 PostgreSQL and creates their table on first write. No core module imports it at load time: `Node`
