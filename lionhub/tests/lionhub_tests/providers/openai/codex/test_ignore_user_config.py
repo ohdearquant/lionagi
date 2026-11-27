@@ -20,17 +20,13 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tomllib
 
 import pytest
 
 from lionagi._errors import ConfigurationError
 from lionhub.providers.openai import _codex_project_layers
 from lionhub.providers.openai.codex import CodexCodeRequest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # the declared `tomli`; the locked 2.4.1 reads TOML 1.1
-    import tomli as tomllib
 
 GRANT = ["-c", "sandbox_workspace_write.network_access=true"]
 

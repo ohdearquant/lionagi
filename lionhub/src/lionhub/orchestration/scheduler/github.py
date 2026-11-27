@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import sys
@@ -187,7 +186,7 @@ async def _gh_cli_token() -> str | None:
             _log.debug("gh auth token lookup failed")
         elif stdout:
             return stdout.decode().strip()
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.warning("gh auth token lookup timed out")
     except Exception:
         _log.debug("gh CLI not available for token retrieval")

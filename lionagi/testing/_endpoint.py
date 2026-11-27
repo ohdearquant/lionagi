@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -319,5 +318,5 @@ def _build_exception(entry: ErrorResponse) -> Exception:
             status_code=_STATUS_FOR_KIND[entry.kind],
         )
     if entry.kind == "timeout":
-        return asyncio.TimeoutError(entry.message)
+        return TimeoutError(entry.message)
     return ValueError(entry.message)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -632,9 +632,9 @@ def test_resolve_at_trigger_sets_next_fire_epoch_and_forces_max_runs_one(tmp_pat
     member = resolved["once"]
     assert member.db_fields["trigger_type"] == "at"
     assert member.db_fields["max_runs"] == 1
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    expected = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc).timestamp()
+    expected = datetime(2026, 7, 15, 9, 0, 0, tzinfo=UTC).timestamp()
     assert member.db_fields["next_fire_at"] == pytest.approx(expected)
 
 
@@ -3367,7 +3367,7 @@ async def test_adopt_clearing_unused_github_target_clears_observed_progress(
 # (tag, member, row, expected): *member* is (target, trigger, extra_member) and
 # *row* is (target, trigger, stored overrides).
 
-_AT_PAST_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+_AT_PAST_EPOCH = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
 _CRON_ROW_FIELDS = {
     "trigger_type": "cron",
     "cron_expr": "0 2 * * *",

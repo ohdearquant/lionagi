@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -26,7 +26,7 @@ from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
 pytestmark = pytest.mark.anyio
 
-NOW = datetime(2026, 11, 16, 14, 5, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 16, 14, 5, tzinfo=UTC)
 ACCOUNT = AccountSpec("alpha", "ALPHA_KEY", 100)
 QUOTE = Quote("model-a", 10, "price-a", "a" * 64)
 
@@ -482,7 +482,7 @@ async def test_a_bill_after_the_lease_expired_with_no_admission_since_still_bloc
 
 async def test_a_bill_for_an_earlier_period_probe_blocks_after_an_admission_in_the_next(tmp_path):
     # The credit period keyed 2026-11 ends at 2026-11-30T00:00Z.
-    now = [datetime(2026, 11, 29, 23, 0, tzinfo=timezone.utc)]
+    now = [datetime(2026, 11, 29, 23, 0, tzinfo=UTC)]
     ledger = await _prepare(tmp_path)
     ledger._clock = lambda: now[0]
     attempt = uuid4()
@@ -491,7 +491,7 @@ async def test_a_bill_for_an_earlier_period_probe_blocks_after_an_admission_in_t
 
     # An admission in the next credit period closes only that period's expired attempts.
     now[0] = now[0] + ledger.open_lease + timedelta(seconds=1)
-    assert now[0] > datetime(2026, 11, 30, tzinfo=timezone.utc)
+    assert now[0] > datetime(2026, 11, 30, tzinfo=UTC)
     later = uuid4()
     await ledger.reserve(Scope("branch", uuid4(), "anthropic"), later, QUOTE, (ACCOUNT,))
     await ledger.settle(later, ProvenNotSent())

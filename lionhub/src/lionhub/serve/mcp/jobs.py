@@ -25,7 +25,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -3446,7 +3446,7 @@ def _unresolved_spawn_age(submitted_at: Any) -> float | None:
     except ValueError:
         return None
     if stamped.tzinfo is None:
-        stamped = stamped.replace(tzinfo=timezone.utc)  # this writer's own UTC
+        stamped = stamped.replace(tzinfo=UTC)  # this writer's own UTC
     return (now_utc() - stamped).total_seconds()
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -28,7 +28,7 @@ from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
 pytestmark = pytest.mark.anyio
 
-NOW = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 12, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 ALPHA = AccountSpec("alpha", "ALPHA_KEY", 100)
 BETA = AccountSpec("beta", "BETA_KEY", 100)

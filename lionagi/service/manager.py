@@ -49,7 +49,7 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
             try:
                 # TODO: migrate to anyio cancel scope for timeout
                 await asyncio.wait_for(model.close(), timeout=per_model_timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning(
                     "iModel shutdown timed out for %r after %.1fs",
                     name,

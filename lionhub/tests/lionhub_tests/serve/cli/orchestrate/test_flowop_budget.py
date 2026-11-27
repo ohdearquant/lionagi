@@ -381,7 +381,7 @@ def test_the_preamble_renders_the_instant_it_was_handed():
     import datetime
 
     captured = 1786380000.0
-    expected = datetime.datetime.fromtimestamp(captured, tz=datetime.timezone.utc).strftime(
+    expected = datetime.datetime.fromtimestamp(captured, tz=datetime.UTC).strftime(
         "%Y-%m-%dT%H:%M:%S"
     )
     assert expected in _build_budget_preambles(600, [[], [0]], 2, 0, captured)[0]

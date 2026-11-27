@@ -237,7 +237,7 @@ async def run_beta_agent(
             try:
                 event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
                 yield event
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
         while not event_queue.empty():

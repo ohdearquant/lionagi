@@ -141,7 +141,7 @@ async def test_make_shell_post_hook_runs_and_returns_none(monkeypatch):
 
 async def test_make_shell_post_hook_handles_timeout_silently(monkeypatch):
     async def raise_timeout(*_a, **_kw):
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", raise_timeout)
 

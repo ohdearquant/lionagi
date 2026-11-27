@@ -425,7 +425,7 @@ async def _run_status(*, command: str, entity_id: str | None, as_json: bool) -> 
             _run_status_inner(command=command, entity_id=entity_id, as_json=as_json),
             timeout=_DB_BUSY_TIMEOUT_S,
         )
-    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+    except TimeoutError:
         return (
             f"state.db busy (no read within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
             "another writer may be holding a long transaction; try again",
@@ -502,7 +502,7 @@ def _dispatch_audit(*, as_json: bool) -> int:
 
     try:
         result = run_async(asyncio.wait_for(_go(), timeout=_DB_BUSY_TIMEOUT_S))
-    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+    except TimeoutError:
         log_error(f"state.db busy (no read within {_DB_BUSY_TIMEOUT_S:.0f}s) — try again")
         return EXIT_UNKNOWN
     if "error" in result:

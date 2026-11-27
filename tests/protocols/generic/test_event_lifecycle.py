@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -149,7 +149,7 @@ class TestInvokeLifecycle:
         clock = iter((100.0, 100.05))
         monkeypatch.setattr(
             "lionagi.protocols.generic.event.ln.now_utc",
-            lambda: datetime.fromtimestamp(next(clock), tz=timezone.utc),
+            lambda: datetime.fromtimestamp(next(clock), tz=UTC),
         )
         event = SuccessEvent()
         await event.invoke()

@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager, closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import anyio
@@ -37,7 +37,7 @@ _TEST_DEADLINE_S = 3.0
 def make_ledger(tmp_path, **options) -> CredentialLedger:
     return CredentialLedger(
         tmp_path / "ledger.sqlite3",
-        clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+        clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
         **options,
     )
 

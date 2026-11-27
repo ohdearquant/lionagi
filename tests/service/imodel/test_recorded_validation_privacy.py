@@ -590,7 +590,7 @@ async def test_stream_close_does_not_allow_late_validation_writes(monkeypatch):
         await stream.aclose()
         try:
             await asyncio.wait_for(teardown.wait(), timeout=1)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pytest.fail("underlying stream teardown did not finish", pytrace=False)
         if isinstance(call.execution.error, ValidationError):
             pytest.fail("underlying stream close retained validation input", pytrace=False)
@@ -618,7 +618,7 @@ async def test_deferred_invoke_does_not_write_validation_after_return(monkeypatc
 
     async def fast_timeout(awaitable, timeout):
         awaitable.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(model.executor.processor, "request_permission", permission)
     try:

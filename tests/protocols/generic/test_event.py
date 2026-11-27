@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -83,8 +83,8 @@ def test_event_with_error():
 
 
 def test_event_duration(monkeypatch):
-    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-    t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+    t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=UTC)
     monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
     first = Event(execution=Execution(duration=1.5))
     monkeypatch.setattr(element_mod, "now_utc", lambda: t1)

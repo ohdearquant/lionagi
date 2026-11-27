@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import shlex
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -956,7 +956,7 @@ class CodingEngine(Engine):
                         agent.operate(instruction=instruction, **kw),
                         timeout=timeout_s,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     run.notify("turn_timeout", stage=self_.name, timeout_s=timeout_s)
                     return None  # operate_with_repair sees arrived()=False → fix path
 
@@ -1019,11 +1019,11 @@ class CodingEngine(Engine):
             await stage_coro
             return False
         t0 = monotonic()
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         try:
             await asyncio.wait_for(stage_coro, timeout=self.stage_timeout_s)
             return False
-        except asyncio.TimeoutError:
+        except TimeoutError:
             elapsed_raw = monotonic() - t0
             elapsed = round(elapsed_raw, 1)
             limit_reached_at = (started_at + timedelta(seconds=self.stage_timeout_s)).isoformat()

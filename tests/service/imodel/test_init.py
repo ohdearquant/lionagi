@@ -1689,7 +1689,7 @@ class TestReportedServedModel:
 
         async def mock_stream():
             yield model.endpoint._line_to_stream_chunk(_CREATED)
-            raise asyncio.TimeoutError("read timed out")
+            raise TimeoutError("read timed out")
 
         model.provider_metadata["served_model"] = "from-an-earlier-call"
         api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])

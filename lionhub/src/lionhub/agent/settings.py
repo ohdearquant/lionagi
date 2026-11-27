@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -236,7 +235,7 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                 raise PermissionError(f"Hook execution error: {e}") from e
             try:
                 returncode, stderr_bytes = await _run_hook(argv, payload)
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
             except Exception as e:
                 raise PermissionError(f"Hook execution error: {e}") from e
@@ -259,7 +258,7 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                 return None
             try:
                 await _run_hook(argv, payload)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 logger.warning("hook subprocess timed out (swallowed)", exc_info=exc)
             except Exception as exc:
                 logger.warning("hook subprocess error (swallowed)", exc_info=exc)

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import types
@@ -170,7 +169,7 @@ async def test_exec_failure_is_not_acked_and_successful_retry_is_acked(
         async def communicate(self, payload):
             events.append(json.loads(payload)["event_id"])
             if self.fail == "timeout":
-                raise asyncio.TimeoutError
+                raise TimeoutError
             return b"", b"adapter failed" if self.fail == "nonzero" else b""
 
         async def wait(self):

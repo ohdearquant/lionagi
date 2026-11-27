@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -289,7 +289,7 @@ def write_record(
         "kernel": _kernel(),
         "policy_sha256": policy_sha256,
         "read_roots": list(read_roots),
-        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "probed_at": datetime.now(UTC).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
     }
     tmp = path.with_suffix(".tmp")

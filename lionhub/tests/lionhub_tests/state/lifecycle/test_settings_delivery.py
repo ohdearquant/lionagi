@@ -128,7 +128,6 @@ async def test_async_python_hook_normal_return_and_explicit_false(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_exec_adapter_timeout_is_failure(monkeypatch):
-    import asyncio
 
     from lionhub.state.lifecycle import notify_settings
 
@@ -136,7 +135,7 @@ async def test_real_exec_adapter_timeout_is_failure(monkeypatch):
         pid = None
 
         async def communicate(self, payload):
-            raise asyncio.TimeoutError
+            raise TimeoutError
 
     async def spawn(*args, **kwargs):
         return Process()

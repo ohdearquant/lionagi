@@ -561,10 +561,7 @@ async def test_pre_tool_use_timeout_passes_spawn_bound_witnesses_and_denies(monk
     proc = MagicMock()
     proc.pid = 9999
     proc.stdin = _FakeStdin()
-    # asyncio.wait_for raises asyncio.TimeoutError, which is NOT the builtin
-    # TimeoutError before 3.11 -- inject the real raised type so this exercises
-    # the pre-3.11 teardown path rather than passing by luck on 3.11+.
-    proc.stdout = _FakeStream(raises=asyncio.TimeoutError())
+    proc.stdout = _FakeStream(raises=TimeoutError())
     proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
@@ -601,7 +598,7 @@ async def test_post_tool_use_timeout_surfaces_reason_not_raise(monkeypatch):
     proc = MagicMock()
     proc.pid = 8888
     proc.stdin = _FakeStdin()
-    proc.stdout = _FakeStream(raises=asyncio.TimeoutError())
+    proc.stdout = _FakeStream(raises=TimeoutError())
     proc.stderr = _FakeStream()
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -408,7 +408,7 @@ async def test_github_apply_target_change_fences_old_inflight_poll(
 # (tag, member, row, expected): *member* is (target, trigger, extra_member) and
 # *row* is (target, trigger, stored overrides).
 
-_AT_PAST_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+_AT_PAST_EPOCH = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
 _CRON_ROW_FIELDS = {
     "trigger_type": "cron",
     "cron_expr": "0 2 * * *",

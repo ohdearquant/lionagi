@@ -160,7 +160,7 @@ all = [
 
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 # Both import roots, so `lionhub` sorts as first-party like `lionagi`.
 src = [".", "lionhub/src", "apps/studio/backend/src"]
@@ -171,9 +171,10 @@ select = ["E", "F", "W", "B", "I", "UP", "N", "S", "A", "RUF013"]
 ignore = [
     "N805",   # pydantic validator first-arg naming
     "A004",   # ExceptionGroup stdlib shadowing (compat shim)
-    "UP035",  # typing imports needed for Python 3.10
-    "UP006",  # typing generics needed for Python 3.10
-    "UP007",  # X | Y union syntax needs 3.10+ (already using from __future__)
+    "UP035",  # typing-module imports are left as written
+    "UP006",  # typing-module generics are left as written
+    "UP007",  # Optional/Union annotations are left as written
+    "UP042",  # a str+Enum subclass keeps its str() and format() output; StrEnum changes both
     "S101",   # assert usage (fine in non-web library)
     "E501",   # line length (handled by formatter)
     "W293",   # blank line whitespace (handled by formatter)
@@ -202,7 +203,7 @@ extend-immutable-calls = ["pydantic.Field", "lionhub.serve.mcp.server._arg"]
     "F401",   # unused imports (import-bridge tests verify importability)
     "F601",   # repeated dict keys (test fixture patterns)
     "F841",   # unused variable (test setup patterns)
-    "UP045",  # X | None annotation (3.10 compat)
+    "UP045",  # Optional annotations are left as written
     "N",      # naming relaxed in tests
 ]
 "lionhub/tests/**" = ["S", "A", "B", "E402", "E721", "E731", "F401", "F601", "F841", "UP045", "N"]

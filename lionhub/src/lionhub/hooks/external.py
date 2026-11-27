@@ -580,8 +580,7 @@ async def _run_hook_process(
             _drain(proc, envelope_bytes),
             timeout=timeout,
         )
-    except (TimeoutError, asyncio.TimeoutError) as err:
-        # Catches both since they're distinct classes before Python 3.11.
+    except TimeoutError as err:
         # Kill the whole process group so a hung hook's children can't
         # continue side effects after the timeout is declared.
         group_witnesses = (

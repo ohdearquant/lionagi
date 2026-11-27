@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from xml.parsers.expat import ExpatError
@@ -314,7 +314,7 @@ def write_record(
         "volume_uuid": uuid,
         "kernel": _kernel(),
         "policy_sha256": policy_sha256,
-        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "probed_at": datetime.now(UTC).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
     }
     tmp = path.with_suffix(".tmp")

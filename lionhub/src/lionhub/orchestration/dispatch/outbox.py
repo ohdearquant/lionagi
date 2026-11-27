@@ -12,7 +12,6 @@ See docs/adr/ADR-0059-durable-dispatch-outbox.md.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -149,7 +148,7 @@ async def _exec_notify_template(
         returncode, _, stderr_bytes = await communicate_in_process_group(
             argv, payload_json.encode() if needs_stdin else b"", timeout=timeout
         )
-    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+    except TimeoutError:
         return False, f"notify template timed out after {timeout}s: {argv[0]!r}"
     except Exception as exc:  # noqa: BLE001
         return False, f"notify template execution error: {exc}"

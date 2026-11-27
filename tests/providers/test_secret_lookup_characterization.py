@@ -75,7 +75,7 @@ async def test_cli_fill_results_environment_and_cleanup(fake_child, monkeypatch,
     if outcome == "nonzero":
         proc.returncode = 7
     elif outcome == "timeout":
-        proc.communicate.side_effect = asyncio.TimeoutError()
+        proc.communicate.side_effect = TimeoutError()
     elif outcome == "run-error":
         proc.communicate.side_effect = OSError("lookup-output-secret")
 
@@ -102,7 +102,7 @@ async def test_one_name_results_environment_and_cleanup(fake_child, caplog, outc
         proc.returncode = 3
         proc.stdout.read.side_effect = [b" x\xff ", b""]
     elif outcome == "timeout":
-        proc.stdout.read.side_effect = [asyncio.TimeoutError(), b""]
+        proc.stdout.read.side_effect = [TimeoutError(), b""]
     elif outcome == "too-long":
         proc.stdout.read.side_effect = [b"12345", b""]
     else:

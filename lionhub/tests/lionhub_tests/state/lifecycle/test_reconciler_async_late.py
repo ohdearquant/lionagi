@@ -44,7 +44,7 @@ async def _wait_for_ack(db: StateDB, transition: str, consumer: str) -> bool:
 
     try:
         await asyncio.wait_for(wait(), timeout=2)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return False
     return True
 
@@ -56,7 +56,7 @@ async def _wait_for_release(reconciler: TerminalReconciler) -> bool:
 
     try:
         await asyncio.wait_for(wait(), timeout=2)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return False
     return True
 

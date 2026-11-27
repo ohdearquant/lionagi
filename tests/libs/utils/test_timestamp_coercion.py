@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -21,7 +21,7 @@ def test_boolean_is_not_an_epoch(value):
 
 @pytest.mark.parametrize("value", ["2025-01-01", "2025-01-01T00:00:00"])
 def test_naive_iso_string_is_utc(value):
-    assert _utils.coerce_created_at(value) == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert _utils.coerce_created_at(value) == datetime(2025, 1, 1, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("suffix", ["Z", "z"])
@@ -40,12 +40,12 @@ def test_trailing_z_is_normalized_before_python_iso_parser(monkeypatch, suffix, 
 
     monkeypatch.setattr(_utils, "datetime", LegacyDatetime)
     assert _utils.coerce_created_at(f"2025-01-01T00:00:00{fraction}{suffix}") == datetime(
-        2025, 1, 1, microsecond=int((fraction[1:] + "000000")[:6]), tzinfo=timezone.utc
+        2025, 1, 1, microsecond=int((fraction[1:] + "000000")[:6]), tzinfo=UTC
     )
 
 
 def test_compact_numeric_string_keeps_epoch_precedence():
-    assert _utils.coerce_created_at("20250101") == datetime.fromtimestamp(20250101, tz=timezone.utc)
+    assert _utils.coerce_created_at("20250101") == datetime.fromtimestamp(20250101, tz=UTC)
 
 
 @pytest.mark.parametrize("value", ["1e300", "inf", "-inf", "nan", "-1e300"])

@@ -13,7 +13,7 @@ import types
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path as StdPath
 from types import UnionType
@@ -63,7 +63,7 @@ __all__ = (
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def short_id(n: int = 12) -> str:
@@ -455,14 +455,14 @@ def coerce_created_at(v: Any) -> datetime:
     if isinstance(v, bool):
         raise ValueError("Expected datetime/timestamp/string, got bool")
     if isinstance(v, datetime):
-        return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
     if isinstance(v, int | float):
-        return datetime.fromtimestamp(v, tz=timezone.utc)
+        return datetime.fromtimestamp(v, tz=UTC)
 
     if isinstance(v, str):
         with contextlib.suppress(ValueError, OverflowError, OSError):
-            return datetime.fromtimestamp(float(v), tz=timezone.utc)
+            return datetime.fromtimestamp(float(v), tz=UTC)
         with contextlib.suppress(ValueError):
             iso = v[:-1] + "+00:00" if v.endswith(("Z", "z")) else v
             # Python 3.10 accepts only 3 or 6 fractional digits. Match newer
@@ -473,7 +473,7 @@ def coerce_created_at(v: Any) -> datetime:
                 iso,
             )
             parsed = datetime.fromisoformat(iso)
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+            return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
         raise ValueError(f"String '{v}' is neither timestamp nor ISO format")
 
     raise ValueError(f"Expected datetime/timestamp/string, got {type(v).__name__}")

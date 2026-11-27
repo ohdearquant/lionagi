@@ -8,7 +8,6 @@ import asyncio
 import os
 import socket
 import subprocess
-import sys
 import uuid
 
 import pytest
@@ -123,8 +122,7 @@ async def test_ack_cancellation_is_uncertain_or_propagated_and_reserved(
                 task.cancel("caller cancelled during ACK")
                 with pytest.raises(asyncio.CancelledError) as caught:
                     await task
-                if sys.version_info >= (3, 11):
-                    assert caught.value.args == ("caller cancelled during ACK",)
+                assert caught.value.args == ("caller cancelled during ACK",)
             assert (await second.attempt_exact(db, event_id)).status == "busy"
             assert not await is_acknowledged(db, event_id, "ack-timeout")
             assert calls == [event_id]

@@ -1003,7 +1003,7 @@ class TestSingleRetryPathParity:
         async def _raise_timeout(request):
             nonlocal call_count
             call_count += 1
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         def create_client():
             return httpx.AsyncClient(transport=httpx.MockTransport(_raise_timeout))
@@ -1124,7 +1124,7 @@ class TestRetryConfigDefaultRetriesRealErrors:
         async def _raise_timeout(request):
             nonlocal call_count
             call_count += 1
-            raise _asyncio.TimeoutError()
+            raise TimeoutError()
 
         def create_client():
             return _http_client(_raise_timeout)
@@ -1739,7 +1739,7 @@ def _self_signed_server_context(tmp_path) -> tuple[ssl.SSLContext, bytes]:
 
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)

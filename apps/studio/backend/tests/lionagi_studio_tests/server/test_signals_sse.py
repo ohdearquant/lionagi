@@ -920,7 +920,7 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
     task.cancel()
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-    except (asyncio.CancelledError, asyncio.TimeoutError):
+    except (TimeoutError, asyncio.CancelledError):
         pass  # expected — task was cancelled
 
     # The generator must be cancellable without propagating unexpected errors.

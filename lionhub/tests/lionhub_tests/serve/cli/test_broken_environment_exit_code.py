@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,11 +36,6 @@ from lionhub.orchestration.job import (
     run_was_allocated,
 )
 from tests._job_test_support import _no_run_allocated  # noqa: F401
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 # `from lionhub.serve.cli import main` is not a handle on this module. What it yields
 # depends on import order: the package's __getattr__ pins the re-exported

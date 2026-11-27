@@ -262,7 +262,7 @@ async def test_process_crash_after_effect_replays_same_event_before_ack(tmp_path
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=20)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.communicate()
             pytest.fail(f"{mode} child did not exit within 20 seconds")

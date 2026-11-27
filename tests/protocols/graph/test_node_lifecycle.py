@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -339,8 +339,8 @@ class TestNodeTouch:
         ],
     )
     def test_touch_track_updated_at(self, monkeypatch, class_name, node_kwargs):
-        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=UTC)
         monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
         monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
         cls = create_node(class_name, track_updated_at=True)
@@ -353,7 +353,7 @@ class TestNodeTouch:
         assert t.updated_at == t1.isoformat()
         updated_at = datetime.fromisoformat(t.updated_at)
         assert updated_at == t1
-        assert updated_at > datetime.fromtimestamp(t.created_at, tz=timezone.utc)
+        assert updated_at > datetime.fromtimestamp(t.created_at, tz=UTC)
 
     @pytest.mark.parametrize(
         ("class_name", "node_kwargs"),

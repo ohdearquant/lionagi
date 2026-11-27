@@ -7,7 +7,7 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
@@ -40,7 +40,7 @@ from lionhub.providers.anthropic.accounts._pricing import (
     quote_ceiling,
 )
 
-NOW = datetime(2026, 1, 15, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, tzinfo=UTC)
 
 
 async def reserved(path: Path):

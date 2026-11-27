@@ -1912,7 +1912,7 @@ async def ndjson_from_cli(
             # whole grace ends the stream.
             try:
                 return await asyncio.wait_for(read_task, _POST_EXIT_DRAIN_GRACE)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning(
                     "CLI child (pid %s) exited but stdout stayed open — orphaned "
                     "descendants hold the pipe; ending the stream after %.0fs grace",
@@ -1978,7 +1978,7 @@ async def ndjson_from_cli(
             drain_truncated = False
             try:
                 await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 drain_truncated = True
             except asyncio.CancelledError:
                 raise
@@ -1996,7 +1996,7 @@ async def ndjson_from_cli(
             unread: str | None = None
             try:
                 await asyncio.wait_for(shield_quietly(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 unread = "its stderr drain did not finish"
             except asyncio.CancelledError:
                 raise

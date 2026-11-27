@@ -135,13 +135,13 @@ async def test_private_late_ack_stays_reserved_until_owner_coroutine_settles(
         if drain is not None and not drain.done():
             try:
                 await asyncio.wait_for(asyncio.shield(drain), 2)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 drain.cancel()
                 await asyncio.gather(drain, return_exceptions=True)
         if ack_entered.is_set() and not ack_completed.is_set():
             try:
                 await asyncio.wait_for(ack_completed.wait(), 2)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         if key is not None:
             with reconciliation._workers_lock:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -21,7 +21,7 @@ from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 from lionhub.providers.anthropic.accounts._pricing import CURRENT_REVISION
 from lionhub.providers.anthropic.accounts._router import AccountRouter, RouterAttempt
 
-NOW = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 12, tzinfo=UTC)
 ALPHA = AccountSpec("alpha", "ALPHA_KEY", 10**15)
 
 

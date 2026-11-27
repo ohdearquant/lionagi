@@ -151,7 +151,7 @@ async def test_timeout_warning_does_not_copy_exception_details(monkeypatch, capl
     class _SensitiveTimeout(_Child):
         async def communicate(self, data=None):
             self.stdin = data
-            raise asyncio.TimeoutError("synthetic-secret-token")
+            raise TimeoutError("synthetic-secret-token")
 
     child = _SensitiveTimeout()
     _install_child(monkeypatch, child)

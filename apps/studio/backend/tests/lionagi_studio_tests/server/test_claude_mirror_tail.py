@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -32,8 +32,8 @@ def _write_transcript(
     proj_dir = root / "-Users-someone-proj"
     proj_dir.mkdir(parents=True, exist_ok=True)
     path = proj_dir / f"{uid}.jsonl"
-    t0 = datetime.fromtimestamp(base_ts, tz=timezone.utc).isoformat()
-    t1 = datetime.fromtimestamp(base_ts + 1, tz=timezone.utc).isoformat()
+    t0 = datetime.fromtimestamp(base_ts, tz=UTC).isoformat()
+    t1 = datetime.fromtimestamp(base_ts + 1, tz=UTC).isoformat()
     events = [
         {
             "type": "user",
@@ -72,7 +72,7 @@ def _write_codex_transcript(
     records = [
         {
             "type": "session_meta",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "payload": {
                 "id": uid,
                 "session_id": uid,
@@ -82,7 +82,7 @@ def _write_codex_transcript(
         },
         {
             "type": "response_item",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "payload": {
                 "type": "message",
                 "role": "user",
@@ -236,7 +236,7 @@ def test_scoping_the_claude_root_does_not_reach_the_real_codex_tree(tmp_path, mo
             stop.set()
             try:
                 await asyncio.wait_for(task, timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 task.cancel()
                 # A tail that will not stop is usually the same tail that never
                 # made progress, so raising from here would replace the useful

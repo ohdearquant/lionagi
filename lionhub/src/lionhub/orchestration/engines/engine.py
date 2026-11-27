@@ -2293,7 +2293,7 @@ class Engine:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await partial_task
             raise
-        except (asyncio.TimeoutError, Exception) as exc:
+        except (TimeoutError, Exception) as exc:
             logger.warning("partial export after degrade failed: %s", exc)
             if not partial_task.done():
                 partial_task.cancel()

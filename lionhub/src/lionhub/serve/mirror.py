@@ -861,11 +861,11 @@ async def mirror_forever(
                         _log.exception("transcript mirror pass failed")
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=interval)
-                    except (asyncio.TimeoutError, TimeoutError):
+                    except TimeoutError:
                         pass
         except Exception:  # connection open/teardown failed — retry, never die
             _log.exception("claude mirror connection failed; retrying")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 pass

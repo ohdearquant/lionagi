@@ -5,7 +5,7 @@
 
 import threading
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Union
 from uuid import UUID, uuid4
 
@@ -161,23 +161,23 @@ class TestCoerceCreatedAt:
     def test_naive_datetime_becomes_utc(self):
         naive = datetime(2025, 1, 1, 12, 0, 0)
         result = coerce_created_at(naive)
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_aware_datetime_passthrough(self):
-        aware = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        aware = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
         assert coerce_created_at(aware) is aware
 
     def test_from_int_timestamp(self):
         result = coerce_created_at(1704067200)
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_from_float_timestamp(self):
         result = coerce_created_at(1704067200.5)
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_from_numeric_string(self):
         result = coerce_created_at("1704067200")
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_from_iso_string(self):
         result = coerce_created_at("2025-01-01T12:00:00+00:00")

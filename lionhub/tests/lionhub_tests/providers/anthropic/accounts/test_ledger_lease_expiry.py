@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid5
 
 import pytest
@@ -21,7 +21,7 @@ from lionagi.service.accounts._types import (
 )
 from lionhub.providers.anthropic.accounts._ledger import CredentialLedger
 
-T0 = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+T0 = datetime(2026, 1, 1, 12, tzinfo=UTC)
 LEASE = timedelta(hours=2)
 
 
@@ -556,7 +556,7 @@ async def test_only_the_current_month_is_read(tmp_path):
     clock = Clock(T0)
     ledger = make_ledger(tmp_path, clock)
     old = await ledger.reserve(scope(), uuid4(), quote(2), (spec(),))
-    clock.now = datetime(2026, 2, 10, tzinfo=timezone.utc)
+    clock.now = datetime(2026, 2, 10, tzinfo=UTC)
     await ledger.reserve(scope(), uuid4(), quote(2), (spec(),))
 
     assert attempt_row(ledger.path, old.attempt_id)[0] == "open"
