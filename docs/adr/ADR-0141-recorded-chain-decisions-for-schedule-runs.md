@@ -143,10 +143,10 @@ Why this way:
 - A usable recorded branch stays authoritative for chain following after a schedule edit, even if the run's status and exit code disagree.
 
 The new terminal floor narrows the audited override contracts in
-[ADR-0035 D5](ADR-0035-persisted-run-completion-contract.md#d5--transactional-status-vocabulary-terminal-protection-and-cas)
-and [ADR-0057 D4](ADR-0057-operational-lifecycle-and-transition-audit.md#d4--terminal-changes-require-an-audited-override)
+[ADR-0035 D5](ADR-0035-persisted-run-completion-contract.md#d5-transactional-status-vocabulary-terminal-protection-and-cas)
+and [ADR-0057 D4](ADR-0057-operational-lifecycle-and-transition-audit.md#d4-terminal-changes-require-an-audited-override)
 and the generic terminal override in
-[ADR-0058 D2](ADR-0058-unified-lifecycle-transition-service.md#d2--one-complete-policy-per-managed-entity)
+[ADR-0058 D2](ADR-0058-unified-lifecycle-transition-service.md#d2-one-complete-policy-per-managed-entity)
 for schedule runs. A terminal `schedule_run` cannot move to a nonterminal status,
 even when the request supplies a valid override. An override between terminal
 statuses remains available and carries any stored selection. The scheduler never
@@ -214,7 +214,7 @@ path even with a valid override.
 
 Each refusal commits one `status_transition_rejected` event in `admin_events`
 and leaves the current row and transition history unchanged.
-[ADR-0058 D1](ADR-0058-unified-lifecycle-transition-service.md#d1--immutable-typed-command-and-result-records)
+[ADR-0058 D1](ADR-0058-unified-lifecycle-transition-service.md#d1-immutable-typed-command-and-result-records)
 has a schedule-run exception: a decision refusal on a nonterminal row returns
 `rejected` with the unchanged current status and `transition_id=None`. For
 example, a guarded `running`-to-terminal write carrying a decision without the
@@ -231,7 +231,7 @@ typed undeclared-edge rejection.
 `lionhub/src/lionhub/state/lifecycle/adapters.py::run_update_status` and
 `lionhub/src/lionhub/state/transitions.py::transition` raise `TransitionRejectedError` for
 these rejected outcomes after the audit commits. This adds a schedule-run
-mapping to [ADR-0058 D5](ADR-0058-unified-lifecycle-transition-service.md#d5--facade-preserving-staged-migration).
+mapping to [ADR-0058 D5](ADR-0058-unified-lifecycle-transition-service.md#d5-facade-preserving-staged-migration).
 Other entities keep their existing legacy behavior. The exception carries a
 reason from the service outcome, one of `no_override`, `terminal_floor`, or
 `decision_conflict`, and its message names the reason. The `no_override`
