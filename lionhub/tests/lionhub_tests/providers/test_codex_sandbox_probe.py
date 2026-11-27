@@ -667,6 +667,76 @@ def test_the_record_is_keyed_by_the_bytes_of_the_binary(tmp_path, record_dir):
         require_passing_probe_record(str(binary))
 
 
+def _count_reads(monkeypatch, real: str) -> list[str]:
+    """Every open of the file at ``real`` by the module that hashes codex binaries."""
+    import builtins
+
+    from lionhub.providers.openai import _codex_permissions as permissions
+
+    reads: list[str] = []
+
+    def counting_open(file, *args, **kwargs):
+        if os.fspath(file) == real:
+            reads.append(real)
+        return builtins.open(file, *args, **kwargs)
+
+    monkeypatch.setattr(permissions, "open", counting_open, raising=False)
+    return reads
+
+
+def test_a_launch_reads_the_binary_once_and_not_again_while_it_is_unchanged(
+    tmp_path, record_dir, monkeypatch
+):
+    binary = _fake_binary(tmp_path / "bin")
+    path = probe_module.write_record(str(binary), _passing_arms())
+    reads = _count_reads(monkeypatch, os.path.realpath(binary))
+    # Writing the record read the binary; launches on the same bytes read it no more.
+    assert require_passing_probe_record(str(binary)) == path
+    assert require_passing_probe_record(str(binary)) == path
+    assert reads == []
+    # Other bytes and another size: the next launch reads the binary once, and is refused.
+    binary.write_text(binary.read_text() + "# replaced\n")
+    with pytest.raises(CLIInputRefusedError, match="no probe record for codex 0.162.1"):
+        require_passing_probe_record(str(binary))
+    assert len(reads) == 1
+
+
+def test_a_record_found_for_the_binary_is_checked_against_the_digest_it_was_found_by(
+    tmp_path, record_dir, monkeypatch
+):
+    binary = _fake_binary(tmp_path / "bin")
+    path = probe_module.write_record(str(binary), _passing_arms())
+    binary.write_text(binary.read_text() + "# replaced\n")
+    real = os.path.realpath(binary)
+    shutil.copy(path, probe_record_path(real, "0.162.1", binary_sha256(real)))
+    # A new modification time, so the launch reads the bytes afresh rather than from memory.
+    seen = os.stat(real)
+    os.utime(real, ns=(seen.st_atime_ns, seen.st_mtime_ns + 1_000_000_000))
+    reads = _count_reads(monkeypatch, real)
+    with pytest.raises(CLIInputRefusedError, match="is not for codex 0.162.1"):
+        require_passing_probe_record(str(binary))
+    # The record is found by one digest and checked against that digest, so one read.
+    assert len(reads) == 1
+
+
+def test_the_digest_is_read_again_when_the_size_or_the_modification_time_changes(tmp_path):
+    import hashlib
+
+    target = tmp_path / "binary"
+    target.write_bytes(b"one")
+    assert binary_sha256(str(target)) == hashlib.sha256(b"one").hexdigest()
+    # The same size: only the modification time tells the bytes apart.
+    target.write_bytes(b"two")
+    seen = target.stat()
+    os.utime(target, ns=(seen.st_atime_ns, seen.st_mtime_ns + 1_000_000_000))
+    assert binary_sha256(str(target)) == hashlib.sha256(b"two").hexdigest()
+    # Another size, the modification time put back to what it was.
+    target.write_bytes(b"three")
+    os.utime(target, ns=(seen.st_atime_ns, seen.st_mtime_ns + 1_000_000_000))
+    assert binary_sha256(str(target)) == hashlib.sha256(b"three").hexdigest()
+    assert binary_sha256(str(tmp_path / "missing")) is None
+
+
 def test_the_binary_is_looked_up_on_the_path_of_the_given_environment(
     tmp_path, record_dir, monkeypatch
 ):
