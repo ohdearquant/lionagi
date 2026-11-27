@@ -15,6 +15,8 @@ provider, in a scratch working directory and a scratch ``CODEX_HOME``, and has t
 child to read, write and fetch. Acceptance is what the tool outputs the stand-in receives show
 (a denied canary that was not read, a write that did not land), never codex's own report. A
 denied real path is opened for zero bytes and its exit status recorded; it is never read out.
+Each is opened outside the sandbox first, and one this process cannot open there is recorded as
+untested: its failed open inside the sandbox would say nothing about the sandbox.
 The record holds every arm in ``REQUIRED_ARMS`` with its verdict and evidence, whether it
 passed or not, and is keyed by the binary's resolved path and version.
 """
@@ -695,6 +697,20 @@ def _scratch_env_verdict(
     return bool(equal and _ok(outputs.get("scratch_write")) and landed), note
 
 
+def _opens_outside(path: str) -> bool:
+    """Whether this process, outside the sandbox, can open ``path`` for reading; nothing is read.
+
+    A denied path that fails to open here (mode 000, an access list, another owner) fails to
+    open inside the sandbox too, whatever the sandbox does, so its refusal there is no evidence.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]:
     from lionhub.agent.child_sandbox import resolve_child_sandbox
 
@@ -747,11 +763,15 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     open_zero = f"/bin/sh -c {q(_OPEN_FOR_ZERO_BYTES)} _"
     python = _child_python()
     denied_sock, control_sock = dirs["deny"] / "d.sock", dirs["open"] / "c.sock"
-    real = [
+    candidates = [
         p
         for p in deny_entries(policy_deny, homes["heavy"], _env(homes["heavy"]))
         if os.path.isfile(p) and not p.startswith(str(root))
-    ][:_REAL_PATHS_OPENED]
+    ]
+    # A path this process cannot open outside the sandbox is untested, never refused: the child
+    # is not asked to open it.
+    untested = [p for p in candidates if not _opens_outside(p)]
+    real = [p for p in candidates if p not in untested][:_REAL_PATHS_OPENED]
     heavy_commands = [
         ("deny_canary", f"/bin/cat {secret}"),
         ("own_codex_home", f"/bin/cat {q(str(homes['heavy'] / 'auth.json'))}"),
@@ -904,15 +924,20 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     )
 
     arms = {
-        "deny_canary": _arm(
-            _refused(heavy["deny_canary"], deny_mark) and control_open_ok and real_refused,
-            heavy["deny_canary"],
-            heavy["open_control"],
-            note=(
-                f"control open of a readable file succeeded: {control_open_ok}; "
-                f"{len(real)} real denied path(s) opened for 0 bytes, all refused: {real_refused}"
+        "deny_canary": {
+            **_arm(
+                _refused(heavy["deny_canary"], deny_mark) and control_open_ok and real_refused,
+                heavy["deny_canary"],
+                heavy["open_control"],
+                note=(
+                    f"control open of a readable file succeeded: {control_open_ok}; "
+                    f"{len(real)} real denied path(s) opened for 0 bytes, all refused: "
+                    f"{real_refused}; {len(untested)} untested, because this process cannot "
+                    "open them outside the sandbox either"
+                ),
             ),
-        ),
+            "untested": untested,
+        },
         "unix_socket_refused_network_on": {
             **_arm(unix_on_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_on_note),
             "connects": {"heavy": _connects(heavy, heavy_seen)},
