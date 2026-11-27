@@ -1579,15 +1579,53 @@ def _cache_key_digest(value: Any) -> str:
     """``sha256:`` and the first 16 hex digits of the SHA-256 of *value*'s ``repr``.
 
     The ``repr`` keeps values of different types apart where their text is the same
-    (``None`` and ``"None"``), as the cache key built from the values themselves did.
+    (``None`` and ``"None"``), as the cache key built from the values themselves did. A
+    ``SecretStr`` is read as its text, whether it is *value* itself or sits inside a dict,
+    list, tuple, set or frozenset: its ``repr`` masks the text, so two different secrets
+    would otherwise share one cache entry.
     """
-    if isinstance(value, SecretStr):
-        value = value.get_secret_value()
+    value = _secret_text_revealed(value, set())
     if isinstance(value, (bytes, bytearray)):
         data = b"b" + bytes(value)
     else:
         data = repr(value).encode("utf-8", "surrogatepass")
     return "sha256:" + hashlib.sha256(data).hexdigest()[:16]
+
+
+def _secret_text_revealed(value: Any, open_ids: set[int]) -> Any:
+    """*value* with each ``SecretStr`` inside it read as its text; *value* itself if none.
+
+    The keys and values of a dict and the items of a list, tuple, set or frozenset are read.
+    A container is rebuilt, as the plain built-in type, only when a secret was found inside
+    it, so every value without one keeps the digest it had. *open_ids* names the containers
+    being read, so a container that holds itself is read once.
+    """
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    if not isinstance(value, (dict, list, tuple, set, frozenset)) or id(value) in open_ids:
+        return value
+    open_ids.add(id(value))
+    try:
+        if isinstance(value, dict):
+            pairs = [
+                (_secret_text_revealed(key, open_ids), _secret_text_revealed(item, open_ids))
+                for key, item in value.items()
+            ]
+            unchanged = all(
+                new_key is key and new_item is item
+                for (new_key, new_item), (key, item) in zip(pairs, value.items(), strict=True)
+            )
+            return value if unchanged else dict(pairs)
+        items = [_secret_text_revealed(item, open_ids) for item in value]
+        if all(new is old for new, old in zip(items, value, strict=True)):
+            return value
+        if isinstance(value, list):
+            return items
+        if isinstance(value, tuple):
+            return tuple(items)
+        return frozenset(items) if isinstance(value, frozenset) else set(items)
+    finally:
+        open_ids.discard(id(value))
 
 
 def _cache_key_headers(headers: Any) -> Any:
