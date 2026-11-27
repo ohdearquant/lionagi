@@ -1856,7 +1856,9 @@ def test_prune_does_not_pause_when_the_pause_is_zero(tmp_path, monkeypatch):
 
 _CONTENTION_CHUNKS = 10
 _HOLD_SECONDS = 0.04
-_WRITER_BUSY_SECONDS = 0.12
+# Ten holds. The writer's first attempt has to outlast the rest of the first chunk,
+# its commit included, and a loaded runner has delayed that commit past three holds.
+_WRITER_BUSY_SECONDS = 0.4
 
 
 def _prune_runs_beside_a_waiting_writer(
@@ -1948,8 +1950,9 @@ def test_a_waiting_writer_gets_in_between_chunks_when_the_pass_pauses(tmp_path, 
     between two chunks when the pass pauses after each chunk. Its first attempt starts
     while the first chunk is held, with nine chunks still to run.
 
-    The pause is about twice the writer's busy timeout, so a writer thread that a
-    loaded machine delays a little still finds the store free."""
+    The busy timeout is ten holds, so a first chunk whose commit a loaded machine
+    delays still ends inside it, and the pass, with a pause after each of its ten
+    chunks, still outlasts it several times over."""
     outcomes, duration = _prune_runs_beside_a_waiting_writer(
         tmp_path, monkeypatch, pause_seconds=0.25
     )
