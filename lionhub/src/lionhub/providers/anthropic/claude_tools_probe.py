@@ -343,8 +343,9 @@ def _union(run: Mapping[str, Any]) -> list[str]:
     return sorted({name for names in run["offered"] for name in names})
 
 
-def _clip(names: Sequence[str]) -> str:
-    return (", ".join(names) or "nothing")[: read_probe._EVIDENCE_CHARS]
+def _listed(names: Sequence[str]) -> str:
+    """Every name, whole: a list cut short hides the tool that fails the arm."""
+    return ", ".join(names) or "nothing"
 
 
 def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -360,7 +361,7 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
         "passed": with_server > 0 and not others,
         "evidence": (
             f"{len(off['offered'])} requests, {with_server} offering {server_tool}; tools offered "
-            f"across them: {_clip(offered)}; exit status {off['exit_status']}"
+            f"across them: {_listed(offered)}; exit status {off['exit_status']}"
         ),
     }
 
@@ -368,7 +369,7 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     arms["control_offers_native_tools"] = {
         "passed": "Bash" in native_offered,
         "evidence": (
-            f"without --tools the run offered {_clip(native_offered)}, "
+            f"without --tools the run offered {_listed(native_offered)}, "
             + ("with" if server_tool in native_offered else "without")
             + f" {server_tool}; exit status {native['exit_status']}"
         ),
@@ -381,7 +382,7 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     arms["ambient_servers_absent"] = {
         "passed": control_ok and not leaked and not started,
         "evidence": (
-            f"without --strict-mcp-config the run offered {_clip(ambient_offered)}"
+            f"without --strict-mcp-config the run offered {_listed(ambient_offered)}"
             + (
                 ", so the user-scope decoy is one this binary loads"
                 if control_ok
@@ -392,8 +393,8 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
                 if decoys[1] in ambient_offered
                 else ", without the project decoy"
             )
-            + f"; with the launch's flags decoy tools offered: {_clip(leaked)}, decoy servers "
-            f"started: {_clip(started)}"
+            + f"; with the launch's flags decoy tools offered: {_listed(leaked)}, decoy servers "
+            f"started: {_listed(started)}"
         ),
     }
 
@@ -402,7 +403,7 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     answered = ping is not None and not ping[1] and _ANSWER in ping[0]
     arms["server_connected"] = {
         "passed": {"initialize", "tools/list", "tools/call"} <= set(methods) and answered,
-        "evidence": (f"the server received {_clip(methods)}; " + read_probe._evidence(ping)),
+        "evidence": (f"the server received {_listed(methods)}; " + read_probe._evidence(ping)),
     }
     return arms
 

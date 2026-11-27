@@ -182,7 +182,7 @@ class FakeCodex:
         native = self._native(overrides)
         clients: dict[str, _Client] = {}
         mcp_tools: list[dict] = []
-        by_call: dict[str, tuple[str, str]] = {}
+        by_call: dict[tuple[str | None, str], tuple[str, str]] = {}
         try:
             for name, (command, args) in servers.items():
                 if name == SERVER_NAME and "server_not_started" in self.leaks:
@@ -190,6 +190,8 @@ class FakeCodex:
                 else:
                     clients[name] = _Client(command, args)
                     tools = clients[name].tools()
+                # A call resolves by its namespace and its name together, as the Responses API
+                # names a call of a tool nested in a namespace tool; a bare name does not.
                 if "namespaced" in self.leaks:
                     mcp_tools.append(
                         {
@@ -198,11 +200,11 @@ class FakeCodex:
                             "tools": [{"type": "function", "name": tool} for tool in tools],
                         }
                     )
-                    by_call.update({tool: (name, tool) for tool in tools if name == SERVER_NAME})
+                    by_call.update({(f"mcp__{name}", tool): (name, tool) for tool in tools})
                 else:
                     for tool in tools:
                         mcp_tools.append({"type": "function", "name": f"mcp__{name}__{tool}"})
-                        by_call[f"mcp__{name}__{tool}"] = (name, tool)
+                        by_call[(None, f"mcp__{name}__{tool}")] = (name, tool)
             provider = next(v for v in overrides if v.startswith("model_providers.stub="))
             url = re.search(r'base_url="([^"]+)/v1"', provider).group(1)
             stand_in = _LIVE[url]
@@ -223,13 +225,14 @@ class FakeCodex:
                 item = _reply_item(payload)
                 if item["type"] != "function_call":
                     return 0
-                server, tool = by_call.get(item["name"], (None, None))
+                key = (item.get("namespace"), item["name"])
+                server, tool = by_call.get(key, (None, None))
                 if server in clients and server in approved:
                     output = clients[server].call(tool)
                 elif server in clients:
                     output = "MCP tool call requires approval, but approval policy is never"
                 else:
-                    output = f"unknown tool {item['name']}"
+                    output = f"unsupported call: {item['name']}"
                 items += [
                     item,
                     {"type": "function_call_output", "call_id": item["call_id"], "output": output},
@@ -334,11 +337,13 @@ def test_the_control_evidence_says_when_the_server_tool_was_offered(tmp_path):
     assert "with the server's tool" in row["arms"]["control_offers_native_tools"]["evidence"]
 
 
-def test_a_nested_tool_is_labelled_and_called_by_its_own_name(tmp_path):
+def test_a_nested_tool_is_labelled_and_called_by_its_namespace_and_its_own_name(tmp_path):
     (row,), runs, _ = _probe(tmp_path, "namespaced")
 
     assert row["offered"] == ["mcp__probe/ping"]
+    assert row["arms"]["server_connected"]["passed"] is True, row
     assert runs["candidate-0"]["ping_result"] == "pong"
+    assert "tools/call" in runs["candidate-0"]["server_methods"][SERVER_NAME]
 
 
 def test_a_run_with_no_request_fails_rather_than_reading_as_no_tools(tmp_path):
@@ -390,6 +395,28 @@ def test_the_stand_in_keeps_labels_outputs_and_routes_only():
     assert stand_in.outputs == {"call_0": "pong"}
     assert stand_in.routes == ["POST /v1/responses", "POST /v1/responses", "GET /v1/models"]
     assert "not kept" not in json.dumps(vars(stand_in), default=str)
+
+
+def test_the_stand_in_calls_a_nested_tool_by_its_namespace_and_a_flat_one_by_its_name():
+    nested = {
+        "tools": [
+            {"type": "function", "name": "exec_command"},
+            {"type": "namespace", "name": "mcp__probe", "tools": [{"name": "ping"}]},
+        ],
+        "input": [],
+    }
+    flat = {"tools": [{"type": "function", "name": "mcp__probe__ping"}], "input": []}
+
+    call = _reply_item(
+        ToolsStandIn().answer("POST", "/v1/responses", json.dumps(nested).encode())[2]
+    )
+    plain = _reply_item(
+        ToolsStandIn().answer("POST", "/v1/responses", json.dumps(flat).encode())[2]
+    )
+
+    assert call["type"] == "function_call"
+    assert (call["namespace"], call["name"]) == ("mcp__probe", "ping")
+    assert plain["name"] == "mcp__probe__ping" and "namespace" not in plain
 
 
 def test_the_stand_in_never_calls_a_decoy_or_a_tool_without_the_server_name():
@@ -541,3 +568,34 @@ def test_main_exit_status_follows_the_table(monkeypatch, tmp_path, rows, status)
     for _ in rows:
         argv += ["--candidate", "-c x=1"]
     assert probe_module.main(argv) == status
+
+
+def test_main_prints_every_offered_tool_whole(monkeypatch, tmp_path, capsys):
+    rows, runs, _ = _probe(tmp_path / "p", "switch_ignored")
+    long_names = [f"multi_agent_v1/tool_with_a_long_name_{index:02d}" for index in range(12)]
+    rows[0]["offered"] = sorted([*rows[0]["offered"], *long_names])
+    monkeypatch.setattr(
+        probe_module, "probe", lambda binary, candidates, scratch=None: (rows, runs)
+    )
+    monkeypatch.setattr(probe_module, "write_record", lambda b, r, s: tmp_path / "record.json")
+
+    probe_module.main(["--binary", "/fake/codex", "--candidate", _ALL_OFF])
+
+    out = capsys.readouterr().out
+    assert len(", ".join(rows[0]["offered"])) > 240
+    assert f"offered: {', '.join(rows[0]['offered'])}\n" in out
+
+
+def test_a_long_tool_list_stays_whole_in_the_evidence(tmp_path):
+    many = " ".join(f"-c features.extra_{index:02d}=true" for index in range(30))
+
+    class Many(FakeCodex):
+        def _native(self, overrides):
+            extra = [{"name": f"native_tool_with_a_long_name_{i:02d}"} for i in range(30)]
+            return [*super()._native(overrides), *extra]
+
+    rows, _ = probe_module.probe("/fake/codex", [many], runner=Many(), scratch=tmp_path / "scratch")
+
+    evidence = rows[0]["arms"]["offers_only_server_tools"]["evidence"]
+    assert len(evidence) > 240
+    assert "native_tool_with_a_long_name_29, web_search; exit status 0" in evidence

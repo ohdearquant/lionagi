@@ -369,6 +369,17 @@ def test_an_extra_flag_reaches_every_run_after_the_tool_flags(tmp_path):
         assert argv[at + 2] == "--permission-prompts"
 
 
+def test_a_long_tool_list_stays_whole_in_the_evidence(tmp_path, monkeypatch):
+    long_names = tuple(f"NativeToolWithALongName{index:02d}" for index in range(20))
+    monkeypatch.setitem(globals(), "_NATIVE", ("Bash", *long_names))
+
+    arms, _, _ = _probe(tmp_path)
+
+    evidence = arms["control_offers_native_tools"]["evidence"]
+    assert len(evidence) > 240
+    assert "NativeToolWithALongName19" in evidence
+
+
 def test_a_run_with_no_request_fails_rather_than_reading_as_no_tools(tmp_path):
     def silent(argv, env, cwd):
         return 0

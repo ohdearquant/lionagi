@@ -15,7 +15,9 @@ candidate is one run and one row. The probe writes the stdio stand-in MCP server
 the Responses API, served by the claude read probe's listener, which keeps the label of every tool
 each request offers (its ``name``, else its ``type``; a tool nested in another is labelled
 ``outer/inner``). The stand-in answers the first request that offers the server's ``ping`` tool
-with one call of it and every other request with a plain message. Each run has its own working
+with one call of it, named as the Responses API names a call (a tool nested in a namespace tool by
+the namespace and its own name), and every other request with a plain message. Each run has its
+own working
 directory and ``CODEX_HOME``, and two decoy servers are named where codex finds ambient
 configuration: one in ``CODEX_HOME/config.toml``, one in a ``.codex/config.toml`` in the working
 directory. The runs, each with the flags of a contained launch (apps and plugins off, the stand-in
@@ -197,8 +199,9 @@ class ToolsStandIn:
     """A loopback stand-in for the Responses API that keeps the tool labels of each request.
 
     A request that offers the probe server's tool and carries no tool output yet is answered with
-    one call of that tool, by the last part of its label; every other request with a plain
-    message. ``offered`` keeps each request's labels in order, ``outputs`` the tool output text
+    one call of that tool, every other request with a plain message. The call names the tool as
+    the Responses API does: a tool nested in a namespace tool by its own ``name`` and the
+    namespace's name as ``namespace``, any other tool by its label alone. ``offered`` keeps each request's labels in order, ``outputs`` the tool output text
     codex sent back by call id, and ``routes`` each request's method and path. Nothing else of a
     request is kept.
     """
@@ -234,14 +237,17 @@ class ToolsStandIn:
             target = next((label for label in labels if _owner(label) == SERVER_NAME), None)
         rid = f"resp_{len(self.offered)}"
         if done == 0 and target is not None:
+            namespace, _, name = target.rpartition("/")
             item_out: dict[str, Any] = {
                 "type": "function_call",
                 "id": "fc_0",
                 "call_id": "call_0",
-                "name": target.rsplit("/", 1)[-1],
+                "name": name,
                 "arguments": "{}",
                 "status": "completed",
             }
+            if namespace:
+                item_out["namespace"] = namespace
         else:
             item_out = {
                 "type": "message",
@@ -349,8 +355,9 @@ def _union(run: Mapping[str, Any]) -> list[str]:
     return sorted({label for labels in run["offered"] for label in labels})
 
 
-def _clip(labels: Sequence[str]) -> str:
-    return (", ".join(labels) or "nothing")[:_EVIDENCE_CHARS]
+def _listed(labels: Sequence[str]) -> str:
+    """Every label, whole: a list cut short hides the tool that fails the row."""
+    return ", ".join(labels) or "nothing"
 
 
 def _native_arm(native: Mapping[str, Any]) -> dict[str, Any]:
@@ -360,7 +367,7 @@ def _native_arm(native: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "passed": bool(natives),
         "evidence": (
-            f"with no candidate the run offered {_clip(offered)}, "
+            f"with no candidate the run offered {_listed(offered)}, "
             + ("with" if has_server else "without")
             + f" the server's tool; exit status {native['exit_status']}"
         ),
@@ -380,7 +387,7 @@ def _row_arms(
         "passed": with_server > 0 and not others,
         "evidence": (
             f"{len(run['offered'])} requests, {with_server} offering the server's tool; tools "
-            f"offered across them: {_clip(offered)}; exit status {run['exit_status']}"
+            f"offered across them: {_listed(offered)}; exit status {run['exit_status']}"
         ),
     }
     arms["control_offers_native_tools"] = dict(native_arm)
@@ -400,15 +407,15 @@ def _row_arms(
     arms["ambient_servers_absent"] = {
         "passed": control_ok and not leaked and not started,
         "evidence": (
-            f"without --ignore-user-config the control offered {_clip(ambient_offered)} and "
-            f"loaded the decoys {_clip(loaded)}"
+            f"without --ignore-user-config the control offered {_listed(ambient_offered)} and "
+            f"loaded the decoys {_listed(loaded)}"
             + (
                 ", so the user-scope decoy is one this binary loads"
                 if control_ok
                 else ", without the user-scope decoy, so its absence below shows nothing"
             )
-            + f"; with the candidate decoy tools offered: {_clip(leaked)}, decoy servers "
-            f"started: {_clip(started)}"
+            + f"; with the candidate decoy tools offered: {_listed(leaked)}, decoy servers "
+            f"started: {_listed(started)}"
         ),
     }
 
@@ -419,7 +426,7 @@ def _row_arms(
         "passed": {"initialize", "tools/list", "tools/call"} <= set(methods)
         and ping is not None
         and ANSWER in ping,
-        "evidence": f"the server received {_clip(methods)}; the call returned: {clipped}",
+        "evidence": f"the server received {_listed(methods)}; the call returned: {clipped}",
     }
     return {name: arms[name] for name in REQUIRED_ARMS}
 
@@ -581,7 +588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     for row in rows:
         print(f"{'pass' if row['passed'] else 'FAIL'}  {row['candidate']}")
-        print(f"      offered: {_clip(row['offered'])}")
+        print(f"      offered: {_listed(row['offered'])}")
         for name, arm in row["arms"].items():
             print(f"      {'pass' if arm['passed'] else 'FAIL'}  {name}  {arm['evidence']}")
     print(f"record: {path}")
