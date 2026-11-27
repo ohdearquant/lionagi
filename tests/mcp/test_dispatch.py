@@ -1067,6 +1067,70 @@ def test_other_machine_exit_codes_keep_transport_errors(
     assert result["error"]["detail"] == {"stderr": "Example diagnostic\n"}
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "message"),
+    [
+        (0, b"", "no machine result"),
+        (1, b'{"ok": false,', "one JSON value"),
+        (7, b'{"ok": true, "contract_version": 1, "data": {}}', "exited 7"),
+    ],
+    ids=["no-result", "not-json", "success-beside-failure"],
+)
+def test_other_machine_exit_codes_mask_the_stderr_they_return(
+    machine_process_result, returncode, stdout, message
+):
+    uri = "postgresql://fixture:synthetic-password@example.invalid"
+    machine_process_result(returncode, stdout, f"Unable to access {uri}\n".encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    assert result["ok"] is False
+    assert message in result["error"]["message"]
+    assert result["error"]["detail"] == {
+        "stderr": "Unable to access postgresql://fixture:***@example.invalid\n"
+    }
+    assert "synthetic-password" not in json.dumps(result)
+
+
+def test_other_machine_exit_codes_mask_before_cutting_the_stderr_tail(machine_process_result):
+    # A synthetic URL split by the tail boundary leaves only the placeholder and host.
+    stderr = "postgresql://fixture:" + "x" * 2010 + "@example.invalid\n" + "p" * 1980
+    machine_process_result(0, b"", stderr.encode())
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    expected_stderr = ("postgresql://fixture:***@example.invalid\n" + "p" * 1980)[-2000:]
+    assert result["error"]["detail"] == {"stderr": expected_stderr}
+
+
+def test_machine_environment_exit_masks_envelope_detail_keys(machine_process_result):
+    uri = "postgresql://fixture:synthetic-password@example.invalid"
+    masked = "postgresql://fixture:***@example.invalid"
+    envelope = {
+        "ok": False,
+        "contract_version": 1,
+        "data": None,
+        "error": {
+            "kind": "unavailable",
+            "message": "Startup failed",
+            "detail": {"first": 1, uri: "value", "nested": {uri: [{uri: 2}]}, "last": 3},
+        },
+    }
+    machine_process_result(78, json.dumps(envelope).encode(), b"Startup failed\n")
+
+    result = call(ops=[{"op": "handshake"}])["ops"][0]
+    detail = result["error"]["detail"]
+    assert detail == {
+        "first": 1,
+        masked: "value",
+        "nested": {masked: [{masked: 2}]},
+        "last": 3,
+        "exit_code": 78,
+        "stderr": "Startup failed\n",
+    }
+    # A renamed key keeps its place.
+    assert list(detail)[:4] == ["first", masked, "nested", "last"]
+    assert "synthetic-password" not in json.dumps(result)
+
+
 def test_a_machine_command_that_cannot_be_launched_is_an_error(monkeypatch):
     monkeypatch.setattr(
         dispatch.config, "li_command", lambda: ["/nonexistent/li-that-is-not-installed"]
