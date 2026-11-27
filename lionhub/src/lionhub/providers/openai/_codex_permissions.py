@@ -553,24 +553,28 @@ def codex_binary_version(binary: str) -> str | None:
     return found.group(0) if found else None
 
 
-#: The SHA-256 of each file ``binary_sha256`` has read, keyed by the path it was given, the file's
-#: size and its modification time, for the life of the process.
-_SHA256_BY_FILE: dict[tuple[str, int, int], str] = {}
+#: The SHA-256 of each file ``binary_sha256`` has read, keyed by the path it was given and the
+#: file's size, modification time, inode and status-change time, for the life of the process.
+_SHA256_BY_FILE: dict[tuple[str, int, int, int, int], str] = {}
 
 
 def binary_sha256(path: str) -> str | None:
     """The SHA-256 of the file at ``path`` as hex, or None when it cannot be read.
 
     Every profiled codex launch asks for its binary's digest, so the digest is kept for the life
-    of the process under ``path``, the file's size and its modification time, and the file is
-    read again only when one of them changes. A digest is not kept when the size or the
-    modification time of the file read differs from what ``path`` showed before the read.
+    of the process under ``path`` and the file's size, modification time, inode and status-change
+    time, and the file is read again only when one of them changes. The status-change time is in
+    the key because a program can set the modification time back but not that one, so new bytes
+    under an old modification time still read as changed. A digest is not kept when any of the
+    four differs between the file read and what ``path`` showed before the read, which covers a
+    file replaced or written to while it was read.
     """
     try:
         before = os.stat(path)
     except OSError:
         return None
-    key = (path, before.st_size, before.st_mtime_ns)
+    stamp = (before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
+    key = (path, *stamp)
     cached = _SHA256_BY_FILE.get(key)
     if cached is not None:
         return cached
@@ -583,7 +587,7 @@ def binary_sha256(path: str) -> str | None:
     except OSError:
         return None
     value = digest.hexdigest()
-    if (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns):
+    if (after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns) == stamp:
         _SHA256_BY_FILE[key] = value
     return value
 

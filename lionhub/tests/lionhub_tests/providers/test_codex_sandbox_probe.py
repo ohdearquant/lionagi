@@ -737,6 +737,39 @@ def test_the_digest_is_read_again_when_the_size_or_the_modification_time_changes
     assert binary_sha256(str(tmp_path / "missing")) is None
 
 
+def test_new_bytes_of_the_same_size_under_the_old_modification_time_are_read_again(tmp_path):
+    import hashlib
+
+    target = tmp_path / "binary"
+    target.write_bytes(b"one")
+    seen = target.stat()
+    assert binary_sha256(str(target)) == hashlib.sha256(b"one").hexdigest()
+    # Same size, and the modification time put back: only the status-change time moved.
+    target.write_bytes(b"two")
+    os.utime(target, ns=(seen.st_atime_ns, seen.st_mtime_ns))
+    now = target.stat()
+    assert (now.st_size, now.st_mtime_ns) == (seen.st_size, seen.st_mtime_ns)
+    assert binary_sha256(str(target)) == hashlib.sha256(b"two").hexdigest()
+
+
+def test_a_file_replaced_under_the_same_size_and_modification_time_is_read_again(tmp_path):
+    import hashlib
+
+    target = tmp_path / "binary"
+    target.write_bytes(b"one")
+    seen = target.stat()
+    assert binary_sha256(str(target)) == hashlib.sha256(b"one").hexdigest()
+    # Another file moved over the path: a new inode, with the old size and modification time.
+    other = tmp_path / "other"
+    other.write_bytes(b"two")
+    os.utime(other, ns=(seen.st_atime_ns, seen.st_mtime_ns))
+    os.replace(other, target)
+    now = target.stat()
+    assert now.st_ino != seen.st_ino
+    assert (now.st_size, now.st_mtime_ns) == (seen.st_size, seen.st_mtime_ns)
+    assert binary_sha256(str(target)) == hashlib.sha256(b"two").hexdigest()
+
+
 def test_the_binary_is_looked_up_on_the_path_of_the_given_environment(
     tmp_path, record_dir, monkeypatch
 ):
