@@ -14,8 +14,10 @@ uses, runs the codex binary on PATH six times against a loopback stand-in for a 
 provider, in a scratch working directory and a scratch ``CODEX_HOME``, and has the model ask the
 child to read, write and fetch. Acceptance is what the tool outputs the stand-in receives show
 (a denied canary that was not read, a write that did not land), never codex's own report. A
-denied real path is opened for zero bytes and its exit status recorded; it is never read out.
-Each is opened outside the sandbox first, and one this process cannot open there is recorded as
+denied real file is opened for zero bytes and a denied real directory is listed, and the exit
+status is recorded; neither is read out. Every denied location present on the host is tried, and
+the record states how many were opened of how many, which a launch reads. Each is opened or
+listed outside the sandbox first, and one this process cannot open or list there is recorded as
 untested: its failed open inside the sandbox would say nothing about the sandbox.
 The record holds every arm in ``REQUIRED_ARMS`` with its verdict and evidence, whether it
 passed or not, and is keyed by the binary's resolved path and version.
@@ -67,10 +69,12 @@ Runner = Callable[[list[str], dict[str, str], Path], object]
 
 _RUN_TIMEOUT_SECONDS = 180
 _EVIDENCE_CHARS = 240
-_REAL_PATHS_OPENED = 5
 # The shell opens its argument for reading and reads nothing: ``:`` is a no-op, so the exit
 # status is the status of the redirection's open and nothing else.
 _OPEN_FOR_ZERO_BYTES = ': < "$1"'
+# A denied directory is listed, its names sent to /dev/null, so the exit status is the status of
+# reading the directory and none of its names reach the tool output.
+_LIST_DIRECTORY = "/bin/ls -A"
 # The connect a child (and the probe itself, outside the sandbox) runs against one unix socket.
 # It prints one token and exits: ``connect=ok``, ``connect=<errno name>`` from its own errno
 # table, ``connect=timeout``, or ``connect=<exception name>`` for an OSError with no errno. The
@@ -711,6 +715,17 @@ def _opens_outside(path: str) -> bool:
     return True
 
 
+def _lists_outside(path: str) -> bool:
+    """Whether this process, outside the sandbox, can list the directory ``path``; the names
+    are not kept. The directory counterpart of ``_opens_outside``."""
+    try:
+        with os.scandir(path) as entries:
+            next(entries, None)
+    except OSError:
+        return False
+    return True
+
+
 def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]:
     from lionhub.agent.child_sandbox import resolve_child_sandbox
 
@@ -763,15 +778,28 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     open_zero = f"/bin/sh -c {q(_OPEN_FOR_ZERO_BYTES)} _"
     python = _child_python()
     denied_sock, control_sock = dirs["deny"] / "d.sock", dirs["open"] / "c.sock"
-    candidates = [
+    list_dir = _LIST_DIRECTORY
+    # Every denied location outside the probe's own directory is tried: a file is opened for
+    # zero bytes, a directory is listed. One this process cannot open or list outside the
+    # sandbox is untested, never refused: the child is not asked to open it. Anything else
+    # present (a pipe, a socket, a device) is untested too, because opening a pipe would wait.
+    located = [
         p
         for p in deny_entries(policy_deny, homes["heavy"], _env(homes["heavy"]))
-        if os.path.isfile(p) and not p.startswith(str(root))
+        if not p.startswith(str(root))
     ]
-    # A path this process cannot open outside the sandbox is untested, never refused: the child
-    # is not asked to open it.
-    untested = [p for p in candidates if not _opens_outside(p)]
-    real = [p for p in candidates if p not in untested][:_REAL_PATHS_OPENED]
+    absent = [p for p in located if not os.path.exists(p)]
+    present = [p for p in located if p not in absent]
+    real: list[tuple[str, str]] = []
+    untested: list[str] = []
+    for p in present:
+        if os.path.isdir(p) and _lists_outside(p):
+            real.append(("dir", f"{list_dir} {q(p)} > /dev/null"))
+        elif os.path.isfile(p) and _opens_outside(p):
+            real.append(("file", f"{open_zero} {q(p)}"))
+        else:
+            untested.append(p)
+    listed = sum(kind == "dir" for kind, _ in real)
     heavy_commands = [
         ("deny_canary", f"/bin/cat {secret}"),
         ("own_codex_home", f"/bin/cat {q(str(homes['heavy'] / 'auth.json'))}"),
@@ -779,11 +807,13 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
         ("write_cwd", f"echo w > {q(str(dirs['cwd'] / 'w'))}"),
         ("write_entry", f"echo w > {q(str(dirs['entry'] / 'w'))}"),
         ("write_outside", f"echo w > {q(str(dirs['outside'] / 'w'))}"),
-        # Each denied real path is opened for zero bytes by the shell. The control opens a file
-        # the profile leaves readable, the same way in the same run, so a shell that cannot open
-        # anything is told apart from a path that was refused.
+        # Each denied real file is opened for zero bytes by the shell, and each denied real
+        # directory is listed. The controls open a file and list a directory the profile leaves
+        # readable, the same way in the same run, so a shell that cannot open or list anything
+        # is told apart from a path that was refused.
         ("open_control", f"{open_zero} {opened}"),
-        *((f"real_{i}", f"{open_zero} {q(p)}") for i, p in enumerate(real)),
+        ("list_control", f"{list_dir} {q(str(dirs['open']))} > /dev/null"),
+        *((f"real_{i}", command) for i, (_, command) in enumerate(real)),
         ("unix_control", _connect_command(python, control_sock)),
         ("unix_denied", _connect_command(python, denied_sock)),
     ]
@@ -912,6 +942,7 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     # empty list.
     real_refused = bool(real) and all(_refused(heavy.get(f"real_{i}")) for i in range(len(real)))
     control_open_ok = _ok(heavy["open_control"])
+    control_list_ok = _ok(heavy["list_control"])
     slash_landed = tmp_slash.exists()
     env_landed = tmp_env is not None and tmp_env.exists()
     for path in (tmp_slash, tmp_env):
@@ -926,17 +957,29 @@ def _probe(binary: str, runner: Runner, root: Path) -> dict[str, dict[str, Any]]
     arms = {
         "deny_canary": {
             **_arm(
-                _refused(heavy["deny_canary"], deny_mark) and control_open_ok and real_refused,
+                _refused(heavy["deny_canary"], deny_mark)
+                and control_open_ok
+                and control_list_ok
+                and real_refused,
                 heavy["deny_canary"],
                 heavy["open_control"],
+                heavy["list_control"],
                 note=(
                     f"control open of a readable file succeeded: {control_open_ok}; "
-                    f"{len(real)} real denied path(s) opened for 0 bytes, all refused: "
-                    f"{real_refused}; {len(untested)} untested, because this process cannot "
-                    "open them outside the sandbox either"
+                    f"control listing of a readable directory succeeded: {control_list_ok}; "
+                    f"{len(real)} of {len(present)} denied location(s) on this host opened "
+                    f"({len(real) - listed} file(s) for 0 bytes, {listed} directory(ies) "
+                    f"listed), all refused: {real_refused}; {len(untested)} untested, because "
+                    "this process cannot open them outside the sandbox either or they are "
+                    f"neither a file nor a directory; {len(absent)} absent from this host"
                 ),
             ),
+            # The count a launch reads: denied locations opened inside the sandbox, of those
+            # present on this host.
+            "opened": len(real),
+            "of": len(present),
             "untested": untested,
+            "absent": absent,
         },
         "unix_socket_refused_network_on": {
             **_arm(unix_on_ok, heavy["unix_denied"], heavy["unix_control"], note=unix_on_note),

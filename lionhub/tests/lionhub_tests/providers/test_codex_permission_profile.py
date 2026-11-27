@@ -139,7 +139,10 @@ def _fake_binary(directory: Path, version: str = "0.162.1") -> Path:
 
 
 def _passing_arms() -> dict[str, dict]:
-    return {name: {"passed": True, "evidence": "rc=0 ok"} for name in REQUIRED_ARMS}
+    arms = {name: {"passed": True, "evidence": "rc=0 ok"} for name in REQUIRED_ARMS}
+    # The deny arm states how many denied locations it opened, and a launch reads the count.
+    arms["deny_canary"].update(opened=1, of=1)
+    return arms
 
 
 # --------------------------------------------------------------------------- sandbox off: pinned
