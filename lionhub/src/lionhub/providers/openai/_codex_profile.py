@@ -14,17 +14,13 @@ import logging
 import os
 import re
 import stat
+import tomllib as _tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from lionagi._errors import ConfigurationError
 from lionagi.libs.path_safety import validate_bare_name
-
-try:
-    import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
-    import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = (
     "CODEX_MCP_PROFILE_PREFIX",

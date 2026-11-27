@@ -151,7 +151,7 @@ def test_the_grant_is_read_from_the_home_the_childs_environment_names(tmp_path, 
         "[sandbox_workspace_write\n",
         # TOML 1.1, which codex reads: a TOML 1.0 parser refuses the file, so the hook it
         # declares cannot be seen and the file is refused as unreadable; a parser that
-        # reads TOML 1.1 (`tomli` on Python 3.10) sees the hook and refuses it as declared
+        # reads TOML 1.1 sees the hook and refuses it as declared
         'note = "\\x41"\n[hooks]\nPreToolUse = [{ type = "command", command = "true" }]\n',
     ],
     ids=["broken", "toml-1.1-with-hooks"],
@@ -1095,12 +1095,11 @@ def test_an_unreadable_user_config_gets_the_permission_remedy(codex_home):
 def test_toml_1_1_syntax_in_the_user_config_is_read_as_this_pythons_parser_reads_it(
     codex_home, syntax
 ):
-    """Codex reads TOML 1.1. tomllib (3.11 and later) and tomli before 2.4 read TOML 1.0, so
-    under the flag such a config is refused with the parser remedy; tomli from 2.4 reads it."""
+    """Codex reads TOML 1.1. Where tomllib reads only TOML 1.0 (Python 3.11 to 3.14), such a
+    config is refused under the flag with the parser remedy; a tomllib that reads 1.1 reads it."""
     (codex_home / "config.toml").write_text(f'{syntax}\nsandbox_mode = "workspace-write"\n')
     request = CodexCodeRequest(prompt="hi", ignore_user_config=True)
-    tomli = None if sys.version_info >= (3, 11) else pytest.importorskip("tomli")
-    if tomli is None or tuple(int(x) for x in tomli.__version__.split(".")[:2]) < (2, 4):
+    if not _codex_project_layers._READS_TOML_1_1:
         with pytest.raises(ConfigurationError, match="Make the file one this Python's TOML parser"):
             request.as_cmd_args()
     else:
@@ -1153,12 +1152,8 @@ def test_a_project_layer_the_parser_refuses_is_named_with_the_parsers_limit(tmp_
     assert "cannot be parsed here (" in message
     assert "(at line 1, column " in message
     assert "Set `sandbox_mode` in the run's config overrides" in message
-    # the TOML 1.1 note only where the parser reads 1.0: tomllib (3.11 to 3.14), tomli before 2.4
-    tomli = None if sys.version_info >= (3, 11) else pytest.importorskip("tomli")
-    reads_1_1 = tomli is not None and tuple(int(x) for x in tomli.__version__.split(".")[:2]) >= (
-        2,
-        4,
-    )
+    # the TOML 1.1 note only where the parser reads 1.0 (tomllib on Python 3.11 to 3.14)
+    reads_1_1 = _codex_project_layers._READS_TOML_1_1
     assert ("codex reads it and this parser does not" in message) is not reads_1_1
 
 

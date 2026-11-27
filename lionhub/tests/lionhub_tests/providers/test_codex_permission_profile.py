@@ -40,10 +40,7 @@ from lionhub.providers.openai.codex import CodexCodeRequest, toml_override_value
 
 
 def _toml_loads(text: str) -> dict:
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10: the declared `tomli` reads the same TOML
-        import tomli as tomllib
+    import tomllib
 
     return tomllib.loads(text)
 

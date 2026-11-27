@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2266,7 +2265,6 @@ async def test_a_dag_failure_outranks_a_cancel_while_the_control_poller_winds_do
     assert db.landed == ["running", "completed"]
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is 3.11+")
 @pytest.mark.asyncio
 async def test_a_cancel_the_drain_holds_stays_pending_on_the_task(tmp_path):
     """When the synthesis's own failure is raised in place of a cancel that landed during its
@@ -2300,7 +2298,6 @@ async def test_a_cancel_the_drain_holds_stays_pending_on_the_task(tmp_path):
     assert cancelling == [1]
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is 3.11+")
 @pytest.mark.asyncio
 async def test_a_cancel_the_execution_drain_holds_stays_pending_on_the_task(tmp_path, monkeypatch):
     """The same holds for the execution phase's drain: the run's own failure is raised in place

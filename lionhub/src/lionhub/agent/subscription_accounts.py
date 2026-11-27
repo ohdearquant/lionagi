@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib as _tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,11 +44,6 @@ from lionhub.providers._subagent_admission import (
     ACCOUNT_ENV,
     without_account_names,
 )
-
-try:
-    import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = (
     "ACCOUNTS_FILE",

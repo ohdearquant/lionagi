@@ -14,6 +14,7 @@ import asyncio
 import os
 import re
 import threading
+import tomllib as _toml
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,6 @@ from lionhub.serve.mcp._child_actor import (
     child_actor_for,
     mint_child_actor_config,
 )
-
-try:
-    import tomllib as _toml
-except ModuleNotFoundError:  # Python 3.10
-    import toml as _toml  # type: ignore[import-untyped,no-redef]
-
 
 SUBMITTER_CONFIG = """\
 # khive.toml - project-local configuration

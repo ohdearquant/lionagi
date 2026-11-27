@@ -98,10 +98,7 @@ def _default_roots():
 
 def _profile_table(args: list[str]) -> dict:
     """The permission profile table a codex command line carries, parsed back from its override."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10: the declared `tomli` reads the same TOML
-        import tomli as tomllib
+    import tomllib
 
     rows = [o for o in _pairs(args, "-c") if o.startswith("permissions.lionagi_child=")]
     assert len(rows) == 1
@@ -110,10 +107,7 @@ def _profile_table(args: list[str]) -> dict:
 
 def _expected_profile(env, *, write, light=False, read_only=False, network=False) -> dict:
     """The table a launch builds for these inputs, rendered and parsed as a command line carries it."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10: the declared `tomli` reads the same TOML
-        import tomli as tomllib
+    import tomllib
 
     from lionhub.agent.child_sandbox import resolve_child_sandbox
     from lionhub.providers.openai._codex_permissions import (

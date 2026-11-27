@@ -4,15 +4,10 @@
 
 import ast
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
-
 
 ROOT = Path(__file__).resolve().parents[2]
 # The record is split into pieces so that no file grows toward the data-file size limit as

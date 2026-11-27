@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 from importlib.util import resolve_name
 from pathlib import Path
 
@@ -36,11 +37,6 @@ import yaml
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"

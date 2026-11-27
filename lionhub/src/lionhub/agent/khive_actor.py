@@ -23,13 +23,9 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib as _toml
 from collections.abc import Mapping
 from typing import Any
-
-try:  # Python 3.11+
-    import tomllib as _toml
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as _toml  # type: ignore[no-redef]
 
 __all__ = (
     "KHIVE_ACTOR_ENV",
