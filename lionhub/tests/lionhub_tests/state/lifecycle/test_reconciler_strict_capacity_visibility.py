@@ -179,8 +179,10 @@ async def test_strict_preparation_timeout_is_reported_while_cancel_resistant(tmp
     async with StateDB(tmp_path / "state.db") as db:
         (event_id,) = await _seed(db, 1)
         await register_consumer(db, "strict-prepare-timeout", start="all")
+        # The attempt's budget also covers the owed-row read before preparation starts, so it
+        # must outlast that read on a slow runner and still expire inside the held preparation.
         strict = TerminalReconciler(
-            "strict-prepare-timeout", prepare, batch_size=1, timeout=0.03, clock=clock
+            "strict-prepare-timeout", prepare, batch_size=1, timeout=1.0, clock=clock
         )
         reporter = TerminalReconciler(
             "strict-prepare-timeout", prepare, batch_size=1, timeout=0.03, clock=clock
