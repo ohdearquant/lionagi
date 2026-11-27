@@ -12,11 +12,13 @@ its tools. This probe makes that record.
 It writes the stdio stand-in MCP server of :mod:`lionhub.providers._tools_probe_server`, which
 offers one tool, ``ping``, answers it with ``pong`` and logs every method it receives. It then
 runs the binary three times against the read probe's loopback stand-in for the Messages API
-(:mod:`lionhub.providers.anthropic.claude_read_probe`), which here also keeps the name of every
-tool each request offers. The stand-in answers a request
-that offers tools with one call of ``mcp__probe__ping`` and the next with text. Each run has its
-own working directory, ``HOME`` and ``CLAUDE_CONFIG_DIR``, and in each two decoy servers are named
-where Claude Code finds ambient configuration: one in the run's ``~/.claude.json`` and
+(:mod:`lionhub.providers.anthropic.claude_read_probe`), which here also keeps what each request
+offers: for every tool, :func:`tool_shape`, which is its name, its ``type`` when that is a string,
+the keys of its definition, its boolean, number and null values, and the length in bytes of its
+description and of its input schema, never their text. The stand-in answers a request that offers
+tools with one call of ``mcp__probe__ping`` and the next with text. Each run has its own working
+directory, ``HOME`` and ``CLAUDE_CONFIG_DIR``, and in each two decoy servers are named where Claude
+Code finds ambient configuration: one in the run's ``~/.claude.json`` and
 ``CLAUDE_CONFIG_DIR/.claude.json``, one in a ``.mcp.json`` in its working directory. The runs:
 
 - ``tools_off``: the launch's flags, with the stand-in server as the only one in ``--mcp-config``;
@@ -27,12 +29,14 @@ The arms:
 
 - ``offers_only_server_tools``: ``tools_off`` sent at least one request offering
   ``mcp__probe__ping``, and no request, the first or any later one, offered any other tool.
-- ``control_offers_native_tools``: ``native_control`` offered ``Bash`` beside the server's tool,
-  so a run that offers no built-in tool is not a blind read of the tool list.
+- ``control_offers_native_tools``: ``native_control`` offered ``Bash``, so a run that offers no
+  built-in tool is not a blind read of the tool list. The server's tool need not be offered in
+  that run: with its built-in tools on, a binary may offer a tool search in its place. The
+  evidence says whether it was offered.
 - ``ambient_servers_absent``: ``ambient_control`` offered the user-scope decoy's tool, which shows
   this binary loads that decoy, and ``tools_off`` offered neither decoy's tool and started neither
-  decoy server. The project decoy is checked for absence only: whether this binary would load an
-  unapproved project server at all is not shown.
+  decoy server. The project decoy's absence shows something only when ``ambient_control`` offered
+  its tool too; the evidence says whether it did.
 - ``server_connected``: in ``tools_off`` the stand-in server received ``initialize``,
   ``tools/list`` and ``tools/call``, and the call of ``ping`` came back with its answer.
 
@@ -43,7 +47,12 @@ model request goes to the stand-in, which never keeps headers; what reached the 
 kept in the record. The record is written to ``LIONAGI_HOME/claude-tools-probes``, keyed by the
 binary's resolved path, version and bytes, with the flags it measured. No launch reads it yet.
 
-Run ``python -m lionhub.providers.anthropic.claude_tools_probe``.
+``--extra-flag`` adds claude arguments to all three runs, after the tool flags. Each value is
+split as a POSIX shell splits it and must begin with a flag; a flag the probe sets itself is
+refused. They are written into the record, and a record made with them is kept beside the record
+of the launch's flags alone, never in its place.
+
+Run ``python -m lionhub.providers.anthropic.claude_tools_probe [--extra-flag '<args>' ...]``.
 """
 
 from __future__ import annotations
@@ -52,6 +61,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -72,14 +82,18 @@ __all__ = (
     "SERVER_NAME",
     "ToolListStandIn",
     "main",
+    "parse_extra_flag",
     "probe",
+    "tool_shape",
     "tools_off_flags",
     "tools_record_dir",
     "tools_record_path",
     "write_record",
 )
 
-_RECORD_FORMAT = 1
+# Format 2: the native control passes on Bash alone, each run keeps the shape of every offered
+# tool, and the record carries the extra flags it was made with.
+_RECORD_FORMAT = 2
 
 #: Runs one claude command line, ``(argv, env, cwd)``, and returns its exit status, -1 when it
 #: outlived the timeout. Injected so tests need no binary.
@@ -107,6 +121,23 @@ REQUIRED_ARMS: tuple[str, ...] = (
 
 _RUNS: tuple[str, ...] = ("tools_off", "native_control", "ambient_control")
 
+# Arguments an extra flag may not carry: the probe sets each of them, and the controls are made by
+# dropping one, so an extra flag that set one again would change what every run measures.
+_REFUSED_FLAGS = frozenset(
+    {
+        "-p",
+        "--print",
+        "--model",
+        "--no-session-persistence",
+        "--tools",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "--allowed-tools",
+        "--allowedTools",
+        "--permission-prompts",
+    }
+)
+
 
 def tools_off_flags(mcp_config: str, server: str) -> list[str]:
     """The flags that leave a claude_code child no tool but those of ``server``, the one server
@@ -129,13 +160,65 @@ def tools_off_flags(mcp_config: str, server: str) -> list[str]:
     ]
 
 
+def parse_extra_flag(text: str) -> list[str]:
+    """The claude arguments one ``--extra-flag`` names, split as a POSIX shell splits them.
+
+    The first must be a flag: the tool flags end in a list, which a bare value would join.
+    """
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        raise ValueError(f"the extra flag {text!r} cannot be split: {exc}") from exc
+    if not tokens:
+        raise ValueError("an extra flag names at least one claude argument")
+    if not tokens[0].startswith("-"):
+        raise ValueError(f"the extra flag {text!r} does not begin with a flag")
+    refused = sorted({token.split("=", 1)[0] for token in tokens} & _REFUSED_FLAGS)
+    if refused:
+        raise ValueError(
+            f"the extra flag {text!r} carries {', '.join(refused)}, which the probe sets itself"
+        )
+    return tokens
+
+
+def _byte_length(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    text = json.dumps(value, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    return len(text.encode("utf-8"))
+
+
+def tool_shape(tool: Mapping[str, Any]) -> dict[str, Any]:
+    """What the record keeps of one tool a request offers, never the text of its description or
+    schema: its name and ``type`` when each is a string, the keys of its definition, every
+    boolean, number and null value by key, and the length in bytes of its ``description`` and
+    ``input_schema`` (None for a key the definition lacks)."""
+    name, kind = tool.get("name"), tool.get("type")
+    shape: dict[str, Any] = {
+        "name": name if isinstance(name, str) else None,
+        "keys": sorted(tool),
+        "description_bytes": (_byte_length(tool["description"]) if "description" in tool else None),
+        "schema_bytes": _byte_length(tool["input_schema"]) if "input_schema" in tool else None,
+        "scalars": {
+            key: value
+            for key, value in sorted(tool.items())
+            if value is None or isinstance(value, bool | int | float)
+        },
+    }
+    if isinstance(kind, str):
+        shape["type"] = kind
+    return shape
+
+
 class ToolListStandIn(read_probe.MessagesStandIn):
-    """The read probe's Messages stand-in, which also keeps the names of the tools each request
-    offers, in request order. It keeps no other part of a request."""
+    """The read probe's Messages stand-in, which also keeps, in request order, the names of the
+    tools each request offers and the :func:`tool_shape` of each. It keeps no other part of a
+    request."""
 
     def __init__(self, steps: Sequence[Mapping[str, Any]]) -> None:
         super().__init__(steps)
         self.offered: list[list[str]] = []
+        self.shapes: list[list[dict[str, Any]]] = []
 
     def answer(self, method: str, path: str, body: bytes) -> tuple[int, str, bytes]:
         route = path.split("?", 1)[0]
@@ -145,13 +228,17 @@ class ToolListStandIn(read_probe.MessagesStandIn):
             except ValueError:
                 request = {}
             tools = request.get("tools") if isinstance(request, dict) else None
-            names = (
-                sorted(str(tool.get("name")) for tool in tools if isinstance(tool, dict))
+            entries = (
+                [tool for tool in tools if isinstance(tool, dict)]
                 if isinstance(tools, list)
                 else []
             )
+            shapes = sorted(
+                (tool_shape(tool) for tool in entries), key=lambda shape: str(shape["name"])
+            )
             with self._lock:
-                self.offered.append(names)
+                self.offered.append(sorted(str(tool.get("name")) for tool in entries))
+                self.shapes.append(shapes)
         return super().answer(method, path, body)
 
 
@@ -166,8 +253,9 @@ def _flags(run: str, mcp_config: str) -> list[str]:
     return flags
 
 
-def _argv(binary: str, flags: Sequence[str]) -> list[str]:
-    # --permission-prompts takes one value, so the prompt may follow it.
+def _argv(binary: str, flags: Sequence[str], extra: Sequence[str] = ()) -> list[str]:
+    # --permission-prompts takes one value, so the prompt may follow it; it also ends a list the
+    # extra flags leave open.
     return [
         binary,
         "-p",
@@ -175,6 +263,7 @@ def _argv(binary: str, flags: Sequence[str]) -> list[str]:
         "--model",
         read_probe._MODEL,
         *flags,
+        *extra,
         "--permission-prompts",
         "none",
         read_probe._PROMPT,
@@ -191,10 +280,17 @@ def _write_json(path: Path, document: Mapping[str, Any]) -> None:
 
 
 def _run(
-    binary: str, runner: Runner, run: str, root: Path, python: str, script: Path
+    binary: str,
+    runner: Runner,
+    run: str,
+    root: Path,
+    python: str,
+    script: Path,
+    extra: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """One claude run: what it was given, the tools each request offered, the methods each
-    stand-in server received and the result of the ``ping`` call, None when none came back."""
+    """One claude run: what it was given, the tools each request offered and their shapes, the
+    methods each stand-in server received and the result of the ``ping`` call, None when none
+    came back."""
     base = root / run
     home, config, cwd = base / "home", base / "config", base / "cwd"
     # A short name: Claude Code is documented to give Bash the system temp directory instead of an
@@ -215,7 +311,7 @@ def _run(
 
     stand_in = ToolListStandIn([{"tool": _mcp_tool(SERVER_NAME), "input": {}}])
     proxy = read_probe.ProxyRecorder()
-    argv = _argv(binary, _flags(run, str(mcp_config)))
+    argv = _argv(binary, _flags(run, str(mcp_config)), extra)
     with read_probe._serve(stand_in) as base_url, read_probe._serve(proxy) as proxy_url:
         env = read_probe._env(base_url, proxy_url, home, config, claude_tmp)
         status = runner(argv, env, cwd)
@@ -225,6 +321,7 @@ def _run(
         "exit_status": status,
         "requests": list(stand_in.seen),
         "offered": [list(names) for names in stand_in.offered],
+        "offered_shapes": [list(shapes) for shapes in stand_in.shapes],
         "proxied": list(proxy.seen),
         "server_methods": {name: _logged(path) for name, path in logs.items()},
         "ping_result": stand_in.results.get("toolu_probe_0"),
@@ -258,10 +355,11 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
 
     native_offered = _union(native)
     arms["control_offers_native_tools"] = {
-        "passed": "Bash" in native_offered and server_tool in native_offered,
+        "passed": "Bash" in native_offered,
         "evidence": (
-            f"without --tools the run offered {_clip(native_offered)}; exit status "
-            f"{native['exit_status']}"
+            f"without --tools the run offered {_clip(native_offered)}, "
+            + ("with" if server_tool in native_offered else "without")
+            + f" {server_tool}; exit status {native['exit_status']}"
         ),
     }
 
@@ -278,8 +376,13 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
                 if control_ok
                 else ", without the user-scope decoy, so its absence below shows nothing"
             )
+            + (
+                ", and the project decoy is one it loads"
+                if decoys[1] in ambient_offered
+                else ", without the project decoy"
+            )
             + f"; with the launch's flags decoy tools offered: {_clip(leaked)}, decoy servers "
-            f"started: {_clip(started)}; the project decoy is checked for absence only"
+            f"started: {_clip(started)}"
         ),
     }
 
@@ -294,12 +397,12 @@ def _arms(runs: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def _probe(
-    binary: str, runner: Runner, root: Path
+    binary: str, runner: Runner, root: Path, extra: Sequence[str]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     script = root / "mcp_stand_in.py"
     script.write_text(_MCP_SERVER_SOURCE, encoding="utf-8")
     python = read_probe._child_python()
-    runs = {run: _run(binary, runner, run, root, python, script) for run in _RUNS}
+    runs = {run: _run(binary, runner, run, root, python, script, extra) for run in _RUNS}
     arms = _arms(runs)
     return {name: arms[name] for name in REQUIRED_ARMS}, runs
 
@@ -324,17 +427,19 @@ def probe(
     *,
     runner: Runner | None = None,
     scratch: Path | None = None,
+    extra_flags: Sequence[str] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Run every arm against ``binary``: arm name to ``{"passed": bool, "evidence": str}``, and
     what each of the three runs was given and saw.
 
     ``runner`` defaults to the read probe's ``run_claude``. ``scratch`` is a directory to make the
-    probe's root in; the root is a fresh subdirectory, removed afterwards.
+    probe's root in; the root is a fresh subdirectory, removed afterwards. ``extra_flags`` are
+    claude arguments added to every run after the tool flags, already split.
     """
     parent = _scratch_parent(scratch)
     root = Path(os.path.realpath(tempfile.mkdtemp(prefix="p-", dir=parent)))
     try:
-        return _probe(binary, runner or read_probe.run_claude, root)
+        return _probe(binary, runner or read_probe.run_claude, root, list(extra_flags))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -346,10 +451,17 @@ def tools_record_dir() -> Path:
     return Path(LIONAGI_HOME) / "claude-tools-probes"
 
 
-def tools_record_path(resolved: str, version: str, sha256: str) -> Path:
+def tools_record_path(
+    resolved: str, version: str, sha256: str, extra_flags: Sequence[str] = ()
+) -> Path:
     """The record for one binary, named by its resolved path, version and the SHA-256 of its
-    bytes: a binary replaced in place under the same path and version has no record."""
-    digest = hashlib.sha256(f"{resolved}\0{version}\0{sha256}".encode()).hexdigest()[:24]
+    bytes: a binary replaced in place under the same path and version has no record. A record
+    made with extra flags is named by them too, so it never stands in for the record of the
+    launch's flags alone."""
+    key = f"{resolved}\0{version}\0{sha256}"
+    if extra_flags:
+        key += "\0" + json.dumps(list(extra_flags))
+    digest = hashlib.sha256(key.encode()).hexdigest()[:24]
     return tools_record_dir() / f"claude-{version}-{digest}.json"
 
 
@@ -357,9 +469,11 @@ def write_record(
     binary: str,
     arms: Mapping[str, Mapping[str, Any]],
     runs: Mapping[str, Any],
+    extra_flags: Sequence[str] = (),
 ) -> Path:
-    """Write the tools record for ``binary``, replacing any earlier one. ``tool_flags`` holds the
-    flags measured, with ``{mcp_config}`` and ``{server}`` where a launch puts its own."""
+    """Write the tools record for ``binary``, replacing any earlier one made with the same extra
+    flags. ``tool_flags`` holds the flags measured, with ``{mcp_config}`` and ``{server}`` where a
+    launch puts its own, and ``extra_flags`` what every run had after them."""
     resolved = os.path.realpath(binary)
     version = read_probe._binary_version(binary)
     if version is None:
@@ -367,7 +481,7 @@ def write_record(
     sha256 = read_probe._sha256(resolved)
     if sha256 is None:
         raise RuntimeError(f"the bytes of {binary!r} cannot be read")
-    path = tools_record_path(resolved, version, sha256)
+    path = tools_record_path(resolved, version, sha256, extra_flags)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "format": _RECORD_FORMAT,
@@ -375,6 +489,7 @@ def write_record(
         "version": version,
         "sha256": sha256,
         "tool_flags": tools_off_flags("{mcp_config}", "{server}"),
+        "extra_flags": list(extra_flags),
         "runs": {name: dict(run) for name, run in runs.items()},
         "probed_at": datetime.now(UTC).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
@@ -385,12 +500,34 @@ def write_record(
     return path
 
 
+def _beside_server_tool(runs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The shape of each tool ``tools_off`` offered beside the server's, once per name."""
+    off = runs.get("tools_off") or {}
+    seen: dict[str, dict[str, Any]] = {}
+    for shapes in off.get("offered_shapes", []):
+        for shape in shapes:
+            name = str(shape["name"])
+            if name != _mcp_tool(SERVER_NAME):
+                seen.setdefault(name, shape)
+    return [seen[name] for name in sorted(seen)]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Probe the claude binary on PATH and write its tools record; 0 only when every arm passed."""
+    """Probe the claude binary on PATH and write its tools record; 0 only when every arm passed,
+    2 when the probe cannot run."""
     parser = argparse.ArgumentParser(
         prog="python -m lionhub.providers.anthropic.claude_tools_probe"
     )
     parser.add_argument("--binary", help="claude binary to probe (default: claude on PATH)")
+    parser.add_argument(
+        "--extra-flag",
+        action="append",
+        default=[],
+        help=(
+            "claude arguments to add to every run, split as a POSIX shell splits them; repeat "
+            "for more (a single flag is written --extra-flag=--name)"
+        ),
+    )
     parser.add_argument(
         "--scratch",
         help=(
@@ -399,18 +536,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    try:
+        extra = [token for text in args.extra_flag for token in parse_extra_flag(text)]
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     binary = args.binary or shutil.which("claude")
     if not binary:
         print("claude is not on PATH", file=sys.stderr)
         return 2
     try:
-        arms, runs = probe(binary, scratch=Path(args.scratch) if args.scratch else None)
-        path = write_record(binary, arms, runs)
+        arms, runs = probe(
+            binary, scratch=Path(args.scratch) if args.scratch else None, extra_flags=extra
+        )
+        path = write_record(binary, arms, runs, extra)
     except (ConfigurationError, RuntimeError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if extra:
+        print(f"extra flags: {shlex.join(extra)}")
     for name, arm in arms.items():
         print(f"{'pass' if arm['passed'] else 'FAIL'}  {name}  {arm['evidence']}")
+    for shape in _beside_server_tool(runs):
+        print(f"beside the server's tool: {json.dumps(shape, sort_keys=True)}")
     print(f"record: {path}")
     return 0 if all(arm["passed"] for arm in arms.values()) else 1
 

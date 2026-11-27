@@ -14,6 +14,7 @@ arm is shown to fail for the reason it exists.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
 import stat
@@ -34,6 +35,21 @@ from lionhub.providers.anthropic.claude_tools_probe import (
 _PORTS = itertools.count(42000)
 _LIVE: dict[str, object] = {}
 _NATIVE = ("Bash", "Edit", "Read")
+_PLACEHOLDER = {
+    "name": "DeferredToolPlaceholder",
+    "description": "Stands for tools loaded on demand.",
+    "input_schema": {"type": "object", "properties": {}},
+    "defer_loading": True,
+}
+
+
+def _definition(name: str) -> dict:
+    """The definition the fake offers for one tool."""
+    return {
+        "name": name,
+        "description": f"The {name} tool.",
+        "input_schema": {"type": "object", "properties": {}},
+    }
 
 
 @contextlib.contextmanager
@@ -126,8 +142,11 @@ class FakeClaude:
     request offers ``Bash``), ``strict_ignored`` (the ambient servers load under
     ``--strict-mcp-config``), ``decoy_never_loads`` (ambient servers never load),
     ``server_not_started`` (the server's tool is offered but its server never started),
-    ``rejects_empty_tools`` (the CLI refuses ``--tools ""`` and exits before any request) and
-    ``no_native_control`` (a run without ``--tools`` offers no built-in tool).
+    ``rejects_empty_tools`` (the CLI refuses ``--tools ""`` and exits before any request),
+    ``no_native_control`` (a run without ``--tools`` offers no built-in tool),
+    ``deferred_with_natives`` (with built-in tools on, server tools are held back behind a tool
+    search) and ``placeholder`` (every request also offers a placeholder tool, which
+    ``--disallowed-tools`` removes by name).
     """
 
     def __init__(self, *leaks: str) -> None:
@@ -165,16 +184,24 @@ class FakeClaude:
                     continue
                 clients[name] = _Client(spec)
                 server_tools += [f"mcp__{name}__{tool}" for tool in clients[name].tools()]
+            visible = server_tools
+            if tools is None and "deferred_with_natives" in self.leaks:
+                native, visible = [*native, "ToolSearch"], []
+            disallowed = _list_value(argv, "--disallowed-tools") or []
+            placeholder = "placeholder" in self.leaks and _PLACEHOLDER["name"] not in disallowed
             stand_in = _LIVE[env["ANTHROPIC_BASE_URL"]]
             results: list[dict] = []
             for turn in range(8):
-                offered = native + server_tools
+                offered = native + visible
                 if turn > 0 and "late_native" in self.leaks:
                     offered = [*offered, "Bash"]
+                definitions = [_definition(name) for name in offered]
+                if placeholder:
+                    definitions.append(dict(_PLACEHOLDER))
                 body = {
                     "model": argv[argv.index("--model") + 1],
                     "stream": True,
-                    "tools": [{"name": name} for name in offered],
+                    "tools": definitions,
                     "messages": [
                         {"role": "user", "content": argv[-1]},
                         {"role": "user", "content": results},
@@ -261,12 +288,61 @@ def test_the_measured_run_carries_the_launch_flags_and_each_control_drops_one(tm
             {"offers_only_server_tools", "ambient_servers_absent", "server_connected"},
         ),
         ("no_native_control", {"control_offers_native_tools"}),
+        ("placeholder", {"offers_only_server_tools"}),
     ],
 )
 def test_each_leak_fails_the_arm_that_exists_for_it(tmp_path, leak, expected):
     arms, _, _ = _probe(tmp_path, leak)
 
     assert _failed(arms) == expected, arms
+
+
+def test_the_native_control_passes_on_bash_when_server_tools_wait_behind_a_search(tmp_path):
+    arms, runs, _ = _probe(tmp_path, "deferred_with_natives")
+
+    assert _failed(arms) == set(), arms
+    assert "mcp__probe__ping" not in runs["native_control"]["offered"][0]
+    assert "without mcp__probe__ping" in arms["control_offers_native_tools"]["evidence"]
+
+
+def test_a_run_offering_the_server_tool_says_so_in_the_control_evidence(tmp_path):
+    arms, _, _ = _probe(tmp_path)
+
+    assert "with mcp__probe__ping" in arms["control_offers_native_tools"]["evidence"]
+
+
+def test_the_placeholder_is_recorded_by_shape_and_never_by_text(tmp_path):
+    arms, runs, _ = _probe(tmp_path, "placeholder")
+
+    off = runs["tools_off"]
+    assert off["offered"][0] == ["DeferredToolPlaceholder", "mcp__probe__ping"]
+    shape = off["offered_shapes"][0][0]
+    assert shape == {
+        "name": "DeferredToolPlaceholder",
+        "keys": ["defer_loading", "description", "input_schema", "name"],
+        "description_bytes": len(_PLACEHOLDER["description"].encode()),
+        "schema_bytes": len(b'{"properties":{},"type":"object"}'),
+        "scalars": {"defer_loading": True},
+    }
+    assert "on demand" not in json.dumps(runs)
+    assert "DeferredToolPlaceholder" in arms["offers_only_server_tools"]["evidence"]
+
+
+def test_an_extra_flag_reaches_every_run_after_the_tool_flags(tmp_path):
+    fake = FakeClaude("placeholder")
+    extra = ["--disallowed-tools", "DeferredToolPlaceholder"]
+
+    arms, runs = probe_module.probe(
+        "/fake/claude", runner=fake, scratch=tmp_path / "s", extra_flags=extra
+    )
+
+    assert _failed(arms) == set(), arms
+    for run in runs.values():
+        argv = run["argv"]
+        at = argv.index("--disallowed-tools")
+        assert argv[at : at + 2] == extra
+        assert argv[at - 2 : at] == ["--allowed-tools", f"mcp__{SERVER_NAME}"]
+        assert argv[at + 2] == "--permission-prompts"
 
 
 def test_a_run_with_no_request_fails_rather_than_reading_as_no_tools(tmp_path):
@@ -280,10 +356,20 @@ def test_a_run_with_no_request_fails_rather_than_reading_as_no_tools(tmp_path):
     assert "0 requests" in arms["offers_only_server_tools"]["evidence"]
 
 
-def test_the_stand_in_keeps_tool_names_and_nothing_else(tmp_path):
+def test_the_stand_in_keeps_tool_names_and_shapes_and_no_text(tmp_path):
     stand_in = ToolListStandIn([])
     body = {
-        "tools": [{"name": "Bash", "input_schema": {"secret": "x"}}, {"name": "Read"}],
+        "tools": [
+            {
+                "name": "Read",
+                "description": "quill\u00e9",
+                "input_schema": {"secret": "x"},
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "web_search_x", "name": "web_search", "max_uses": 3, "strict": None},
+            {"name": "Bash"},
+            "not a tool",
+        ],
         "system": "not kept",
         "messages": [],
     }
@@ -291,8 +377,37 @@ def test_the_stand_in_keeps_tool_names_and_nothing_else(tmp_path):
     stand_in.answer("POST", "/v1/messages", json.dumps({"messages": []}).encode())
     stand_in.answer("POST", "/v1/messages/count_tokens", b"{}")
 
-    assert stand_in.offered == [["Bash", "Read"], []]
-    assert "not kept" not in json.dumps(vars(stand_in), default=str)
+    assert stand_in.offered == [["Bash", "Read", "web_search"], []]
+    assert stand_in.shapes == [
+        [
+            {
+                "name": "Bash",
+                "keys": ["name"],
+                "description_bytes": None,
+                "schema_bytes": None,
+                "scalars": {},
+            },
+            {
+                "name": "Read",
+                "keys": ["cache_control", "description", "input_schema", "name"],
+                "description_bytes": 7,
+                "schema_bytes": len(b'{"secret":"x"}'),
+                "scalars": {},
+            },
+            {
+                "name": "web_search",
+                "keys": ["max_uses", "name", "strict", "type"],
+                "description_bytes": None,
+                "schema_bytes": None,
+                "scalars": {"max_uses": 3, "strict": None},
+                "type": "web_search_x",
+            },
+        ],
+        [],
+    ]
+    kept = json.dumps(vars(stand_in), default=str)
+    for text in ("not kept", "secret", "quill", "ephemeral"):
+        assert text not in kept
 
 
 def test_the_flags_put_the_empty_tool_list_before_the_next_flag():
@@ -323,15 +438,66 @@ def test_the_record_is_keyed_by_the_binary_and_holds_the_measured_flags(tmp_path
     assert path.parent == probe_module.tools_record_dir()
     assert path.name.startswith("claude-2.1.400-")
     record = json.loads(path.read_text())
-    assert record["format"] == 1
+    assert record["format"] == 2
     assert record["version"] == "2.1.400"
     assert record["tool_flags"] == tools_off_flags("{mcp_config}", "{server}")
+    assert record["extra_flags"] == []
     assert set(record["arms"]) == set(REQUIRED_ARMS)
     assert set(record["runs"]) == {"tools_off", "native_control", "ambient_control"}
+    assert record["runs"]["tools_off"]["offered_shapes"][0][0]["name"] == "mcp__probe__ping"
 
     other = _fake_binary(tmp_path / "claude-other", "2.1.400")
     other.write_text(other.read_text() + "# other bytes\n")
     assert probe_module.write_record(str(other), arms, runs) != path
+
+
+def test_a_record_made_with_extra_flags_never_takes_the_launch_records_place(tmp_path):
+    arms, runs, _ = _probe(tmp_path)
+    binary = _fake_binary(tmp_path / "claude", "2.1.400")
+    resolved = str(binary.resolve())
+    sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+    key = f"{resolved}\0{'2.1.400'}\0{sha}".encode()
+
+    plain = probe_module.write_record(str(binary), arms, runs)
+    extra = probe_module.write_record(str(binary), arms, runs, ["--disallowed-tools", "X"])
+
+    assert plain.name == f"claude-2.1.400-{hashlib.sha256(key).hexdigest()[:24]}.json"
+    assert extra != plain
+    assert json.loads(plain.read_text())["extra_flags"] == []
+    assert json.loads(extra.read_text())["extra_flags"] == ["--disallowed-tools", "X"]
+
+
+@pytest.mark.parametrize(
+    ("text", "tokens"),
+    [
+        (
+            "--disallowed-tools DeferredToolPlaceholder",
+            ["--disallowed-tools", "DeferredToolPlaceholder"],
+        ),
+        ("--settings '{\"a\": 1}'", ["--settings", '{"a": 1}']),
+        ("--verbose", ["--verbose"]),
+    ],
+)
+def test_an_extra_flag_splits_as_a_shell_splits_it(text, tokens):
+    assert probe_module.parse_extra_flag(text) == tokens
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("", "at least one"),
+        ("'unclosed", "cannot be split"),
+        ("Bash", "does not begin with a flag"),
+        ("--tools Bash", "--tools"),
+        ("--verbose --strict-mcp-config", "--strict-mcp-config"),
+        ("--mcp-config=/x.json", "--mcp-config"),
+        ("--allowedTools Bash", "--allowedTools"),
+        ("-p", "-p"),
+    ],
+)
+def test_an_extra_flag_the_probe_cannot_measure_is_refused(text, message):
+    with pytest.raises(ValueError, match=message):
+        probe_module.parse_extra_flag(text)
 
 
 def test_a_binary_whose_version_cannot_be_read_gets_no_record(tmp_path):
@@ -357,7 +523,58 @@ def test_main_without_a_claude_on_path_exits_2(monkeypatch, capsys):
 def test_main_exits_0_only_when_every_arm_passed(monkeypatch, tmp_path, passed, status):
     arms = {name: {"passed": True, "evidence": "e"} for name in REQUIRED_ARMS}
     arms["server_connected"]["passed"] = passed
-    monkeypatch.setattr(probe_module, "probe", lambda binary, scratch=None: (arms, {}))
-    monkeypatch.setattr(probe_module, "write_record", lambda binary, a, r: tmp_path / "record.json")
+    monkeypatch.setattr(
+        probe_module, "probe", lambda binary, scratch=None, extra_flags=(): (arms, {})
+    )
+    monkeypatch.setattr(
+        probe_module, "write_record", lambda binary, a, r, extra=(): tmp_path / "record.json"
+    )
 
     assert probe_module.main(["--binary", "/fake/claude"]) == status
+
+
+def test_main_refuses_a_bad_extra_flag_before_looking_for_claude(monkeypatch, capsys):
+    def which(name):
+        raise AssertionError("looked for claude")
+
+    monkeypatch.setattr(probe_module.shutil, "which", which)
+
+    assert probe_module.main(["--extra-flag", "--tools Bash"]) == 2
+    assert "which the probe sets itself" in capsys.readouterr().err
+
+
+def test_main_hands_every_extra_flag_on_and_prints_what_sat_beside_the_server(
+    monkeypatch, tmp_path, capsys
+):
+    seen = {}
+    real_probe = probe_module.probe
+
+    def fake_probe(binary, scratch=None, extra_flags=()):
+        seen["probe"] = list(extra_flags)
+        return real_probe(
+            binary,
+            runner=FakeClaude("placeholder"),
+            scratch=tmp_path / "s",
+            extra_flags=extra_flags,
+        )
+
+    def fake_record(binary, arms, runs, extra=()):
+        seen["record"] = list(extra)
+        return tmp_path / "record.json"
+
+    monkeypatch.setattr(probe_module, "probe", fake_probe)
+    monkeypatch.setattr(probe_module, "write_record", fake_record)
+
+    status = probe_module.main(
+        ["--binary", "/fake/claude", "--extra-flag=--verbose", "--extra-flag", "--debug api"]
+    )
+
+    assert status == 1
+    assert seen == {
+        "probe": ["--verbose", "--debug", "api"],
+        "record": ["--verbose", "--debug", "api"],
+    }
+    out = capsys.readouterr().out
+    assert "extra flags: --verbose --debug api" in out
+    assert 'beside the server\'s tool: {"description_bytes"' in out
+    assert '"name": "DeferredToolPlaceholder"' in out

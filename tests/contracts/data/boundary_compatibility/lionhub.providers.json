@@ -98,7 +98,7 @@
       "__all__ = (\n    \"PLACEHOLDER_API_KEY\",\n    \"REQUIRED_ARMS\",\n    \"MessagesStandIn\",\n    \"ProxyRecorder\",\n    \"main\",\n    \"probe\",\n    \"read_record_dir\",\n    \"read_record_path\",\n    \"run_claude\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/providers/anthropic/claude_tools_probe.py": [
-      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"SERVER_NAME\",\n    \"ToolListStandIn\",\n    \"main\",\n    \"probe\",\n    \"tools_off_flags\",\n    \"tools_record_dir\",\n    \"tools_record_path\",\n    \"write_record\",\n)"
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"SERVER_NAME\",\n    \"ToolListStandIn\",\n    \"main\",\n    \"parse_extra_flag\",\n    \"probe\",\n    \"tool_shape\",\n    \"tools_off_flags\",\n    \"tools_record_dir\",\n    \"tools_record_path\",\n    \"write_record\",\n)"
     ],
     "lionhub/src/lionhub/providers/anthropic/messages.py": [
       "__all__ = (\"ANTHROPIC_DEFAULT_MAX_TOKENS\", \"CreateMessageRequest\", \"AnthropicMessagesEndpoint\")"
@@ -491,7 +491,9 @@
     "lionhub/src/lionhub/providers/anthropic/claude_tools_probe.py": [
       "ToolListStandIn",
       "main",
+      "parse_extra_flag",
       "probe",
+      "tool_shape",
       "tools_off_flags",
       "tools_record_dir",
       "tools_record_path",
