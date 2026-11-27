@@ -932,11 +932,15 @@ async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_
     capped, monkeypatch
 ):
     """One unreadable observation is retried before the spawn is refused; the second read
-    records the start time the slot needs to outlive this holder."""
+    records the start time the slot needs to outlive this holder.
+
+    The child stays running until the second read has been taken. A child that exits at
+    once can be gone before the retry, and an exited child's start time no longer reads."""
     from lionhub.providers import _cli_subprocess
 
     real_observe = _cli_subprocess.observe_spawned
     observations = []
+    second_read_taken = capped / "second-read-taken"
 
     def _first_read_fails(pid, *, expected_marker):
         observed = real_observe(pid, expected_marker=expected_marker)
@@ -945,11 +949,19 @@ async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_
             return _cli_subprocess.SpawnedProcess(
                 pid=observed.pid, pgid=observed.pgid, create_time=None
             )
+        second_read_taken.touch()
         return observed
 
     monkeypatch.setattr(_cli_subprocess, "observe_spawned", _first_read_fails)
-    quick = 'import sys; sys.stdout.write(\'{"type": "done"}\\n\')'
-    stream = ndjson_from_cli([sys.executable, "-c", quick], engine="codex")
+    waits_for_the_second_read = (
+        "import os, sys, time\n"
+        "for _ in range(3000):\n"
+        f"    if os.path.exists({str(second_read_taken)!r}):\n"
+        "        break\n"
+        "    time.sleep(0.01)\n"
+        'sys.stdout.write(\'{"type": "done"}\\n\')\n'
+    )
+    stream = ndjson_from_cli([sys.executable, "-c", waits_for_the_second_read], engine="codex")
     async with contextlib.aclosing(stream):
         assert [obj async for obj in stream] == [{"type": "done"}]
     assert len(observations) == 2
