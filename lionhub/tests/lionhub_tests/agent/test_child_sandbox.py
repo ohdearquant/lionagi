@@ -22,6 +22,7 @@ import lionhub.agent.child_sandbox as child_sandbox
 from lionagi._errors import ConfigurationError
 from lionhub.agent.child_sandbox import (
     CHILD_SANDBOX_OPT_OUT,
+    CHILD_SANDBOX_SETTINGS_FIX,
     CLAUDE_CLI_FLOOR,
     DEFAULT_ALLOW_WRITE,
     DEFAULT_DENY_EDIT,
@@ -566,7 +567,8 @@ def test_an_unreadable_extends_file_refuses(tmp_path):
             resolve_child_sandbox(None, _settings(extends=[str(locked)]))
     finally:
         locked.chmod(0o600)
-    assert "child_sandbox: {enabled: false}" in str(caught.value)
+    assert str(caught.value).endswith(CHILD_SANDBOX_SETTINGS_FIX)
+    assert "child_sandbox: {enabled: false}" not in str(caught.value)
 
 
 def test_a_malformed_extends_file_refuses(tmp_path):
@@ -1319,7 +1321,8 @@ def _backend_check(tmp_path, monkeypatch):
     check_sandbox_backend()
 
 
-_REFUSALS = {
+#: Refusals raised while the settings are resolved: switching the sandbox off does not lift them.
+_SETTINGS_REFUSALS = {
     "malformed value": lambda tmp_path, monkeypatch: resolve_child_sandbox(
         None, _settings(enabled="false")
     ),
@@ -1346,6 +1349,15 @@ _REFUSALS = {
     "extends file with an unknown key": lambda tmp_path, monkeypatch: resolve_child_sandbox(
         None, _settings(extends=[_write(tmp_path / "off.yaml", "enabled: false\n")])
     ),
+    "path with a dot-dot segment": lambda tmp_path, monkeypatch: resolve_child_sandbox(
+        None, _settings(allow_write=["~/.cache/uv/../../.ssh"])
+    ),
+    "unreadable global settings file": _unreadable_global,
+    "unreadable accounts file": _unreadable_accounts,
+}
+
+#: Refusals the opt-out does lift.
+_REFUSALS = {
     "malformed policy dict": lambda tmp_path, monkeypatch: policy_from_dict({"surprise": 1}),
     "unreadable existing settings": lambda tmp_path, monkeypatch: claude_settings_argument(
         POLICY, "absent.json", tmp_path
@@ -1371,11 +1383,6 @@ _REFUSALS = {
     "unknown setting sources": lambda tmp_path, monkeypatch: child_sandbox._child_setting_sources(
         "everything"
     ),
-    "path with a dot-dot segment": lambda tmp_path, monkeypatch: resolve_child_sandbox(
-        None, _settings(allow_write=["~/.cache/uv/../../.ssh"])
-    ),
-    "unreadable global settings file": _unreadable_global,
-    "unreadable accounts file": _unreadable_accounts,
     "CLI below the floor": _floor_check((2, 1, 322)),
     "unreadable CLI version": _floor_check(None),
     "no sandbox backend": _backend_check,
@@ -1383,13 +1390,44 @@ _REFUSALS = {
 
 
 @pytest.mark.parametrize("case", sorted(_REFUSALS))
-def test_every_refusal_ends_with_the_opt_out_sentence(case, tmp_path, monkeypatch):
+def test_a_launch_refusal_ends_with_the_opt_out_sentence(case, tmp_path, monkeypatch):
     with pytest.raises(ConfigurationError) as caught:
         _REFUSALS[case](tmp_path, monkeypatch)
     text = str(caught.value)
     assert text.endswith(CHILD_SANDBOX_OPT_OUT)
     assert text.count(CHILD_SANDBOX_OPT_OUT) == 1
     assert text != CHILD_SANDBOX_OPT_OUT
+
+
+@pytest.mark.parametrize("case", sorted(_SETTINGS_REFUSALS))
+def test_a_settings_refusal_names_the_fix_and_not_the_opt_out(case, tmp_path, monkeypatch):
+    with pytest.raises(ConfigurationError) as caught:
+        _SETTINGS_REFUSALS[case](tmp_path, monkeypatch)
+    text = str(caught.value)
+    assert text.endswith(CHILD_SANDBOX_SETTINGS_FIX)
+    assert text.count(CHILD_SANDBOX_SETTINGS_FIX) == 1
+    assert CHILD_SANDBOX_OPT_OUT not in text
+    assert "enabled: false}" not in text
+    assert text != CHILD_SANDBOX_SETTINGS_FIX
+
+
+def test_switching_the_sandbox_off_does_not_lift_a_settings_refusal():
+    settings = _settings(enabled=False, profiles={"reader": {"allow_read": ["~/not-denied"]}})
+    with pytest.raises(ConfigurationError, match="not on the deny list") as caught:
+        resolve_child_sandbox("reader", settings)
+    assert str(caught.value).endswith(CHILD_SANDBOX_SETTINGS_FIX)
+    assert CHILD_SANDBOX_OPT_OUT not in str(caught.value)
+
+
+def test_a_settings_refusal_keeps_the_error_that_caused_it(tmp_path):
+    with pytest.raises(ConfigurationError, match="cannot read extends file") as caught:
+        resolve_child_sandbox(None, _settings(extends=[str(tmp_path / "absent.yaml")]))
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+
+
+def test_the_settings_fix_sentence_does_not_offer_the_opt_out():
+    assert "enabled: false" not in CHILD_SANDBOX_SETTINGS_FIX
+    assert CHILD_SANDBOX_SETTINGS_FIX.endswith(".")
 
 
 def test_the_opt_out_sentence_names_the_key_and_the_file():
