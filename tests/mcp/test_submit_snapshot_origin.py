@@ -286,8 +286,14 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
         first_run, first_config, _ = calls[0]
         checkpoint = load_checkpoint(first_run.checkpoint_path)
         if named:
-            assert checkpoint["config"]["mcp_config"] == str(source)
+            # The checkpoint points at the run directory's copy of the named set and keeps
+            # the name beside it, so a later edit of the named file cannot reach a resume.
+            copy = first_run.state_root / "mcp-config.json"
+            assert checkpoint["config"]["mcp_config"] == str(copy)
+            assert checkpoint["config"]["mcp_config_named"] == str(source)
+            assert set(json.loads(copy.read_text())["mcpServers"]) == {"ambient"}
             assert checkpoint["config"].get("mcp_config_origin") != "submit_snapshot"
+            source.write_text(json.dumps({"mcpServers": {"replacement": {"command": "other"}}}))
         else:
             assert checkpoint["config"]["mcp_config_origin"] == "submit_snapshot"
             assert checkpoint["config"]["mcp_submit_snapshot"] == handle["mcp_config"]
@@ -309,7 +315,9 @@ def test_flow_checkpoint_replays_snapshot_origin_and_refusal(submitted, monkeypa
             with pytest.raises(McpConfigError, match="mcp-submit-snapshot"):
                 await flow._resume_flow("original", retry_failed=True)
         else:
-            assert second_config["mcp_config"] == str(source)
+            second_run = calls[1][0]
+            assert second_config["mcp_config"] == str(second_run.state_root / "mcp-config.json")
+            assert second_config["mcp_config_named"] == str(source)
             assert second_config.get("mcp_config_origin") != "submit_snapshot"
 
     asyncio.run(exercise())
