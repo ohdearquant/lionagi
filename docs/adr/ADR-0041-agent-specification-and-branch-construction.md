@@ -2,7 +2,7 @@
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
   Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
-  Proposed; Amendment 8 (2026-11-23) Proposed
+  Proposed; Amendment 8 (2026-11-23) accepted 2026-11-27
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
@@ -10,7 +10,7 @@
 
 ## Amendment 8 (2026-11-23) — a resume runs the MCP servers its first run was handed
 
-**Status: Proposed.**
+**Status: Accepted (2026-11-27).**
 
 A new `li agent` branch records its MCP choice once, in `branch.metadata["mcp_launch"]`. A
 resumed or continued leg that names neither `--mcp-config` nor `--no-mcp-config` replays that
@@ -74,8 +74,7 @@ Decision:
   `mcp_config_named` keeps today's behaviour and reads the named file again.
 - **`li o flow`.** Its checkpoint records a named config the same way (`mcp_config` and
   `mcp_config_origin: explicit`), and its resume reads the file again. The flow copies the set into
-  its own run directory under the same rules, and its checkpoint gains `mcp_config_named`. That half
-  is not implemented yet: until it is, a flow's resume reads the named file again.
+  its own run directory under the same rules, and its checkpoint gains `mcp_config_named`.
 - **`agent.submit` takes no copy of a named config itself.** ADR-0048 Amendment 1's sentence on
   this stays true of the submit layer, and the job record's `mcp_config` still names the caller's
   file.

@@ -12,6 +12,7 @@ and "something configured but unusable" are returned as distinct states.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,9 @@ from lionagi._paths import is_account_home
 from lionhub.serve.mcp._errors import SubmitInputError
 
 __all__ = (
+    "MCP_CONFIG_COPY_NAME",
     "MCP_CONFIG_FILENAME",
+    "MCP_CONFIG_NAMED_KEY",
     "McpConfigError",
     "McpResolution",
     "SNAPSHOT_SEARCHED_FROM_KEY",
@@ -28,6 +31,8 @@ __all__ = (
     "discover_mcp_config",
     "explicit_mcp_config_path",
     "resolve_spawn_mcp_servers",
+    "servers_as_read",
+    "write_mcp_config_copy",
 )
 
 MCP_CONFIG_FILENAME = ".mcp.json"
@@ -39,6 +44,11 @@ SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
 # other than that directory, the run reading the snapshot starts there, so its own
 # directory cannot stand in for this one.
 SNAPSHOT_SEARCHED_FROM_KEY = "lionagiSnapshotSearchedFrom"
+# The copy of a named set a run writes into its own run directory, which its record points at
+# so a resume replays the set the run was handed (ADR-0041 Amendment 8).
+MCP_CONFIG_COPY_NAME = "mcp-config.json"
+# Beside the copy, the absolute path the caller named, kept as provenance only.
+MCP_CONFIG_NAMED_KEY = "mcp_config_named"
 
 
 class McpConfigError(SubmitInputError):
@@ -72,6 +82,9 @@ class McpResolution:
     # A marker in the same parsed file as ``servers`` can only restrict worker
     # access. It does not establish provenance or turn a named file ambient.
     snapshot_marker: bool = False
+    # That marker's keys as the named file held them, so a copy of the set restricts its
+    # workers as the file did.
+    snapshot_keys: dict[str, str] | None = None
 
     @property
     def ok(self) -> bool:
@@ -247,7 +260,21 @@ def resolve_spawn_mcp_servers(
                 if SNAPSHOT_SEARCHED_FROM_KEY in data:
                     _snapshot_path(data, SNAPSHOT_SEARCHED_FROM_KEY, path)
             return McpResolution(
-                data["mcpServers"], None, path, searched_from, explicit=True, snapshot_marker=marked
+                data["mcpServers"],
+                None,
+                path,
+                searched_from,
+                explicit=True,
+                snapshot_marker=marked,
+                snapshot_keys=(
+                    {
+                        key: data[key]
+                        for key in (SNAPSHOT_SOURCE_KEY, SNAPSHOT_SEARCHED_FROM_KEY)
+                        if key in data
+                    }
+                    if marked
+                    else None
+                ),
             )
         if SNAPSHOT_SOURCE_KEY not in data:
             return McpResolution(data["mcpServers"], None, path, searched_from)
@@ -271,3 +298,37 @@ def resolve_spawn_mcp_servers(
     if not servers:
         return McpResolution(None, "mcp_config_declares_no_servers", found, searched_from)
     return McpResolution(servers, None, found, searched_from)
+
+
+def servers_as_read(resolution: McpResolution) -> dict[str, Any] | None:
+    """A copy of the servers *resolution* read, detached from anything that later changes it."""
+    if resolution.servers is None:
+        return None
+    return json.loads(json.dumps(resolution.servers))
+
+
+def write_mcp_config_copy(
+    state_root: str | Path,
+    servers: dict[str, Any] | None,
+    *,
+    snapshot_keys: dict[str, str] | None = None,
+) -> Path:
+    """Write the server set a named config handed a run into its run directory.
+
+    The file is created, never replaced, and readable by its owner alone: a resume reads this
+    copy rather than the named file, so the set it replays is the set this run was handed.
+    *snapshot_keys* carries a named file's snapshot marker into the copy, so the copy limits
+    the run's workers as the named file did.
+    """
+    path = Path(state_root) / MCP_CONFIG_COPY_NAME
+    content = json.dumps({**(snapshot_keys or {}), "mcpServers": servers or {}}, indent=2) + "\n"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:
+        raise McpConfigError(
+            f"could not copy the named MCP config into the run directory ({path}): "
+            f"{exc.strerror or type(exc).__name__}"
+        ) from None
+    return path
