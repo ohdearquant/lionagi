@@ -11,6 +11,7 @@ import json
 import re
 import sys
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -168,9 +169,9 @@ _TRIGGER_WAIT_MAX_SECONDS = 600.0
 def _fmt_rfc3339(ts: float | None) -> str:
     if ts is None:
         return "-"
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.fromtimestamp(ts, tz=UTC).astimezone().isoformat(timespec="seconds")
 
 
 def _fmt_duration_ms(ms: int | None) -> str:

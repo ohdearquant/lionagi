@@ -850,8 +850,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                 _routing_scope=_routing_scope,
             )
 
-        import asyncio
-
         import httpx
 
         from lionagi.service.accounts._request_guard import (
@@ -1072,7 +1070,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         except (_RoutedNoRetryError, _RoutedRetryableError):
             await anyio.lowlevel.checkpoint()
             raise
-        except (httpx.RequestError, asyncio.TimeoutError, TimeoutError, ConnectionError):
+        except (httpx.RequestError, TimeoutError, ConnectionError):
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,

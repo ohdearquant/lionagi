@@ -270,7 +270,7 @@ async def _enqueue_control(
             _enqueue_control_inner(entity_id=entity_id, verb=verb, payload=payload),
             timeout=_DB_BUSY_TIMEOUT_S,
         )
-    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+    except TimeoutError:
         return _db_busy_on_write()
 
 
@@ -371,7 +371,7 @@ def run_ctl_resolve(args: argparse.Namespace) -> int:
                 timeout=_DB_BUSY_TIMEOUT_S,
             )
         )
-    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+    except TimeoutError:
         output, exit_code = _db_busy_on_write()
     if exit_code == EXIT_UNKNOWN:
         log_error(output)

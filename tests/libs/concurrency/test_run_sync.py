@@ -315,7 +315,7 @@ async def test_wait_for_run_sync_times_out_only_after_the_worker_returns(
             await asyncio.wait_for(
                 run_sync(worker, abandon_on_cancel=abandon_on_cancel), timeout=0.05
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             finished_at_timeout.append(finished.is_set())
             raise
 

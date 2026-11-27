@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
@@ -167,7 +167,7 @@ async def test_operation_invoke_chat(monkeypatch: pytest.MonkeyPatch):
     clock = iter((100.0, 100.25))
     monkeypatch.setattr(
         "lionagi.protocols.generic.event.ln.now_utc",
-        lambda: datetime.fromtimestamp(next(clock), tz=timezone.utc),
+        lambda: datetime.fromtimestamp(next(clock), tz=UTC),
     )
     await op.invoke()
 

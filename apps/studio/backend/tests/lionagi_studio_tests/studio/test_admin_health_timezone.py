@@ -14,7 +14,7 @@ fire times with, not a fresh read that would answer a different question.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
@@ -133,7 +133,7 @@ def test_payload_carries_resolution_and_process_start_times(monkeypatch, tmp_pat
     parses, still sorts before now, and reports a daemon that started in 1970.
     """
     payload = _health_timezone(monkeypatch, tmp_path)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     for key in ("resolved_at", "daemon_started_at"):
         assert payload[key] is not None
@@ -184,7 +184,7 @@ def test_reported_zone_is_the_one_fire_times_are_computed_in(monkeypatch, tmp_pa
 
     # The failure this whole report exists to expose: a UTC interpretation of
     # the same expression is a different absolute instant.
-    utc_reading = datetime(2026, 7, 22, 6, 30, tzinfo=timezone.utc).timestamp()
+    utc_reading = datetime(2026, 7, 22, 6, 30, tzinfo=UTC).timestamp()
     assert next_at != utc_reading
 
 

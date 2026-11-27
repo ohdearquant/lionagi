@@ -74,7 +74,7 @@ async def _initialize(server: dict, project: Path, home: Path) -> str:
         reply = b""
         try:
             reply = await asyncio.wait_for(exchange(), timeout=15)
-        except (asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, OSError) as exc:
             failure = exc
         finally:
             if child.returncode is None:

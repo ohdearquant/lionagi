@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -1906,8 +1906,8 @@ def test_compute_next_fire_uses_configured_timezone(monkeypatch):
     # 18:00 EDT (UTC-4 in July) == 22:00 UTC same day. A UTC-only
     # implementation would resolve "0 18 * * *" against ref_epoch's raw UTC
     # clock fields and land on a different absolute instant.
-    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
-    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+    got_utc = datetime.fromtimestamp(next_at, tz=UTC)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=UTC)
     assert datetime.fromtimestamp(next_at, tz=NY) == datetime(2026, 7, 2, 18, 0, 0, tzinfo=NY)
 
 
@@ -1928,7 +1928,7 @@ def test_compute_next_fire_date_pinned_cron_fires_same_day_not_next_year(monkeyp
     # "17:30" UTC-clock instant, but still before 17:30 EDT local — this is
     # exactly the window that broke 8 production schedules under UTC-only
     # resolution (created after the UTC moment, before the local moment).
-    ref_epoch = datetime(2027, 7, 2, 19, 0, 0, tzinfo=timezone.utc).timestamp()
+    ref_epoch = datetime(2027, 7, 2, 19, 0, 0, tzinfo=UTC).timestamp()
 
     next_at = engine._compute_next_fire(schedule, ref_epoch)
     assert next_at is not None
@@ -1949,14 +1949,14 @@ def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
 
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(cron_expr="0 18 * * *")
-    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=UTC).timestamp()
 
     with caplog.at_level(logging.WARNING):
         next_at = engine._compute_next_fire(schedule, ref_epoch)
 
     assert next_at is not None
-    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
-    assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=timezone.utc)
+    got_utc = datetime.fromtimestamp(next_at, tz=UTC)
+    assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=UTC)
     assert any("is not a zone this host can load" in r.getMessage() for r in caplog.records)
 
 
@@ -1979,8 +1979,8 @@ def test_compute_next_fire_cron_prefers_resolved_timezone_over_scheduler_tz(monk
 
     # 18:00 EDT == 22:00 UTC. A SCHEDULER_TZ=UTC-only implementation would
     # instead land on 18:00 UTC == 14:00 EDT the same day.
-    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
-    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+    got_utc = datetime.fromtimestamp(next_at, tz=UTC)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=UTC)
 
 
 def test_compute_next_fire_cron_null_resolved_timezone_uses_scheduler_tz(monkeypatch):
@@ -1998,8 +1998,8 @@ def test_compute_next_fire_cron_null_resolved_timezone_uses_scheduler_tz(monkeyp
     ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     next_at = engine._compute_next_fire(schedule, ref_epoch)
     assert next_at is not None
-    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
-    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+    got_utc = datetime.fromtimestamp(next_at, tz=UTC)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=UTC)
 
 
 # 'at' trigger — fire-once semantics (no next occurrence to compute; the
@@ -5058,7 +5058,7 @@ async def test_a_github_pass_is_timed_through_the_dispatched_stamp_of_the_real_l
             if task in done:
                 return task.result()
             task.cancel()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
     clock = [1000.0]
 

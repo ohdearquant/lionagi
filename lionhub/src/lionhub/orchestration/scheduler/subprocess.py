@@ -708,7 +708,7 @@ async def spawn_and_wait(
     except _CommandProcessPublicationError:
         await shield_quietly(_stop_child(failed_publication=True))
         raise
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         _log.warning(
             "spawn_and_wait deadline exceeded; terminating child for %s after %ss",
             invocation_id,

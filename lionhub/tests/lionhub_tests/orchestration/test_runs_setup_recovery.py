@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -321,9 +320,7 @@ async def test_direct_cancel_during_cleanup_keeps_first_failure(
         elif mode == "ordinary":
             with pytest.raises(asyncio.CancelledError) as raised:
                 await task
-            # Python 3.10 can recreate a propagated cancellation without its message.
-            if sys.version_info >= (3, 11):
-                assert raised.value.args == ("second",)
+            assert raised.value.args == ("second",)
         else:
             with pytest.raises(asyncio.CancelledError) as raised:
                 await task
@@ -375,8 +372,7 @@ async def test_cancel_during_fallback_close_after_ordinary_setup_failure(
         task.cancel("second")
         with pytest.raises(asyncio.CancelledError) as raised:
             await asyncio.wait_for(task, 5)
-        if sys.version_info >= (3, 11):
-            assert raised.value.args == ("second",)
+        assert raised.value.args == ("second",)
         assert closes == 2
         assert db._engine is None
     finally:

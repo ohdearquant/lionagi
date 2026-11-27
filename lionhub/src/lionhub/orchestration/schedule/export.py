@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -201,7 +201,7 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
                 "trigger_type='at' row has no next_fire_at to reconstruct the "
                 "one-shot fire time (already fired or disabled)"
             )
-        return Trigger(at=datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat())
+        return Trigger(at=datetime.fromtimestamp(epoch, tz=UTC).isoformat())
     if kind == "github_poll":
         repo = row.get("github_repo")
         if not repo:

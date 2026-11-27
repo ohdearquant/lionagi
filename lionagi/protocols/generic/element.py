@@ -95,7 +95,7 @@ class Element(BaseModel):
 
                 # Naive datetime (no timezone) is treated as UTC.
                 if parsed_dt.tzinfo is None:
-                    parsed_dt = parsed_dt.replace(tzinfo=dt.timezone.utc)
+                    parsed_dt = parsed_dt.replace(tzinfo=dt.UTC)
 
                 return parsed_dt.timestamp()
             except ValueError:
@@ -123,7 +123,7 @@ class Element(BaseModel):
     @property
     def created_datetime(self) -> dt.datetime:
         """Creation time as a UTC-aware datetime."""
-        return dt.datetime.fromtimestamp(self.created_at, tz=dt.timezone.utc)
+        return dt.datetime.fromtimestamp(self.created_at, tz=dt.UTC)
 
     def __eq__(self, other: Any) -> bool:
         """Compare by id."""

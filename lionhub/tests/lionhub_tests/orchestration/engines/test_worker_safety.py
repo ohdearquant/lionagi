@@ -134,7 +134,7 @@ async def test_turn_timeout_enters_fix_loop(tmp_path, monkeypatch):
             # First call times out; fix-round call emits a change
             if timeout_count == 0:
                 timeout_count += 1
-                raise asyncio.TimeoutError("turn timed out")
+                raise TimeoutError("turn timed out")
             await run.emit(ChangeProposed(summary="fixed after timeout", plan_ref="W-1"))
             return "ok"
 
@@ -182,7 +182,7 @@ async def test_turn_timeout_all_rounds_concludes_failed(tmp_path, monkeypatch):
         name = "implement"
 
         async def operate(self, *, instruction, **kw):
-            raise asyncio.TimeoutError("always")
+            raise TimeoutError("always")
 
     branches = {
         "plan": _ScriptedBranch(run, [plan_ev], name="plan"),

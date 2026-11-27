@@ -85,7 +85,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
@@ -921,7 +921,7 @@ def write_record(
         "sha256": sha256,
         "read_roots": list(read_roots),
         "runs": {name: dict(run) for name, run in runs.items()},
-        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "probed_at": datetime.now(UTC).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
     }
     tmp = path.with_suffix(".tmp")

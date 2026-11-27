@@ -1049,7 +1049,7 @@ class iModel:  # noqa: N801
                         api_call.completion_event.wait(),
                         timeout=10.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
             completed_call = self.executor.pile.pop(api_call.id)

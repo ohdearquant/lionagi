@@ -50,11 +50,7 @@ def _sdk_connection_closed():
 
 
 def _base_exception_group():
-    if sys.version_info >= (3, 11):
-        return BaseExceptionGroup  # noqa: F821 (builtin from 3.11)
-    from exceptiongroup import BaseExceptionGroup as backport
-
-    return backport
+    return BaseExceptionGroup
 
 
 class TestMCPConnectionPoolContextManager:

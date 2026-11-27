@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -112,7 +112,7 @@ async def test_default_path_uses_home_settings_directory(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_first_reservation_creates_private_schema(tmp_path):
     path = tmp_path / "private" / "credential-ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 3, 2, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 3, 2, tzinfo=UTC))
 
     reservation = await reserve_one(ledger)
     rows = await ledger.status("anthropic", "2026-03")
@@ -169,7 +169,7 @@ async def test_non_database_file_refuses_without_changing_bytes(tmp_path):
 @pytest.mark.anyio
 async def test_admission_holds_ceiling_and_settlement_replaces_it(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 15, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 15, tzinfo=UTC))
     spec = make_spec(budget=10)
     first = await reserve_one(ledger, quote=make_quote(8), accounts=(spec,))
 
@@ -208,7 +208,7 @@ async def test_admission_holds_ceiling_and_settlement_replaces_it(tmp_path):
 @pytest.mark.anyio
 async def test_a_later_unknown_outcome_keeps_the_reason_already_recorded(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 15, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 15, tzinfo=UTC))
     attempt = await reserve_one(ledger, quote=make_quote(8), accounts=(make_spec(budget=10),))
 
     assert await ledger.settle(attempt.attempt_id, UnknownOutcome("rate_limited")) == "still_open"
@@ -221,7 +221,7 @@ async def test_a_later_unknown_outcome_keeps_the_reason_already_recorded(tmp_pat
 @pytest.mark.anyio
 async def test_budget_equality_admits_and_one_more_nusd_refuses(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     spec = make_spec(budget=10)
     admitted = await reserve_one(ledger, quote=make_quote(10), accounts=(spec,))
@@ -260,7 +260,7 @@ async def test_quote_validation_and_empty_accounts(tmp_path):
 @pytest.mark.anyio
 async def test_integer_ratio_orders_values_that_float_division_ties(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     n = 2**53
     assert (n + 1) / (n + 2) == n / (n + 1)
@@ -289,7 +289,7 @@ async def test_integer_ratio_orders_values_that_float_division_ties(tmp_path):
 @pytest.mark.anyio
 async def test_open_scope_count_breaks_equal_ratio_before_name(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     account_a = make_spec("alpha", 10)
     account_b = make_spec("beta", 10)
@@ -310,7 +310,7 @@ async def test_open_scope_count_breaks_equal_ratio_before_name(tmp_path):
 @pytest.mark.anyio
 async def test_open_count_uses_distinct_scopes(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     account_a = make_spec("alpha", 10)
     account_b = make_spec("beta", 10)
@@ -330,7 +330,7 @@ async def test_open_count_uses_distinct_scopes(tmp_path):
 @pytest.mark.anyio
 async def test_name_breaks_equal_ratio_and_scope_count(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     selected = await reserve_one(
         ledger,
@@ -344,7 +344,7 @@ async def test_name_breaks_equal_ratio_and_scope_count(tmp_path):
 @pytest.mark.anyio
 async def test_binding_stays_even_when_another_account_has_more_room(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     account_a = make_spec("alpha", 10)
     account_b = make_spec("beta", 10)
@@ -367,7 +367,7 @@ async def test_binding_stays_even_when_another_account_has_more_room(tmp_path):
 @pytest.mark.anyio
 async def test_blocked_or_removed_binding_is_not_reassigned(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     account_a = make_spec("alpha", 10)
     account_b = make_spec("beta", 10)
@@ -399,7 +399,7 @@ async def test_blocked_or_removed_binding_is_not_reassigned(tmp_path):
 @pytest.mark.anyio
 async def test_all_blocked_and_no_capacity_have_distinct_errors(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     account_a = make_spec("alpha", 10)
     original = await reserve_one(ledger, accounts=(account_a,))
@@ -427,10 +427,10 @@ async def test_all_blocked_and_no_capacity_have_distinct_errors(tmp_path):
 @pytest.mark.anyio
 async def test_month_rollover_keeps_attempt_month_and_detects_clock_regression(tmp_path):
     # The period keyed 2026-02 starts at 00:00 UTC on 2026-01-31, the last day of January.
-    now = [datetime(2026, 1, 30, 23, 59, tzinfo=timezone.utc)]
+    now = [datetime(2026, 1, 30, 23, 59, tzinfo=UTC)]
     ledger = CredentialLedger(tmp_path / "ledger.sqlite3", clock=lambda: now[0])
     january = await reserve_one(ledger, quote=make_quote(4), accounts=(make_spec(budget=10),))
-    now[0] = datetime(2026, 1, 31, 0, 1, tzinfo=timezone.utc)
+    now[0] = datetime(2026, 1, 31, 0, 1, tzinfo=UTC)
     february = await reserve_one(
         ledger,
         quote=make_quote(2),
@@ -446,7 +446,7 @@ async def test_month_rollover_keeps_attempt_month_and_detects_clock_regression(t
     assert old_row[5] == "2026-01"
     assert (await ledger.status("anthropic", "2026-01"))[0].settled_nusd == 3
 
-    now[0] = datetime(2026, 1, 30, tzinfo=timezone.utc)
+    now[0] = datetime(2026, 1, 30, tzinfo=UTC)
     with pytest.raises(AccountRoutingError) as caught:
         await reserve_one(ledger, accounts=(make_spec(budget=10),))
     assert caught.value.code is RouterErrorCode.LEDGER_UNAVAILABLE
@@ -457,12 +457,12 @@ async def test_month_rollover_keeps_attempt_month_and_detects_clock_regression(t
 @pytest.mark.parametrize(
     ("at", "month"),
     [
-        (datetime(2026, 10, 30, 23, 59, 59, tzinfo=timezone.utc), "2026-10"),
-        (datetime(2026, 10, 31, 0, 0, tzinfo=timezone.utc), "2026-11"),
-        (datetime(2026, 12, 30, 23, 59, tzinfo=timezone.utc), "2026-12"),
-        (datetime(2026, 12, 31, 0, 0, tzinfo=timezone.utc), "2027-01"),
-        (datetime(2028, 2, 28, 23, 59, tzinfo=timezone.utc), "2028-02"),
-        (datetime(2028, 2, 29, 0, 0, tzinfo=timezone.utc), "2028-03"),
+        (datetime(2026, 10, 30, 23, 59, 59, tzinfo=UTC), "2026-10"),
+        (datetime(2026, 10, 31, 0, 0, tzinfo=UTC), "2026-11"),
+        (datetime(2026, 12, 30, 23, 59, tzinfo=UTC), "2026-12"),
+        (datetime(2026, 12, 31, 0, 0, tzinfo=UTC), "2027-01"),
+        (datetime(2028, 2, 28, 23, 59, tzinfo=UTC), "2028-02"),
+        (datetime(2028, 2, 29, 0, 0, tzinfo=UTC), "2028-03"),
     ],
 )
 async def test_a_month_starts_at_midnight_utc_on_the_previous_months_last_day(tmp_path, at, month):
@@ -475,7 +475,7 @@ async def test_a_month_starts_at_midnight_utc_on_the_previous_months_last_day(tm
 @pytest.mark.anyio
 async def test_changed_key_reference_refuses(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     await reserve_one(ledger, accounts=(make_spec(key_env="FIRST_KEY"),))
 
@@ -489,7 +489,7 @@ async def test_changed_key_reference_refuses(tmp_path):
 @pytest.mark.anyio
 async def test_changed_month_budget_refuses(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     await reserve_one(ledger, accounts=(make_spec(budget=10),))
 
@@ -503,7 +503,7 @@ async def test_changed_month_budget_refuses(tmp_path):
 @pytest.mark.anyio
 async def test_duplicate_attempt_and_conflicting_settlement_preserve_first_cost(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     scope = make_scope()
     attempt_id = uuid4()
     original = await reserve_one(ledger, scope=scope, attempt_id=attempt_id, quote=make_quote(5))
@@ -543,7 +543,7 @@ async def test_duplicate_attempt_and_conflicting_settlement_preserve_first_cost(
 @pytest.mark.anyio
 async def test_invalid_usage_writes_nothing(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     reservation = await reserve_one(ledger)
 
     with pytest.raises(ValueError):
@@ -560,7 +560,7 @@ async def test_invalid_usage_writes_nothing(tmp_path):
 @pytest.mark.anyio
 async def test_cost_above_ceiling_is_kept_and_blocks_account(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     reservation = await reserve_one(ledger, quote=make_quote(1), accounts=(make_spec(budget=1),))
 
     assert await ledger.settle(reservation.attempt_id, make_usage(4)) == "settled"
@@ -575,7 +575,7 @@ async def test_cost_above_ceiling_is_kept_and_blocks_account(tmp_path):
 @pytest.mark.anyio
 async def test_reconcile_adjust_and_clear_block_are_sourced_and_repeatable(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     reservation = await reserve_one(ledger, quote=make_quote(6))
     reconciliation_id = uuid4()
     await ledger.reconcile(reconciliation_id, reservation.attempt_id, 4, "provider-record")
@@ -626,7 +626,7 @@ async def test_reconcile_adjust_and_clear_block_are_sourced_and_repeatable(tmp_p
 @pytest.mark.anyio
 async def test_adjustment_requires_an_existing_account_and_valid_source(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     await reserve_one(ledger)
 
@@ -643,7 +643,7 @@ async def test_adjustment_requires_an_existing_account_and_valid_source(tmp_path
 @pytest.mark.anyio
 async def test_corrections_count_toward_admission_in_both_directions(tmp_path):
     ledger = CredentialLedger(
-        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+        tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
     first = await reserve_one(ledger)
     await ledger.settle(first.attempt_id, make_usage(0))
@@ -662,7 +662,7 @@ async def test_corrections_count_toward_admission_in_both_directions(tmp_path):
 @pytest.mark.anyio
 async def test_reconciling_a_settled_attempt_conflicts_and_keeps_its_cost(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     reservation = await reserve_one(ledger, quote=make_quote(6))
     await ledger.settle(reservation.attempt_id, make_usage(2))
 
@@ -677,7 +677,7 @@ async def test_reconciling_a_settled_attempt_conflicts_and_keeps_its_cost(tmp_pa
 @pytest.mark.anyio
 async def test_a_ledger_created_by_a_peer_while_this_one_opens_is_used(tmp_path, monkeypatch):
     path = tmp_path / "ledger.sqlite3"
-    clock = lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)  # noqa: E731
+    clock = lambda: datetime(2026, 1, 1, tzinfo=UTC)  # noqa: E731
     ledger, peer = CredentialLedger(path, clock=clock), CredentialLedger(path, clock=clock)
     real_connect = sqlite3.connect
     opened: list[bool] = []
@@ -724,7 +724,7 @@ async def test_a_ledger_created_by_a_peer_while_this_one_opens_is_used(tmp_path,
 @pytest.mark.anyio
 async def test_two_connections_admit_only_one_reservation(tmp_path):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     spec = make_spec(budget=10)
     results: list[object] = []
 
@@ -812,9 +812,9 @@ asyncio.run(run())
         "admitted",
         "budget_exhausted",
     ]
-    status = await CredentialLedger(
-        path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
-    ).status("anthropic", "2026-01")
+    status = await CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)).status(
+        "anthropic", "2026-01"
+    )
     assert (status[0].open_ceiling_nusd, status[0].open_attempts) == (6, 1)
 
 
@@ -824,7 +824,7 @@ async def test_busy_lock_refuses_within_timeout(tmp_path):
     ledger = CredentialLedger(
         path,
         busy_timeout_s=0.2,
-        clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+        clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
     )
     await ledger.status("anthropic", "2026-01")
     lock = sqlite3.connect(path, isolation_level=None)
@@ -845,7 +845,7 @@ async def test_busy_lock_refuses_within_timeout(tmp_path):
 @pytest.mark.anyio
 async def test_commit_failure_rolls_back_attempt_and_binding(tmp_path, monkeypatch):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     await ledger.status("anthropic", "2026-01")
     original_connect = ledger._connect
 
@@ -877,7 +877,7 @@ async def test_commit_failure_rolls_back_attempt_and_binding(tmp_path, monkeypat
 @pytest.mark.anyio
 async def test_cancel_waits_for_reservation_worker_to_commit(tmp_path, monkeypatch):
     path = tmp_path / "ledger.sqlite3"
-    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     await ledger.status("anthropic", "2026-01")
     original_connect = ledger._connect
     entered = threading.Event()

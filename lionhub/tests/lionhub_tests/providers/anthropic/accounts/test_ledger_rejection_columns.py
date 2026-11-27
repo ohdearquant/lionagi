@@ -6,7 +6,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -29,7 +29,7 @@ NEW_COLUMNS = ("provider_error_type", "rejection_class", "settlement_evidence_js
 ERROR_TYPE = min(_PROVIDER_ERROR_TYPES)
 REJECTION_CLASS = min(_REJECTION_CLASSES)
 SENTINEL = "sentinel-outside-every-set"
-NOW = datetime(2026, 1, 15, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, tzinfo=UTC)
 
 needs_drop_column = pytest.mark.skipif(
     sqlite3.sqlite_version_info < (3, 35, 0),

@@ -6,19 +6,13 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import pytest
 
 from lionagi.protocols.types import MessageManager
 
-# Use the same conditional backport selector the manager uses. On 3.11+
-# we get the builtin; on 3.10 we get the exceptiongroup package's class
-# (anyio/pytest pull it in transitively).
-if sys.version_info >= (3, 11):
-    _ExcGroup = BaseExceptionGroup  # noqa: F821
-else:
-    from exceptiongroup import BaseExceptionGroup as _ExcGroup
+# The builtin class, which the manager's compatibility import resolves to.
+_ExcGroup = BaseExceptionGroup
 
 
 @pytest.fixture

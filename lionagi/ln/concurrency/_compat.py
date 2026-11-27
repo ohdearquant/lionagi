@@ -8,7 +8,8 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
-if sys.version_info >= (3, 11):
+# The pre-3.11 branch is kept while tests still load it to exercise the fallback classes.
+if sys.version_info >= (3, 11):  # noqa: UP036
     from builtins import BaseExceptionGroup, ExceptionGroup
 
 else:
@@ -16,7 +17,7 @@ else:
         from exceptiongroup import BaseExceptionGroup, ExceptionGroup
     except ImportError:
 
-        class BaseExceptionGroup(BaseException):  # type: ignore
+        class BaseExceptionGroup(BaseException):  # type: ignore  # noqa: A001
             """Minimal BaseExceptionGroup implementation for Python 3.10 without exceptiongroup."""
 
             def __init__(self, message: str, exceptions: Sequence[BaseException]) -> None:
@@ -40,7 +41,7 @@ else:
                     type(self)(self.message, rest) if rest else None,
                 )
 
-        class ExceptionGroup(BaseExceptionGroup, Exception):  # type: ignore  # noqa: N818  # compat shim must match stdlib ExceptionGroup name
+        class ExceptionGroup(BaseExceptionGroup, Exception):  # type: ignore  # noqa: A001, N818  # compat shim must match stdlib ExceptionGroup name
             pass
 
 

@@ -99,10 +99,9 @@ async def test_cancelled_stream_closes_outside_exception_handler_and_owns_helper
         assert "its stderr said: late detail" in caplog.text
         assert warning_order == [(True, False)]
         assert stdout_stopped.is_set()
-        if sys.version_info >= (3, 11):
-            assert caught.value.args == (
-                "cleanup cancellation" if cleanup_cancel else "original cancellation",
-            )
+        assert caught.value.args == (
+            "cleanup cancellation" if cleanup_cancel else "original cancellation",
+        )
         assert lease.released == (0 if cleanup_cancel else 1)
     finally:
         stderr_release.set()

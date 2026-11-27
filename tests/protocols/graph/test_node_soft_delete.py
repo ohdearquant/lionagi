@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -43,8 +43,8 @@ class TestNodeSoftDelete:
         assert d.is_deleted is True
 
     def test_soft_delete_sets_deleted_at(self, monkeypatch):
-        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
+        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=UTC)
         monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
         monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
         cls = create_node("Del", soft_delete=True)
@@ -57,7 +57,7 @@ class TestNodeSoftDelete:
         assert d.deleted_at == t1.isoformat()
         deleted_at = datetime.fromisoformat(d.deleted_at)
         assert deleted_at == t1
-        assert deleted_at > datetime.fromtimestamp(d.created_at, tz=timezone.utc)
+        assert deleted_at > datetime.fromtimestamp(d.created_at, tz=UTC)
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)

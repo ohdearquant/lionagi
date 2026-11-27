@@ -751,7 +751,7 @@ async def _acknowledge_late(target: _Worker | _AttemptAdmission) -> None:
         if isinstance(target, _Worker) and target.strict_outcomes:
             try:
                 await asyncio.wait_for(shield_quietly(wrapped), timeout=HANDLER_BUDGET_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Late ACK stuck for %s: transaction remains reserved", target.key[2])
                 # Cancelling the proxy does not prove the owner-loop ACK settled.
                 await shield_quietly(wrapped)
@@ -1655,7 +1655,7 @@ class TerminalReconciler:
             result = await asyncio.wait_for(
                 shield_quietly(asyncio.wrap_future(worker.future)), timeout=self.timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             with _workers_lock:
                 worker.timed_out = True
             _detach_worker(worker)
@@ -1742,7 +1742,7 @@ class TerminalReconciler:
             preparation = asyncio.ensure_future(self.prepare(row, db))
             try:
                 prepared = await asyncio.wait_for(shield_quietly(preparation), timeout=self.timeout)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 admission.retain(preparation)
                 preparation.cancel()
                 raise
@@ -1797,7 +1797,7 @@ class TerminalReconciler:
             return await asyncio.wait_for(perform(), timeout=self.timeout)
         except _WorkerBusyError:
             return AttemptResult("busy")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             with _workers_lock:
                 admission.timed_out = True
             if ack_uncertain:

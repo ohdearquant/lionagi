@@ -34,7 +34,7 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -1056,7 +1056,7 @@ def write_record(binary: str, arms: Mapping[str, Mapping[str, Any]]) -> Path:
         "binary": resolved,
         "version": version,
         "sha256": sha256,
-        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "probed_at": datetime.now(UTC).isoformat(),
         "arms": {name: dict(arm) for name, arm in arms.items()},
     }
     tmp = path.with_suffix(".tmp")

@@ -337,7 +337,7 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         stdout_bytes, _ = await asyncio.wait_for(
             proc.communicate(), timeout=_LOOKUP_TIMEOUT_SECONDS
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         if proc is not None:
             await _cleanup_after_lookup_failure(proc, leader_created)
         logger.warning("secret lookup %s for %s timed out", program, name)
@@ -440,7 +440,7 @@ async def lookup_one_name(
             expected_marker=group_marker,
         )
         out = await asyncio.wait_for(read_bounded(proc), timeout=_LOOKUP_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         if proc is not None:
             await _cleanup_after_lookup_failure(proc, leader_created)
         return OneNameLookup(failure="timeout")

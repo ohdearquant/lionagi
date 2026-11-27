@@ -522,7 +522,7 @@ async def test_exec_adapters_share_lifecycle_across_outcomes(
             if case == "post_spawn":
                 raise OSError(cause)
             if case == "timeout":
-                raise asyncio.TimeoutError
+                raise TimeoutError
             if case == "cancel":
                 raise asyncio.CancelledError
             return b"", stderr.encode() if case == "nonzero" else b""
@@ -756,7 +756,7 @@ async def test_exec_handler_records_timeout_outcome_and_warns(monkeypatch, tmp_p
         pid = 456
 
         async def communicate(self, data=None):
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
     proc = _FakeProc()
 
@@ -1249,7 +1249,7 @@ async def _wait_for_notify_condition(check, description):
 
     try:
         await asyncio.wait_for(wait(), _NOTIFY_DEADMAN)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail(description)
 
 

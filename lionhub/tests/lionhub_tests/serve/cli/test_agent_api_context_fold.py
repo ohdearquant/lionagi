@@ -1081,7 +1081,7 @@ async def test_amendment2_small_deficit_preserves_mapping_keys_and_yaml_only_val
         "bytes": b"whole bytes",
         "set": {"whole", "set"},
         "date": datetime.date(2026, 10, 24),
-        "datetime": datetime.datetime(2026, 10, 24, 5, 0, tzinfo=datetime.timezone.utc),
+        "datetime": datetime.datetime(2026, 10, 24, 5, 0, tzinfo=datetime.UTC),
     }
     branch, _requests, originals = await _clip_fixture([output], cap=1000000)
     before = estimate_next_request_tokens(branch)

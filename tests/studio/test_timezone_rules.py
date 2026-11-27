@@ -6,7 +6,7 @@ import struct
 import subprocess
 import sys
 import zoneinfo
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
@@ -131,7 +131,7 @@ _YEARLY_FOOTER = b"STD0DST,M3.1.0/0,M9.1.0/0"
 
 
 def _first_sunday(year, month):
-    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    first = datetime(year, month, 1, tzinfo=UTC)
     return int(first.timestamp()) + (6 - first.weekday()) % 7 * 86400
 
 

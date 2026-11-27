@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from lionhub.serve.cli.registration import CliDeclaration, auto_register
@@ -45,7 +45,7 @@ def _validate_group_by(raw: str) -> list[str]:
 def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
 async def _query_run_stats(

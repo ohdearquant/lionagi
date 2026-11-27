@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -44,7 +44,7 @@ from tests._mirror_test_support import temp_db_path as temp_db_path
 
 def _write_session_file(path: Path, uid: str, *, age_secs: float) -> None:
     """One transcript file for `uid` whose messages are `age_secs` old."""
-    ts = _iso(datetime.now(timezone.utc) - timedelta(seconds=age_secs))
+    ts = _iso(datetime.now(UTC) - timedelta(seconds=age_secs))
     stem = path.stem
     events = [
         {
@@ -75,7 +75,7 @@ def _lineage_event(uid: str, euid: str, parent: str | None, role: str, text: str
         "type": role,
         "uuid": euid,
         "parentUuid": parent,
-        "timestamp": _iso(datetime.now(timezone.utc)),
+        "timestamp": _iso(datetime.now(UTC)),
         "sessionId": uid,
         "cwd": "/tmp",
         "message": {"role": role, "content": [{"type": "text", "text": text}]},

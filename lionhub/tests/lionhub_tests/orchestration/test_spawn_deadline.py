@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import UTC
 
 import pytest
 
@@ -53,10 +54,10 @@ def test_preamble_deadline_approximately_correct(monkeypatch: pytest.MonkeyPatch
     m = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", preamble)
     assert m, f"No timestamp in preamble: {preamble!r}"
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     deadline_ts = (
-        datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+        datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp()
     )
 
     assert deadline_ts == int(now + 300)

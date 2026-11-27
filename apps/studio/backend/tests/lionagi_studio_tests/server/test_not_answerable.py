@@ -167,7 +167,7 @@ def test_the_show_stream_survives_a_store_it_may_not_read(tmp_path, monkeypatch)
         # StoreNotAddressableError out of this await instead.
         try:
             await asyncio.wait_for(stream.__anext__(), timeout=2.0)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             pass
         finally:
             await stream.aclose()

@@ -130,7 +130,7 @@ class TestAPICalling:
         with patch.object(
             mock_endpoint,
             "call",
-            side_effect=asyncio.TimeoutError("Request timed out"),
+            side_effect=TimeoutError("Request timed out"),
         ):
             await api_call.invoke()
 

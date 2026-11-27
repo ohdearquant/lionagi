@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,7 +38,7 @@ from lionhub.providers.anthropic.accounts._router import AccountRouter, RouterAt
 
 pytestmark = pytest.mark.asyncio
 
-NOW = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 12, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 MODEL = "claude-sonnet-5-5"
 BUDGET = 10**15
