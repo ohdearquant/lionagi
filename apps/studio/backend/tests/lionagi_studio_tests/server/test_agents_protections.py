@@ -741,6 +741,30 @@ def test_agent_routes_refuse_later_system_block(tmp_path, monkeypatch, method, u
             id="later-unreadable-system-block",
         ),
         pytest.param(
+            "--- # agent\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-commented-opener",
+        ),
+        pytest.param(
+            "---\u200b\nlion_system: true\n---\nPrompt.\n",
+            True,
+            True,
+            id="system-zero-width-opener",
+        ),
+        pytest.param(
+            "--- # agent\nname: sample\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-commented-opener",
+        ),
+        pytest.param(
+            "---\u200b\nname: sample\n---\nPrompt.\n",
+            False,
+            True,
+            id="ordinary-zero-width-opener",
+        ),
+        pytest.param(
             "---\nlion_system: false\n---\nPrompt.\n",
             False,
             False,
