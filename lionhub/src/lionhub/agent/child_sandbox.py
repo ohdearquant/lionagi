@@ -8,8 +8,10 @@ write, and the configuration a child must not edit. It is resolved from the glob
 settings file only and rendered into the settings Claude Code understands and into the permission
 profile a Codex child runs under. Any malformed value
 raises ``ConfigurationError`` so a child never starts unconfined because of a configuration
-mistake. Every refusal raised here ends with the same sentence naming the opt-out,
-``CHILD_SANDBOX_OPT_OUT``.
+mistake. A refusal raised while the settings are resolved ends with
+``CHILD_SANDBOX_SETTINGS_FIX``: those checks run whether the sandbox is on or off, so switching
+it off would not lift them. Every other refusal raised here ends with the same sentence naming
+the opt-out, ``CHILD_SANDBOX_OPT_OUT``.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from lionagi._errors import ConfigurationError
 
 __all__ = (
     "CHILD_SANDBOX_OPT_OUT",
+    "CHILD_SANDBOX_SETTINGS_FIX",
     "CLAUDE_CLI_FLOOR",
     "DEFAULT_ALLOW_WRITE",
     "DEFAULT_DENY_EDIT",
@@ -68,6 +71,13 @@ CLAUDE_CLI_FLOOR: tuple[int, int, int] = (2, 1, 323)
 CHILD_SANDBOX_OPT_OUT = (
     "To run Claude Code children without the sandbox, set "
     "`child_sandbox: {enabled: false}` in ~/.lionagi/settings.yaml."
+)
+
+#: The closing sentence of a refusal raised while the settings are resolved. Those checks run
+#: whether the sandbox is on or off, so the opt-out would not lift them.
+CHILD_SANDBOX_SETTINGS_FIX = (
+    "Switching the sandbox off does not lift this refusal: the settings are checked on every "
+    "launch, so correct the value or file named above."
 )
 
 #: Generic credential locations and local stores a child may not read. Entries are ``~/`` or absolute paths;
@@ -515,16 +525,10 @@ def configured_deny_read() -> tuple[str, ...]:
     Raises:
         ConfigurationError: the global settings, an ``extends`` file, the accounts file or one of
             its rows cannot be read, or the block is malformed; the launch is refused. The text
-            carries no opt-out, since turning the Claude Code child sandbox off does not lift
-            this refusal for these policies.
+            ends with ``CHILD_SANDBOX_SETTINGS_FIX`` and carries no opt-out, since turning the
+            Claude Code child sandbox off does not lift this refusal.
     """
-    try:
-        return resolve_child_sandbox(None).deny_read
-    except ConfigurationError as exc:
-        text = str(exc)
-        if text.endswith(CHILD_SANDBOX_OPT_OUT):
-            text = text[: -len(CHILD_SANDBOX_OPT_OUT)].rstrip()
-        raise ConfigurationError(text) from None
+    return resolve_child_sandbox(None).deny_read
 
 
 def _lies_under(path: str, entry: str) -> bool:
@@ -780,7 +784,7 @@ def profile_deny_read_refusal(
 def _global_settings() -> dict:
     """The global lionagi settings layer; the project layer is never read here.
 
-    A global file that cannot be read or parsed refuses the launch, naming the opt-out.
+    A global file that cannot be read or parsed refuses the launch.
     """
     from lionagi._settings import load_settings
 
@@ -837,8 +841,21 @@ def resolve_child_sandbox(profile: str | None, settings: dict | None = None) -> 
             the deny list or that lies under another deny entry the profile leaves denied, or
             unreadable ``extends`` file, or a subscription accounts file that cannot be read, so
             its sign-ins cannot be named, or a profile that declares ``deny_read`` while the
-            sandbox is switched off.
+            sandbox is switched off. Each of these checks runs whether the sandbox is on or off,
+            so a refusal ends with ``CHILD_SANDBOX_SETTINGS_FIX``, never with the opt-out.
     """
+    try:
+        return _resolve_child_sandbox(profile, settings)
+    except ConfigurationError as exc:
+        text = str(exc)
+        if not text.endswith(CHILD_SANDBOX_OPT_OUT):
+            raise
+        text = text[: -len(CHILD_SANDBOX_OPT_OUT)].rstrip().rstrip(".;:")
+        raise ConfigurationError(f"{text}. {CHILD_SANDBOX_SETTINGS_FIX}") from exc.__cause__
+
+
+def _resolve_child_sandbox(profile: str | None, settings: dict | None) -> ChildSandboxPolicy:
+    """``resolve_child_sandbox`` before its refusals are given their closing sentence."""
     if settings is None:
         warn_project_child_sandbox()
         settings = _global_settings()
