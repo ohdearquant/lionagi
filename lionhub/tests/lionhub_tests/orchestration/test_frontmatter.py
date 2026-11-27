@@ -8,7 +8,13 @@ from datetime import date
 import pytest
 import yaml
 
-from lionhub.orchestration.frontmatter import parse_frontmatter, parse_frontmatter_strict
+from lionhub.orchestration.frontmatter import (
+    _FM_OPENER,
+    _FM_SPLIT,
+    _frontmatter_parts,
+    parse_frontmatter,
+    parse_frontmatter_strict,
+)
 
 VALID = "---\nname: x\ndescription: y\n---\nBody.\n"
 BROKEN = "---\nname: [unterminated\n---\nBody.\n"
@@ -147,3 +153,24 @@ def test_parse_frontmatter_strict_raises_on_null_frontmatter(prefix):
     that then reads as successfully-parsed, empty frontmatter."""
     with pytest.raises(yaml.YAMLError):
         parse_frontmatter_strict(prefix + NULL_FRONTMATTER)
+
+
+def test_the_delimiter_pattern_is_the_opener_alone_on_its_line():
+    assert _FM_SPLIT.fullmatch(_FM_OPENER)
+    assert _FM_SPLIT.fullmatch(_FM_OPENER + "  ")
+    assert _FM_SPLIT.fullmatch(_FM_OPENER + " # agent") is None
+    assert _FM_SPLIT.fullmatch(_FM_OPENER + "-") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("---\nname: x\n---\nBody.", ["", "\nname: x\n", "\nBody."]),
+        ("---\nname: x", ["", "\nname: x"]),
+        ("--- # agent\nname: x\n---\nBody.", None),
+        ("Body.\n---\nname: x\n---", None),
+    ],
+    ids=["closed", "unclosed", "not-a-bare-opener", "no-opener"],
+)
+def test_frontmatter_parts_splits_only_after_a_bare_opener(text, expected):
+    assert _frontmatter_parts(text) == expected

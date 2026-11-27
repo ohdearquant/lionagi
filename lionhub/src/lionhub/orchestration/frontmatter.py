@@ -8,7 +8,8 @@ from typing import Any
 import yaml
 
 _FM_OPENER = "---"
-_FM_SPLIT = re.compile(r"^---\s*$", re.MULTILINE)
+# A delimiter line is the opener alone, with only whitespace after it.
+_FM_SPLIT = re.compile(rf"^{re.escape(_FM_OPENER)}\s*$", re.MULTILINE)
 
 
 def _strip_frontmatter_prefix(text: str) -> str:
@@ -61,6 +62,19 @@ def _with_unescaped_scalars(text: str) -> str:
     return text + "\n" + _DOUBLE_QUOTED_SCALAR.sub(unescape, text)
 
 
+def _frontmatter_parts(text: str) -> list[str] | None:
+    """Split *text* at its frontmatter delimiters.
+
+    When the first line of *text* is a bare ``---``, returns the pieces of
+    ``_FM_SPLIT.split(text, maxsplit=2)``: three when a closing delimiter follows, two when
+    none does. Returns ``None`` when the first line is anything else, so nothing in the file
+    is read as settings. Callers remove a leading byte-order mark and whitespace first.
+    """
+    if _FM_SPLIT.match(text) is None:
+        return None
+    return _FM_SPLIT.split(text, maxsplit=2)
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return _parse_frontmatter(text, _load_frontmatter_yaml)
 
@@ -72,12 +86,8 @@ def _parse_frontmatter_for_save(text: str) -> tuple[dict[str, Any], str]:
 
 def _parse_frontmatter(text: str, load_yaml: Callable[[str], Any]) -> tuple[dict[str, Any], str]:
     text = _trim_frontmatter_document(text)
-    if _FM_SPLIT.match(text) is None:
-        # Only a first line that is a bare --- opens a block. After any other first
-        # line, nothing in the file is read as settings.
-        return {}, text
-    parts = _FM_SPLIT.split(text, maxsplit=2)
-    if len(parts) < 3:
+    parts = _frontmatter_parts(text)
+    if parts is None or len(parts) < 3:
         return {}, text
     try:
         fm = load_yaml(parts[1]) or {}
@@ -100,11 +110,11 @@ def parse_frontmatter_strict(text: str) -> tuple[dict[str, Any], str]:
     file ``parse_frontmatter`` reads no settings at all.
     """
     text = _trim_frontmatter_document(text)
-    if not text.startswith(_FM_OPENER):
+    parts = _frontmatter_parts(text)
+    if parts is None:
+        if text.startswith(_FM_OPENER):
+            raise yaml.YAMLError("frontmatter opening line must be a bare ---")
         return {}, text
-    if _FM_SPLIT.match(text) is None:
-        raise yaml.YAMLError("frontmatter opening line must be a bare ---")
-    parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
         raise yaml.YAMLError("frontmatter opening delimiter has no matching closing delimiter")
     fm = _load_frontmatter_yaml(parts[1])
