@@ -181,6 +181,30 @@ def f(value: "list['lionagi.contract.Contract']"):
     assert any(edge["target"] == "lionagi.missing" for edge in output["unresolved_internal"])
 
 
+def test_dynamic_imports_that_name_their_module_by_keyword(tmp_path):
+    root, modules, _, _ = fixture_project(tmp_path)
+    (root / "lionagi/foundation.py").write_text(
+        """
+import importlib
+from lionagi.ln import import_module as load
+importlib.import_module(name="lionagi.adapter")
+importlib.import_module(name=".contract", package="lionagi")
+__import__(name="lionagi.root")
+load(package_name="lionagi", module_name="sibling")
+importlib.import_module(name=computed)
+load(package_name=computed)
+""",
+        encoding="utf-8",
+    )
+    graph = checker.scan(modules)
+    targets = {
+        e["target"]
+        for e in graph
+        if e["source"] == "lionagi.foundation" and e["kind"] == "dynamic_literal"
+    }
+    assert targets == {"lionagi.adapter", "lionagi.contract", "lionagi.root", "lionagi.sibling"}
+
+
 def test_lazy_mapping_relative_and_source_module_sequence(tmp_path):
     root, modules, _, _ = fixture_project(tmp_path)
     (root / "lionagi/__init__.py").write_text(
