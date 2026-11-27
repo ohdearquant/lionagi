@@ -2050,7 +2050,7 @@ def _check_readable_profile_settings(
     name: str, text: str, frontmatter: dict[str, Any], *, line_offset: int
 ) -> str:
     """Check the leading declaration names and the body, returning the leading source."""
-    from lionhub.orchestration.frontmatter import _FM_SPLIT
+    from lionhub.orchestration.frontmatter import _FM_SPLIT, _with_unescaped_scalars
 
     text = text.strip()
     delimiters = _FM_SPLIT.finditer(text)
@@ -2066,7 +2066,7 @@ def _check_readable_profile_settings(
     for opening_line, block in _profile_body_blocks(
         name, text[closing.end() :].splitlines(), line_offset=body_line_offset
     ):
-        if _DENY_READ_KEY_LINE.search(block):
+        if _DENY_READ_KEY_LINE.search(_with_unescaped_scalars(block)):
             # Read as prompt text, a deny_read here would deny nothing.
             raise ConfigurationError(
                 f"agent profile {name!r}: the --- block on line "
@@ -2099,13 +2099,20 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     import yaml
 
     from lionhub.orchestration.console import warn
-    from lionhub.orchestration.frontmatter import _FM_SPLIT, parse_frontmatter_strict
+    from lionhub.orchestration.frontmatter import (
+        _FM_SPLIT,
+        _with_unescaped_scalars,
+        parse_frontmatter_strict,
+    )
 
+    # Every check below that reads unread text by spelling also reads it with its
+    # double-quoted scalars unescaped, so a key such as "\x74ools" is found.
     def containment_settings(block: str, document: Any) -> dict[str, Any]:
         if isinstance(document, dict):
             settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in document), True)
             light = document.get("workload") == "light"
         else:
+            block = _with_unescaped_scalars(block)
             settings = dict.fromkeys((key for key in _CONTAINMENT_KEYS if key in block), True)
             light = _LIGHT_WORKLOAD_LINE.search(block) is not None
         if light:
@@ -2119,6 +2126,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         value refuses: its settings cannot be read. A span after prompt text may be ordinary
         markdown, so there only a line that sets a tool field as a key refuses.
         """
+        block = _with_unescaped_scalars(block)
         if _TOOL_KEY_LINE.search(block) if key_lines_only else "tools" in block:
             raise ConfigurationError(
                 f"agent profile {name!r}: tool settings could not be read; "
@@ -2132,6 +2140,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         the file refuses on any mention, and a span after prompt text on a line that sets it
         as a key.
         """
+        block = _with_unescaped_scalars(block)
         if _DENY_READ_KEY_LINE.search(block) if key_lines_only else "deny_read" in block:
             raise ConfigurationError(
                 f"agent profile {name!r}: deny_read could not be read, and the child would "
@@ -2148,7 +2157,8 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
 
     def refuse_misplaced_mcp(block: str, reads: bool, document: Any, line: int) -> None:
         if (reads and isinstance(document, dict) and "mcp" in document) or (
-            not reads and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", block, re.M)
+            not reads
+            and re.search(r"^[ \t]*[\"']?mcp[\"']?[ \t]*:", _with_unescaped_scalars(block), re.M)
         ):
             raise ConfigurationError(
                 f"agent profile {name!r}: the --- block on line {line} follows prompt text "
@@ -2158,7 +2168,10 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
     def refuse_misplaced_settings(block: str, opening: int) -> None:
         reads, document = _read_profile_settings(block)
         refuse_misplaced_mcp(block, reads, document, opening + 1)
-        declared = set(_FLAG_KEY_LINE.findall(block)) | set(_DENY_READ_KEY_LINE.findall(block))
+        unescaped = _with_unescaped_scalars(block)
+        declared = set(_FLAG_KEY_LINE.findall(unescaped)) | set(
+            _DENY_READ_KEY_LINE.findall(unescaped)
+        )
         refuse_misplaced_tools(block, reads, document, opening)
         if not reads or isinstance(document, dict):
             declared.update(containment_settings(block, document))
@@ -2190,7 +2203,7 @@ def _settings_of_unread_frontmatter(name: str, text: str, *, line_offset: int) -
         refuse_unread_tool_settings(block)
         refuse_unread_deny_read(block)
         settings = containment_settings(block, document)
-        if _CONTAIN_KEY in block:
+        if _CONTAIN_KEY in _with_unescaped_scalars(block):
             # Keep containment for mentions in an unclosed user-settings block.
             settings[_CONTAIN_KEY] = True
         what = f"its frontmatter does not read as YAML settings ({reason})"

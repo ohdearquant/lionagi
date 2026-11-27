@@ -34,6 +34,33 @@ def _load_frontmatter_yaml(document: str) -> Any:
         raise yaml.YAMLError(f"frontmatter contains an invalid YAML scalar: {exc}") from exc
 
 
+_DOUBLE_QUOTED_SCALAR = re.compile(r'"(?:[^"\\\r\n]|\\.)*"')
+
+
+def _with_unescaped_scalars(text: str) -> str:
+    """Return *text* followed by a copy whose double-quoted scalars are unescaped.
+
+    The checks on text that does not read as YAML look for a key's literal spelling, so a key
+    written with escapes, such as ``"\\x74ools"``, would pass them. Matching against the
+    returned text finds both spellings. A scalar whose escapes do not decode is copied as
+    written. Text with no backslash is returned unchanged.
+    """
+    if "\\" not in text:
+        return text
+
+    def unescape(match: re.Match[str]) -> str:
+        scalar = match.group()
+        if "\\" not in scalar:
+            return scalar
+        try:
+            value = yaml.safe_load(scalar)
+        except yaml.YAMLError:
+            return scalar
+        return f'"{value}"' if isinstance(value, str) else scalar
+
+    return text + "\n" + _DOUBLE_QUOTED_SCALAR.sub(unescape, text)
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return _parse_frontmatter(text, _load_frontmatter_yaml)
 
