@@ -2620,11 +2620,14 @@ async def test_run_flow_and_resume_round_trip_an_explicit_mcp_config_path(
     temp_db_path: Path, tmp_path: Path
 ):
     """Same seam as above, for the opt-in side: a run launched with a named
-    --mcp-config file must persist that path and resume against it, not fall
-    back to ambient discovery once the dropped-field path is exercised."""
+    --mcp-config file must persist the copy it took of that file's set, keep the
+    named path beside it, and resume against the copy, not fall back to ambient
+    discovery once the dropped-field path is exercised."""
     from lionhub.serve.cli.orchestrate import flow as flow_module
 
     env = _env_for_run_flow(tmp_path)
+    env.run.state_root = tmp_path / "state"
+    env.run.state_root.mkdir()
     inner_mock = AsyncMock(return_value="ok result")
 
     with (
@@ -2647,8 +2650,10 @@ async def test_run_flow_and_resume_round_trip_an_explicit_mcp_config_path(
     ):
         await flow_module._resume_flow("abc123")
 
-    assert resumed_run_flow_mock.call_args.kwargs["mcp_config"] == "/tmp/named-mcp.json"
-    assert resumed_run_flow_mock.call_args.kwargs["no_mcp_config"] is False
+    resumed_kwargs = resumed_run_flow_mock.call_args.kwargs
+    assert resumed_kwargs["mcp_config"] == str(env.run.state_root / "mcp-config.json")
+    assert resumed_kwargs["mcp_config_named"] == "/tmp/named-mcp.json"
+    assert resumed_kwargs["no_mcp_config"] is False
 
 
 # CLI wiring: `li o flow --resume` argparse + dispatch
@@ -3191,7 +3196,8 @@ def test_canonical_mcp_config_resolves_a_relative_path_against_its_base(
 async def test_run_flow_persists_a_relative_mcp_config_as_the_path_it_resolved(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The checkpoint itself must hold the resolved path, not the raw string.
+    """The checkpoint itself must hold the resolved path, not the raw string, as the
+    named path it keeps beside the run directory's copy.
 
     Covers the wiring rather than the helper: a test that calls
     ``_canonical_mcp_config`` directly still passes when the checkpoint is built
@@ -3205,6 +3211,8 @@ async def test_run_flow_persists_a_relative_mcp_config_as_the_path_it_resolved(
     monkeypatch.chdir(launched_from)
 
     env = _env_for_run_flow(tmp_path)
+    env.run.state_root = tmp_path / "state"
+    env.run.state_root.mkdir()
     inner_mock = AsyncMock(return_value="ok result")
     with (
         patch.object(flow_module, "setup_orchestration", AsyncMock(return_value=env)),
@@ -3212,7 +3220,7 @@ async def test_run_flow_persists_a_relative_mcp_config_as_the_path_it_resolved(
     ):
         await flow_module._run_flow("claude", "do the thing", mcp_config="cfg.json")
 
-    persisted = inner_mock.call_args.kwargs["checkpoint_config"]["mcp_config"]
+    persisted = inner_mock.call_args.kwargs["checkpoint_config"]["mcp_config_named"]
     assert persisted == str((launched_from / "cfg.json").resolve())
     assert Path(persisted).is_absolute()
 

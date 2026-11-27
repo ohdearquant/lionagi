@@ -13,6 +13,7 @@ from lionhub.orchestration.flow.parsing import add_orchestrate_subparser
 from lionhub.serve.cli import orchestrate
 from lionhub.serve.cli.orchestrate import _orchestration, flow
 
+from .test_flow_named_mcp_copy import runs  # noqa: F401
 from .test_no_mcp_config_handoff import (
     _cli_args,
     _setup,
@@ -97,7 +98,11 @@ async def test_named_file_worker_scope(tmp_run, marked):  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_resume_named_marked_file_contains_workers(tmp_run, monkeypatch):  # noqa: F811
+async def test_resume_named_marked_file_contains_workers(
+    tmp_run,  # noqa: F811
+    runs,  # noqa: F811
+    monkeypatch,
+):
     named = tmp_run / "named.json"
     _write_config(named, marked=True)
     checkpoint_path = tmp_run / "checkpoint.json"
@@ -126,6 +131,10 @@ async def test_resume_named_marked_file_contains_workers(tmp_run, monkeypatch): 
     await flow._run_flow("claude_code/sonnet", "work", mcp_config=str(named))
     checkpoint = load_checkpoint(checkpoint_path)
     assert checkpoint["config"]["mcp_config_origin"] == "explicit"
+    # The resume reads the run directory's copy, which keeps the marker that limits workers.
+    assert checkpoint["config"]["mcp_config"] == str(
+        runs.allocated[0].state_root / "mcp-config.json"
+    )
     monkeypatch.setattr(
         _checkpoint,
         "_find_run_dir_by_id",

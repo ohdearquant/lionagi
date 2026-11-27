@@ -11,6 +11,7 @@ from lionhub.orchestration import mcp_config
 from lionhub.orchestration.flow.checkpoint import FlowResumeError
 from lionhub.serve.cli.orchestrate import flow
 
+from .test_flow_named_mcp_copy import runs  # noqa: F401
 from .test_no_mcp_config_handoff import tmp_run
 
 
@@ -196,7 +197,11 @@ async def test_malformed_recorded_flag_never_falls_back_to_discovery(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monkeypatch):  # noqa: F811
+async def test_named_marked_config_survives_flow_start_and_resume(
+    tmp_run,  # noqa: F811
+    runs,  # noqa: F811
+    monkeypatch,
+):
     """A named file remains caller-owned even when it has a snapshot marker."""
     from lionhub.orchestration.flow import checkpoint as _checkpoint
     from lionhub.orchestration.flow.checkpoint import CheckpointWriter, load_checkpoint
@@ -236,7 +241,10 @@ async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monke
     monkeypatch.setattr(flow, "_run_flow_inner", execute)
     await flow._run_flow("claude_code/sonnet", "work", mcp_config="named.json")
     checkpoint = load_checkpoint(checkpoint_path)
-    assert checkpoint["config"]["mcp_config"] == str(recorded)
+    copy = runs.allocated[0].state_root / "mcp-config.json"
+    assert checkpoint["config"]["mcp_config"] == str(copy)
+    assert checkpoint["config"]["mcp_config_named"] == str(recorded)
+    assert json.loads(copy.read_text())["lionagiSnapshotOf"] == str(tmp_run / "old.json")
     monkeypatch.setattr(
         _checkpoint,
         "_find_run_dir_by_id",
@@ -248,6 +256,8 @@ async def test_named_marked_config_survives_flow_start_and_resume(tmp_run, monke
 
     # Identical bytes from an older record have no trustworthy origin.
     checkpoint["config"].pop("mcp_config_origin")
+    checkpoint["config"].pop("mcp_config_named")
+    checkpoint["config"]["mcp_config"] = str(recorded)
     checkpoint_path.write_text(json.dumps(checkpoint))
     with pytest.raises(FlowResumeError, match="ambiguous"):
         await flow._resume_flow("recorded-run")

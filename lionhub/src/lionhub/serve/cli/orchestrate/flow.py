@@ -3309,6 +3309,7 @@ async def _run_flow(
     mcp_launch_dir_unrecorded: bool = False,
     no_mcp_config_source: str | None = None,
     mcp_launch_dir: str | None = None,
+    mcp_config_named: str | None = None,
     graph_source: GraphSource | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
@@ -3423,6 +3424,31 @@ async def _run_flow(
             _checkpoint_config["no_mcp_config_source"] = "profile"
             _checkpoint_config.pop("mcp_submit_snapshot", None)
             _checkpoint_config.pop("mcp_config_origin", None)
+        if _checkpoint_config.get("mcp_config_origin") == "explicit" and (
+            resume_checkpoint is None or mcp_config_named is not None
+        ):
+            # A named file can change, or sit where a worker can write: the checkpoint points
+            # at the copy of the set this run was handed and keeps the name as provenance, and
+            # a resume that replayed a copy copies it again into its own run directory
+            # (ADR-0041 Amendment 8). A resume of a record from before the copy reads the named
+            # file again, as it did.
+            from lionhub.orchestration.mcp_config import (
+                MCP_CONFIG_NAMED_KEY,
+                write_mcp_config_copy,
+            )
+
+            _checkpoint_config[MCP_CONFIG_NAMED_KEY] = (
+                mcp_config_named
+                if mcp_config_named is not None
+                else _checkpoint_config["mcp_config"]
+            )
+            _checkpoint_config["mcp_config"] = str(
+                write_mcp_config_copy(
+                    env.run.state_root,
+                    env.mcp_servers_as_read,
+                    snapshot_keys=env.mcp_snapshot_keys,
+                )
+            )
 
         # `--notify` is compatibility sugar over the terminal-callback registry:
         # registered against this run's own entity, unregistered in `finally`
@@ -4189,6 +4215,27 @@ async def _resume_flow(
         or not Path(launch_dir).is_absolute()
     ):
         raise FlowResumeError("The recorded MCP launch directory is invalid; start a fresh run.")
+    if "mcp_config_named" in config:
+        # A checkpoint that names the config it was given points at the run directory's copy
+        # of that set; the named path is provenance and is never read (ADR-0041 Amendment 8).
+        named = config["mcp_config_named"]
+        if (
+            origin != "explicit"
+            or not isinstance(named, str)
+            or not named.strip()
+            or not Path(named).is_absolute()
+        ):
+            raise FlowResumeError(
+                "The checkpoint has an invalid record of the MCP config it was named; "
+                "start a fresh run."
+            )
+        copy = config.get("mcp_config")
+        if isinstance(copy, str) and Path(copy).is_absolute() and not Path(copy).is_file():
+            raise FlowResumeError(
+                f"This run was launched with the MCP config {_format_recorded_mcp_path(copy)}, "
+                "which is no longer a readable file; start a fresh run with --mcp-config naming "
+                "the config to use, or with --no-mcp-config."
+            )
     if origin is not None or snapshot is not None:
         named_config = config.get("mcp_config")
         valid_explicit = (
