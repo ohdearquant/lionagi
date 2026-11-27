@@ -2,11 +2,129 @@
 
 - **Status**: Accepted, amended 2026-10-17, 2026-10-25, 2026-10-27, 2026-11-20 and 2026-11-21 (see
   Amendments 1 to 5); Amendment 6 (2026-11-22) accepted 2026-11-23; Amendment 7 (2026-11-23)
-  Proposed; Amendment 8 (2026-11-23) accepted 2026-11-27
+  Proposed; Amendment 8 (2026-11-23) accepted 2026-11-27; Amendment 9 (2026-11-27) Proposed
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 9 (2026-11-27) — a leg host whose legs reach only their caller's computer
+
+**Status: Proposed.** Three questions stay open until answered, and this amendment is not
+accepted before then: whether codex and gemini-cli profiles may launch no leg on a computer host
+until their provider passes a tools record (D2); whether flow and fanout may be refused there
+until every model child goes through one builder (D6); and whether a leg's model process may run
+on the host under the host's own account, acting only through its caller's computer's verbs, or
+must itself run under that computer's account (D1 to D5).
+
+This amendment serves the owner's direction of 2026-11-23: callers keep the usual lion verbs, a
+leg a caller launches runs in that caller's own khive computer, lionagi is installed as an app on
+the computer host, and no leg process runs on the caller's machine. D1 to D5 decide something
+narrower than a leg running in the computer: the leg's model process runs on the host, under the
+host's own account, and everything the leg does it does in the caller's computer through that
+computer's MCP verbs. Whether that is what was asked, or whether the model process itself must
+run under the computer's account, is the third open question.
+
+Today a leg host runs `agent` launches only. Each leg gets a worktree of a repository the host
+serves, runs with no MCP server and keeps its provider's native tools inside the child sandbox
+(`lionhub/src/lionhub/serve/daemon/leg_host.py` 74 and 288; `docs/guides/remote-legs.md`, "What
+a leg is handed"). This amendment adds a computer mode, in which each leg's only tools are the MCP
+verbs of its caller's computer.
+
+Decision:
+
+- **D1, the mode.** A leg host started with a caller list (D4) is a computer host. A host started
+  without one runs the worktree mode unchanged. The mode is chosen at start, and a host never mixes
+  the two.
+- **D2, native tools off, per provider.** "Off" means the model is offered no tool except those
+  of the one MCP server in D3. The proof is the tool list in the model requests the provider's CLI
+  sends, never the CLI's own report of its tools. The existing probes run the CLI against a
+  loopback stand-in for the model API, so that request is readable
+  (`lionhub/src/lionhub/providers/anthropic/claude_read_probe.py`, module docstring;
+  `lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py`, module docstring).
+  - claude_code: `--tools ""`, `--strict-mcp-config`, `--mcp-config` naming the host-written file
+    of D3, and `--allowed-tools mcp__<server>`. A probe writes a record to
+    `LIONAGI_HOME/claude-tools-probes`, keyed by the binary's resolved path, version and bytes. Its
+    arms:
+    1. every model request in the run, the first and each later one, offers exactly the stand-in
+       MCP server's tools;
+    2. the same command line without `--tools ""` offers `Bash`, so the read of the tool list is
+       not blind;
+    3. a decoy server named in the run's `~/.claude.json` and one in a `.mcp.json` in its working
+       directory are absent from every request;
+    4. the stand-in MCP server received `initialize` and `tools/list`, so the one server is
+       connected.
+
+    A launch is refused unless the record for the binary the host resolves passes every arm and
+    holds the same tool flags as the launch. As a second check, the host ends a leg whose stream's
+    init event lists a tool outside `mcp__<server>__`. That event is the CLI's own report, so it
+    never stands in for the record.
+  - codex: refused until a record with the same four arms passes. The stand-in reads codex's
+    Responses `tools` array, so the record is taken the same way. Which codex settings, if any,
+    remove its shell, patch and web search tools from that array is measured and recorded in this
+    amendment before it is accepted. Until a record passes, the refusal reads "no measured switch
+    turns this provider's native tools off".
+  - gemini-cli: refused. lionagi passes the CLI no tool switch
+    (`lionhub/src/lionhub/providers/google/gemini_code.py`, `GeminiCodeRequest._cmd_args`) and has
+    no stand-in for its service, so nothing on the host can show which tools it offers its model.
+
+  Open: under these rules a caller whose leg profile runs on codex or gemini-cli can launch no leg
+  at all, since none runs on the caller's machine either. That narrows the usual verbs for those
+  profiles.
+- **D3, exactly one MCP server.** The host writes the leg's MCP file from the caller's entry in D4,
+  never from the request. The file holds that one server and is created with mode 0600 in the
+  invocation's directory by the writer Amendment 8 uses
+  (`lionhub.orchestration.mcp_config.write_mcp_config_copy`). The start-up refusal of a host whose
+  `~/.lionagi/.mcp.json` or `~/.claude.json` names a server stays. The computer's own refusals
+  apply to the leg as they apply to its caller.
+- **D4, the caller list.** `~/.lionagi/leg_callers.yaml` under the host's account, one entry per
+  caller: the SHA-256 of the caller's bearer (never the bearer), the caller's actor, its
+  computer's name, and the MCP server definition for that computer, naming the host environment
+  variables that hold the computer's credential. The host's owner writes it, the same hand that
+  issues each bearer and installs the app. No caller writes it: it sits outside every computer,
+  and a leg writes only its own invocation directory. The host does not start when the file is
+  missing, does not parse, is not owned by the host's account, or is readable or writable by group
+  or others. It re-reads the file on every launch, so a removed entry refuses that caller's next
+  launch, and a file that no longer parses refuses every launch. A leg already running when its
+  caller's entry is removed runs to completion; the owner who needs it stopped ends it on the host
+  or revokes its credential at the computer.
+- **D5, the launch contract.**
+  - The bearer must hash to an entry, or the answer is 401. In computer mode
+    `LIONAGI_STUDIO_AUTH_TOKEN` admits no launch.
+  - A launch carries `action_kind`, `action_agent`, `action_prompt`, `action_computer` and
+    `action_account`. `action_repo` and `action_head` are refused (422): the leg works in its
+    computer's trees, so the host keeps no repository for it. Its working directory is an empty
+    directory the host makes for the invocation and removes after it, under the existing tree
+    configuration refusals.
+  - An `action_computer` other than the entry's computer is answered 403: "action_computer <name>
+    is not this caller's computer; a leg reaches only the computer of the caller that launches
+    it". The text is the same whether or not the named computer belongs to another caller.
+  - Status, result and cancel answer only for invocations the same bearer started; any other id is
+    answered 404, as an unknown one is.
+  - On the caller's side, two settings, `launch_host` (a name in `~/.lionagi/remotes.yaml`) and
+    `launch_computer`. When both are set, `agent.submit`, and the verbs of D6 once admitted,
+    forward the launch through the `li remote` client with the caller's bearer and never start a
+    process on the caller's machine.
+- **D6, flow and fanout.** A computer host runs them in the end: the host runs the driver, which
+  offers a model no tool, and starts every model child (planner, each worker, synthesis) through
+  the one D2 and D3 builder, for the same caller. Until that holds, a flow or fanout launch is
+  refused: "this host starts every model child through one builder, and flow and fanout children
+  are not routed through it yet". The orchestration paths build provider command lines apart from
+  the agent path, so a check on the agent path says nothing about them. They are admitted when a
+  test that walks the orchestration package's syntax tree finds every provider spawn site calling
+  the builder. Open: until then a caller has no flow or fanout, since neither runs on the caller's
+  machine.
+
+What a computer host needs: an account of its own, apart from every computer's; lionagi installed
+in a virtual environment there; the Claude Code CLI and its login; `claude_code` profiles in
+`~/.lionagi/agents`; the child sandbox enabled; `leg_callers.yaml` with each computer credential in
+a host environment variable; a passing tools record for the installed `claude` binary, taken
+again after every CLI update, since the record's key changes and launches are refused until then;
+a bind on loopback or a tailnet address the callers reach; and network from the leg's CLI to the
+model API and to its computer's MCP endpoint. `leg_repos.yaml` is not read in computer mode.
+
+This amendment adds no verb and changes no computer. Installing and updating the app is the
+owner's.
 
 ## Amendment 8 (2026-11-23) — a resume runs the MCP servers its first run was handed
 
