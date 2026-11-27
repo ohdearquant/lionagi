@@ -84,7 +84,10 @@ def _fake_binary(directory: Path, version: str = "0.162.1", name: str = "codex")
 
 
 def _passing_arms() -> dict[str, dict]:
-    return {name: {"passed": True, "evidence": "rc=0 ok"} for name in REQUIRED_ARMS}
+    arms = {name: {"passed": True, "evidence": "rc=0 ok"} for name in REQUIRED_ARMS}
+    # The deny arm states how many denied locations it opened, and a launch reads the count.
+    arms["deny_canary"].update(opened=1, of=1)
+    return arms
 
 
 # ------------------------------------------------------------------------------- the fake codex
@@ -244,7 +247,7 @@ class FakeCodex:
         if "scratch_env_other" in self.leaks and child_env["TMP"]:
             child_env["TMP"] += "-other"
         items: list[dict] = []
-        for _ in range(40):
+        for _ in range(400):
             item = _ask(base, items)
             if item["type"] != "function_call":
                 break
@@ -323,6 +326,18 @@ class FakeCodex:
                 return "connect=ENOENT\nrc=1"
             listener.connect()
             return "connect=ok\nrc=0"
+        if words[0] == "/bin/ls" and words[1:2] == ["-A"] and words[3:] == [">", "/dev/null"]:
+            # The listing of a directory, its names sent nowhere.
+            target = Path(words[2])
+            if not os.access(target, os.R_OK | os.X_OK):
+                return f"ls: {target}: Permission denied\nrc=1"
+            spared = "real_path_not_denied" in leaks and scratch not in target.parents
+            refused = (_under(target, deny) and not ignored and not spared) or (
+                "lists_always_fail" in leaks
+            )
+            if refused:
+                return f"ls: {target}: Operation not permitted\nrc=1"
+            return "rc=0"
         if words[0] == "/bin/cat":
             target = Path(words[-1])
             ours = scratch in target.parents
@@ -518,8 +533,6 @@ def test_a_tilde_deny_entry_expands_against_the_home_the_probe_child_gets(tmp_pa
 def test_a_real_denied_path_is_opened_for_zero_bytes_and_never_read(
     tmp_path, sandbox_on, monkeypatch
 ):
-    # No cap, so the planted file is opened whatever the host's own denied files fill first.
-    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
     fake = FakeCodex()
     scratch = tmp_path / "scratch"
     probe_module.probe("codex", runner=fake, scratch=scratch)
@@ -607,7 +620,7 @@ def test_a_written_record_is_found_by_the_launch_for_the_same_binary_and_version
     path = probe_module.write_record(str(binary), _passing_arms())
     assert path.parent == record_dir
     record = json.loads(path.read_text())
-    assert record["format"] == 6
+    assert record["format"] == 7
     assert record["sha256"] == binary_sha256(os.path.realpath(binary))
     assert record["binary"] == os.path.realpath(binary)
     assert record["version"] == "0.162.1"
@@ -644,10 +657,10 @@ def test_the_record_is_keyed_by_the_version(tmp_path, record_dir):
         require_passing_probe_record(str(binary))
 
 
-@pytest.mark.parametrize("earlier", [1, 2, 3])
+@pytest.mark.parametrize("earlier", [1, 2, 3, 6])
 def test_a_record_of_another_format_is_no_record(tmp_path, record_dir, earlier):
-    # Format 2 records predate the read-only arm and format 3 records the per-network-state
-    # socket arms, so neither admits a launch.
+    # Format 2 records predate the read-only arm, format 3 records the per-network-state
+    # socket arms and format 6 records the deny arm's count, so none admits a launch.
     binary = _fake_binary(tmp_path / "bin")
     path = probe_module.write_record(str(binary), _passing_arms())
     record = json.loads(path.read_text())
@@ -766,12 +779,15 @@ def test_a_deny_arm_fails_when_its_same_run_control_open_fails(tmp_path, sandbox
 
 
 def test_the_deny_arm_fails_when_no_real_denied_path_was_opened(tmp_path, sandbox_on, monkeypatch):
-    # A host with none of the denied files has nothing to open; an arm that tested nothing does
-    # not pass.
-    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 0)
+    # A host where nothing denied can be opened or listed outside the sandbox has nothing to
+    # test; an arm that tested nothing does not pass.
+    monkeypatch.setattr(probe_module, "_opens_outside", lambda path: False)
+    monkeypatch.setattr(probe_module, "_lists_outside", lambda path: False)
     arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
-    assert not arms["deny_canary"]["passed"]
-    assert "0 real denied path(s) opened for 0 bytes" in arms["deny_canary"]["evidence"]
+    arm = arms["deny_canary"]
+    assert not arm["passed"]
+    assert arm["opened"] == 0
+    assert f"0 of {arm['of']} denied location(s) on this host opened" in arm["evidence"]
 
 
 _NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000 = pytest.mark.skipif(
@@ -808,7 +824,6 @@ def test_a_denied_path_unreadable_outside_the_sandbox_is_not_counted_as_refused(
     # says nothing: the arm has tested no real path and does not pass.
     locked = _unreadable_file(tmp_path / "locked" / "credentials")
     _deny_only(monkeypatch, locked)
-    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
     fake = FakeCodex(("real_path_not_denied",))
     arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
     arm = arms["deny_canary"]
@@ -826,7 +841,6 @@ def test_a_path_unreadable_outside_the_sandbox_is_never_opened_inside_it(
     planted = tmp_path / "planted-deny" / "credentials"
     locked = _unreadable_file(tmp_path / "locked" / "credentials")
     _deny_only(monkeypatch, planted, locked)
-    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
     fake = FakeCodex()
     arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
     arm = arms["deny_canary"]
@@ -847,7 +861,6 @@ def test_the_open_outside_the_sandbox_decides_which_real_paths_are_tested(
 ):
     # Staged without a mode-000 file, so it also runs as root: the outside open is the gate.
     planted = tmp_path / "planted-deny" / "credentials"
-    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
     opens_outside = probe_module._opens_outside
     monkeypatch.setattr(
         probe_module,
@@ -865,6 +878,193 @@ def test_the_open_outside_the_sandbox_takes_a_readable_file_and_not_a_missing_on
     present.write_text("x\n")
     assert probe_module._opens_outside(str(present))
     assert not probe_module._opens_outside(str(tmp_path / "missing"))
+
+
+def test_the_listing_outside_the_sandbox_takes_a_directory_and_nothing_else(tmp_path):
+    (tmp_path / "present").write_text("x\n")
+    assert probe_module._lists_outside(str(tmp_path))
+    assert not probe_module._lists_outside(str(tmp_path / "present"))
+    assert not probe_module._lists_outside(str(tmp_path / "missing"))
+
+
+def _commands_of(fake: FakeCodex, program: str) -> list[list[str]]:
+    """The words of every command the child ran whose program is ``program``."""
+    runs = [shlex.split(c.rsplit("; echo rc=", 1)[0]) for c in fake.commands]
+    return [words for words in runs if words[0] == program]
+
+
+def test_every_denied_file_on_the_host_is_opened_with_no_cap(tmp_path, monkeypatch):
+    files = []
+    for i in range(8):
+        path = tmp_path / "many" / f"credentials-{i}"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("not a real credential\n")
+        files.append(path)
+    _deny_only(monkeypatch, *files)
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    opened = [words[4] for words in _commands_of(fake, "/bin/sh")]
+    for path in files:
+        assert any(_same_file(p, path) for p in opened)
+    assert arms["deny_canary"]["passed"]
+
+
+def test_a_denied_directory_is_listed_inside_the_sandbox_and_its_names_go_nowhere(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "key").write_text("not a real credential\n")
+    _deny_only(monkeypatch, vault)
+    fake = FakeCodex()
+    scratch = tmp_path / "scratch"
+    arms = probe_module.probe("codex", runner=fake, scratch=scratch)
+    listed = _commands_of(fake, "/bin/ls")
+    # The control lists a readable directory of the probe's own; the denied one comes after it.
+    assert listed and listed[0][2].startswith(str(scratch))
+    assert any(_same_file(w[2], vault) for w in listed[1:])
+    assert all(w[1] == "-A" and w[3:] == [">", "/dev/null"] for w in listed)
+    arm = arms["deny_canary"]
+    assert arm["passed"]
+    assert arm["opened"] >= 1
+    assert "directory(ies) listed" in arm["evidence"]
+
+
+def test_the_deny_arm_fails_when_a_denied_directory_can_be_listed(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _deny_only(monkeypatch, vault)
+    fake = FakeCodex(("real_path_not_denied",))
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert not arms["deny_canary"]["passed"]
+
+
+def test_a_deny_arm_fails_when_its_same_run_control_listing_fails(tmp_path, sandbox_on):
+    arms = probe_module.probe(
+        "codex", runner=FakeCodex(("lists_always_fail",)), scratch=tmp_path / "scratch"
+    )
+    assert not arms["deny_canary"]["passed"]
+    assert (
+        "control listing of a readable directory succeeded: False"
+        in arms["deny_canary"]["evidence"]
+    )
+
+
+def test_the_deny_arm_states_how_many_denied_locations_it_opened_of_how_many(tmp_path, monkeypatch):
+    planted = tmp_path / "planted" / "credentials"
+    skipped = tmp_path / "skipped" / "credentials"
+    for path in (planted, skipped):
+        path.parent.mkdir()
+        path.write_text("not a real credential\n")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    missing = tmp_path / "missing" / "credentials"
+    _deny_only(monkeypatch, planted, vault, skipped, missing)
+    opens_outside = probe_module._opens_outside
+    monkeypatch.setattr(
+        probe_module,
+        "_opens_outside",
+        lambda path: opens_outside(path) and not _same_file(path, skipped),
+    )
+    arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
+    arm = arms["deny_canary"]
+    assert arm["passed"]
+    # Opened counts what the child was asked to open; of counts what is present on the host.
+    assert 0 < arm["opened"] == arm["of"] - len(arm["untested"])
+    assert any(_same_file(p, skipped) for p in arm["untested"])
+    assert any(_same_file(p, missing) for p in arm["absent"])
+    assert not any(_same_file(p, missing) for p in arm["untested"])
+    assert (
+        f"{arm['opened']} of {arm['of']} denied location(s) on this host opened"
+        in (arm["evidence"])
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes on this platform")
+def test_a_denied_pipe_is_untested_and_never_opened(tmp_path, sandbox_on, monkeypatch):
+    # Opening a pipe for reading waits for a writer, so a denied pipe is recorded, not opened.
+    planted = tmp_path / "planted-deny" / "credentials"
+    pipe = tmp_path / "pipe"
+    os.mkfifo(pipe)
+    _deny_only(monkeypatch, planted, pipe)
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    arm = arms["deny_canary"]
+    assert arm["passed"]
+    assert any(_same_file(p, pipe) for p in arm["untested"])
+    assert not any(str(pipe) in c or os.path.realpath(pipe) in c for c in fake.commands)
+
+
+@_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000
+def test_a_directory_unlistable_outside_the_sandbox_is_never_listed_inside_it(
+    tmp_path, sandbox_on, monkeypatch
+):
+    planted = tmp_path / "planted-deny" / "credentials"
+    locked = tmp_path / "locked-dir"
+    locked.mkdir()
+    _deny_only(monkeypatch, planted, locked)
+    fake = FakeCodex()
+    locked.chmod(0)
+    try:
+        arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    finally:
+        locked.chmod(0o700)
+    arm = arms["deny_canary"]
+    assert arm["passed"]
+    assert any(_same_file(p, locked) for p in arm["untested"])
+    assert not any(str(locked) in c or os.path.realpath(locked) in c for c in fake.commands)
+
+
+@pytest.mark.parametrize(
+    "count",
+    [
+        {},
+        {"opened": 0, "of": 3},
+        {"opened": 2, "of": 1},
+        {"opened": True, "of": 1},
+        {"opened": "1", "of": 1},
+        {"opened": 1, "of": None},
+    ],
+)
+def test_a_launch_reads_the_deny_arm_s_count(tmp_path, record_dir, count):
+    # A deny arm marked passed admits a launch only with a count of at least one location
+    # opened, of at least as many present.
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["deny_canary"] = {"passed": True, "evidence": "rc=1 refused", **count}
+    probe_module.write_record(str(binary), arms)
+    with pytest.raises(CLIInputRefusedError, match="did not pass: deny_canary"):
+        require_passing_probe_record(str(binary))
+
+
+def test_a_launch_admits_a_deny_arm_that_opened_some_of_the_locations(tmp_path, record_dir):
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["deny_canary"].update(opened=2, of=5)
+    path = probe_module.write_record(str(binary), arms)
+    assert require_passing_probe_record(str(binary)) == path
+
+
+def test_a_refusal_because_nothing_denied_was_opened_names_what_to_add(tmp_path, record_dir):
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["deny_canary"] = {"passed": False, "evidence": "e", "opened": 0, "of": 2}
+    probe_module.write_record(str(binary), arms)
+    with pytest.raises(CLIInputRefusedError) as refused:
+        require_passing_probe_record(str(binary))
+    text = str(refused.value)
+    assert "did not pass: deny_canary" in text
+    assert "opened none of the 2 denied location(s) present on this host" in text
+    assert "`child_sandbox.deny_read` in ~/.lionagi/settings.yaml" in text
+
+
+def test_a_refusal_of_a_deny_arm_with_no_count_says_so(tmp_path, record_dir):
+    binary = _fake_binary(tmp_path / "bin")
+    arms = _passing_arms()
+    arms["deny_canary"] = {"passed": True, "evidence": "e"}
+    probe_module.write_record(str(binary), arms)
+    with pytest.raises(CLIInputRefusedError, match="states no count of the denied locations"):
+        require_passing_probe_record(str(binary))
 
 
 @_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000

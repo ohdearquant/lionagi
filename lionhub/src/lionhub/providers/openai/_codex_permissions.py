@@ -74,8 +74,14 @@ PROBE_COMMAND = "python -m lionhub.providers.openai.codex_sandbox_probe"
 #: admits no launch. Format 6 adds the ``scratch_env`` arm (ADR-0041 Amendment 6): a run whose
 #: command line hands the child a scratch directory through ``shell_environment_policy.set``, as
 #: a launch with a scratch directory does. A format 5 record measured no such run, so it admits
-#: no launch.
-_RECORD_FORMAT = 6
+#: no launch. Format 7 tries every denied location present on the host, a directory by listing
+#: it, and the deny arm states how many it opened as ``opened`` of ``of``, which a launch reads
+#: (ADR-0133, "Probe arms and the probe record"): a format 6 record opened at most five files
+#: and states no count, so it admits no launch.
+_RECORD_FORMAT = 7
+
+#: The arm that opens denied locations inside the sandbox, and whose count a launch reads.
+_DENY_ARM = "deny_canary"
 
 #: The socket arm a launch needs, by its table's ``network.enabled``.
 SOCKET_ARMS: Mapping[bool, str] = {
@@ -684,7 +690,9 @@ def _failed_arms(
     environment ``env``.
 
     A conditional arm recorded as skipped counts as satisfied only when ``env`` leaves its
-    variable unset or empty; a launch that sets it needs the arm to have passed.
+    variable unset or empty; a launch that sets it needs the arm to have passed. The deny arm
+    counts as passed only when it also states a count (``_deny_count``) with at least one
+    denied location opened.
     """
     needed = launch_arms(table, scratch=scratch)
     arms = record.get("arms")
@@ -696,7 +704,10 @@ def _failed_arms(
         if not isinstance(arm, Mapping):
             failed.append(name)
         elif arm.get("passed") is True:
-            continue
+            if name == _DENY_ARM:
+                count = _deny_count(arm)
+                if count is None or count[0] == 0:
+                    failed.append(name)
         elif (
             name in CONDITIONAL_ARMS
             and arm.get("skipped") is True
@@ -706,6 +717,34 @@ def _failed_arms(
         else:
             failed.append(name)
     return failed
+
+
+def _deny_count(arm: Mapping[str, Any]) -> tuple[int, int] | None:
+    """The deny arm's ``(opened, of)``: how many of the denied locations present on the host
+    the probe opened inside the sandbox, and how many were present. None unless both are whole
+    numbers and ``opened`` is at most ``of``."""
+    opened, of = arm.get("opened"), arm.get("of")
+    for value in (opened, of):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+    return (opened, of) if opened <= of else None
+
+
+def _deny_remedy(arm: object) -> str:
+    """What a refusal adds when the deny arm did not pass: the count the arm states and, when
+    the probe opened nothing, what to add to the settings."""
+    count = _deny_count(arm) if isinstance(arm, Mapping) else None
+    if count is None:
+        return "; its deny arm states no count of the denied locations it opened"
+    opened, of = count
+    if opened:
+        return f"; its deny arm opened {opened} of the {of} denied location(s) on this host"
+    return (
+        f"; its deny arm opened none of the {of} denied location(s) present on this host, so "
+        "nothing showed the sandbox refusing a read. Add a file or directory that exists on "
+        "this host and that this account can read to `child_sandbox.deny_read` in "
+        "~/.lionagi/settings.yaml, then probe again"
+    )
 
 
 def _launch_binary(binary: str, env: Mapping[str, str], cwd: str | os.PathLike[str] | None) -> str:
@@ -806,6 +845,9 @@ def require_passing_probe_record(
             problem = (
                 f"the probe record {str(path)!r} has arms that did not pass: {', '.join(failed)}"
             )
+            if _DENY_ARM in failed:
+                arms = record.get("arms")
+                problem += _deny_remedy(arms.get(_DENY_ARM) if isinstance(arms, Mapping) else None)
     if problem is not None:
         raise CLIInputRefusedError(
             "a codex child runs under lionagi's permission profile while the child sandbox is "

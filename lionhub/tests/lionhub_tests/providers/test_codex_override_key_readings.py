@@ -50,6 +50,7 @@ def passing_binary(tmp_path, monkeypatch):
     binary.write_text('#!/bin/sh\necho "codex-cli 0.162.1"\n')
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     arms = {name: {"passed": True, "evidence": "rc=0 ok"} for name in REQUIRED_ARMS}
+    arms["deny_canary"].update(opened=1, of=1)
     probe_module.write_record(str(binary), arms)
     monkeypatch.setattr(codex_module, "CODEX_CLI", str(binary))
     return binary
