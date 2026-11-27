@@ -1601,7 +1601,10 @@ async def ndjson_from_cli(
             if _prepare_argv is not None:
                 refusal = None
                 try:
-                    cmd[:] = _prepare_argv(spawn_env)
+                    # Rendering can block (a codex launch reads its binary's version with a
+                    # subprocess and its digest from the file), so it runs on a worker thread
+                    # and the event loop goes on running every other task meanwhile.
+                    cmd[:] = await asyncio.to_thread(_prepare_argv, spawn_env)
                 except Exception as exc:
                     safe_types = (
                         CLIInputRefusedError,

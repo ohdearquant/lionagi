@@ -554,16 +554,45 @@ def codex_binary_version(binary: str) -> str | None:
     return found.group(0) if found else None
 
 
+#: The SHA-256 of each file ``binary_sha256`` has read, keyed by the path it was given and the
+#: file's size, modification time, inode and status-change time, for the life of the process.
+_SHA256_BY_FILE: dict[tuple[str, int, int, int, int], str] = {}
+
+
 def binary_sha256(path: str) -> str | None:
-    """The SHA-256 of the file at ``path`` as hex, or None when it cannot be read."""
+    """The SHA-256 of the file at ``path`` as hex, or None when it cannot be read.
+
+    Every profiled codex launch asks for its binary's digest, so the digest is kept for the life
+    of the process under ``path`` and the file's size, modification time, inode and status-change
+    time, and the file is read again only when one of them changes. The status-change time is in
+    the key because a program can set the modification time back but not that one, so new bytes
+    under an old modification time still read as changed. Where the filesystem stamps the
+    status-change time from a clock coarser than the gap between two writes, a same-size rewrite
+    with the modification time put back inside one tick is not seen. A digest is not kept when any of the
+    four differs between the file read and what ``path`` showed before the read, which covers a
+    file replaced or written to while it was read.
+    """
+    try:
+        before = os.stat(path)
+    except OSError:
+        return None
+    stamp = (before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
+    key = (path, *stamp)
+    cached = _SHA256_BY_FILE.get(key)
+    if cached is not None:
+        return cached
     digest = hashlib.sha256()
     try:
         with open(path, "rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(block)
+            after = os.fstat(handle.fileno())
     except OSError:
         return None
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    if (after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns) == stamp:
+        _SHA256_BY_FILE[key] = value
+    return value
 
 
 def probe_record_path(resolved: str, version: str, sha256: str) -> Path:
@@ -576,21 +605,31 @@ def probe_record_path(resolved: str, version: str, sha256: str) -> Path:
 def probe_record(binary: str) -> tuple[Path, dict[str, Any] | None, str, str | None]:
     """The record for ``binary``: its path, its content (None when absent or unreadable), the
     binary's resolved path and its version (None when unreadable)."""
+    path, data, resolved, version, _sha256 = _probe_record(binary)
+    return path, data, resolved, version
+
+
+def _probe_record(
+    binary: str,
+) -> tuple[Path, dict[str, Any] | None, str, str | None, str | None]:
+    """``probe_record`` and the SHA-256 of the binary's bytes the record path was named by (None
+    when the version or the bytes cannot be read), so a caller checks the record against the
+    digest it was found by without reading the binary again."""
     resolved = os.path.realpath(binary)
     version = codex_binary_version(binary)
     if version is None:
-        return probe_record_dir() / "unknown", None, resolved, None
+        return probe_record_dir() / "unknown", None, resolved, None, None
     sha256 = binary_sha256(resolved)
     if sha256 is None:
-        return probe_record_dir() / "unknown", None, resolved, version
+        return probe_record_dir() / "unknown", None, resolved, version, None
     path = probe_record_path(resolved, version, sha256)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
-        return path, None, resolved, version
+        return path, None, resolved, version, sha256
     if not isinstance(data, dict):
-        return path, None, resolved, version
-    return path, data, resolved, version
+        return path, None, resolved, version, sha256
+    return path, data, resolved, version, sha256
 
 
 def refuse_write_roots_on_probe_record_dir(
@@ -771,7 +810,7 @@ def require_passing_probe_record(
     """
     launch_env = os.environ if env is None else env
     binary = _launch_binary(binary, launch_env, cwd)
-    path, record, resolved, version = probe_record(binary)
+    path, record, resolved, version, sha256 = _probe_record(binary)
     problem = None
     if version is None:
         problem = f"the version of {binary!r} cannot be read"
@@ -785,7 +824,7 @@ def require_passing_probe_record(
     elif (
         record.get("binary") != resolved
         or record.get("version") != version
-        or record.get("sha256") != binary_sha256(resolved)
+        or record.get("sha256") != sha256
     ):
         problem = f"the probe record {str(path)!r} is not for codex {version} at {resolved!r}"
     else:
