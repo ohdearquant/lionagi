@@ -538,3 +538,85 @@ async def test_keyword_values_with_the_same_text_get_separate_cache_entries(monk
 
     assert (none, text) == ({"ok": 1}, {"ok": 2})
     assert sent == [{"proxy": None}, {"proxy": "None"}]
+
+
+@pytest.mark.asyncio
+async def test_keyword_values_holding_different_secrets_get_separate_cache_entries(monkeypatch):
+    from aiocache import SimpleMemoryCache, caches
+    from aiocache.serializers import JsonSerializer
+    from pydantic import SecretStr
+
+    from lionagi.config import settings
+
+    monkeypatch.setattr(settings.aiocache_config, "alias", "default")
+    cache = SimpleMemoryCache(serializer=JsonSerializer())
+    monkeypatch.setattr(caches, "get", lambda alias: cache)
+    secret = "sk-test-" + uuid.uuid4().hex
+    other = "sk-test-" + uuid.uuid4().hex
+    sent = []
+
+    async def transport(payload, headers, **kwargs):
+        sent.append(kwargs)
+        return {"ok": len(sent)}
+
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="test", endpoint="chat/completions", provider="openai", auth_type="none"
+        )
+    )
+    monkeypatch.setattr(endpoint, "_call", transport)
+    payload = {"model": str(uuid.uuid4())}
+
+    async def call(token):
+        return await endpoint.call(
+            payload,
+            cache_control=True,
+            skip_payload_creation=True,
+            auth={"token": SecretStr(token)},
+        )
+
+    first = await call(secret)
+    again = await call(secret)
+    second = await call(other)
+
+    assert (first, again, second) == ({"ok": 1}, {"ok": 1}, {"ok": 2})
+    assert [kwargs["auth"]["token"].get_secret_value() for kwargs in sent] == [secret, other]
+    keys = [str(k) for k in cache._cache]
+    assert len(keys) == 2
+    assert all(secret not in k and other not in k for k in keys)
+
+
+def test_the_cache_key_digest_reads_secrets_inside_containers():
+    import hashlib
+    from collections import OrderedDict
+
+    from pydantic import SecretStr
+
+    from lionagi.service.connections.endpoint import _cache_key_digest
+
+    def digest_of_repr(value):
+        return "sha256:" + hashlib.sha256(repr(value).encode()).hexdigest()[:16]
+
+    for wrap in (
+        lambda s: {"token": s},
+        lambda s: [s],
+        lambda s: ("x", s),
+        lambda s: {s},
+        lambda s: frozenset({s}),
+        lambda s: {"outer": [{"inner": (s,)}]},
+    ):
+        a, b = wrap(SecretStr("secret-a")), wrap(SecretStr("secret-b"))
+        assert _cache_key_digest(a) != _cache_key_digest(b)
+        # A secret reads as its text, as it does at the top level.
+        assert _cache_key_digest(a) == _cache_key_digest(wrap("secret-a"))
+    assert _cache_key_digest(SecretStr("secret-a")) == _cache_key_digest("secret-a")
+
+    # A value with no secret in it keeps the digest of its own repr, subclass included.
+    plain = OrderedDict([("a", [1, (2, "three")])])
+    assert _cache_key_digest(plain) == digest_of_repr(plain)
+
+    # A container that holds itself is read once and still keys its secret.
+    loop_a, loop_b = [SecretStr("secret-a")], [SecretStr("secret-b")]
+    loop_a.append(loop_a)
+    loop_b.append(loop_b)
+    assert _cache_key_digest(loop_a) != _cache_key_digest(loop_b)
