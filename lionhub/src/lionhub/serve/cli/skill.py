@@ -150,13 +150,18 @@ def list_skill_names() -> list[str]:
 
 
 def strip_frontmatter(text: str) -> str:
-    text = text.lstrip()
-    if not text.startswith("---"):
-        return text
-    from lionhub.orchestration.frontmatter import _FM_SPLIT
+    """Return a skill file's text after its frontmatter block.
 
-    parts = _FM_SPLIT.split(text, maxsplit=2)
-    if len(parts) < 3:
+    The block is found by the frontmatter reader's rules: a leading byte-order mark and
+    leading whitespace are dropped, and only a bare ``---`` first line opens a block. The
+    block is not parsed, so one that is not valid YAML is still removed. The body keeps its
+    trailing whitespace.
+    """
+    from lionhub.orchestration.frontmatter import _frontmatter_parts
+
+    text = text.removeprefix("\ufeff").lstrip()
+    parts = _frontmatter_parts(text)
+    if parts is None or len(parts) < 3:
         return text
     return parts[2].lstrip("\n")
 

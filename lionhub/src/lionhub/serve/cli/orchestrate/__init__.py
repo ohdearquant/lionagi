@@ -183,6 +183,15 @@ def _warn_if_shadowing_plugin_playbook(name: str) -> None:
     )
 
 
+#: The token prefix that names a playbook in the user's own ``~/.lionagi/playbooks/``.
+_GLOBAL_PLAYBOOK_PREFIX = "global"
+
+
+def _global_playbook_file(name: str) -> Path:
+    """Where the user's own playbook NAME lives: ``~/.lionagi/playbooks/NAME.playbook.yaml``."""
+    return Path.home() / ".lionagi" / "playbooks" / f"{name}.playbook.yaml"
+
+
 def _warn_if_shadowing_global_playbook(name: str, matched_dir: Path) -> None:
     """Log a shadow warning when a project-local playbook hides the same-named global one.
 
@@ -190,11 +199,12 @@ def _warn_if_shadowing_global_playbook(name: str, matched_dir: Path) -> None:
     this only makes the shadowing visible instead of silent — an untrusted
     checkout could otherwise supply model instructions the user did not
     intend to run whenever they invoke a familiar (globally-defined) name.
+    The warning names the ``global/NAME`` spelling that runs the global file.
     """
     global_dir = Path.home() / ".lionagi"
     if matched_dir == global_dir:
         return
-    global_candidate = global_dir / "playbooks" / f"{name}.playbook.yaml"
+    global_candidate = _global_playbook_file(name)
     if not global_candidate.is_file():
         return
 
@@ -203,8 +213,52 @@ def _warn_if_shadowing_global_playbook(name: str, matched_dir: Path) -> None:
     local_candidate = matched_dir / "playbooks" / f"{name}.playbook.yaml"
     warn(
         f"playbook {name!r} at {local_candidate} shadows the global playbook "
-        f"at {global_candidate}; using the project-local file."
+        f"at {global_candidate}; using the project-local file (run the global one "
+        f"with '{_GLOBAL_PLAYBOOK_PREFIX}/{name}')."
     )
+
+
+def _playbook_resolution(name: str, path: object) -> dict[str, str]:
+    """What a run records about how the playbook it was given resolved.
+
+    ``playbook_path`` is the file that runs. ``playbook_shadowed`` is the user's own global
+    playbook of the same name, present when a bare NAME resolved to another file while that
+    global file exists: a bare name reaches the global file before any plugin, so the file
+    it resolved to is a project-local one that hid it.
+    """
+    resolution = {"playbook_path": str(path)}
+    if "/" in name:
+        return resolution
+    global_file = _global_playbook_file(name)
+    try:
+        hidden = global_file.is_file() and not global_file.samefile(path)
+    except OSError:
+        hidden = False
+    if hidden:
+        resolution["playbook_shadowed"] = str(global_file)
+    return resolution
+
+
+def _resolve_global_playbook_path(name: str) -> tuple[object, str | None]:
+    """Resolve ``global/NAME`` to the user's own ``~/.lionagi/playbooks/NAME.playbook.yaml``."""
+    candidate = _global_playbook_file(name)
+    if not candidate.is_file():
+        return (
+            None,
+            f"playbook not found: no {name!r} in {candidate.parent} "
+            f"(named as '{_GLOBAL_PLAYBOOK_PREFIX}/{name}')",
+        )
+    try:
+        candidate.resolve(strict=True).relative_to(candidate.parent.resolve(strict=True))
+    except (OSError, ValueError):
+        return (
+            None,
+            f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
+        )
+    from lionagi._lionagi_dir_trust import check_lionagi_dir
+
+    check_lionagi_dir("playbook", candidate, candidate.parent.parent)
+    return candidate, None
 
 
 def list_playbooks() -> list[str]:
@@ -234,6 +288,11 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
     playbooks join the search only after a project/global miss (bare name),
     or via an explicit ``<plugin>/<name>`` token, and only for a plugin that
     is trusted + enabled + version-compatible (see ``lionagi.plugins``).
+
+    ``global/<name>`` names the user's own ``~/.lionagi/playbooks/<name>.playbook.yaml``,
+    so a project-local file of the same name cannot hide it. An active plugin named
+    ``global`` that declares ``<name>`` keeps that token, as it did before the spelling
+    existed; a warning then says the global file was not used.
 
     In a gated run, a project playbook from an untrusted ``.lionagi`` directory raises
     ``UntrustedLionagiDirError`` (``lionagi._lionagi_dir_trust``) instead of returning.
@@ -298,6 +357,17 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
             return candidate, None
 
     plugin_path = _resolve_plugin_playbook_path(name)
+    if plugin_token and plugin_part == _GLOBAL_PLAYBOOK_PREFIX:
+        if plugin_path is None:
+            return _resolve_global_playbook_path(playbook_part)
+        if _global_playbook_file(playbook_part).is_file():
+            from lionhub.orchestration.console import warn
+
+            warn(
+                f"playbook {name!r} names the playbook of the active plugin "
+                f"{_GLOBAL_PLAYBOOK_PREFIX!r}; the global file "
+                f"{_global_playbook_file(playbook_part)} is not used."
+            )
     if plugin_path is not None:
         return plugin_path, None
 
@@ -632,6 +702,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
+        playbook_resolution: dict | None = None
         github_pr = None
         file_spec = getattr(args, "file", None)
         if playbook_name and file_spec:
@@ -643,6 +714,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 log_error(resolve_err)
                 return 1
             file_spec = str(resolved_path)
+            playbook_resolution = _playbook_resolution(playbook_name, resolved_path)
 
         if file_spec:
             spec = _load_flow_spec(file_spec)
@@ -848,6 +920,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 fast=getattr(args, "fast", False),
                 playbook_name=playbook_name,
                 playbook_artifacts=playbook_artifacts,
+                playbook_resolution=playbook_resolution,
                 invocation_id=getattr(args, "invocation", None),
                 project=getattr(args, "project", None),
                 pack=getattr(args, "pack", None),

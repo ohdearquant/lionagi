@@ -3,6 +3,9 @@
 
 """Tests for `li skill` — CC-compatible skill reader."""
 
+import pytest
+
+from lionhub.orchestration.frontmatter import parse_frontmatter
 from lionhub.serve.cli.main import main as cli_main
 from lionhub.serve.cli.skill import (
     list_skill_names,
@@ -31,6 +34,37 @@ class TestStripFrontmatter:
 
     def test_empty_input(self):
         assert strip_frontmatter("") == ""
+
+    def test_byte_order_mark_before_the_block_is_dropped(self):
+        text = "\ufeff---\nname: x\n---\n# Body\n"
+        assert strip_frontmatter(text) == "# Body\n"
+
+    def test_byte_order_mark_is_dropped_without_a_block(self):
+        assert strip_frontmatter("\ufeff# Body\n") == "# Body\n"
+
+    def test_a_first_line_that_is_not_a_bare_opener_opens_no_block(self):
+        text = "--- # skill\nname: x\n---\n# Body\n---\nmore\n"
+        assert strip_frontmatter(text) == text
+
+    def test_an_unreadable_block_is_still_removed(self):
+        text = "---\nname: [unclosed\n---\n# Body\n"
+        assert strip_frontmatter(text) == "# Body\n"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "---\nname: x\n---\n\n# Body\n",
+            "\ufeff---\nname: x\n---\n# Body\n",
+            "\ufeff# No block\n",
+            "--- # skill\nname: x\n---\n# Body\n",
+            "---x\n---\nbody\n",
+            "---\nname: x\n",
+            "  \n---\nname: x\n---\nbody\n",
+            "---\n---\n",
+        ],
+    )
+    def test_the_body_is_the_one_the_frontmatter_reader_returns(self, text):
+        assert strip_frontmatter(text).strip() == parse_frontmatter(text)[1]
 
 
 class TestResolveSkillPath:

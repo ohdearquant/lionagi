@@ -3292,6 +3292,7 @@ async def _run_flow(
     fast: bool = False,
     playbook_name: str | None = None,
     playbook_artifacts: dict | None = None,
+    playbook_resolution: dict | None = None,
     invocation_id: str | None = None,
     project: str | None = None,
     pack: str | None = None,
@@ -3368,6 +3369,7 @@ async def _run_flow(
             "fast": fast,
             "playbook_name": playbook_name,
             "playbook_artifacts": playbook_artifacts,
+            "playbook_resolution": playbook_resolution,
             "invocation_id": invocation_id,
             "project": project,
             "pack": pack,
@@ -3506,6 +3508,9 @@ async def _run_flow(
         }
         if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
             _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
+        # The playbook file that ran and, when it hid one, the user's global file of the
+        # same name; a resume replays them from the checkpoint config.
+        _extra_node_metadata.update(playbook_resolution or {})
 
         # start_live_persist resolves `project` (explicit arg, or detect_project()
         # fallback) and stashes the RESOLVED value on env._project — what the
