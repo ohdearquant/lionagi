@@ -3,16 +3,17 @@
 
 """Whether Claude Code offers its model only one MCP server's tools, for one ``claude`` binary.
 
-ADR-0041 Amendment 9 (D2) lets a claude_code leg run on a computer host only when the binary the
-host resolves has a record showing that the launch's tool flags, :func:`tools_off_flags`, leave
-the model no tool but those of the one MCP server the host wrote. The proof is the list of tools
-in the model requests the CLI sends, never the CLI's own report of its tools. This probe makes
-that record.
+ADR-0041 Amendment 9 (D2) proposes that a claude_code leg run on a computer host only when the
+binary the host resolves has a record showing that the launch's tool flags,
+:func:`tools_off_flags`, leave the model no tool but those of the one MCP server the host wrote.
+The proof is the list of tools in the model requests the CLI sends, never the CLI's own report of
+its tools. This probe makes that record.
 
-It writes a stdio stand-in MCP server that offers one tool, ``ping``, answers it with ``pong``
-and logs every method it receives. It then runs the binary three times against the read probe's
-loopback stand-in for the Messages API (:mod:`lionhub.providers.anthropic.claude_read_probe`),
-which here also keeps the name of every tool each request offers. The stand-in answers a request
+It writes the stdio stand-in MCP server of :mod:`lionhub.providers._tools_probe_server`, which
+offers one tool, ``ping``, answers it with ``pong`` and logs every method it receives. It then
+runs the binary three times against the read probe's loopback stand-in for the Messages API
+(:mod:`lionhub.providers.anthropic.claude_read_probe`), which here also keeps the name of every
+tool each request offers. The stand-in answers a request
 that offers tools with one call of ``mcp__probe__ping`` and the next with text. Each run has its
 own working directory, ``HOME`` and ``CLAUDE_CONFIG_DIR``, and in each two decoy servers are named
 where Claude Code finds ambient configuration: one in the run's ``~/.claude.json`` and
@@ -60,6 +61,10 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._errors import ConfigurationError
+from lionhub.providers._tools_probe_server import ANSWER as _ANSWER
+from lionhub.providers._tools_probe_server import MCP_SERVER_SOURCE as _MCP_SERVER_SOURCE
+from lionhub.providers._tools_probe_server import TOOL as _TOOL
+from lionhub.providers._tools_probe_server import logged_methods as _logged
 from lionhub.providers.anthropic import claude_read_probe as read_probe
 
 __all__ = (
@@ -82,8 +87,6 @@ Runner = Callable[[list[str], dict[str, str], Path], int]
 
 #: The name the probe gives its one MCP server.
 SERVER_NAME = "probe"
-_TOOL = "ping"
-_ANSWER = "pong"
 _USER_DECOY = "decoyuser"
 _PROJECT_DECOY = "decoyproject"
 
@@ -103,68 +106,6 @@ REQUIRED_ARMS: tuple[str, ...] = (
 )
 
 _RUNS: tuple[str, ...] = ("tools_off", "native_control", "ambient_control")
-
-#: The stdio stand-in MCP server: ``python -I <this file> <log> <tool>``. It writes every method
-#: it receives to the log, one JSON object per line, and nothing but protocol to its output.
-_MCP_SERVER_SOURCE = """import json
-import sys
-
-LOG, TOOL = sys.argv[1], sys.argv[2]
-
-
-def log(method):
-    with open(LOG, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"method": method}) + "\\n")
-
-
-def reply(message):
-    sys.stdout.write(json.dumps(message) + "\\n")
-    sys.stdout.flush()
-
-
-for line in sys.stdin:
-    try:
-        message = json.loads(line)
-    except ValueError:
-        continue
-    if not isinstance(message, dict):
-        continue
-    method = message.get("method")
-    log(method)
-    if "id" not in message:
-        continue
-    params = message.get("params") or {}
-    if method == "initialize":
-        result = {
-            "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "lionagi-tools-probe", "version": "1"},
-        }
-    elif method == "tools/list":
-        result = {
-            "tools": [
-                {
-                    "name": TOOL,
-                    "description": "Answers pong.",
-                    "inputSchema": {"type": "object", "properties": {}},
-                }
-            ]
-        }
-    elif method == "tools/call":
-        result = {"content": [{"type": "text", "text": "pong"}]}
-    elif method == "ping":
-        result = {}
-    else:
-        reply(
-            {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "error": {"code": -32601, "message": "method not found"},
-            }
-        )
-        continue
-    reply({"jsonrpc": "2.0", "id": message["id"], "result": result})
-"""
 
 
 def tools_off_flags(mcp_config: str, server: str) -> list[str]:
@@ -247,21 +188,6 @@ def _server(python: str, script: Path, log: Path) -> dict[str, Any]:
 def _write_json(path: Path, document: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-
-
-def _logged(path: Path) -> list[str]:
-    """The methods a stand-in server logged, in order; none when it never started."""
-    if not path.is_file():
-        return []
-    methods = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(entry, dict) and isinstance(entry.get("method"), str):
-            methods.append(entry["method"])
-    return methods
 
 
 def _run(

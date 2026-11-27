@@ -40,6 +40,9 @@
     "lionhub/src/lionhub/providers/_subagent_admission.py": [
       "__all__ = (\n    \"ACCOUNT_CAP_ENV\",\n    \"ACCOUNT_ENV\",\n    \"ADMIT_WAIT_ENV\",\n    \"AGENT_DEPTH_ENV\",\n    \"DEFAULT_ADMIT_WAIT_SECONDS\",\n    \"DEFAULT_WORKLOAD\",\n    \"HEAVY_CAP_ENV\",\n    \"TOTAL_CAP_ENV\",\n    \"WORKLOADS\",\n    \"NestedAgentRefusedError\",\n    \"SubagentAdmissionRefusedError\",\n    \"SubagentLease\",\n    \"SubagentWorkload\",\n    \"account_admission\",\n    \"admit_subagent\",\n    \"child_agent_depth\",\n    \"engine_cap_env\",\n    \"refuse_nested_agent\",\n    \"set_child_agent_depth\",\n    \"subagent_admission_status\",\n    \"without_account_names\",\n)"
     ],
+    "lionhub/src/lionhub/providers/_tools_probe_server.py": [
+      "__all__ = (\"ANSWER\", \"MCP_SERVER_SOURCE\", \"TOOL\", \"logged_methods\")"
+    ],
     "lionhub/src/lionhub/providers/ag2/__init__.py": [
       "from lionagi.ln._lazy_init import lazy_import",
       "_LAZY_MAP: dict[str, tuple[str, str | None]] = {\n    \"AG2AgentRequest\": (\"agent\", None),\n    \"AG2BetaEndpoint\": (\"agent\", None),\n    \"AG2GroupChatEndpoint\": (\"groupchat\", None),\n    \"AG2GroupChatRequest\": (\"groupchat\", None),\n    \"AG2NlipEndpoint\": (\"nlip\", None),\n    \"AG2NlipRequest\": (\"nlip\", None),\n    \"AgentConfig\": (\"agent\", None),\n    \"AgentSpec\": (\"groupchat\", None),\n    \"GroupChatSpec\": (\"groupchat\", None),\n    \"HandoffCondition\": (\"groupchat\", None),\n    \"ResearchPlan\": (\"groupchat\", None),\n    \"_assert_nlip_url_safe\": (\"nlip\", None),\n    \"build_group_chat\": (\"groupchat\", None),\n    \"call_nlip_remote\": (\"nlip\", None),\n    \"run_beta_agent\": (\"agent\", None),\n    \"stream_group_chat\": (\"groupchat\", None),\n}",
@@ -280,6 +283,9 @@
     "lionhub/src/lionhub/providers/openai/codex_sandbox_probe.py": [
       "__all__ = (\n    \"ScratchRootError\",\n    \"StubProvider\",\n    \"UnixListener\",\n    \"main\",\n    \"probe\",\n    \"run_codex\",\n    \"tool_outputs\",\n    \"write_record\",\n)"
     ],
+    "lionhub/src/lionhub/providers/openai/codex_tools_probe.py": [
+      "__all__ = (\n    \"REQUIRED_ARMS\",\n    \"SERVER_NAME\",\n    \"ToolsStandIn\",\n    \"main\",\n    \"mcp_flags\",\n    \"parse_candidate\",\n    \"probe\",\n    \"tool_labels\",\n    \"tools_record_dir\",\n    \"tools_record_path\",\n    \"write_record\",\n)"
+    ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
       "__all__ = (\"OpenAIEmbeddingRequest\", \"OpenaiEmbedEndpoint\")"
     ],
@@ -384,6 +390,9 @@
       "set_child_agent_depth",
       "subagent_admission_status",
       "without_account_names"
+    ],
+    "lionhub/src/lionhub/providers/_tools_probe_server.py": [
+      "logged_methods"
     ],
     "lionhub/src/lionhub/providers/ag2/_config.py": [
       "AG2Configs"
@@ -731,6 +740,17 @@
       "probe",
       "run_codex",
       "tool_outputs",
+      "write_record"
+    ],
+    "lionhub/src/lionhub/providers/openai/codex_tools_probe.py": [
+      "ToolsStandIn",
+      "main",
+      "mcp_flags",
+      "parse_candidate",
+      "probe",
+      "tool_labels",
+      "tools_record_dir",
+      "tools_record_path",
       "write_record"
     ],
     "lionhub/src/lionhub/providers/openai/embed.py": [
