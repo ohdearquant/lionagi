@@ -767,11 +767,12 @@ def dispatch_machine(argv: list[str]) -> int:
     the refusal a second time in the exit status would give a consumer two
     answers to one question.
 
-    A `ModuleNotFoundError` or `MissingFeatureError` before run allocation is
-    re-raised so the entry point can return exit 78 with a best-effort
-    environment refusal. Once a run exists on disk it is an ordinary failure of
-    that run and gets an envelope like any other; a missing feature's envelope
-    names the feature and how to install it.
+    An environment fault (an exception in `_ENVIRONMENT_FAULTS`, which the entry
+    point in `main.py` owns) before run allocation is re-raised so the entry
+    point can return exit 78 with a best-effort environment refusal. Once a run
+    exists on disk it is an ordinary failure of that run and gets an envelope
+    like any other; a missing feature's envelope names the feature and how to
+    install it.
     """
     from lionhub.orchestration.job import run_was_allocated
 
@@ -785,24 +786,20 @@ def dispatch_machine(argv: list[str]) -> int:
             data = _run_machine_command(argv)
         except MachineError as exc:
             channel.emit(failure(exc.kind, str(exc), exc.detail))
-        except _ENVIRONMENT_FAULTS as exc:
-            if not run_was_allocated():
+        except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
+            if isinstance(exc, _ENVIRONMENT_FAULTS) and not run_was_allocated():
                 raise
             if isinstance(exc, ModuleNotFoundError):
                 channel.emit(failure("internal", "a required module is not installed"))
             else:
                 from lionhub.state.engine import mask_credentials
 
-                # A missing feature's message names the feature and its install
-                # guidance. It is masked like any other message this sink prints.
+                # The only sink that prints a message from code we do not own. The
+                # producers we do own mask at the source; a driver that quotes the
+                # connection string it was handed has nowhere else to be caught. A
+                # missing feature's message, which names the feature and its install
+                # guidance, is masked here the same way.
                 channel.emit(failure("internal", mask_credentials(f"{type(exc).__name__}: {exc}")))
-        except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
-            from lionhub.state.engine import mask_credentials
-
-            # The only sink that prints a message from code we do not own. The
-            # producers we do own mask at the source; a driver that quotes the
-            # connection string it was handed has nowhere else to be caught.
-            channel.emit(failure("internal", mask_credentials(f"{type(exc).__name__}: {exc}")))
         else:
             channel.emit(ok(data))
     return 0
