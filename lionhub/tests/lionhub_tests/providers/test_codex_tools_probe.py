@@ -134,8 +134,9 @@ class FakeCodex:
     offers ``exec_command``), ``ignore_ignored`` (the user config loads under
     ``--ignore-user-config``), ``decoy_never_loads`` (the user config never loads),
     ``server_not_started`` (the server's tool is offered but its server never starts),
-    ``no_native_control`` (no run ever offers a native tool) and ``namespaced`` (MCP tools come
-    nested under a namespace tool, which is not a leak).
+    ``no_native_control`` (no run ever offers a native tool), ``namespaced`` (MCP tools come
+    nested under a namespace tool, which is not a leak) and ``deferred_with_natives`` (while any
+    native tool is on, MCP tools are held back behind a search tool, which is not a leak either).
     """
 
     def __init__(self, *leaks: str) -> None:
@@ -195,8 +196,11 @@ class FakeCodex:
             url = re.search(r'base_url="([^"]+)/v1"', provider).group(1)
             stand_in = _LIVE[url]
             items: list[dict] = [{"type": "message", "role": "user", "content": argv[-1]}]
+            visible = mcp_tools
+            if native and "deferred_with_natives" in self.leaks:
+                visible = [{"type": "function", "name": "tool_search"}]
             for turn in range(6):
-                offered = native + mcp_tools
+                offered = native + visible
                 if turn > 0 and "late_native" in self.leaks:
                     offered = [*offered, {"name": "exec_command"}]
                 body = {"model": "stub-model", "instructions": "not kept", "tools": offered}
@@ -292,12 +296,28 @@ def test_the_runs_carry_the_launch_mcp_flags_and_the_ambient_control_drops_one(t
         ("server_not_started", {"server_connected"}),
         ("no_native_control", {"control_offers_native_tools"}),
         ("namespaced", set()),
+        ("deferred_with_natives", set()),
     ],
 )
 def test_each_leak_fails_the_arm_that_exists_for_it(tmp_path, leak, expected):
     (row,), _, _ = _probe(tmp_path, leak)
 
     assert _failed(row) == expected, row
+
+
+def test_the_controls_read_a_binary_that_holds_mcp_tools_back_while_its_own_are_on(tmp_path):
+    (row,), runs, _ = _probe(tmp_path, "deferred_with_natives")
+
+    assert not any("mcp__" in label for label in runs["native_control"]["offered"][0])
+    assert not any("decoyuser" in label for label in runs["ambient_control"]["offered"][0])
+    assert "without the server's tool" in row["arms"]["control_offers_native_tools"]["evidence"]
+    assert "loaded the decoys decoyuser" in row["arms"]["ambient_servers_absent"]["evidence"]
+
+
+def test_the_control_evidence_says_when_the_server_tool_was_offered(tmp_path):
+    (row,), _, _ = _probe(tmp_path)
+
+    assert "with the server's tool" in row["arms"]["control_offers_native_tools"]["evidence"]
 
 
 def test_a_nested_tool_is_labelled_and_called_by_its_own_name(tmp_path):
