@@ -135,21 +135,32 @@ _REFUSED_FLAGS = frozenset(
         "--allowed-tools",
         "--allowedTools",
         "--permission-prompts",
+        "--settings",
     }
 )
+
+# The settings the launch passes. With tool search on, Claude Code 2.1.332 offers a placeholder
+# for the tools it would load on demand even under ``--tools ""``, and ``--disallowed-tools`` does
+# not remove it; with ``ENABLE_TOOL_SEARCH`` false it offers none.
+_SETTINGS = json.dumps({"env": {"ENABLE_TOOL_SEARCH": "false"}}, separators=(",", ":"))
 
 
 def tools_off_flags(mcp_config: str, server: str) -> list[str]:
     """The flags that leave a claude_code child no tool but those of ``server``, the one server
     the file ``mcp_config`` defines.
 
-    ``--tools ""`` is meant to remove every built-in tool, ``--strict-mcp-config`` to keep Claude
-    Code from reading servers from anywhere but ``--mcp-config``, and ``--allowed-tools`` lets the
-    child call ``server``'s tools without a permission prompt; the record says whether they do.
-    ``--tools``, ``--mcp-config`` and ``--allowed-tools`` each take a list, so a caller follows
-    these flags with another flag, never with the prompt.
+    ``--settings`` turns tool search off through the child's environment, so it offers no
+    placeholder for tools it would load later. ``--tools ""`` is meant to remove every built-in
+    tool, ``--strict-mcp-config`` to keep Claude Code from reading servers from anywhere but
+    ``--mcp-config``, and ``--allowed-tools`` lets the child call ``server``'s tools without a
+    permission prompt; the record says whether they do. The launch owns ``--settings``: a second
+    one could turn tool search back on, so an extra flag may not carry it. ``--tools``,
+    ``--mcp-config`` and ``--allowed-tools`` each take a list, so a caller follows these flags
+    with another flag, never with the prompt.
     """
     return [
+        "--settings",
+        _SETTINGS,
         "--tools",
         "",
         "--strict-mcp-config",

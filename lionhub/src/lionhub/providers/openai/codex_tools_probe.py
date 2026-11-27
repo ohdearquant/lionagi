@@ -139,13 +139,18 @@ def _toml_array(values: Sequence[str]) -> str:
 
 def mcp_flags(server: str, command: str, args: Sequence[str]) -> list[str]:
     """The flags that give a codex child ``server`` as its one MCP server: the user config
-    dropped, so no server it names loads, and ``server`` defined on the command line."""
+    dropped, so no server it names loads, ``server`` defined on the command line, and that
+    server's tools approved. The approval is scoped to ``server`` alone: under an approval policy
+    of ``never``, codex 0.162.1 refuses every MCP call whose tool is not approved in the config,
+    and the launch does not know the server's tools ahead of time."""
     return [
         "--ignore-user-config",
         "-c",
         f"mcp_servers.{server}.command={_toml_string(command)}",
         "-c",
         f"mcp_servers.{server}.args={_toml_array(args)}",
+        "-c",
+        f"mcp_servers.{server}.default_tools_approval_mode={_toml_string('approve')}",
     ]
 
 

@@ -137,6 +137,8 @@ class FakeCodex:
     ``no_native_control`` (no run ever offers a native tool), ``namespaced`` (MCP tools come
     nested under a namespace tool, which is not a leak) and ``deferred_with_natives`` (while any
     native tool is on, MCP tools are held back behind a search tool, which is not a leak either).
+    Like codex 0.162.1 under an approval policy of ``never``, it runs no call of a server whose
+    tools the config does not approve.
     """
 
     def __init__(self, *leaks: str) -> None:
@@ -165,6 +167,15 @@ class FakeCodex:
                 named.setdefault(found.group(1), {})[found.group(2)] = json.loads(found.group(3))
         for name, spec in named.items():
             servers[name] = (spec["command"], spec["args"])
+        approved = {
+            found.group(1)
+            for value in overrides
+            if (
+                found := re.fullmatch(
+                    r'mcp_servers\.(\w+)\.default_tools_approval_mode="approve"', value
+                )
+            )
+        }
         ignore = "--ignore-user-config" in argv and "ignore_ignored" not in self.leaks
         if not ignore and "decoy_never_loads" not in self.leaks:
             servers.update(_config_servers(Path(env["CODEX_HOME"]) / "config.toml"))
@@ -216,8 +227,10 @@ class FakeCodex:
                     return 0
                 key = (item.get("namespace"), item["name"])
                 server, tool = by_call.get(key, (None, None))
-                if server in clients:
+                if server in clients and server in approved:
                     output = clients[server].call(tool)
+                elif server in clients:
+                    output = "MCP tool call requires approval, but approval policy is never"
                 else:
                     output = f"unsupported call: {item['name']}"
                 items += [
@@ -280,7 +293,8 @@ def test_the_runs_carry_the_launch_mcp_flags_and_the_ambient_control_drops_one(t
 
     measured = runs["candidate-0"]["argv"]
     start = measured.index("--ignore-user-config")
-    assert measured[start + 5 : start + 11] == parse_candidate(_ALL_OFF)
+    width = len(mcp_flags(SERVER_NAME, "python", []))
+    assert measured[start + width : start + width + 6] == parse_candidate(_ALL_OFF)
     assert measured[measured.index("-C") + 2 :] == [measured[-1]]
     assert "--ignore-user-config" in runs["native_control"]["argv"]
     assert "--ignore-user-config" not in runs["ambient_control"]["argv"]
@@ -456,7 +470,25 @@ def test_the_mcp_flags_drop_the_user_config_and_quote_their_values():
         'mcp_servers.kc.command="/opt/py thon"',
         "-c",
         'mcp_servers.kc.args=["-I", "a\\"b"]',
+        "-c",
+        'mcp_servers.kc.default_tools_approval_mode="approve"',
     ]
+
+
+def test_a_server_whose_tools_are_not_approved_never_answers_the_call(tmp_path, monkeypatch):
+    launch_flags = probe_module.mcp_flags
+
+    def unapproved(server, command, args):
+        flags = launch_flags(server, command, args)
+        at = flags.index(f'mcp_servers.{server}.default_tools_approval_mode="approve"')
+        del flags[at - 1 : at + 1]
+        return flags
+
+    monkeypatch.setattr(probe_module, "mcp_flags", unapproved)
+    (row,), _, _ = _probe(tmp_path)
+
+    assert _failed(row) == {"server_connected"}, row
+    assert "requires approval" in row["arms"]["server_connected"]["evidence"]
 
 
 # --------------------------------------------------------------------------------- the record
