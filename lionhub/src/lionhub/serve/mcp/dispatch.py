@@ -57,6 +57,10 @@ MACHINE_TIMEOUT_SECONDS = 60.0
 # would fail to parse with a misleading message.
 MACHINE_OUTPUT_LIMIT = 1_000_000
 _MACHINE_STDERR_TAIL = 2_000
+# How much of the child's stderr before the tail the masker also reads. A credential that
+# starts inside this margin and runs into the tail is seen whole and masked; one that starts
+# further back can leave its end in the tail unmasked.
+_MACHINE_STDERR_MARGIN = 4_096
 
 _STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
@@ -1453,6 +1457,29 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
         raise OpError("invalid_input", str(exc)) from exc
 
 
+def _machine_stderr_tail(stderr: bytes) -> str:
+    """The child's stderr as every failing machine command returns it: masked, then cut.
+
+    Only the last ``_MACHINE_STDERR_TAIL + _MACHINE_STDERR_MARGIN`` characters are read, so the
+    cost of masking does not grow with how much the child printed. They are masked before the
+    cut to ``_MACHINE_STDERR_TAIL``, so a credential the cut splits is still seen whole when it
+    starts inside the margin.
+
+    ``mask_credentials`` replaces the credential shapes it knows (a URL's password, the value of
+    a key ending in ``password``, a ``user:secret@`` pair). It does not find every secret: a
+    bare token, or a password passed as a separate argument, reaches the caller as the child
+    wrote it.
+    """
+    from lionhub.state.engine import mask_credentials
+
+    window = _MACHINE_STDERR_TAIL + _MACHINE_STDERR_MARGIN
+    # A UTF-8 character is at most four bytes, so these bytes hold at least ``window``
+    # characters. A character the byte cut splits decodes as U+FFFD at the start of the
+    # margin, which the final cut drops.
+    text = stderr[-4 * window :].decode("utf-8", "replace")[-window:]
+    return mask_credentials(text)[-_MACHINE_STDERR_TAIL:]
+
+
 def _machine_environment_error(
     cli_path: str, completed: subprocess.CompletedProcess[bytes]
 ) -> OpError:
@@ -1460,7 +1487,7 @@ def _machine_environment_error(
     from lionhub.serve.cli._machine_envelope import _CONTRACT_VERSION
     from lionhub.state.engine import mask_credentials
 
-    stderr = mask_credentials(completed.stderr.decode("utf-8", "replace"))[-_MACHINE_STDERR_TAIL:]
+    stderr = _machine_stderr_tail(completed.stderr)
     detail = {"exit_code": completed.returncode, "stderr": stderr}
     fallback = OpError("unavailable", f"`{cli_path}` could not start in this environment", detail)
     if not completed.stdout or len(completed.stdout) > MACHINE_OUTPUT_LIMIT:
@@ -1539,14 +1566,9 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
             f"over the {MACHINE_OUTPUT_LIMIT} byte limit",
         )
 
-    from lionhub.state.engine import mask_credentials
-
     text = completed.stdout.decode("utf-8", "replace").strip()
-    # Masked before it is cut, as the startup refusal's stderr is, so a secret split by the
-    # cut cannot leave its tail behind.
-    stderr_tail = mask_credentials(completed.stderr.decode("utf-8", "replace"))[
-        -_MACHINE_STDERR_TAIL:
-    ]
+    # The same masked tail the startup refusal returns.
+    stderr_tail = _machine_stderr_tail(completed.stderr)
     if not text:
         raise OpError(
             "internal",
