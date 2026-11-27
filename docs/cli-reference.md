@@ -514,6 +514,13 @@ Bare names resolve project-local `.lionagi/playbooks/` first, then user-global
 `~/.lionagi/playbooks/`, then active trusted plugins. Use `<plugin>/<name>` to
 select a plugin playbook explicitly.
 
+A project-local playbook that hides a user-global one of the same name still
+wins, with a warning naming both files. `global/<name>` runs the user-global
+file instead. The run's session record keeps the file that ran
+(`playbook_path`) and, when it hid one, the global file (`playbook_shadowed`)
+in its node metadata, for `li play` and `play.submit` alike. An active plugin
+named `global` that declares `<name>` keeps the `global/<name>` token.
+
 ### Playbook YAML shape
 
 ```yaml

@@ -479,6 +479,9 @@ do not exist), and roles by recorded design decision — see out-of-scope.
   names resolve only when unambiguous. Tool names are global by necessity (the
   model calls them by bare name), which is exactly why the two rules above are
   strict.
+- A playbook in the user's own `~/.lionagi/playbooks/` is also addressable as
+  `global/<name>`, which a project-local file of the same name cannot hide; an
+  active plugin named `global` that declares `<name>` keeps that token.
 
 ### D7 — Lifecycle and CLI
 
