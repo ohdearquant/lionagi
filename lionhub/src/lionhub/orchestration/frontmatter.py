@@ -22,12 +22,8 @@ def _strip_frontmatter_prefix(text: str) -> str:
 
 
 def _trim_frontmatter_document(text: str) -> str:
-    """Trim whitespace and remove a leading BOM before a possible opener."""
-    if text.startswith("\ufeff"):
-        candidate = text[1:].strip()
-        if candidate.startswith(_FM_OPENER):
-            return candidate
-    return text.strip()
+    """Remove a leading BOM, then trim whitespace."""
+    return text.removeprefix("\ufeff").strip()
 
 
 def _load_frontmatter_yaml(document: str) -> Any:
@@ -49,7 +45,9 @@ def _parse_frontmatter_for_save(text: str) -> tuple[dict[str, Any], str]:
 
 def _parse_frontmatter(text: str, load_yaml: Callable[[str], Any]) -> tuple[dict[str, Any], str]:
     text = _trim_frontmatter_document(text)
-    if not text.startswith(_FM_OPENER):
+    if _FM_SPLIT.match(text) is None:
+        # Only a first line that is a bare --- opens a block. After any other first
+        # line, nothing in the file is read as settings.
         return {}, text
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
@@ -70,11 +68,15 @@ def parse_frontmatter_strict(text: str) -> tuple[dict[str, Any], str]:
     ``---`` is treated as malformed (raises) rather than as "no frontmatter
     present" -- and a frontmatter block that parses to something other than a
     YAML mapping (including an explicit ``null`` document, or an empty body)
-    raises too, instead of being coerced into an empty metadata dict.
+    raises too, instead of being coerced into an empty metadata dict. A first line
+    that starts with ``---`` but holds anything else raises as well; from such a
+    file ``parse_frontmatter`` reads no settings at all.
     """
     text = _trim_frontmatter_document(text)
     if not text.startswith(_FM_OPENER):
         return {}, text
+    if _FM_SPLIT.match(text) is None:
+        raise yaml.YAMLError("frontmatter opening line must be a bare ---")
     parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
         raise yaml.YAMLError("frontmatter opening delimiter has no matching closing delimiter")
