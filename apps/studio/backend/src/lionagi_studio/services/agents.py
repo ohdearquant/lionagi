@@ -17,6 +17,7 @@ from lionhub.orchestration.frontmatter import (
     _FM_SPLIT,
     _load_frontmatter_yaml,
     _strip_frontmatter_prefix,
+    _with_unescaped_scalars,
     parse_frontmatter_strict,
 )
 from lionhub.orchestration.frontmatter import parse_frontmatter as _parse_frontmatter
@@ -85,7 +86,8 @@ def _is_empty_yaml_document(block: str) -> bool:
 def _read_unreadable_agent_block(
     block: str, body: str, *, allow_empty: bool = False
 ) -> _AgentWriteRead:
-    if "lion_system" in block:
+    # An escaped spelling of the key, such as "lion\x5fsystem", counts as a mention too.
+    if "lion_system" in _with_unescaped_scalars(block):
         return _AgentWriteRead(
             {},
             "",
@@ -131,7 +133,7 @@ def _read_agent_for_write(text: str) -> _AgentWriteRead:
             # After a malformed opener, the text past the single bare delimiter may be a
             # block that never closes; where it was meant to end is not known, so inspect
             # it through the end of the file, as an unclosed block after a bare opener is.
-            if len(parts) == 2 and "lion_system" in parts[1]:
+            if len(parts) == 2 and "lion_system" in _with_unescaped_scalars(parts[1]):
                 return _read_unreadable_agent_block(parts[1], "")
             return unreadable_header
         block = parts[1] if len(parts) > 1 else text
