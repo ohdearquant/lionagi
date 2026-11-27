@@ -1546,8 +1546,10 @@ def test_a_moved_module_may_keep_only_its_own_old_logger_name():
 # interim edge into the hub (see test_provider_interim_edge_inventory). Every other
 # package never names lionhub. The set must match what the tree does, and it shrinks as
 # each interim edge is removed, so a package that stops naming lionhub is removed from it
-# too. The Studio application, which imports the hub, now lives outside lionagi/.
-LIONHUB_USERS_UNDER_LIONAGI = frozenset({"service"})
+# too. The Studio application, which imports the hub, now lives outside lionagi/. The
+# protocols edge is the async PostgreSQL adapter hook (test_the_protocols_interim_edge_
+# is_only_the_postgres_adapter_hook).
+LIONHUB_USERS_UNDER_LIONAGI = frozenset({"protocols", "service"})
 
 _LIONHUB_NAME = re.compile(r"lionhub(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -1579,6 +1581,28 @@ def test_only_packages_with_listed_interim_edges_name_lionhub():
             top = path.relative_to(lionagi).parts[0]
             users.setdefault(top.removesuffix(".py"), []).append(str(path.relative_to(ROOT)))
     assert set(users) == LIONHUB_USERS_UNDER_LIONAGI, users
+
+
+def test_the_protocols_interim_edge_is_only_the_postgres_adapter_hook():
+    """Under ``lionagi/protocols`` the hub is named only inside ``_ensure_postgres_adapter``:
+    the import of the adapter module, and the name it compares a missing module against."""
+    protocols = SOURCE_ROOTS[0] / "protocols"
+    node = protocols / "graph" / "node.py"
+    hits = {path: _lionhub_names(path) for path in protocols.rglob("*.py") if _lionhub_names(path)}
+    assert set(hits) == {node}, hits
+    tree = ast.parse(node.read_text(encoding="utf-8"), filename=str(node))
+    (hook,) = [
+        fn
+        for fn in tree.body
+        if isinstance(fn, ast.FunctionDef) and fn.name == "_ensure_postgres_adapter"
+    ]
+    lines = range(hook.lineno, hook.end_lineno + 1)
+    named = []
+    for hit in hits[node]:
+        _, line, name = hit.rsplit(":", 2)
+        assert int(line) in lines, hit
+        named.append(name.strip())
+    assert sorted(named) == ["lionhub", "lionhub.integrations.postgres_adapter"], named
 
 
 def test_the_lionhub_check_sees_each_form_of_reference():

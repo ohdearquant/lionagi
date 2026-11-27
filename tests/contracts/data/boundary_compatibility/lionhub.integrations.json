@@ -4,6 +4,9 @@
       "from __future__ import annotations",
       "__all__ = ()"
     ],
+    "lionhub/src/lionhub/integrations/postgres_adapter.py": [
+      "__all__ = (\"LionAGIAsyncPostgresAdapter\", \"create_lionagi_async_postgres_adapter\")"
+    ],
     "lionhub/src/lionhub/integrations/ruvector/__init__.py": [
       "from __future__ import annotations",
       "__all__ = (\"RuVectorMemoryStore\", \"RuVectorStore\", \"SearchHit\")"
@@ -16,6 +19,9 @@
     ]
   },
   "public_definitions": {
+    "lionhub/src/lionhub/integrations/postgres_adapter.py": [
+      "create_lionagi_async_postgres_adapter"
+    ],
     "lionhub/src/lionhub/integrations/ruvector/memory.py": [
       "RuVectorMemoryStore"
     ],

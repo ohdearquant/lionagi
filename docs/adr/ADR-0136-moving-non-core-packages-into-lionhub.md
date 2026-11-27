@@ -3,7 +3,7 @@
 - **Status**: Accepted (2026-10-25), amended 2026-10-25 (see Amendments 1 and 2); Amendment 3
   (2026-10-31), Amendment 4 (2026-11-10) and Amendment 5 (2026-11-13) accepted 2026-11-23;
   Amendment 6 (2026-11-26), Amendment 7 (2026-11-26), Amendment 8 (2026-11-26) and Amendment 9
-  (2026-11-26) accepted 2026-11-26
+  (2026-11-26) accepted 2026-11-26; Amendment 10 (2026-11-27) proposed
 - **Kind**: Aspirational
 - **Implementation-status**: partial. Wave 1 (D6) moved `lionagi.orchestration`, `lionagi.engines`,
   `lionagi.dispatch` and `lionagi.work` (#3752–#3754), with the `lionhub` root and the moved-module
@@ -17,8 +17,10 @@
   before 2.0 are gone (`service/providers.py`'s in #4745). The CLI provider tables and
   `parse_model_spec` moved to `lionhub.providers.model_spec` (Amendment 8), the frontmatter parser to
   `lionhub.orchestration.frontmatter` and the CLI declaration types to
-  `lionhub.serve.cli.registration` (Amendment 9). `service` is the only core package that
-  imports the hub, through `_provider_compat`. One root module holds hub paths as data, resolved only
+  `lionhub.serve.cli.registration` (Amendment 9), and the async PostgreSQL Node adapter to
+  `lionhub.integrations.postgres_adapter` (Amendment 10). Two core packages import the hub: `service`,
+  through `_provider_compat`, and `protocols`, in the one hook that registers that adapter on first
+  use. One root module holds hub paths as data, resolved only
   when a caller uses an old name: `lionagi/_moved.py`, D3's table of moved paths. Other mentions of
   the hub under `lionagi/` are comments and docstrings. The Studio
   application moved to `lionagi_studio` (#4694, Amendment 5), with three kept old parents under
@@ -44,7 +46,58 @@
   account engine into `lionhub`, closing Amendment 3 C2's router row; Amendment 8 moves the CLI
   provider tables and `parse_model_spec` into `lionhub`, closing Amendment 3 C2's `service/providers.py` row;
   Amendment 9 moves the frontmatter parser out of `lionagi.libs` into `lionhub.orchestration` and the
-  CLI declaration types out of `lionagi._auto` into `lionhub.serve.cli`, which ADR-0139 had kept in the core
+  CLI declaration types out of `lionagi._auto` into `lionhub.serve.cli`, which ADR-0139 had kept in the core;
+  Amendment 10 moves the async PostgreSQL Node adapter into `lionhub.integrations`, lists the
+  `protocols` edge it leaves as interim, and replaces ADR-0050's statement that a failure to load that
+  adapter is swallowed
+
+## Amendment 10 (2026-11-27): the async PostgreSQL Node adapter moves into lionhub
+
+**Status**: Proposed (2026-11-27).
+
+`lionagi.adapters.async_postgres_adapter` builds the adapter that writes `Node` objects to
+PostgreSQL and creates their table on first write. No core module imports it at load time: `Node`
+imports it when a caller first asks `adapt_to_async` or `adapt_from_async` for the key
+`lionagi_async_pg`. It is a third-party integration, the kind D7's `integrations/` slot holds, so
+it leaves the core. The other adapters under `lionagi.adapters` and the availability check
+`check_async_postgres_available` stay.
+
+### L1. What moves, and where
+
+| Old path | New path |
+|---|---|
+| `lionagi.adapters.async_postgres_adapter` | `lionhub.integrations.postgres_adapter` |
+
+The row is a D3 table row, deprecated in 1.1.0 and removed in 2.0.0. No module exists at the old
+path. The adapter is unchanged, and its test moves into `lionhub/tests`.
+
+### L2. The interim edge from `protocols`
+
+`Node` keeps registering the adapter on first use of its key, so the hook that does it,
+`_ensure_postgres_adapter` in `lionagi/protocols/graph/node.py`, imports the hub module. That makes
+`protocols` the second core package that names the hub, beside `service`. The edge is one import
+inside that function, run only for the key `lionagi_async_pg`, and a test pins it there. It is
+interim: it ends in 2.0.0, when `Node` stops registering the adapter itself and a caller registers
+it from the hub, or earlier if a registration seam lets the hub register it without the core naming
+a hub module.
+
+### L3. What a caller sees
+
+With the postgres extra and the hub installed, requesting `lionagi_async_pg` registers and uses the
+same adapter as before, and importing the old path warns until 2.0.0. The failures are no longer
+silent. Before, a missing package or a failure to build the adapter registered nothing, the hook
+recorded the check as done and never tried again, and the lookup that followed failed without
+naming what was missing. Now:
+
+- When sqlalchemy or asyncpg is missing, the request raises the `ImportError` that names the
+  `postgres` extra.
+- When lionhub is not installed, it raises the same error, chained to the `ModuleNotFoundError` for
+  `lionhub`.
+- Any other failure to import or build the adapter propagates unchanged.
+- The hook records the adapter as registered only after it is, so a later request tries again.
+
+This replaces ADR-0050's statement that missing optional dependencies or construction failures are
+swallowed and leave the key unregistered.
 
 ## Amendment 9 (2026-11-26): the frontmatter parser and the CLI declaration types move into lionhub
 

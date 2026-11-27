@@ -1485,6 +1485,13 @@ CONTRACTS: tuple[MoveContract, ...] = (
         private_names=frozenset({"_Marker", "_read_registration_marker"}),
         shared_values=frozenset({"_DEPRECATED_ALIASES", "_MARKER_ATTR"}),
     ),
+    MoveContract(
+        old="lionagi.adapters.async_postgres_adapter",
+        new="lionhub.integrations.postgres_adapter",
+        kind="module",
+        public_names=frozenset({"create_lionagi_async_postgres_adapter"}),
+        shared_values=frozenset({"LionAGIAsyncPostgresAdapter"}),
+    ),
 )
 
 

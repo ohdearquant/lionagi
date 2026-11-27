@@ -17,7 +17,7 @@ includes both `lionagi` and `lionhub`.
 | `lionhub/src/lionhub/providers/` | Provider implementations and shared provider helpers, including the Anthropic account engine (`providers/anthropic/accounts/`): routed accounts, the monthly budget ledger, pricing and key resolution. |
 | `lionhub/src/lionhub/lndl/` | LNDL parsing, assembly, and middle layer. |
 | `lionhub/src/lionhub/state/` | The state store (`StateDB`, over SQLite or PostgreSQL), its schema and migrations, lifecycle transitions, the Claude Code and Codex mirrors, log channels, the CLI worker context and the message retry queue. |
-| `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store. |
+| `lionhub/src/lionhub/integrations/` | Optional third-party integrations: the RuVector vector store and memory store, and the async PostgreSQL adapter for `Node`. |
 | `lionhub/src/lionhub/serve/mcp/` | MCP server and its supporting modules. |
 | `lionhub/src/lionhub/serve/daemon/` | Studio daemon process services: host admission, the reconnect channel, the scheduler log, stack-dump diagnostics, launch access and pairing, the daemon's route inventory, and the daemon's routes for runs, sessions, invocations, launches, schedules, identity and maintenance. |
 | `lionhub/tests/lionhub_tests/` | Tests for packages that have moved into LionHub. |
@@ -132,6 +132,14 @@ in 1.0.0 and are scheduled for removal in 2.0.0.
 | Old import | Current import |
 | --- | --- |
 | `lionagi._auto` | `lionhub.serve.cli.registration` |
+
+The async PostgreSQL adapter for `Node` below is deprecated at its old path in 1.1.0 and is
+scheduled for removal in 2.0.0. `Node` still registers it under the key `lionagi_async_pg` the
+first time that key is requested.
+
+| Old import | Current import |
+| --- | --- |
+| `lionagi.adapters.async_postgres_adapter` | `lionhub.integrations.postgres_adapter` |
 
 The prompt size bound below is deprecated at its old path in 1.0.0 and is scheduled for
 removal in 2.0.0.

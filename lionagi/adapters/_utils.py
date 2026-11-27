@@ -3,7 +3,15 @@
 
 from __future__ import annotations
 
-__all__ = ("check_async_postgres_available",)
+__all__ = ("check_async_postgres_available", "postgres_extra_error")
+
+
+def postgres_extra_error() -> ImportError:
+    """Return the error that names the ``postgres`` extra the async adapter needs."""
+    return ImportError(
+        "This adapter requires postgres option to be installed. "
+        'Please install them using `uv pip install "lionagi[postgres]"`.'
+    )
 
 
 def check_async_postgres_available():
@@ -15,7 +23,4 @@ def check_async_postgres_available():
             all_import_present += 1
     if all_import_present == 2:
         return True
-    return ImportError(
-        "This adapter requires postgres option to be installed. "
-        'Please install them using `uv pip install "lionagi[postgres]"`.'
-    )
+    return postgres_extra_error()

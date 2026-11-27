@@ -57,10 +57,6 @@
       "layer": "adapter",
       "owner": "data_adapters"
     },
-    "lionagi.adapters.async_postgres_adapter": {
-      "layer": "adapter",
-      "owner": "data_adapters"
-    },
     "lionagi.adapters.csv_": {
       "layer": "adapter",
       "owner": "data_adapters"

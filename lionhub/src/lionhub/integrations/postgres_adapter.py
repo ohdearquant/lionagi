@@ -1,7 +1,11 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Async PostgreSQL adapter for lionagi Nodes; requires the ``lionagi[postgres]`` extra, loaded lazily."""
+"""Async PostgreSQL adapter for lionagi Nodes; requires the ``lionagi[postgres]`` extra, loaded lazily.
+
+``Node.adapt_to_async`` and ``Node.adapt_from_async`` register it under the key
+``lionagi_async_pg`` the first time that key is requested.
+"""
 
 from __future__ import annotations
 
@@ -79,8 +83,8 @@ def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:
     return LionAGIAsyncPostgresAdapter
 
 
-# Built lazily by _ensure_postgres_adapter() in node.py; stays defined here so
-# test patching of this attribute resolves without triggering the factory.
-LionAGIAsyncPostgresAdapter = None  # populated lazily by _ensure_postgres_adapter()
+# The class is built by the factory above, on first use; this name stays bound so the names the
+# module exports at its old path, ``lionagi.adapters.async_postgres_adapter``, still resolve.
+LionAGIAsyncPostgresAdapter = None
 
 __all__ = ("LionAGIAsyncPostgresAdapter", "create_lionagi_async_postgres_adapter")
