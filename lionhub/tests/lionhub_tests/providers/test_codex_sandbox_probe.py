@@ -23,6 +23,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -747,8 +748,16 @@ def test_new_bytes_of_the_same_size_under_the_old_modification_time_are_read_aga
     # Same size, and the modification time put back: only the status-change time moved.
     target.write_bytes(b"two")
     os.utime(target, ns=(seen.st_atime_ns, seen.st_mtime_ns))
+    # A filesystem may stamp the status-change time from a coarse clock, one tick of a few
+    # milliseconds, so both writes can share a stamp: wait for the clock to move, putting the
+    # modification time back each time.
+    deadline = time.monotonic() + 5
+    while target.stat().st_ctime_ns == seen.st_ctime_ns and time.monotonic() < deadline:
+        time.sleep(0.005)
+        os.utime(target, ns=(seen.st_atime_ns, seen.st_mtime_ns))
     now = target.stat()
     assert (now.st_size, now.st_mtime_ns) == (seen.st_size, seen.st_mtime_ns)
+    assert now.st_ctime_ns != seen.st_ctime_ns
     assert binary_sha256(str(target)) == hashlib.sha256(b"two").hexdigest()
 
 

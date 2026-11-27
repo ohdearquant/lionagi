@@ -565,7 +565,9 @@ def binary_sha256(path: str) -> str | None:
     of the process under ``path`` and the file's size, modification time, inode and status-change
     time, and the file is read again only when one of them changes. The status-change time is in
     the key because a program can set the modification time back but not that one, so new bytes
-    under an old modification time still read as changed. A digest is not kept when any of the
+    under an old modification time still read as changed. Where the filesystem stamps the
+    status-change time from a clock coarser than the gap between two writes, a same-size rewrite
+    with the modification time put back inside one tick is not seen. A digest is not kept when any of the
     four differs between the file read and what ``path`` showed before the read, which covers a
     file replaced or written to while it was read.
     """
