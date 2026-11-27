@@ -286,7 +286,14 @@ class FakeCodex:
         if words[0] == "/bin/sh" and words[1:4] == ["-c", ': < "$1"', "_"]:
             # The shell opens its argument for reading and reads nothing.
             target = Path(words[-1])
-            refused = (_under(target, deny) and not ignored) or "opens_always_fail" in leaks
+            if not os.access(target, os.R_OK):
+                # An ordinary permission failure, whatever the sandbox does.
+                return f"/bin/sh: {target}: Permission denied\nrc=1"
+            # A sandbox that denies nothing outside the probe's own scratch directory.
+            spared = "real_path_not_denied" in leaks and scratch not in target.parents
+            refused = (_under(target, deny) and not ignored and not spared) or (
+                "opens_always_fail" in leaks
+            )
             if refused:
                 return f"/bin/sh: {target}: Permission denied\nrc=1"
             return "rc=0"
@@ -765,6 +772,104 @@ def test_the_deny_arm_fails_when_no_real_denied_path_was_opened(tmp_path, sandbo
     arms = probe_module.probe("codex", runner=FakeCodex(), scratch=tmp_path / "scratch")
     assert not arms["deny_canary"]["passed"]
     assert "0 real denied path(s) opened for 0 bytes" in arms["deny_canary"]["evidence"]
+
+
+_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000 = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root opens a file of mode 000, so an ordinary permission failure cannot be staged",
+)
+
+
+def _deny_only(monkeypatch, *paths: Path) -> None:
+    """The child sandbox on, denying exactly ``paths`` on top of the default policy."""
+    import lionhub.agent.child_sandbox as child_sandbox
+
+    settings = {"child_sandbox": {"deny_read": [str(p) for p in paths]}}
+    monkeypatch.setattr(child_sandbox, "_global_settings", lambda: settings)
+
+
+def _unreadable_file(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a real credential\n")
+    path.chmod(0)
+    return path
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+@_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000
+def test_a_denied_path_unreadable_outside_the_sandbox_is_not_counted_as_refused(
+    tmp_path, monkeypatch
+):
+    # The sandbox denies nothing outside the probe's own scratch directory, and the one real
+    # denied file is one this user cannot open anyway, so its failed open inside the sandbox
+    # says nothing: the arm has tested no real path and does not pass.
+    locked = _unreadable_file(tmp_path / "locked" / "credentials")
+    _deny_only(monkeypatch, locked)
+    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
+    fake = FakeCodex(("real_path_not_denied",))
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    arm = arms["deny_canary"]
+    assert not arm["passed"]
+    assert arm["untested"] and all(_same_file(p, locked) for p in arm["untested"])
+    assert (
+        "untested, because this process cannot open them outside the sandbox" in (arm["evidence"])
+    )
+
+
+@_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000
+def test_a_path_unreadable_outside_the_sandbox_is_never_opened_inside_it(
+    tmp_path, sandbox_on, monkeypatch
+):
+    planted = tmp_path / "planted-deny" / "credentials"
+    locked = _unreadable_file(tmp_path / "locked" / "credentials")
+    _deny_only(monkeypatch, planted, locked)
+    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    arm = arms["deny_canary"]
+    # The readable denied file is tested and refused, so the arm passes on it alone.
+    assert arm["passed"]
+    assert arm["untested"] and all(_same_file(p, locked) for p in arm["untested"])
+    opened = [
+        shlex.split(c.rsplit("; echo rc=", 1)[0])[4]
+        for c in fake.commands
+        if c.startswith("/bin/sh -c")
+    ]
+    assert any(_same_file(p, planted) for p in opened)
+    assert not any(_same_file(p, locked) for p in opened)
+
+
+def test_the_open_outside_the_sandbox_decides_which_real_paths_are_tested(
+    tmp_path, sandbox_on, monkeypatch
+):
+    # Staged without a mode-000 file, so it also runs as root: the outside open is the gate.
+    planted = tmp_path / "planted-deny" / "credentials"
+    monkeypatch.setattr(probe_module, "_REAL_PATHS_OPENED", 1000)
+    opens_outside = probe_module._opens_outside
+    monkeypatch.setattr(
+        probe_module,
+        "_opens_outside",
+        lambda path: opens_outside(path) and not _same_file(path, planted),
+    )
+    fake = FakeCodex()
+    arms = probe_module.probe("codex", runner=fake, scratch=tmp_path / "scratch")
+    assert any(_same_file(p, planted) for p in arms["deny_canary"]["untested"])
+    assert not any(str(planted) in c or os.path.realpath(planted) in c for c in fake.commands)
+
+
+def test_the_open_outside_the_sandbox_takes_a_readable_file_and_not_a_missing_one(tmp_path):
+    present = tmp_path / "present"
+    present.write_text("x\n")
+    assert probe_module._opens_outside(str(present))
+    assert not probe_module._opens_outside(str(tmp_path / "missing"))
+
+
+@_NEEDS_A_USER_WHO_CANNOT_OPEN_MODE_000
+def test_the_open_outside_the_sandbox_fails_on_a_file_of_mode_000(tmp_path):
+    assert not probe_module._opens_outside(str(_unreadable_file(tmp_path / "locked")))
 
 
 def test_the_control_open_is_the_same_command_on_a_readable_file(tmp_path, sandbox_on):
