@@ -469,11 +469,51 @@ def test_old_manual_versions_cannot_move_latest(metadata, current, expected):
     assert resolve_fixture(metadata, prepare_image=True)["publish_latest"] == expected
 
 
+def pypi_version_reads(calls):
+    return [call for call in calls if call == ("pypi", "1.2.3")]
+
+
 def test_release_image_waits_for_the_wheel_to_be_published(metadata):
+    """PyPI can answer 404 for a new version for a while after its upload
+    succeeded. Image preparation reads it again on an interval, and refuses
+    only when every read in its budget missed."""
     as_release_event(metadata[0])
     del metadata[2]["1.2.3"]
+    sleeps = []
+    with pytest.raises(release.ReleaseError, match="PyPI version missing") as refused:
+        resolve_fixture(metadata, prepare_image=True, sleep=sleeps.append)
+    assert f"after {release.WHEEL_WAIT_ATTEMPTS} reads" in str(refused.value)
+    assert len(pypi_version_reads(metadata[-1])) == release.WHEEL_WAIT_ATTEMPTS
+    assert sleeps == [release.WHEEL_WAIT_INTERVAL_SECONDS] * (release.WHEEL_WAIT_ATTEMPTS - 1)
+
+
+def test_release_image_proceeds_once_pypi_serves_the_wheel(metadata):
+    as_release_event(metadata[0])
+    published = metadata[2].pop("1.2.3")
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            metadata[2]["1.2.3"] = published
+
+    result = resolve_fixture(metadata, prepare_image=True, sleep=sleep)
+    assert result["version"] == "1.2.3" and result["publish_latest"] == "true"
+    assert sleeps == [release.WHEEL_WAIT_INTERVAL_SECONDS] * 2
+    assert len(pypi_version_reads(metadata[-1])) == 3
+
+
+def test_manual_repair_source_check_does_not_wait_for_pypi(metadata):
+    """A manual repair runs after the release, so a wheel missing at its source
+    check is missing, not late: that check reads PyPI once."""
+    del metadata[2]["1.2.3"]
+
+    def sleep(seconds):
+        raise AssertionError("the manual repair source check must not wait")
+
     with pytest.raises(release.ReleaseError, match="PyPI version missing"):
-        resolve_fixture(metadata, prepare_image=True)
+        resolve_fixture(metadata, sleep=sleep)
+    assert len(pypi_version_reads(metadata[-1])) == 1
 
 
 class NoDuplicateKeysLoader(yaml.SafeLoader):
