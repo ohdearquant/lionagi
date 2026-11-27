@@ -621,6 +621,10 @@ class OrchestrationEnv:
     # The khive actor each branch the run built acts as, by branch id, so a node
     # cloned from one of them acts as that branch's profile.
     khive_actors: dict[str, str] = field(default_factory=dict)
+    # The servers the run's config was read to hold, before any actor was attributed to them,
+    # and a named file's snapshot marker keys: what a copy of a named set is written from.
+    mcp_servers_as_read: dict | None = None
+    mcp_snapshot_keys: dict[str, str] | None = None
 
     def expect_worker(self, agent_id: str) -> None:
         """Declare that this run intends to run a worker under *agent_id*."""
@@ -1097,7 +1101,7 @@ async def setup_orchestration(
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers
+    from lionhub.orchestration.mcp_config import resolve_spawn_mcp_servers, servers_as_read
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
@@ -1156,6 +1160,9 @@ async def setup_orchestration(
         submit_snapshot=mcp_submit_snapshot,
         **({"reject_legacy_snapshot": True} if reject_legacy_mcp_snapshot else {}),
     )
+    # The servers as read, before any actor is attributed to them: what a flow's copy of a
+    # named set holds (ADR-0041 Amendment 8).
+    mcp_servers_as_read = servers_as_read(mcp_resolution)
     # An explicit empty set is distinct from finding no configuration.
     run_mcp_servers = {} if no_mcp_config else mcp_resolution.servers
     worker_mcp_servers, withheld_mcp_servers = _worker_mcp_policy(
@@ -1360,6 +1367,8 @@ async def setup_orchestration(
         mcp_launch_dir=launch_dir,
         mcp_disabled_by_profile=profile_origin_mcp_disabled,
         withheld_mcp_servers=withheld_mcp_servers,
+        mcp_servers_as_read=mcp_servers_as_read,
+        mcp_snapshot_keys=mcp_resolution.snapshot_keys,
     )
     env.khive_actors[str(orc_branch.id)] = orc_khive_actor
     return env

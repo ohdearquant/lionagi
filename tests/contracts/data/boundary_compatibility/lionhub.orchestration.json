@@ -121,7 +121,7 @@
       "__all__ = (\"JsonFile\", \"read_json_file\")"
     ],
     "lionhub/src/lionhub/orchestration/mcp_config.py": [
-      "__all__ = (\n    \"MCP_CONFIG_FILENAME\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n)"
+      "__all__ = (\n    \"MCP_CONFIG_COPY_NAME\",\n    \"MCP_CONFIG_FILENAME\",\n    \"MCP_CONFIG_NAMED_KEY\",\n    \"McpConfigError\",\n    \"McpResolution\",\n    \"SNAPSHOT_SEARCHED_FROM_KEY\",\n    \"SNAPSHOT_SOURCE_KEY\",\n    \"discover_mcp_config\",\n    \"explicit_mcp_config_path\",\n    \"resolve_spawn_mcp_servers\",\n    \"servers_as_read\",\n    \"write_mcp_config_copy\",\n)"
     ],
     "lionhub/src/lionhub/orchestration/patterns.py": [
       "__all__ = (\n    \"grant_spawn\",\n    \"normalize_dep_indices\",\n    \"role_node_builder\",\n    \"spawn_roles\",\n    \"plan\",\n    \"build_fanout_graph\",\n    \"build_dag_graph\",\n    \"fanout\",\n)"
@@ -363,7 +363,9 @@
       "McpResolution",
       "discover_mcp_config",
       "explicit_mcp_config_path",
-      "resolve_spawn_mcp_servers"
+      "resolve_spawn_mcp_servers",
+      "servers_as_read",
+      "write_mcp_config_copy"
     ],
     "lionhub/src/lionhub/orchestration/patterns.py": [
       "build_dag_graph",

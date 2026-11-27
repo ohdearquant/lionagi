@@ -55,12 +55,21 @@ from lionhub.orchestration.job import (
     validate_cwd_exists,
 )
 from lionhub.orchestration.mcp_config import (
+    MCP_CONFIG_NAMED_KEY as _MCP_CONFIG_NAMED_KEY,
+)
+from lionhub.orchestration.mcp_config import (
     LegacyMcpReplayError,
     McpConfigError,
     McpResolution,
     _format_recorded_mcp_path,
     explicit_mcp_config_path,
     resolve_spawn_mcp_servers,
+)
+from lionhub.orchestration.mcp_config import (
+    servers_as_read as _servers_as_read,
+)
+from lionhub.orchestration.mcp_config import (
+    write_mcp_config_copy as _write_mcp_config_copy,
 )
 from lionhub.orchestration.runs import (
     _MCP_AGENT_RUN_ID,
@@ -241,11 +250,6 @@ def _subscription_read_rules(
 _NO_PERSISTED_EXECUTION = object()
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
-# The config file a branch was named with, kept as provenance once the record points at the
-# run directory's copy of the set it handed (ADR-0041 Amendment 8).
-_MCP_CONFIG_NAMED_KEY = "mcp_config_named"
-# The name of that copy inside a run directory.
-_MCP_CONFIG_COPY_NAME = "mcp-config.json"
 # Branch metadata naming the hooks file copy a leg started with, so a resume checks it again.
 _HOOKS_FROM_KEY = "hooks_from"
 _HOOKS_FROM_SPEC_FIELDS = ("copy", "sha256", "format", "carry", "source")
@@ -1896,33 +1900,6 @@ def _attributed_resolution(
         resolution,
         servers=attribute_khive_servers(resolution.servers, run_khive_actor(agent_name), cwd=cwd),
     )
-
-
-def _servers_as_read(resolution: McpResolution) -> dict[str, Any] | None:
-    """A copy of the servers *resolution* read, detached from anything that later changes it."""
-    if resolution.servers is None:
-        return None
-    return json.loads(json.dumps(resolution.servers))
-
-
-def _write_mcp_config_copy(state_root: Path, servers: dict[str, Any] | None) -> Path:
-    """Write the server set a named config handed this run into its run directory.
-
-    The file is created, never replaced, and readable by its owner alone: a resume reads this
-    copy rather than the named file, so the set it replays is the set this run was handed.
-    """
-    path = Path(state_root) / _MCP_CONFIG_COPY_NAME
-    content = json.dumps({"mcpServers": servers or {}}, indent=2) + "\n"
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-    except OSError as exc:
-        raise McpConfigError(
-            f"could not copy the named MCP config into the run directory ({path}): "
-            f"{exc.strerror or type(exc).__name__}"
-        ) from None
-    return path
 
 
 #: Why a run whose profile declares ``scratch`` is refused on a provider other than a Claude Code
