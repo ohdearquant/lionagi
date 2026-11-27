@@ -587,8 +587,9 @@ class GeminiCodeRequest(BaseModel):
         default=DEFAULT_WORKLOAD,
         exclude=True,
         description=(
-            "'light' always runs agy with --sandbox and counts against the total and gemini "
-            "agent caps; 'heavy' (the default) also counts against the heavy cap."
+            "'light' runs agy confined (under lionagi's macOS sandbox where the host has one, "
+            "otherwise with agy's own --sandbox) and counts against the total and gemini agent "
+            "caps; 'heavy' (the default) also counts against the heavy cap."
         ),
     )
     profile_deny_read: list[str] = Field(
