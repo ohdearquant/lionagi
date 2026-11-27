@@ -84,7 +84,8 @@ def test_frontmatter_readers_keep_leading_whitespace_semantics(prefix, newline):
     ],
 )
 def test_frontmatter_readers_preserve_plain_body(document):
-    expected = ({}, document.strip())
+    # A leading BOM is dropped from the returned body whether or not a block follows it.
+    expected = ({}, document.removeprefix("\ufeff").strip())
     assert parse_frontmatter(document) == expected
     assert parse_frontmatter_strict(document) == expected
 
@@ -93,6 +94,12 @@ def test_frontmatter_readers_preserve_plain_body(document):
     params=[
         pytest.param("---x\nname: example\n---\nBody.\n", id="suffixed-opener"),
         pytest.param("--- heading\n---\nBody.\n", id="decorative-opener"),
+        pytest.param("--- # agent\nname: example\n---\nBody.\n", id="commented-opener"),
+        pytest.param("---\u200b\nname: example\n---\nBody.\n", id="zero-width-opener"),
+        pytest.param(
+            "--- # agent\nintro\n---\nname: example\n---\nBody.\n", id="block-after-opener"
+        ),
+        pytest.param("--- heading\nSome\n---\nBody\n---\nMore.\n", id="two-bare-delimiters"),
     ]
 )
 def malformed_opener(request):
@@ -100,11 +107,13 @@ def malformed_opener(request):
 
 
 def test_tolerant_reader_keeps_malformed_opener_body(prefix, malformed_opener):
+    """A first line that starts with --- but is not a bare --- opens no block, so no later
+    block is read as settings and the whole text comes back as the body."""
     assert parse_frontmatter(prefix + malformed_opener) == ({}, malformed_opener.strip())
 
 
 def test_strict_reader_rejects_malformed_opener(prefix, malformed_opener):
-    with pytest.raises(yaml.YAMLError, match="no matching closing delimiter"):
+    with pytest.raises(yaml.YAMLError, match="opening line must be a bare ---"):
         parse_frontmatter_strict(prefix + malformed_opener)
 
 
