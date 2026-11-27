@@ -1489,6 +1489,15 @@ def _machine_environment_error(
     pending = [envelope_detail]
     while pending:
         container = pending.pop()
+        if isinstance(container, dict):
+            # A key can quote a credential as plainly as a value, so keys are masked too.
+            # The dict is refilled in its own order, so a renamed key keeps its place.
+            items = list(container.items())
+            container.clear()
+            for key, value in items:
+                if isinstance(key, str):
+                    key = mask_credentials(key)
+                container[key] = value
         items = container.items() if isinstance(container, dict) else enumerate(container)
         for key, value in items:
             if isinstance(value, str):
@@ -1530,8 +1539,14 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
             f"over the {MACHINE_OUTPUT_LIMIT} byte limit",
         )
 
+    from lionhub.state.engine import mask_credentials
+
     text = completed.stdout.decode("utf-8", "replace").strip()
-    stderr_tail = completed.stderr.decode("utf-8", "replace")[-_MACHINE_STDERR_TAIL:]
+    # Masked before it is cut, as the startup refusal's stderr is, so a secret split by the
+    # cut cannot leave its tail behind.
+    stderr_tail = mask_credentials(completed.stderr.decode("utf-8", "replace"))[
+        -_MACHINE_STDERR_TAIL:
+    ]
     if not text:
         raise OpError(
             "internal",
